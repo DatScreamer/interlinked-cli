@@ -7,9 +7,12 @@
 // statuses. Pure functions apart from the JSON load/save.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isTestPath } from "../coverage-test-selector.js";
+import { normalizeFindingPath } from "../findings/provenance.js";
 import type { SymbolHashEntry } from "./identity.js";
 import { freshInstability, mutantIdsChurned, updateInstability } from "./instability.js";
+import { healManifestFiles } from "./manifest-heal.js";
 import type {
 	MutantIdentity,
 	MutantRecord,
@@ -22,6 +25,75 @@ import type {
 
 export function mutationManifestPath(dir: string): string {
 	return join(dir, "mutation-manifest.json");
+}
+
+/**
+ * Normalize a raw `file` argument into the manifest's ONE canonical key: a
+ * repo-relative, forward-slash path with no leading "./". This is the single
+ * choke point every manifest reader/writer funnels a path through —
+ * `applyMeasuredRun` and `fileRecords` below, plus accept.ts's `locate` /
+ * `withMutant` — so an absolute path, a "./"-prefixed path, and a backslash
+ * path all collapse onto the SAME key instead of each earning an independent
+ * record.
+ *
+ * Measured defect (2026-07-31): Claude Code's hook event carries an ABSOLUTE
+ * `file_path`, while the brownfield-adoption sweep (`seedFileBaseline`, driven
+ * from a plain repo-relative path list) keys the SAME files by their
+ * repo-relative path. 17 files ended up with two independent records, so the
+ * survivor-diff invariant compared an edit against a record that was not its
+ * own — half of every affected file's measurement history was invisible to
+ * the ratchet.
+ *
+ * Reuses `normalizeFindingPath` (findings/provenance.ts) for the string-level
+ * cleanup (backslash → "/", strip a leading "./") rather than re-deriving it —
+ * `findings/corpus.ts`'s `toRepoRelative` composes the exact same
+ * `isAbsolute(file) ? relative(cwd, file) : file` shape for the same reason.
+ * `cwd` defaults to `process.cwd()` — the harness's documented convention that
+ * every `.interlinked/` path resolves against the process cwd (the guarded
+ * repo root) — but real callers on the live gate path (gate.ts /
+ * pre-tool-coverage-gates.ts) thread the daemon's actual `ctx.cwd` explicitly,
+ * since a daemon started with `--cwd` can diverge from `process.cwd()`.
+ */
+export function normalizeManifestKey(file: string, cwd: string = process.cwd()): string {
+	const posix = normalizeFindingPath(file);
+	// Both branches go through the SAME resolve -> relative round-trip. An earlier
+	// version returned a relative input after string cleanup only, which left this
+	// "canonical" key non-canonical for exactly the spellings a choke point exists
+	// to collapse: measured 2026-07-31, one file produced FIVE distinct keys —
+	// `src//a.ts`, `src/./a.ts`, `src/sub/../a.ts` and `../<repo>/src/a.ts` each
+	// survived alongside `src/a.ts`. That is the same two-spellings/one-map class
+	// this function was introduced to kill, reintroduced inside the fix itself.
+	// `resolve` collapses `//`, `/./` and `/../`, so the round-trip is idempotent.
+	const abs = isAbsolute(posix) ? posix : resolve(cwd, posix);
+	return normalizeFindingPath(relative(cwd, abs));
+}
+
+/**
+ * Thrown by `applyMeasuredRun` when the resolved key names a test/spec file.
+ *
+ * Mutating a test asks whether anything would notice a CHANGED TEST — the test
+ * is the oracle, so the answer is always "no" and the measurement means
+ * nothing (the same reasoning `gate.ts`'s `isMutationTarget` already applies
+ * before a file is ever chosen as the primary edit target). This class existed
+ * in the wild: 2 `.test.ts` keys were found in the live manifest on 2026-07-31,
+ * written by `seedFileBaseline` (adopt.ts) — a caller with no test-file filter
+ * of its own, upstream of `isMutationTarget`.
+ *
+ * Thrown, not silent: a test-file key reaching THIS point is a caller bug, not
+ * a normal outcome, so it must be loud rather than quietly dropped (a silent
+ * drop would hide exactly the caller defect that put it here). `evaluateMutation`
+ * and `seedFileBaseline` both catch it and fold it into their EXISTING
+ * "nothing to write" contracts (`unavailable` / `null`) — the daemon and the
+ * CLI never see a raw throw, but a new caller that forgets to catch gets an
+ * immediate, unambiguous failure instead of silent corruption.
+ */
+export class MutationManifestTestTargetError extends Error {
+	constructor(public readonly key: string) {
+		super(
+			`mutation manifest: refusing to record a baseline for test file "${key}" — mutating a test proves nothing (the test is the oracle)`,
+		);
+		this.name = "MutationManifestTestTargetError";
+	}
 }
 
 export interface ManifestMeta {
@@ -85,7 +157,11 @@ export function loadManifest(dir: string): MutationManifest | null {
 		// SAFETY: version + files presence checked on the line above; deeper shape
 		// errors surface as missing per-file records, which every consumer treats
 		// as "no baseline" rather than crashing.
-		const manifest = raw as MutationManifest; // SAFETY: see guard above
+		const parsed = raw as MutationManifest; // SAFETY: see guard above
+		// Repo root = the parent of the `.interlinked` dir this manifest lives in
+		// (every caller passes `resolve(cwd, ".interlinked")` as `dir` — see
+		// `normalizeManifestKey`'s docstring).
+		const manifest: MutationManifest = { ...parsed, files: healManifestFiles(parsed.files, dirname(dir)) };
 		manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
 		return manifest;
 	} catch {
@@ -107,8 +183,11 @@ export function saveManifest(dir: string, manifest: MutationManifest): void {
 	manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
 }
 
-function fileRecords(manifest: MutationManifest, file: string): Record<StableId, SymbolRecord> {
-	return manifest.files[file] ?? {};
+/** Every read of a file's records funnels through `normalizeManifestKey` too —
+ *  a caller that still hands in an absolute/`./`/backslash path reads the
+ *  SAME record `applyMeasuredRun` would write, instead of silently missing it. */
+function fileRecords(manifest: MutationManifest, file: string, cwd?: string): Record<StableId, SymbolRecord> {
+	return manifest.files[normalizeManifestKey(file, cwd)] ?? {};
 }
 
 /**
@@ -120,8 +199,8 @@ function fileRecords(manifest: MutationManifest, file: string): Record<StableId,
  * size reflects the file, not the change. Callers use this to treat the first
  * measurement of a file as BASELINE ESTABLISHMENT rather than a verdict.
  */
-export function hasFileBaseline(manifest: MutationManifest, file: string): boolean {
-	return Object.keys(fileRecords(manifest, file)).length > 0;
+export function hasFileBaseline(manifest: MutationManifest, file: string, cwd?: string): boolean {
+	return Object.keys(fileRecords(manifest, file, cwd)).length > 0;
 }
 
 /** Symbols whose hash differs from the base manifest (or are new) — the changed region (spec §3). */
@@ -129,8 +208,9 @@ export function changedSymbols(
 	base: MutationManifest,
 	file: string,
 	overlayHashes: Map<StableId, SymbolHashEntry>,
+	cwd?: string,
 ): Set<StableId> {
-	const records = fileRecords(base, file);
+	const records = fileRecords(base, file, cwd);
 	const changed = new Set<StableId>();
 	for (const [symbolId, entry] of overlayHashes) {
 		const prior = records[symbolId];
@@ -140,9 +220,9 @@ export function changedSymbols(
 }
 
 /** mutantIds accepted (grandfathered survivors + reviewed equivalents) in the base. */
-export function acceptedSurvivors(base: MutationManifest, file: string): Set<StableId> {
+export function acceptedSurvivors(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
 	const out = new Set<StableId>();
-	for (const symbol of Object.values(fileRecords(base, file))) {
+	for (const symbol of Object.values(fileRecords(base, file, cwd))) {
 		for (const m of Object.values(symbol.mutants)) {
 			if (m.status === "survived" || m.status === "equivalent") out.add(m.mutantId);
 		}
@@ -151,9 +231,9 @@ export function acceptedSurvivors(base: MutationManifest, file: string): Set<Sta
 }
 
 /** symbolIds currently quarantined (identity unstable → survivors WARN, not BLOCK). */
-export function quarantinedSymbols(base: MutationManifest, file: string): Set<StableId> {
+export function quarantinedSymbols(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
 	const out = new Set<StableId>();
-	for (const [symbolId, symbol] of Object.entries(fileRecords(base, file))) {
+	for (const [symbolId, symbol] of Object.entries(fileRecords(base, file, cwd))) {
 		if (symbol.instability.quarantined) out.add(symbolId);
 	}
 	return out;
@@ -252,6 +332,10 @@ export interface MeasuredRunArgs {
 	at: string;
 	/** Stable runs to clear a quarantine; defaults to {@link QUARANTINE_STABILITY_THRESHOLD}. */
 	stabilityThreshold?: number;
+	/** Repo root `file` resolves against when absolute. Defaults to `process.cwd()`
+	 *  inside {@link normalizeManifestKey} — pass the daemon's actual `ctx.cwd`
+	 *  when it can diverge from the process cwd (e.g. an explicit `--cwd`). */
+	cwd?: string;
 }
 
 /**
@@ -260,9 +344,20 @@ export interface MeasuredRunArgs {
  * instability updated (churn under an unchanged hash → quarantine), symbols no
  * longer present dropped, generation bumped. Pure — the caller persists it, and
  * ONLY on a measured-clean allow (a dirty run must not launder the manifest).
+ *
+ * THE choke point (spec of this fix): `args.file` is normalized to the
+ * canonical manifest key exactly once, here, via `normalizeManifestKey` — so
+ * every real writer (the per-edit gate's `evaluateMutation` and the
+ * brownfield-adoption `seedFileBaseline`) keys the SAME file identically
+ * regardless of what shape of path it was handed. A resolved key that names a
+ * test/spec file throws {@link MutationManifestTestTargetError} rather than
+ * silently writing — see that class's docstring for why throw-and-catch (not
+ * silent, not an uncaught crash) is the deliberate choice.
  */
 export function applyMeasuredRun(args: MeasuredRunArgs): MutationManifest {
-	const { base, file, overlayHashes, measured, at } = args;
+	const { base, overlayHashes, measured, at } = args;
+	const file = normalizeManifestKey(args.file, args.cwd);
+	if (isTestPath(file)) throw new MutationManifestTestTargetError(file);
 	const threshold = args.stabilityThreshold ?? QUARANTINE_STABILITY_THRESHOLD;
 	const prevFile = base.files[file] ?? {};
 	const bySymbol = new Map<StableId, MeasuredMutant[]>();

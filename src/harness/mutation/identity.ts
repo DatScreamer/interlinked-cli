@@ -108,6 +108,12 @@ function localName(ts: TsModule, sf: TS.SourceFile, node: TS.Node): string {
 	return "(anonymous)";
 }
 
+/** The pseudo-symbol every mutant with no enclosing function anchors to:
+ *  top-level statements, class-property initializers, decorators. Arity is 0 by
+ *  construction, so `symbolIdFor(file, MODULE_QUALIFIED_NAME, 0)` is the one key
+ *  both the anchoring step and the hash map must agree on. */
+const MODULE_QUALIFIED_NAME = "(module)";
+
 /** Qualified name "Outer.method" by walking enclosing classes / functions / namespaces. */
 function qualifiedName(ts: TsModule, sf: TS.SourceFile, node: TS.Node): string {
 	const parts: string[] = [];
@@ -118,7 +124,7 @@ function qualifiedName(ts: TsModule, sf: TS.SourceFile, node: TS.Node): string {
 		else if (ts.isModuleDeclaration(cur)) parts.unshift(cur.name.getText(sf));
 		cur = cur.parent;
 	}
-	return parts.length > 0 ? parts.join(".") : "(module)";
+	return parts.length > 0 ? parts.join(".") : MODULE_QUALIFIED_NAME;
 }
 
 function arityOf(node: TS.Node): number {
@@ -148,7 +154,7 @@ interface ResolvedSite {
 
 function resolveSite(ts: TsModule, sf: TS.SourceFile, file: string, offset: number): ResolvedSite {
 	const fn = enclosingFunction(ts, sf, offset);
-	const qn = fn ? qualifiedName(ts, sf, fn) : "(module)";
+	const qn = fn ? qualifiedName(ts, sf, fn) : MODULE_QUALIFIED_NAME;
 	const arity = fn ? arityOf(fn) : 0;
 	return { symbolId: symbolIdFor(file, qn, arity), qualifiedName: qn };
 }
@@ -210,10 +216,58 @@ export interface SymbolHashEntry {
 	symbolHash: string;
 }
 
+/** The function-like nodes hashed as their own symbol — i.e. exactly the subtrees
+ *  module scope must EXCLUDE. A bodiless function-like (an overload / ambient
+ *  signature) is not one: it carries no expression an engine can rewrite, so no
+ *  mutant anchors inside it. */
+function isHashedFunction(ts: TsModule, node: TS.Node): boolean {
+	return isFunctionLike(ts, node) && (node as TS.FunctionLikeDeclaration).body !== undefined;
+}
+
+/** Half-open spans of the OUTERMOST hashed functions, in source order. Nested
+ *  ones live inside these, so excluding the outermost excludes them all. */
+function hashedFunctionSpans(ts: TsModule, sf: TS.SourceFile): Array<[number, number]> {
+	const spans: Array<[number, number]> = [];
+	const walk = (node: TS.Node): void => {
+		if (isHashedFunction(ts, node)) {
+			spans.push([node.getStart(sf), node.getEnd()]);
+			return;
+		}
+		ts.forEachChild(node, walk);
+	};
+	ts.forEachChild(sf, walk);
+	return spans;
+}
+
+/** The file's text minus the subtrees hashed as their own symbols — the source a
+ *  `(module)` mutant can actually live in. Coarse by design: ONE hash over all of
+ *  module scope means any top-level edit re-measures every module-scope mutant,
+ *  which is safe (over-invalidation), whereas a missing hash is not (spec §3;
+ *  plan 16 §11.1 fix 1). Segments are joined with a newline so excising a
+ *  function can never fuse two adjacent tokens into one. */
+function moduleScopeText(ts: TsModule, sf: TS.SourceFile): string {
+	const full = sf.text;
+	const parts: string[] = [];
+	let cursor = 0;
+	for (const [start, end] of hashedFunctionSpans(ts, sf)) {
+		parts.push(full.slice(cursor, start));
+		cursor = end;
+	}
+	parts.push(full.slice(cursor));
+	return parts.join("\n");
+}
+
 /**
- * Per-symbol normalized-source hashes for the function-like symbols in a file —
- * the differential-skip / changed-region key (spec §3). Module/top-level scope
- * is deferred to a later increment. Returns null when typescript is absent.
+ * Per-symbol normalized-source hashes for a file — the differential-skip /
+ * changed-region key (spec §3). Covers every function-like symbol WITH a body,
+ * plus the `(module)` pseudo-symbol for whatever top-level source is left over
+ * (omitted when that is empty, e.g. a file of nothing but functions).
+ *
+ * This map is the SYMBOL UNIVERSE the manifest is rebuilt from: `applyMeasuredRun`
+ * iterates it, so a measured mutant whose symbolId is missing here is discarded
+ * without a trace. Since `resolveSite` anchors every mutant with no enclosing
+ * function to `(module)`, omitting that entry silently dropped module-scope
+ * mutants (plan 16 §11.1). Returns null when typescript is absent.
  */
 export function computeSymbolHashes(
 	file: string,
@@ -224,7 +278,7 @@ export function computeSymbolHashes(
 	const sf = parseFile(ts, file, content);
 	const out = new Map<StableId, SymbolHashEntry>();
 	const walk = (node: TS.Node): void => {
-		if (isFunctionLike(ts, node) && (node as TS.FunctionLikeDeclaration).body !== undefined) {
+		if (isHashedFunction(ts, node)) {
 			const qn = qualifiedName(ts, sf, node);
 			out.set(symbolIdFor(file, qn, arityOf(node)), {
 				qualifiedName: qn,
@@ -234,5 +288,12 @@ export function computeSymbolHashes(
 		ts.forEachChild(node, walk);
 	};
 	walk(sf);
+	const moduleTokens = normalizeTokens(ts, moduleScopeText(ts, sf));
+	if (moduleTokens.length > 0) {
+		out.set(symbolIdFor(file, MODULE_QUALIFIED_NAME, 0), {
+			qualifiedName: MODULE_QUALIFIED_NAME,
+			symbolHash: sha16([moduleTokens]),
+		});
+	}
 	return out;
 }

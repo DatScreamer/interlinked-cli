@@ -16,10 +16,16 @@ const META = {
 const CONTENT = "function bar(x: number): boolean { return x > 0; }\n";
 
 type Measured = Extract<MutationGateOutcome, { kind: "measured" }>;
+type Unavailable = Extract<MutationGateOutcome, { kind: "unavailable" }>;
 
 // Narrowing helpers live outside the it() blocks so the test bodies stay branch-free.
 function measured(out: MutationGateOutcome): Measured {
 	if (out.kind !== "measured") throw new Error(`expected a measured outcome, got ${out.kind}`);
+	return out;
+}
+
+function unavailable(out: MutationGateOutcome): Unavailable {
+	if (out.kind !== "unavailable") throw new Error(`expected an unavailable outcome, got ${out.kind}`);
 	return out;
 }
 
@@ -249,5 +255,78 @@ describe("zip — pairing identities with measured mutants", () => {
 		const m = measured(evalWith(priorBaseline(), []));
 		expect(m.newSurvivors).toEqual([]);
 		expect(m.decision).toBe("allow");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Key-normalization + test-file rejection at the live gate orchestrator (spec
+// of the 2026-07-31 fix): `evaluateMutation` is where the per-edit gate
+// actually calls into the manifest, so it must never key a test file, and its
+// reads/write must agree on ONE canonical key even when handed an absolute path.
+// ---------------------------------------------------------------------------
+
+describe("evaluateMutation — never keys a test/spec file", () => {
+	it("N: a test-file target is unavailable, not measured — never blocks, never writes", () => {
+		const out = unavailable(
+			evaluateMutation({
+				file: "src/x.test.ts",
+				baseManifest: emptyManifest(META),
+				overlayContent: CONTENT,
+				adapted: [adaptedGt("survived")],
+				siteCountThreshold: 50,
+				at: "t",
+			}),
+		);
+		expect(out.warning).toContain("test file");
+	});
+
+	it("N: still refuses a test target reached through an absolute path", () => {
+		const out = evaluateMutation({
+			file: "/repo/root/src/x.test.ts",
+			baseManifest: emptyManifest(META),
+			overlayContent: CONTENT,
+			adapted: [adaptedGt("survived")],
+			siteCountThreshold: 50,
+			at: "t",
+			cwd: "/repo/root",
+		});
+		expect(out.kind).toBe("unavailable");
+	});
+});
+
+describe("evaluateMutation — an absolute `file` reads and writes the SAME manifest key", () => {
+	const CWD = "/repo/root";
+
+	it("a first-sighting allow, persisted, is visible to the NEXT call keyed by the repo-relative twin", () => {
+		const first = measured(
+			evaluateMutation({
+				file: "/repo/root/src/x.ts",
+				baseManifest: emptyManifest(META),
+				overlayContent: CONTENT,
+				adapted: [adaptedGt("killed")],
+				siteCountThreshold: 50,
+				at: "t",
+				cwd: CWD,
+			}),
+		);
+		expect(first.decision).toBe("allow");
+		const persisted = first.refreshedManifest;
+		if (!persisted) throw new Error("expected a refreshed manifest");
+		expect(Object.keys(persisted.files)).toEqual(["src/x.ts"]);
+
+		// Same content, now a survivor — evaluated with the REPO-RELATIVE path this
+		// time. If the two calls keyed differently, this would read as another
+		// first-sighting (no prior baseline) instead of a real ratchet violation.
+		const second = measured(
+			evaluateMutation({
+				file: "src/x.ts",
+				baseManifest: persisted,
+				overlayContent: CONTENT,
+				adapted: [adaptedGt("survived")],
+				siteCountThreshold: 50,
+				at: "t",
+			}),
+		);
+		expect(second.decision).toBe("block");
 	});
 });

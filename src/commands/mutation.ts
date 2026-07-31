@@ -232,15 +232,18 @@ function renderNormal(reportPath: string, result: MutationGateResult, minScore: 
 }
 
 // ===========================================
-// interlinked mutation accept — audited equivalent-mutant annotation
+// interlinked mutation accept — no longer a write path (plan 16 §7)
 // ===========================================
-// The LIVE per-edit gate's block message has always promised "or annotating
-// an equivalent mutant"; this is that verb. Operates on the live gate's
-// mutation-manifest.json (NOT the report ratchet's mutation-baseline.json):
-// flips one named survivor to status "equivalent" with the human judgment of
-// WHY no test can kill it recorded in-band, so the accepted floor stays
-// auditable. Human-invoked fs write — the sanctioned path past the
-// baseline-integrity gate, same carve-out as `interlinked adopt`.
+// This verb used to flip a named survivor in the LIVE gate's
+// mutation-manifest.json to status "equivalent", carrying the human's prose as
+// the WHY. Typed dispositions ended that: `acceptMutant` now admits only a
+// `proved_equivalent` disposition whose method carries its own mechanism and
+// whose certificate binds to the mutant's current symbol hash, environment and
+// dependency-graph version. Prose satisfies none of that, and a certificate this
+// command minted for itself would be self-certifying — so the command validates
+// the target and then explains the refusal instead of writing anything. It stays
+// wired because the gate's block message points here: the answer a human needs
+// is "kill it, or fix the code", and that is what it now says.
 
 interface MutationAcceptOptions {
 	file?: string;
@@ -261,14 +264,14 @@ export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promis
 	if (file === "" || mutantId === "" || reason.trim() === "") {
 		outputError(
 			mode,
-			"Usage: interlinked mutation accept --file <repo-relative-path> --id <mutantId> --reason <why no test can kill it>. A blank reason is refused — an unauditable floor entry is how ratchets rot.",
+			"Usage: interlinked mutation accept --file <repo-relative-path> --id <mutantId> --reason <why no test can kill it>. State the reason first — writing it down is usually where an 'equivalent' turns out to be a missing test or dead code.",
 		);
 		process.exitCode = 1;
 		return;
 	}
 
-	const { loadManifest, saveManifest } = await import("../harness/mutation/manifest.js");
-	const { acceptMutant } = await import("../harness/mutation/accept.js");
+	const { loadManifest } = await import("../harness/mutation/manifest.js");
+	const { findMutantRecord } = await import("../harness/mutation/accept.js");
 
 	const base = loadManifest(configDir);
 	if (!base) {
@@ -280,8 +283,7 @@ export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promis
 		return;
 	}
 
-	const next = acceptMutant({ base, file, mutantId, reason });
-	if (!next) {
+	if (!findMutantRecord(base, file, mutantId)) {
 		outputError(
 			mode,
 			`Mutant "${mutantId}" not found under "${file}" in the manifest. List the file's survivors before accepting.`,
@@ -290,23 +292,15 @@ export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promis
 		return;
 	}
 
-	saveManifest(configDir, next);
-	const trimmed = reason.trim();
-	output(
+	// The mutant exists — and the manifest still does not change. Since plan 16 §7
+	// (typed dispositions) a mutant reaches status "equivalent" only through a
+	// `proved_equivalent` disposition whose method carries its own mechanism and
+	// whose certificate binds to this mutant's current symbol hash. A reason
+	// string is not a mechanism, and a certificate this command minted for itself
+	// would prove nothing — so there is deliberately no prose path left.
+	outputError(
 		mode,
-		{ accepted: { file, mutantId, reason: trimmed } },
-		{
-			json: () => JSON.stringify({ accepted: { file, mutant_id: mutantId, reason: trimmed } }),
-			short: () => `accepted ${mutantId} (${file}) as equivalent`,
-			normal: () =>
-				[
-					header("Mutation — equivalent mutant accepted"),
-					kvLine("File", file),
-					kvLine("Mutant", mutantId),
-					kvLine("Reason", trimmed),
-					c.dim("  Recorded in mutation-manifest.json; the gate stops charging this mutant."),
-				].join("\n"),
-			full: () => "",
-		},
+		`Refused: a reason is not a mechanism. "${mutantId}" (${file}) stays a survivor. Since typed dispositions (plan 16 §7) the manifest only records an equivalence from a verifier-issued certificate bound to the mutant's current symbol hash; this command cannot mint one. Kill the mutant with a test, or fix/delete the code if the mutant is unkillable because the code should not exist.`,
 	);
+	process.exitCode = 1;
 }

@@ -9,6 +9,8 @@
 // immutable-snapshot-with-`generation`, and the same instability/quarantine
 // model. No executable surface — see identity.ts for the derivation.
 
+import type { SurvivorDisposition } from "./disposition.js";
+
 /** A 16-hex-char sha-256 prefix used as a stable, content-addressed id. */
 export type StableId = string;
 
@@ -68,10 +70,18 @@ export interface MutantRecord {
 	status: MutantStatus;
 	/** ISO timestamp — when this identity first appeared. */
 	firstSeen: string;
-	/** For status "equivalent": the human judgment of WHY no test can kill this
-	 *  mutant, recorded in-band so the accepted floor stays auditable. Set by
-	 *  `acceptMutant` (interlinked mutation accept); absent otherwise. */
+	/** LEGACY, still read forever: the prose WHY of an accepted equivalence.
+	 *  Manifests written before typed dispositions carry ONLY this field, so it
+	 *  can never be removed — `dispositionOf` surfaces it verbatim rather than
+	 *  reinterpreting it as evidence. Still written alongside `disposition` as a
+	 *  human-readable rendering for older readers. */
 	accepted_reason?: string;
+	/** The typed judgment (plan 16 §7): why this survivor is resolved, and with
+	 *  what mechanism. `proved_equivalent` is the only kind that reaches
+	 *  `status: "equivalent"`; `dead_code` / `unresolved` attach here WITHOUT
+	 *  touching status, so a defect can never be laundered into the accepted
+	 *  floor. Absent on records written before typed dispositions. */
+	disposition?: SurvivorDisposition;
 }
 
 /** Mirror of coverage-index `ShardInstability`: quarantine on identity churn. */

@@ -108,6 +108,11 @@ export interface MutationGateContext {
 	 *  results are simply dropped, which is the old single-window behaviour. */
 	onPending?: ((file: string, overlayContent: string, pending: readonly PendingHandle[]) => void) | undefined;
 	at: string;
+	/** Repo root to resolve an absolute `file_path` against when keying the
+	 *  manifest (manifest.ts's `normalizeManifestKey`) — pass the daemon's actual
+	 *  `ctx.cwd`, which can diverge from `process.cwd()` under an explicit
+	 *  `--cwd`. Omitted callers fall back to `process.cwd()`. */
+	cwd?: string;
 }
 
 /** The minimum a caller needs to come back for an unfinished run. */
@@ -354,6 +359,7 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 		siteCountThreshold: ctx.config.site_count_threshold ?? DEFAULT_SITE_COUNT_THRESHOLD,
 		testRun: result.testRun,
 		at: ctx.at,
+		...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
 	});
 	const persistWarning = persistIfCleanMeasured(outcome, ctx.persist);
 	const decision = applyMode(mutationOutcomeToDecision(outcome), ctx.config.mode);

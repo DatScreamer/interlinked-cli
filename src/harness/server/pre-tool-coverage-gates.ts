@@ -278,6 +278,7 @@ export async function runMutationWriteGate(
 			}
 		},
 		at: new Date().toISOString(),
+		cwd: ctx.cwd,
 	});
 	if (!decision) return null;
 	if (decision.decision === "block") {

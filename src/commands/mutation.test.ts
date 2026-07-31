@@ -483,23 +483,34 @@ describe("mutationAcceptCommand", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	it("P1: flips the named survivor to equivalent and persists the reason", async () => {
+	// CHANGED 2026-07-31 (plan 16 §7, typed dispositions). These two cases used to
+	// assert that `--reason <prose>` flipped the survivor to "equivalent" and
+	// exited 0. That behavior is gone deliberately, not incidentally: a mutant now
+	// reaches status "equivalent" only through a `proved_equivalent` disposition
+	// whose method carries its own mechanism and whose certificate binds to the
+	// mutant's current symbol hash. Prose has no mechanism and no invalidation
+	// inputs, and a certificate this command minted for itself would prove
+	// nothing — so the prose path is a refusal now. The old assertions encoded the
+	// behavior this unit exists to remove; they are rewritten, not deleted.
+	it("P1: refuses the prose path and leaves the manifest byte-identical", async () => {
 		writeLiveManifest(tmp);
+		const before = readFileSync(join(tmp, ".interlinked", "mutation-manifest.json"), "utf-8");
 		await mutationAcceptCommand({
 			file: FILE,
 			id: "m1",
 			reason: "poll loop only branches on ready/gone; the default arm is unobservable",
 			cwd: tmp,
 		});
-		expect(readMutant(tmp)?.status).toBe("equivalent");
-		expect(readMutant(tmp)?.accepted_reason).toContain("unobservable");
+		expect(readMutant(tmp)?.status).toBe("survived");
+		expect(readMutant(tmp)?.accepted_reason).toBeUndefined();
+		expect(readFileSync(join(tmp, ".interlinked", "mutation-manifest.json"), "utf-8")).toBe(before);
 	});
 
-	it("P2: reports the acceptance and does not fail the command", async () => {
+	it("P2: says why — a reason is not a mechanism — and exits non-zero", async () => {
 		writeLiveManifest(tmp);
 		await mutationAcceptCommand({ file: FILE, id: "m1", reason: "unobservable arm", cwd: tmp });
-		expect(io.mocks().exitCode).toBeUndefined();
-		expect(io.mocks().stdout).toContain("equivalent");
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("not a mechanism");
 	});
 
 	it("N1: an unknown mutant id changes nothing and exits non-zero", async () => {
@@ -522,5 +533,21 @@ describe("mutationAcceptCommand", () => {
 		await mutationAcceptCommand({ file: FILE, id: "m1", reason: "r", cwd: tmp });
 		expect(io.mocks().exitCode).toBe(1);
 		expect(io.mocks().stderr).toContain("manifest");
+	});
+
+	it("N4: opts with no --cwd/--file/--id/--reason at all falls back to defaults and refuses", async () => {
+		// Every option is `?? "" ` / `|| process.cwd()` defaulted when the caller
+		// (e.g. a malformed invocation) omits it entirely — distinct from N2's
+		// "reason is present but blank". Drive that by chdir-ing into `tmp` and
+		// passing an opts object with nothing set at all.
+		const orig = process.cwd();
+		process.chdir(tmp);
+		try {
+			await mutationAcceptCommand({});
+		} finally {
+			process.chdir(orig);
+		}
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("Usage: interlinked mutation accept");
 	});
 });

@@ -264,6 +264,90 @@ describe("identity keys are distinct where the inputs are", () => {
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Module scope is a symbol too (plan 16 §11.1). `resolveSite` has always
+// anchored a top-level mutant to the pseudo-symbol "(module)", but
+// `computeSymbolHashes` emitted no entry for it — and `applyMeasuredRun`
+// rebuilds a file's record by iterating the hash map, so every module-scope
+// mutant was silently discarded on persist (measured: codex-feature-flag.ts
+// recorded 104 of the 117 mutants a live run reports).
+// ---------------------------------------------------------------------------
+
+describe("computeSymbolHashes — module scope is a first-class symbol", () => {
+	const MODULE = "(module)";
+	const WITH_TOP_LEVEL = `const LIMIT = 10;\n\nfunction over(x: number): boolean {\n\treturn x > LIMIT;\n}\n`;
+
+	function hashes(content: string): Map<string, { qualifiedName: string; symbolHash: string }> {
+		const map = computeSymbolHashes(FILE, content);
+		if (!map) throw new Error("typescript unavailable");
+		return map;
+	}
+
+	const moduleEntry = (content: string): { qualifiedName: string; symbolHash: string } | undefined =>
+		[...hashes(content).values()].find((e) => e.qualifiedName === MODULE);
+
+	const names = (content: string): string[] => [...hashes(content).values()].map((e) => e.qualifiedName).sort();
+
+	it("P1: emits a (module) entry for a file with top-level statements", () => {
+		expect(names(WITH_TOP_LEVEL)).toEqual([MODULE, "over"]);
+	});
+
+	it("P2: keys the (module) entry by the symbolId a top-level mutant anchors to", () => {
+		// The crux: the hash map IS the symbol universe the manifest is rebuilt
+		// from, so a key mismatch here drops the mutant rather than failing loudly.
+		const [id] = derive(WITH_TOP_LEVEL, [{ needle: "10", lexeme: "10", replacement: "11", mutator: "Num" }]);
+		expect(id?.qualifiedName).toBe(MODULE);
+		expect(hashes(WITH_TOP_LEVEL).get(id?.symbolId ?? "")?.qualifiedName).toBe(MODULE);
+	});
+
+	it("P3: leaves the module hash alone when only a function BODY changes", () => {
+		// Function bodies are hashed as their own symbols; counting them twice would
+		// invalidate every module-scope survivor on an unrelated edit.
+		expect(moduleEntry(WITH_TOP_LEVEL.replace("x > LIMIT", "x >= LIMIT"))?.symbolHash).toBe(
+			moduleEntry(WITH_TOP_LEVEL)?.symbolHash,
+		);
+	});
+
+	it("P4: changes the module hash when a top-level token changes", () => {
+		expect(moduleEntry(WITH_TOP_LEVEL.replace("= 10", "= 11"))?.symbolHash).not.toBe(
+			moduleEntry(WITH_TOP_LEVEL)?.symbolHash,
+		);
+	});
+
+	it("P5: is stable under reformatting and comments outside the functions", () => {
+		const reformatted = `// header\nconst   LIMIT  =  10 ;\n\n/** doc */\nfunction over( x : number ) : boolean {\n\treturn x > LIMIT;\n}\n`;
+		expect(moduleEntry(reformatted)?.symbolHash).toBe(moduleEntry(WITH_TOP_LEVEL)?.symbolHash);
+	});
+
+	it("P6: covers a class-property initializer, which also anchors to (module)", () => {
+		// `enclosingFunction` finds nothing for a property initializer, so its
+		// mutants land on (module) exactly like a top-level const's do.
+		const SRC = `class C {\n\treadonly n = 1 > 0;\n\tget flag(): boolean {\n\t\treturn this.n;\n\t}\n}\n`;
+		const [id] = derive(SRC, [{ needle: "1 > 0", lexeme: ">", replacement: ">=" }]);
+		expect(id?.qualifiedName).toBe(MODULE);
+		expect(hashes(SRC).get(id?.symbolId ?? "")?.qualifiedName).toBe(MODULE);
+	});
+
+	it("N1: emits NO module entry when every top-level statement is a hashed function", () => {
+		const only = `function a(): number {\n\treturn 1;\n}\n\nexport function b(): number {\n\treturn 2;\n}\n`;
+		expect(names(only)).toEqual(["a", "b"]);
+	});
+
+	it("N2: emits nothing at all for an empty or comment-only file", () => {
+		expect(hashes("").size).toBe(0);
+		expect(hashes("// nothing here\n/* nor here */\n").size).toBe(0);
+	});
+
+	it("P7: covers a top-level statement SANDWICHED between two functions", () => {
+		// The multi-segment splice: module scope is the file minus each hashed
+		// function span, so a statement between two of them must still be seen.
+		const between = (init: string): string =>
+			`function a(): void {}\nconst mid = ${init};\nfunction b(): void {}\n`;
+		expect(names(between("1"))).toEqual([MODULE, "a", "b"]);
+		expect(moduleEntry(between("2"))?.symbolHash).not.toBe(moduleEntry(between("1"))?.symbolHash);
+	});
+});
+
 describe("symbol hashes track the body, not the surroundings", () => {
 	const A = "function f(x: number) {\n\treturn x > 0;\n}\n";
 	const B = "function f(x: number) {\n\treturn x >= 0;\n}\n";

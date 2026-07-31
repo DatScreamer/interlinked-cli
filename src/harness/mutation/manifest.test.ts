@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { computeSymbolHashes, deriveIdentities, type SymbolHashEntry } from "./identity.js";
 import {
 	acceptedSurvivors,
 	appendReceipt,
@@ -12,9 +13,11 @@ import {
 	emptyManifest,
 	loadManifest,
 	type MeasuredMutant,
+	MutationManifestTestTargetError,
 	makeManifestPersister,
 	mutationManifestPath,
 	mutationReceiptsPath,
+	normalizeManifestKey,
 	quarantinedSymbols,
 	saveManifest,
 } from "./manifest.js";
@@ -458,6 +461,81 @@ describe("changedSymbols — what counts as changed decides what counts as new",
 	});
 });
 
+// ---------------------------------------------------------------------------
+// The persist round-trip (plan 16 §11.1). `applyMeasuredRun` rebuilds a file's
+// record by iterating `overlayHashes`, so a measured mutant whose symbolId is
+// absent from that map is dropped without a trace. Module-scope mutants hit
+// exactly that hole until `computeSymbolHashes` learned to emit a "(module)"
+// entry. These tests use the REAL identity derivation — a hand-built map would
+// pin the fixture, not the agreement between the two producers.
+// ---------------------------------------------------------------------------
+
+describe("applyMeasuredRun — no measured mutant may be dropped on persist", () => {
+	const MIXED_FILE = "src/mixed.ts";
+	// Both kinds in one file: a module-scope constant and a function body.
+	const MIXED = `const LIMIT = 10;\n\nexport function over(x: number): boolean {\n\treturn x > LIMIT;\n}\n`;
+	const AT = "2026-07-30T00:00:00Z";
+
+	function identities(): MutantIdentity[] {
+		const ids = deriveIdentities(MIXED_FILE, MIXED, [
+			{ file: MIXED_FILE, mutator: "Num", originalLexeme: "10", replacement: "11", startOffset: MIXED.indexOf("10") },
+			{ file: MIXED_FILE, mutator: "Op", originalLexeme: ">", replacement: ">=", startOffset: MIXED.indexOf("> LIMIT") },
+		]);
+		if (!ids) throw new Error("typescript unavailable — identity derivation returned null");
+		return ids;
+	}
+
+	function hashes(): Map<string, SymbolHashEntry> {
+		const h = computeSymbolHashes(MIXED_FILE, MIXED);
+		if (!h) throw new Error("typescript unavailable — symbol hashing returned null");
+		return h;
+	}
+
+	const asMeasured = (ids: MutantIdentity[]): MeasuredMutant[] =>
+		ids.map((identity) => ({ identity, status: "survived" as MutantStatus }));
+
+	const persistedMutantIds = (m: MutationManifest): string[] =>
+		Object.values(m.files[MIXED_FILE] ?? {})
+			.flatMap((s) => Object.keys(s.mutants))
+			.sort();
+
+	const idOf = (ids: MutantIdentity[], qualifiedName: string): string =>
+		ids.find((i) => i.qualifiedName === qualifiedName)?.mutantId ?? "missing";
+
+	it("P: persists BOTH a function mutant and a module-scope mutant", () => {
+		const ids = identities();
+		const out = applyMeasuredRun({
+			base: emptyManifest(META),
+			file: MIXED_FILE,
+			overlayHashes: hashes(),
+			measured: asMeasured(ids),
+			at: AT,
+		});
+		expect(persistedMutantIds(out)).toEqual(ids.map((i) => i.mutantId).sort());
+		expect(
+			Object.values(out.files[MIXED_FILE] ?? {})
+				.map((s) => s.qualifiedName)
+				.sort(),
+		).toEqual(["(module)", "over"]);
+	});
+
+	it("N: a mutant whose symbolId is absent from the hash map is still dropped (the mechanism)", () => {
+		// Pins WHY the fix belongs in computeSymbolHashes: an incomplete symbol
+		// universe loses mutants silently here, and always will.
+		const ids = identities();
+		const partial = new Map(hashes());
+		partial.delete(ids.find((i) => i.qualifiedName === "(module)")?.symbolId ?? "");
+		const out = applyMeasuredRun({
+			base: emptyManifest(META),
+			file: MIXED_FILE,
+			overlayHashes: partial,
+			measured: asMeasured(ids),
+			at: AT,
+		});
+		expect(persistedMutantIds(out)).toEqual([idOf(ids, "over")]);
+	});
+});
+
 describe("applyMeasuredRun — carrying knowledge forward", () => {
 	const hashes = (symbolId: string, symbolHash: string) =>
 		new Map([[symbolId, { symbolId, qualifiedName: "fn", symbolHash }]]);
@@ -514,5 +592,263 @@ describe("applyMeasuredRun — carrying knowledge forward", () => {
 			at: "2026-06-06T00:00:00Z",
 		});
 		expect(out.generation).toBe(base.generation + 1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Key-normalization defect (measured 2026-07-31): 17 manifest keys were
+// ABSOLUTE paths duplicating an existing repo-relative entry, and 2 keys were
+// test files. `normalizeManifestKey` is the ONE choke point that makes both
+// impossible at the write boundary; `healManifestFiles` (via `loadManifest`)
+// converges an already-corrupted file on disk instead of leaving it broken.
+// ---------------------------------------------------------------------------
+
+describe("normalizeManifestKey — the manifest's ONE canonical key", () => {
+	const CWD = "/repo/root";
+
+	it("P1: leaves an already-relative path untouched", () => {
+		expect(normalizeManifestKey("src/a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it('P2: strips a leading "./"', () => {
+		expect(normalizeManifestKey("./src/a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it("P3: converts backslashes to forward slashes", () => {
+		expect(normalizeManifestKey("src\\a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it("P4: relativizes an absolute path against cwd", () => {
+		expect(normalizeManifestKey("/repo/root/src/a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it("P5: an absolute path, a \"./\"-prefixed path, and a backslash path all collapse to ONE key", () => {
+		const keys = new Set([
+			normalizeManifestKey("/repo/root/src/a.ts", CWD),
+			normalizeManifestKey("./src/a.ts", CWD),
+			normalizeManifestKey("src\\a.ts", CWD),
+			normalizeManifestKey("src/a.ts", CWD),
+		]);
+		expect([...keys]).toEqual(["src/a.ts"]);
+	});
+
+	// REGRESSION (2026-07-31): the first version of this "canonical" key ran the
+	// resolve->relative round-trip only for ABSOLUTE inputs and returned relative
+	// ones after string cleanup alone. Measured, one file then produced FIVE keys
+	// — the very two-spellings/one-map class this function exists to kill,
+	// reintroduced inside the fix. P5 above could not catch it because none of its
+	// four spellings contains a redundant segment.
+	it("P6: redundant segments in a RELATIVE path collapse — //, /./ and /../", () => {
+		expect(normalizeManifestKey("src//a.ts", CWD)).toBe("src/a.ts");
+		expect(normalizeManifestKey("src/./a.ts", CWD)).toBe("src/a.ts");
+		expect(normalizeManifestKey("src/sub/../a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it("P7: a relative path that walks out of cwd and back resolves to the same key", () => {
+		expect(normalizeManifestKey("../root/src/a.ts", CWD)).toBe("src/a.ts");
+	});
+
+	it("P8: every spelling of one file yields exactly ONE key", () => {
+		const keys = new Set(
+			[
+				"src/a.ts",
+				"./src/a.ts",
+				"src//a.ts",
+				"src/./a.ts",
+				"src/sub/../a.ts",
+				"src\\a.ts",
+				"/repo/root/src/a.ts",
+				"/repo/root/./src/a.ts",
+				"../root/src/a.ts",
+			].map((s) => normalizeManifestKey(s, CWD)),
+		);
+		expect([...keys]).toEqual(["src/a.ts"]);
+	});
+
+	it("N2: a file genuinely OUTSIDE cwd keeps its distinct escaping key", () => {
+		// Canonicalizing must not collapse a real sibling-repo path into the repo.
+		expect(normalizeManifestKey("/repo/other/src/a.ts", CWD)).toBe("../other/src/a.ts");
+	});
+
+	it("N: is idempotent — normalizing an already-normalized key changes nothing", () => {
+		for (const input of ["/repo/root/src/a.ts", "./src/a.ts", "src\\a.ts", "src/a.ts"]) {
+			const once = normalizeManifestKey(input, CWD);
+			expect(normalizeManifestKey(once, CWD)).toBe(once);
+		}
+	});
+
+	it("defaults cwd to process.cwd() when omitted", () => {
+		const abs = join(process.cwd(), "src/z.ts");
+		expect(normalizeManifestKey(abs)).toBe("src/z.ts");
+	});
+});
+
+describe("applyMeasuredRun — key normalization at the write boundary", () => {
+	const AT = "2026-07-31T00:00:00Z";
+	const CWD = "/repo/root";
+
+	function runAt(file: string): MutationManifest {
+		return applyMeasuredRun({
+			base: emptyManifest(META),
+			file,
+			overlayHashes: overlay([["s1", "h1"]]),
+			measured: [measured("m1", "s1", "killed")],
+			at: AT,
+			cwd: CWD,
+		});
+	}
+
+	it("P1: an absolute path and its repo-relative twin resolve to the SAME single key", () => {
+		const viaAbsolute = runAt("/repo/root/src/a.ts");
+		const viaRelative = runAt("src/a.ts");
+		expect(Object.keys(viaAbsolute.files)).toEqual(["src/a.ts"]);
+		expect(Object.keys(viaRelative.files)).toEqual(["src/a.ts"]);
+		expect(viaAbsolute.files["src/a.ts"]).toEqual(viaRelative.files["src/a.ts"]);
+	});
+
+	it('P2: a "./"-prefixed path and a backslash path key identically too', () => {
+		expect(Object.keys(runAt("./src/a.ts").files)).toEqual(["src/a.ts"]);
+		expect(Object.keys(runAt("src\\a.ts").files)).toEqual(["src/a.ts"]);
+	});
+
+	it("P3: writing under an absolute key REFRESHES the SAME record a prior relative-keyed write created", () => {
+		// The actual bug this closes: a live per-edit gate write (absolute) used to
+		// land in a SEPARATE record from a sweep write (relative) for the same file,
+		// so the survivor-diff invariant compared an edit against the wrong history.
+		const afterSweep = runAt("src/a.ts");
+		const afterEdit = applyMeasuredRun({
+			base: afterSweep,
+			file: "/repo/root/src/a.ts",
+			overlayHashes: overlay([["s1", "h1"]]),
+			measured: [measured("m1", "s1", "survived")],
+			at: AT,
+			cwd: CWD,
+		});
+		expect(Object.keys(afterEdit.files)).toEqual(["src/a.ts"]);
+		expect(afterEdit.files["src/a.ts"]?.s1?.mutants.m1?.status).toBe("survived");
+	});
+
+	it("N1: rejects a test-file target — throws MutationManifestTestTargetError, nothing is written", () => {
+		expect(() =>
+			applyMeasuredRun({
+				base: emptyManifest(META),
+				file: "src/a.test.ts",
+				overlayHashes: overlay([["s1", "h1"]]),
+				measured: [measured("m1", "s1", "survived")],
+				at: AT,
+			}),
+		).toThrow(MutationManifestTestTargetError);
+	});
+
+	it("N2: rejects a test target reached via an absolute path too (normalize-then-check, not check-then-normalize)", () => {
+		expect(() =>
+			applyMeasuredRun({
+				base: emptyManifest(META),
+				file: "/repo/root/src/a.test.ts",
+				overlayHashes: overlay([["s1", "h1"]]),
+				measured: [measured("m1", "s1", "survived")],
+				at: AT,
+				cwd: CWD,
+			}),
+		).toThrow(MutationManifestTestTargetError);
+	});
+});
+
+describe("loadManifest — self-heals an already-corrupted files map", () => {
+	let repoRoot: string;
+	let dir: string;
+
+	beforeEach(() => {
+		repoRoot = mkdtempSync(join(tmpdir(), "mut-heal-"));
+		dir = join(repoRoot, ".interlinked");
+		mkdirSync(dir, { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(repoRoot, { recursive: true, force: true });
+	});
+
+	function writeRaw(files: Record<string, unknown>): void {
+		const raw = { ...emptyManifest(META), files };
+		writeFileSync(mutationManifestPath(dir), JSON.stringify(raw), "utf-8");
+	}
+
+	it("P1: merges an absolute-path record into its repo-relative twin without losing data", () => {
+		const absKey = join(repoRoot, "src/a.ts");
+		writeRaw({
+			[absKey]: { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }) },
+			"src/a.ts": { s2: sym({ symbolId: "s2", symbolHash: "h2", mutants: [rec("m2", "killed")] }) },
+		});
+		const healed = loadManifest(dir);
+		expect(healed).not.toBeNull();
+		const files = healed?.files ?? {};
+		expect(Object.keys(files)).toEqual(["src/a.ts"]);
+		const merged = files["src/a.ts"] ?? {};
+		expect(Object.keys(merged).sort()).toEqual(["s1", "s2"]);
+		expect(merged.s1?.mutants.m1?.status).toBe("survived");
+		expect(merged.s2?.mutants.m2?.status).toBe("killed");
+	});
+
+	it("P2: a same-symbolId conflict keeps the MORE CAUTIOUS status and the EARLIER firstSeen", () => {
+		const absKey = join(repoRoot, "src/b.ts");
+		const survivedFirst: MutantRecord = { ...rec("m1", "survived"), firstSeen: "2026-01-01T00:00:00Z" };
+		const killedLater: MutantRecord = { ...rec("m1", "killed"), firstSeen: "2026-02-01T00:00:00Z" };
+		writeRaw({
+			[absKey]: { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [survivedFirst] }) },
+			"src/b.ts": { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [killedLater] }) },
+		});
+		const healed = loadManifest(dir);
+		const m1 = healed?.files["src/b.ts"]?.s1?.mutants.m1;
+		// A merge must never silently clear a survivor one of the two copies
+		// recorded — that would read as the ratchet auto-resolving itself without
+		// a real new measurement.
+		expect(m1?.status).toBe("survived");
+		// firstSeen is the true first sighting, independent of which side's status
+		// won — always the earlier of the two.
+		expect(m1?.firstSeen).toBe("2026-01-01T00:00:00Z");
+	});
+
+	it("P3: a reviewed disposition on either side always wins the status conflict", () => {
+		const absKey = join(repoRoot, "src/c.ts");
+		const reviewed: MutantRecord = {
+			...rec("m1", "equivalent"),
+			accepted_reason: "poll loop only branches on ready/gone",
+		};
+		const unreviewedSurvived: MutantRecord = rec("m1", "survived");
+		writeRaw({
+			[absKey]: { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [reviewed] }) },
+			"src/c.ts": { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [unreviewedSurvived] }) },
+		});
+		const healed = loadManifest(dir);
+		const m1 = healed?.files["src/c.ts"]?.s1?.mutants.m1;
+		expect(m1?.status).toBe("equivalent");
+		expect(m1?.accepted_reason).toContain("ready/gone");
+	});
+
+	it("N: drops a test-file record entirely, keeping the other files intact", () => {
+		writeRaw({
+			"src/a.test.ts": { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }) },
+			"src/a.ts": { s2: sym({ symbolId: "s2", symbolHash: "h2" }) },
+		});
+		const healed = loadManifest(dir);
+		expect(Object.keys(healed?.files ?? {})).toEqual(["src/a.ts"]);
+	});
+
+	it("N: a test-file record that ALSO collides with an absolute duplicate is still dropped", () => {
+		const absTestKey = join(repoRoot, "src/a.test.ts");
+		writeRaw({
+			[absTestKey]: { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }) },
+			"src/a.test.ts": { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }) },
+			"src/a.ts": { s2: sym({ symbolId: "s2", symbolHash: "h2" }) },
+		});
+		const healed = loadManifest(dir);
+		expect(Object.keys(healed?.files ?? {})).toEqual(["src/a.ts"]);
+	});
+
+	it("a manifest with no duplicates and no test files heals to an equivalent shape", () => {
+		writeRaw({
+			"src/a.ts": { s1: sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "killed")] }) },
+		});
+		const healed = loadManifest(dir);
+		expect(healed?.files["src/a.ts"]?.s1?.symbolHash).toBe("h1");
 	});
 });

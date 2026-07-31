@@ -133,4 +133,48 @@ describe("seedFileBaseline — brownfield adoption", () => {
 		expect(Object.keys(must(second).files)).toContain(FILE);
 		expect(Object.keys(must(second).files)).toContain("src/b.ts");
 	});
+
+	// -------------------------------------------------------------------------
+	// Key normalization + test-file rejection at the OTHER live write path
+	// (spec of the 2026-07-31 fix): unlike the per-edit gate, this entry point
+	// has NO test-file filter of its own — it is driven by an operator-supplied
+	// file list, not a changeset `isMutationTarget` already screened.
+	// -------------------------------------------------------------------------
+
+	it("N: rejects a test-file target upfront — never trusts the report enough to write", () => {
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: "src/a.test.ts",
+				content: CONTENT,
+				report: report("Survived"),
+				at: "t",
+			}),
+		).toBeNull();
+	});
+
+	it("N: rejects a test-file target reached through an absolute path", () => {
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: "/repo/root/src/a.test.ts",
+				content: CONTENT,
+				report: report("Survived"),
+				at: "t",
+				cwd: "/repo/root",
+			}),
+		).toBeNull();
+	});
+
+	it("keys an absolute-path adoption under the SAME repo-relative key a relative one would use", () => {
+		const seeded = seedFileBaseline({
+			base: emptyManifest(META),
+			file: "/repo/root/src/a.ts",
+			content: CONTENT,
+			report: report("Survived"),
+			at: "t",
+			cwd: "/repo/root",
+		});
+		expect(Object.keys(must(seeded).files)).toEqual([FILE]);
+	});
 });

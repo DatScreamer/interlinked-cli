@@ -23,8 +23,14 @@
 // operator-invoked path may establish a floor from dirty state, and the floor is
 // shrink-only afterwards under the baseline-integrity gate.
 
+import { isTestPath } from "../coverage-test-selector.js";
 import { computeSymbolHashes, deriveIdentities } from "./identity.js";
-import { applyMeasuredRun, type MeasuredMutant } from "./manifest.js";
+import {
+	applyMeasuredRun,
+	type MeasuredMutant,
+	MutationManifestTestTargetError,
+	normalizeManifestKey,
+} from "./manifest.js";
 import { strykerToAdapted } from "./stryker-adapter.js";
 import type { MutationManifest } from "./types.js";
 
@@ -39,6 +45,9 @@ export interface SeedArgs {
 	report: unknown;
 	/** ISO timestamp recorded as `firstSeen` for newly-recorded mutants. */
 	at: string;
+	/** Repo root `file` resolves against when absolute — see manifest.ts's
+	 *  `normalizeManifestKey`. Omitted callers fall back to `process.cwd()`. */
+	cwd?: string;
 }
 
 /**
@@ -50,6 +59,14 @@ export interface SeedArgs {
  * introduced later would then read as pre-existing and be accepted silently.
  */
 export function seedFileBaseline(args: SeedArgs): MutationManifest | null {
+	// Unlike the per-edit gate (gate.ts's `isMutationTarget`), this entry point
+	// has NO test-file filter of its own — it is driven by an operator-supplied
+	// file list (e.g. the brownfield sweep script), not the harness's own
+	// changeset. A test-file target reaching here is exactly the caller bug
+	// `MutationManifestTestTargetError` documents; checked upfront (before any
+	// hashing work) using the SAME predicate + normalizer as everywhere else.
+	if (isTestPath(normalizeManifestKey(args.file, args.cwd))) return null;
+
 	const adapted = strykerToAdapted(args.report);
 	if (adapted === null) return null;
 
@@ -80,11 +97,24 @@ export function seedFileBaseline(args: SeedArgs): MutationManifest | null {
 	// survivors included. Reusing it means adoption and the clean-pass refresh
 	// build byte-identical manifests, so a file adopted today is indistinguishable
 	// from one that earned its baseline honestly. Only the caller differs.
-	return applyMeasuredRun({
-		base: args.base,
-		file: args.file,
-		overlayHashes,
-		measured,
-		at: args.at,
-	});
+	try {
+		return applyMeasuredRun({
+			base: args.base,
+			file: args.file,
+			overlayHashes,
+			measured,
+			at: args.at,
+			...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+		});
+	} catch (err) {
+		// The upfront check above already covers this in practice; this catch is
+		// the non-bypassable BACKSTOP `applyMeasuredRun` itself enforces (spec of
+		// this fix — manifest.ts is the one choke point every writer funnels
+		// through, not just this caller's own pre-check). Folds into the SAME
+		// "cannot be trusted to establish a baseline" contract every other
+		// rejection in this function already uses — null, not a throw the CLI /
+		// sweep script would have to handle specially.
+		if (err instanceof MutationManifestTestTargetError) return null;
+		throw err;
+	}
 }

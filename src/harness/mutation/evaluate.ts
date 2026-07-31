@@ -8,6 +8,7 @@
 // passed in) — fully deterministic.
 
 import { createHash } from "node:crypto";
+import { isTestPath } from "../coverage-test-selector.js";
 import { computeSymbolHashes, deriveIdentities } from "./identity.js";
 import {
 	acceptedSurvivors,
@@ -16,6 +17,7 @@ import {
 	computeNewSurvivors,
 	hasFileBaseline,
 	type MeasuredMutant,
+	normalizeManifestKey,
 	quarantinedSymbols,
 } from "./manifest.js";
 import type { AdaptedMutant } from "./stryker-adapter.js";
@@ -43,6 +45,10 @@ export interface MutationEvalInput {
 	testRun?: TestRunResult | undefined;
 	/** Injected timestamp (no clock dependency). */
 	at: string;
+	/** Repo root `file` resolves against when absolute — see `normalizeManifestKey`
+	 *  in manifest.ts. Threaded from the daemon's `ctx.cwd` (gate.ts /
+	 *  pre-tool-coverage-gates.ts); omitted callers fall back to `process.cwd()`. */
+	cwd?: string;
 }
 
 function unavailable(reason: string): MutationGateOutcome {
@@ -92,6 +98,18 @@ function buildReceipt(input: MutationEvalInput, measured: MeasuredMutant[]): Mut
 
 /** Evaluate a measured per-edit mutation run into a gate outcome (spec §5). */
 export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome {
+	// The manifest key, resolved ONCE (manifest.ts's `normalizeManifestKey` — the
+	// single choke point) and reused for every read AND the eventual write below,
+	// so this call never reads one key's history and writes another's. A test/spec
+	// target is rejected here, upfront — before any hashing/identity work, and
+	// covering the block AND allow branches alike (the later `applyMeasuredRun`
+	// call only fires on allow, so checking only there would miss a test target
+	// that happened to compute a "block" verdict).
+	const key = normalizeManifestKey(input.file, input.cwd);
+	if (isTestPath(key)) {
+		return unavailable("test files are not mutation targets — mutating a test proves nothing (the test is the oracle)");
+	}
+
 	const overlayHashes = computeSymbolHashes(input.file, input.overlayContent);
 	const identities = deriveIdentities(
 		input.file,
@@ -101,13 +119,13 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 	if (overlayHashes === null || identities === null) return unavailable("typescript unavailable");
 
 	const measured = zip(identities, input.adapted);
-	const changed = changedSymbols(input.baseManifest, input.file, overlayHashes);
+	const changed = changedSymbols(input.baseManifest, key, overlayHashes);
 	const newSurvivors = computeNewSurvivors(
 		measured,
 		{
 			changed,
-			accepted: acceptedSurvivors(input.baseManifest, input.file),
-			quarantined: quarantinedSymbols(input.baseManifest, input.file),
+			accepted: acceptedSurvivors(input.baseManifest, key),
+			quarantined: quarantinedSymbols(input.baseManifest, key),
 		},
 		input.at,
 	);
@@ -129,7 +147,7 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 	// verdicting it: the survivors are recorded, not charged to this edit. From
 	// the second edit onward there is a real prior and the ratchet applies
 	// normally. This is the same adoption semantics every other ratchet here uses.
-	const firstSighting = !hasFileBaseline(input.baseManifest, input.file);
+	const firstSighting = !hasFileBaseline(input.baseManifest, key);
 	const oversize = !firstSighting && changedSiteCount > input.siteCountThreshold;
 	// Spec §7: a red overlay suite is a hard block; a new test that doesn't fail on
 	// base (RED-witness) is a warning, never a block.
@@ -142,14 +160,21 @@ export function evaluateMutation(input: MutationEvalInput): MutationGateOutcome 
 	const decision = suiteRed || ratchetTripped ? "block" : "allow";
 	// Manifest refresh is earned ONLY by a measured-clean pass — a dirty run must
 	// not launder the manifest, and an unavailable run never reaches here (§4/§12).
+	// `applyMeasuredRun` re-normalizes+re-checks `key` internally too (it is the
+	// non-bypassable backstop for every caller, not just this one) — deliberately
+	// NOT wrapped in a try/catch here: the upfront check above already used the
+	// identical predicate on the identical key, so a throw from this call would
+	// mean the two checks disagree, which is a bug in THIS fix and should fail
+	// loud (tests), not be silently absorbed at runtime.
 	const refreshedManifest =
 		decision === "allow"
 			? applyMeasuredRun({
 					base: input.baseManifest,
-					file: input.file,
+					file: key,
 					overlayHashes,
 					measured,
 					at: input.at,
+					...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
 				})
 			: undefined;
 	return {
