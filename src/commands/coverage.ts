@@ -25,6 +25,8 @@ import {
 	compareCoverage,
 	loadBaseline,
 	loadCoverageSummary,
+	normalizePath,
+	type PartialReportVerdict,
 	saveBaseline,
 } from "../harness/coverage-ratchet.js";
 import { getConfigDir } from "../lib/config.js";
@@ -91,19 +93,32 @@ export async function coverageCheckCommand(opts: CoverageCheckOptions): Promise<
 			normal: () => renderNormal(reportPath, result),
 		});
 
-		if (opts.updateBaseline) {
+		// A partial/scoped report (see `detectPartialReport`) is UNMEASURED, not
+		// clean — `result.nextBaseline` is already the input baseline unchanged
+		// (compareCoverage guarantees this), so persisting it is a safe no-op,
+		// but skip the write and the misleading "updated" banner entirely: this
+		// run measured nothing, so there is nothing to accept.
+		if (opts.updateBaseline && !result.partialReport?.partial) {
 			saveBaseline(configDir, result.nextBaseline);
 			if (mode !== "json") {
 				process.stderr.write(
 					`\n  ${c.green("✓")} Baseline updated at ${join(".interlinked", "coverage-baseline.json")}\n`,
 				);
 			}
+		} else if (opts.updateBaseline && mode !== "json") {
+			process.stderr.write(
+				`\n  ${c.yellow("⚠")} Baseline NOT updated — the report looks partial/scoped (see above).\n`,
+			);
 		}
 
-		const hasErrors = result.findings.some((f) => f.severity === "error");
-		const hasWarnings = result.findings.length > 0;
-		if (hasErrors || (opts.strict && hasWarnings)) {
-			process.exitCode = 1;
+		// A partial report can never fail the run: there is nothing measurable
+		// to regress against. Fail to UNMEASURED, never to REGRESSED.
+		if (!result.partialReport?.partial) {
+			const hasErrors = result.findings.some((f) => f.severity === "error");
+			const hasWarnings = result.findings.length > 0;
+			if (hasErrors || (opts.strict && hasWarnings)) {
+				process.exitCode = 1;
+			}
 		}
 	} catch (err) {
 		outputError(mode, err instanceof Error ? err.message : String(err));
@@ -229,6 +244,19 @@ function reportMtimeMs(path: string): number {
  * like the clobbering this fixes, and an empty parse is how the ratchet once
  * "passed" with files_checked: 0 and wrote an invalid baseline (finding
  * 2026-06, round 6 — the vacuous-success class).
+ *
+ * Keys are normalized through `normalizePath` (the SAME repo-relative-POSIX
+ * normalizer `compareCoverage` and `detectPartialReport` use) BEFORE merging —
+ * not after. The LCOV reader already emits repo-relative keys, but the
+ * istanbul `coverage-summary.json` / `coverage-final.json` readers emit
+ * ABSOLUTE keys; merging on raw keys let the same file land under two
+ * different keys (one per source), so it was compared and reported TWICE
+ * downstream even though every consumer normalizes independently — the
+ * normalization happened too late to prevent the duplicate entry in the first
+ * place (finding 2026-07-31: 234 findings / 117 unique, 2088 files_checked for
+ * 1044 real files — every file processed exactly twice). Normalizing here
+ * collapses both spellings onto one key so "freshest report wins" actually
+ * overwrites instead of coexisting.
  */
 export function loadMergedReport(
 	reportPaths: string[],
@@ -242,7 +270,10 @@ export function loadMergedReport(
 			return { summary: merged, failedPath: path };
 		}
 		for (const [key, entry] of Object.entries(summary)) {
-			merged[key] = entry;
+			if (!entry) continue;
+			const normalized = normalizePath(key, cwd);
+			if (!normalized) continue;
+			merged[normalized] = entry;
 		}
 	}
 	return { summary: merged, failedPath: null };
@@ -260,6 +291,9 @@ interface CoverageCheckJson {
 	report: string;
 	findings: CoverageRatchetFinding[];
 	stats: CoverageRatchetResult["stats"];
+	/** Set whenever the ratchet ran; `partial: true` means findings above are
+	 *  forced empty because the report couldn't be trusted — see `reason`. */
+	partialReport?: PartialReportVerdict;
 }
 
 function buildJsonPayload(reportPath: string, result: CoverageRatchetResult): CoverageCheckJson {
@@ -267,13 +301,42 @@ function buildJsonPayload(reportPath: string, result: CoverageRatchetResult): Co
 		report: reportPath,
 		findings: result.findings,
 		stats: result.stats,
+		...(result.partialReport ? { partialReport: result.partialReport } : {}),
 	};
+}
+
+/** The partial-report banner: names the likely cause (a scoped test run
+ *  overwriting the shared coverage/ report) so the human's next action is
+ *  obvious, and makes explicit that this is NOT a clean pass — just an
+ *  unmeasurable one. */
+function renderPartialReportNotice(partialReport: PartialReportVerdict): string {
+	const lines: string[] = [];
+	lines.push(c.yellow("  ⚠ Coverage report looks PARTIAL — findings suppressed, not measured."));
+	lines.push(
+		c.dim(
+			`    ${partialReport.zeroed}/${partialReport.comparable} previously well-covered files now read as exactly 0%.`,
+		),
+	);
+	lines.push(
+		c.dim(
+			"    Likely cause: a scoped `vitest run --coverage <files>` overwrote the shared report.",
+		),
+	);
+	lines.push(c.dim("    Re-run the full suite before trusting this report."));
+	return lines.join("\n");
 }
 
 function renderNormal(reportPath: string, result: CoverageRatchetResult): string {
 	const lines: string[] = [];
 	lines.push(header("Coverage Ratchet"));
 	lines.push(kvLine("Report", reportPath));
+
+	if (result.partialReport?.partial) {
+		lines.push("");
+		lines.push(renderPartialReportNotice(result.partialReport));
+		return lines.join("\n");
+	}
+
 	lines.push(kvLine("Files checked", String(result.stats.files_checked)));
 	lines.push(
 		kvLine(

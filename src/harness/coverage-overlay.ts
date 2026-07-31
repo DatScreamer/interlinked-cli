@@ -17,9 +17,18 @@
 //      the biome overlay documented (`relative(projectRoot, file)`). The overlay
 //      lives at `.interlinked/<COV_OVERLAY_PREFIX><rand>/`.
 //   2. CHEAP. `node_modules` is symlinked (not copied) so dependency resolution
-//      works without an O(repo) copy; `.git` and the `.interlinked` dir itself
-//      are skipped (the latter prevents copying a sibling overlay into the new
-//      one — quadratic blowup).
+//      works without an O(repo) copy — at EVERY depth, so a workspace package's
+//      own `node_modules` costs a link too; `.git` and the `.interlinked` dir
+//      itself are skipped (the latter prevents copying a sibling overlay into
+//      the new one — quadratic blowup); and generated build/report/cache output
+//      is pruned (see `GENERATED_*_DIRS` below). Measured on this repo
+//      2026-07-31 (`scratch/cov-overlay-*-bench`): a 489.7 MB / 6442-file input
+//      tree mirrors to 113.3 MB / 2893 files in 583 ms — 4.3x fewer bytes,
+//      2.2x fewer files than the pre-2026-07-31 policy (which skipped only
+//      `.git` / `node_modules` / `.interlinked` and took 935 ms warm / 2328 ms
+//      cold on the same tree). That un-pruned cost is why `per_edit_coverage`
+//      was disabled locally (plan 15 §9), so this is load-bearing, not a
+//      micro-optimization.
 //
 // `createCoverageOverlay` is the injectable seam the write-guard depends on, so
 // the guard's unit tests stub it out entirely (no real mirror) while the
@@ -35,7 +44,7 @@ import {
 	statSync,
 	symlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { removeInTree, writeFileInTree } from "./overlay-safe-write.js";
 
 /** Directory under projectRoot that holds overlay trees. */
@@ -44,6 +53,63 @@ const INTERLINKED_DIR = ".interlinked";
 const COV_OVERLAY_PREFIX = ".cov-overlay-";
 /** Top-level entries never mirrored (linked or skipped instead). */
 const SKIP_ENTRIES = new Set([".git", "node_modules", INTERLINKED_DIR]);
+
+/**
+ * Tool-owned output/cache directories, pruned at ANY depth.
+ *
+ * Every name here is written by a build / test / deploy tool and can never be
+ * hand-authored source, so a nested occurrence (`landing/.wrangler`, a
+ * workspace's `.turbo`) is exactly as generated as a top-level one. A suite run
+ * against the overlay reads sources and tests — never a bundler cache — so
+ * dropping these cannot change the coverage verdict, only its cost.
+ *
+ * `.stryker-tmp` earns a special mention: Stryker's sandbox is itself a full
+ * copy of the working tree, so mirroring it is the same quadratic blowup that
+ * `.interlinked` (which holds sibling overlays) is skipped to avoid.
+ */
+const GENERATED_ANY_DEPTH_DIRS: ReadonlySet<string> = new Set([
+	// JS/TS bundler + framework build output and caches
+	".next",
+	".nuxt",
+	".svelte-kit",
+	".turbo",
+	".cache",
+	".parcel-cache",
+	// Cloudflare wrangler local state; Stryker sandbox (a whole-tree copy)
+	".wrangler",
+	".stryker-tmp",
+	// Istanbul raw coverage capture
+	".nyc_output",
+	// Python tool caches + bytecode
+	".tox",
+	".pytest_cache",
+	".mypy_cache",
+	".ruff_cache",
+	"__pycache__",
+	// JVM build cache
+	".gradle",
+]);
+
+/**
+ * Build/report output pruned at the PROJECT ROOT ONLY.
+ *
+ * Each is generated output by overwhelming convention at a repo root (tsup /
+ * tsc `dist`, CRA `build`, Next export `out`, Rust+Maven `target`, vitest
+ * `reportsDirectory: "coverage"`, Stryker `reports`) — but each also names a
+ * plausible SOURCE directory when nested (`src/commands/build/`, `src/out/`).
+ * Pruning a real source dir would make the overlay's suite fail to import,
+ * which the gate reads as a failing suite — a silent false block. Depth is the
+ * cheap disambiguator, so these stay root-scoped while the unambiguous
+ * tool-owned names above apply everywhere.
+ */
+const GENERATED_ROOT_ONLY_DIRS: ReadonlySet<string> = new Set([
+	"dist",
+	"build",
+	"out",
+	"target",
+	"coverage",
+	"reports",
+]);
 /** Age past which a sibling overlay is presumed leaked (daemon killed mid-gate)
  *  and swept. Gates are synchronous and bounded in minutes; an hour-old tree
  *  cannot be live. Found 2026-06-11: seven leaked trees ≈ 24 GB filled the disk
@@ -112,11 +178,60 @@ export type CreateCoverageOverlayFn = (
 	extraFiles?: ReadonlyArray<OverlayFile>,
 ) => CoverageOverlay;
 
+/** True when a TOP-LEVEL entry must not be deep-copied into the overlay:
+ *  the linked/skipped triad, plus generated output under either policy
+ *  (root-only names apply here; any-depth names apply here too). */
+function isSkippedTopLevelEntry(entry: string): boolean {
+	return (
+		SKIP_ENTRIES.has(entry) ||
+		GENERATED_ROOT_ONLY_DIRS.has(entry) ||
+		GENERATED_ANY_DEPTH_DIRS.has(entry)
+	);
+}
+
+/**
+ * Build the `cpSync` filter for one mirror pass. Returns false (prune) for a
+ * generated tool directory at any depth, and false for a nested `node_modules`
+ * — recording its (src, dst) pair in `nestedNodeModules` so the caller can
+ * SYMLINK it instead. Diverting rather than dropping matters: a workspace
+ * package resolves its deps through its own `node_modules`, so the link keeps
+ * resolution identical while the copy cost goes to zero.
+ */
+function makeMirrorFilter(
+	nestedNodeModules: Array<[string, string]>,
+): (src: string, dst: string) => boolean {
+	return (src, dst) => {
+		const base = basename(src);
+		if (base === "node_modules") {
+			nestedNodeModules.push([src, dst]);
+			return false;
+		}
+		return !GENERATED_ANY_DEPTH_DIRS.has(base);
+	};
+}
+
+/** Symlink each diverted nested `node_modules` back to the real one. Runs
+ *  AFTER the copy loop, so every parent directory already exists in the overlay
+ *  (a pruned directory short-circuits its whole subtree, so a diverted path's
+ *  ancestors are always copied ones). Best-effort: a failed link degrades that
+ *  package's resolution, never the whole mirror. */
+function linkNestedNodeModules(nestedNodeModules: ReadonlyArray<[string, string]>): void {
+	for (const [src, dst] of nestedNodeModules) {
+		try {
+			symlinkSync(src, dst, "dir");
+		} catch {
+			// intentional: the parent may be gone, or the platform refused the
+			// symlink — the package simply resolves through the root link.
+		}
+	}
+}
+
 /**
  * Mirror the top-level project entries into `overlayRoot`. `node_modules` is
- * symlinked back to the real one (dependency resolution without a deep copy);
- * `.git` and `.interlinked` are skipped. Best-effort per entry — a single
- * unreadable entry must not abort the mirror (the suite can still run).
+ * symlinked back to the real one at every depth (dependency resolution without
+ * a deep copy); `.git`, `.interlinked`, and generated build/report/cache output
+ * are skipped. Best-effort per entry — a single unreadable entry must not abort
+ * the mirror (the suite can still run).
  */
 function mirrorProjectInto(projectRoot: string, overlayRoot: string): void {
 	let entries: string[];
@@ -125,17 +240,20 @@ function mirrorProjectInto(projectRoot: string, overlayRoot: string): void {
 	} catch {
 		return; // unreadable root → empty overlay; caller's runner will degrade.
 	}
+	const nestedNodeModules: Array<[string, string]> = [];
+	const filter = makeMirrorFilter(nestedNodeModules);
 	for (const entry of entries) {
-		if (SKIP_ENTRIES.has(entry)) continue;
+		if (isSkippedTopLevelEntry(entry)) continue;
 		const src = join(projectRoot, entry);
 		const dst = join(overlayRoot, entry);
 		try {
-			cpSync(src, dst, { recursive: true, dereference: false });
+			cpSync(src, dst, { recursive: true, dereference: false, filter });
 		} catch {
 			// intentional: skip an entry that can't be copied (e.g. a transient
 			// file removed mid-walk); the rest of the mirror still proceeds.
 		}
 	}
+	linkNestedNodeModules(nestedNodeModules);
 	linkNodeModules(projectRoot, overlayRoot);
 }
 

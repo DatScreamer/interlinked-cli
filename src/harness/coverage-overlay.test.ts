@@ -112,6 +112,137 @@ describe("createCoverageOverlay", () => {
 	});
 });
 
+// The mirror used to cpSync EVERY top-level entry except `.git`/`.interlinked`/
+// `node_modules` — on this repo 489.7 MB / 6440 files / ~2.3s per edit, which is
+// why `per_edit_coverage` was disabled locally (plan 15 §9, plan 16 build item 5).
+// Pruning generated output + diverting nested `node_modules` to symlinks brought
+// that to 113.3 MB / 2891 files / ~0.5s. These cases pin BOTH directions: the
+// generated trees must not be mirrored, and real source must still be.
+describe("mirror skip policy — positive (must be pruned)", () => {
+	/** Plant a directory with one marker file and return its relative path. */
+	function plantDir(relDir: string): string {
+		mkdirSync(join(root, relDir), { recursive: true });
+		writeFileSync(join(root, relDir, "marker.txt"), "generated\n");
+		return relDir;
+	}
+
+	function mirrored(overlayRoot: string, relDir: string): boolean {
+		return existsSync(join(overlayRoot, relDir, "marker.txt"));
+	}
+
+	it("P1: does not mirror top-level build output (dist, build, out, target)", () => {
+		for (const d of ["dist", "build", "out", "target"]) plantDir(d);
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		for (const d of ["dist", "build", "out", "target"]) {
+			expect(mirrored(overlay.overlayRoot, d)).toBe(false);
+		}
+		overlay.cleanup();
+	});
+
+	it("P2: does not mirror top-level report output (coverage, reports)", () => {
+		for (const d of ["coverage", "reports"]) plantDir(d);
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		for (const d of ["coverage", "reports"]) {
+			expect(mirrored(overlay.overlayRoot, d)).toBe(false);
+		}
+		overlay.cleanup();
+	});
+
+	it("P3: does not mirror top-level tool caches (.wrangler, .stryker-tmp, .next, .turbo)", () => {
+		const dirs = [".wrangler", ".stryker-tmp", ".next", ".turbo"];
+		for (const d of dirs) plantDir(d);
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		for (const d of dirs) expect(mirrored(overlay.overlayRoot, d)).toBe(false);
+		overlay.cleanup();
+	});
+
+	it("P4: prunes tool caches NESTED inside a mirrored dir (landing/.wrangler)", () => {
+		plantDir(join("landing", ".wrangler"));
+		writeFileSync(join(root, "landing", "index.html"), "<html></html>\n");
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		expect(mirrored(overlay.overlayRoot, join("landing", ".wrangler"))).toBe(false);
+		// …while the dir that CONTAINED it is still mirrored.
+		expect(existsSync(join(overlay.overlayRoot, "landing", "index.html"))).toBe(true);
+		overlay.cleanup();
+	});
+
+	it("P5: prunes nested __pycache__ / .pytest_cache anywhere in the tree", () => {
+		plantDir(join("src", "py", "__pycache__"));
+		plantDir(join("src", "py", ".pytest_cache"));
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		expect(mirrored(overlay.overlayRoot, join("src", "py", "__pycache__"))).toBe(false);
+		expect(mirrored(overlay.overlayRoot, join("src", "py", ".pytest_cache"))).toBe(false);
+		overlay.cleanup();
+	});
+
+	it("P6: symlinks a NESTED node_modules instead of deep-copying it", () => {
+		// A workspace package resolves deps through its own node_modules; the copy
+		// of one such tree was 205 MB of the 490 MB mirror on this repo.
+		mkdirSync(join(root, "pkg", "node_modules", "dep"), { recursive: true });
+		writeFileSync(join(root, "pkg", "node_modules", "dep", "index.js"), "module.exports=2;\n");
+		writeFileSync(join(root, "pkg", "package.json"), JSON.stringify({ name: "pkg" }));
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		const nested = join(overlay.overlayRoot, "pkg", "node_modules");
+		expect(lstatSync(nested).isSymbolicLink()).toBe(true);
+		// The link must resolve to the REAL nested tree, not the root one.
+		expect(realpathSync(nested)).toBe(realpathSync(join(root, "pkg", "node_modules")));
+		// …and the package's own files still come through as real copies.
+		expect(existsSync(join(overlay.overlayRoot, "pkg", "package.json"))).toBe(true);
+		overlay.cleanup();
+	});
+});
+
+describe("mirror skip policy — negative (must still be mirrored)", () => {
+	function plantFile(relPath: string, content: string): void {
+		mkdirSync(join(root, dirname(relPath)), { recursive: true });
+		writeFileSync(join(root, relPath), content);
+	}
+
+	it("N1: mirrors ordinary source and doc trees", () => {
+		plantFile(join("docs", "design", "notes.md"), "# notes\n");
+		plantFile(join("scripts", "gen.mjs"), "export {};\n");
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		expect(existsSync(join(overlay.overlayRoot, "docs", "design", "notes.md"))).toBe(true);
+		expect(existsSync(join(overlay.overlayRoot, "scripts", "gen.mjs"))).toBe(true);
+		expect(existsSync(join(overlay.overlayRoot, "src", "a.test.ts"))).toBe(true);
+		overlay.cleanup();
+	});
+
+	it("N2: mirrors NESTED dirs whose names are only root-level build conventions", () => {
+		// `src/commands/build/` and `src/out/` are real source in plenty of repos —
+		// pruning them would make the overlay's suite fail to import, which the gate
+		// reads as a failing suite (a silent false block). Root-only is deliberate.
+		plantFile(join("src", "commands", "build", "index.ts"), "export const b = 1;\n");
+		plantFile(join("src", "out", "writer.ts"), "export const w = 1;\n");
+		plantFile(join("src", "coverage", "model.ts"), "export const c = 1;\n");
+		plantFile(join("src", "target", "t.ts"), "export const t = 1;\n");
+		plantFile(join("src", "reports", "r.ts"), "export const r = 1;\n");
+		plantFile(join("src", "dist", "d.ts"), "export const d = 1;\n");
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 2;\n");
+		for (const rel of [
+			join("src", "commands", "build", "index.ts"),
+			join("src", "out", "writer.ts"),
+			join("src", "coverage", "model.ts"),
+			join("src", "target", "t.ts"),
+			join("src", "reports", "r.ts"),
+			join("src", "dist", "d.ts"),
+		]) {
+			expect(existsSync(join(overlay.overlayRoot, rel))).toBe(true);
+		}
+		overlay.cleanup();
+	});
+
+	it("N3: still writes the proposed content when the prune filter is active", () => {
+		mkdirSync(join(root, "dist"), { recursive: true });
+		writeFileSync(join(root, "dist", "bundle.js"), "//generated\n");
+		const overlay = createCoverageOverlay(root, "src/a.ts", "export const a = 42;\n");
+		expect(readFileSync(join(overlay.overlayRoot, "src", "a.ts"), "utf-8")).toBe(
+			"export const a = 42;\n",
+		);
+		overlay.cleanup();
+	});
+});
+
 describe("sweepStaleOverlays — leaked-tree reaping (finding 2026-06-11: 7 leaked trees ≈ 24 GB)", () => {
 	const HOUR_MS = 60 * 60 * 1000;
 

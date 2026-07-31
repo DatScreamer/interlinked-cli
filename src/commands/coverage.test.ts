@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { coverageBaselineCommand, coverageCheckCommand } from "./coverage.js";
+import { PARTIAL_REPORT_MIN_COMPARABLE_FILES } from "../harness/coverage-ratchet.js";
+import { coverageBaselineCommand, coverageCheckCommand, loadMergedReport } from "./coverage.js";
 
 interface Captured {
 	stdout: string;
@@ -338,6 +339,221 @@ describe("coverageCheckCommand", () => {
 		} finally {
 			process.chdir(orig);
 		}
+	});
+});
+
+describe("loadMergedReport / coverageCheckCommand — cross-source path-form dedup (2026-07-31 fix)", () => {
+	// Real-world bug: LCOV's SF reader normalizes to a repo-relative POSIX key,
+	// but istanbul's json-summary reporter keys by ABSOLUTE path. Pre-fix,
+	// loadMergedReport merged on the raw key, so the SAME file occupied two
+	// slots — one per source — and was compared (and reported) TWICE downstream.
+	// Measured on this repo's own full-suite report: 234 findings / 117 unique,
+	// stats.files_checked: 2088 for 1044 real files.
+	let tmp: string;
+	let io: ReturnType<typeof captureIO>;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "cov-merge-"));
+		io = captureIO();
+	});
+
+	afterEach(() => {
+		io.restore();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("P1: same file via LCOV (relative key) + istanbul (absolute key) yields ONE comparison and ONE finding per metric", async () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "coverage-baseline.json"),
+			JSON.stringify({
+				version: 1,
+				updated_at: "2026-01-01",
+				files: { "src/foo.ts": { lines_pct: 100, branches_pct: 100 } },
+			}),
+		);
+		writeLcov(tmp, "src/foo.ts"); // 50%/50%, keyed "src/foo.ts" (repo-relative)
+		writeFileSync(
+			join(tmp, "coverage", "coverage-summary.json"),
+			JSON.stringify({
+				[join(tmp, "src/foo.ts")]: { lines: { pct: 50 }, branches: { pct: 50 } },
+			}),
+		);
+		await coverageCheckCommand({ cwd: tmp, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		// stats.files_checked counts FILES: one file described by two sources is
+		// still exactly one, not two.
+		expect(parsed.stats.files_checked).toBe(1);
+		expect(parsed.stats.files_decreased).toBe(1);
+		const metricKeys = parsed.findings
+			.map((f: { metric: string; file: string }) => `${f.file}:${f.metric}`)
+			.sort();
+		// One finding per metric (lines, branches) — NOT duplicated per source.
+		expect(metricKeys).toEqual(["src/foo.ts:branches", "src/foo.ts:lines"]);
+	});
+
+	it("P2: loadMergedReport collapses an absolute key and a repo-relative key for the same file into one entry", () => {
+		mkdirSync(join(tmp, "coverage"), { recursive: true });
+		const lcovPath = join(tmp, "coverage", "lcov.info");
+		writeFileSync(
+			lcovPath,
+			["SF:src/foo.ts", "DA:1,1", "DA:2,0", "BRDA:1,0,0,1", "end_of_record", ""].join("\n"),
+		);
+		const summaryPath = join(tmp, "coverage", "coverage-summary.json");
+		writeFileSync(
+			summaryPath,
+			JSON.stringify({
+				[join(tmp, "src/foo.ts")]: { lines: { pct: 75 }, branches: { pct: 25 } },
+			}),
+		);
+		const { summary, failedPath } = loadMergedReport([lcovPath, summaryPath], tmp);
+		expect(failedPath).toBeNull();
+		expect(Object.keys(summary)).toEqual(["src/foo.ts"]);
+	});
+
+	it("P3: loadMergedReport collapses a './'-prefixed key and a bare relative key for the same file", () => {
+		mkdirSync(join(tmp, "coverage"), { recursive: true });
+		const aPath = join(tmp, "coverage", "report-a.json");
+		const bPath = join(tmp, "coverage", "report-b.json");
+		writeFileSync(
+			aPath,
+			JSON.stringify({ "./src/foo.ts": { lines: { pct: 60 }, branches: { pct: 40 } } }),
+		);
+		writeFileSync(
+			bPath,
+			JSON.stringify({ "src/foo.ts": { lines: { pct: 90 }, branches: { pct: 80 } } }),
+		);
+		const { summary, failedPath } = loadMergedReport([aPath, bPath], tmp);
+		expect(failedPath).toBeNull();
+		expect(Object.keys(summary)).toEqual(["src/foo.ts"]);
+	});
+
+	it("N1: a file present in only ONE source is still checked (disjoint files aren't collapsed together)", async () => {
+		writeLcov(tmp, "src/foo.ts");
+		writeFileSync(
+			join(tmp, "coverage", "coverage-summary.json"),
+			JSON.stringify({
+				[join(tmp, "src/bar.ts")]: { lines: { pct: 55 }, branches: { pct: 45 } },
+			}),
+		);
+		await coverageCheckCommand({ cwd: tmp, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.stats.files_checked).toBe(2);
+		expect(parsed.stats.files_new).toBe(2);
+		const files = parsed.findings.map((f: { file: string }) => f.file).sort();
+		expect(files).toEqual([]); // no baseline yet — new files, not regressions
+	});
+
+	it("N2: loadMergedReport keeps disjoint files under two independent keys", () => {
+		mkdirSync(join(tmp, "coverage"), { recursive: true });
+		const aPath = join(tmp, "coverage", "report-a.json");
+		const bPath = join(tmp, "coverage", "report-b.json");
+		writeFileSync(aPath, JSON.stringify({ "src/foo.ts": { lines: { pct: 60 }, branches: { pct: 40 } } }));
+		writeFileSync(
+			bPath,
+			JSON.stringify({
+				[join(tmp, "src/bar.ts")]: { lines: { pct: 90 }, branches: { pct: 80 } },
+			}),
+		);
+		const { summary, failedPath } = loadMergedReport([aPath, bPath], tmp);
+		expect(failedPath).toBeNull();
+		expect(Object.keys(summary).sort()).toEqual(["src/bar.ts", "src/foo.ts"]);
+	});
+});
+
+describe("coverageCheckCommand — partial-report handling", () => {
+	let tmp: string;
+	let io: ReturnType<typeof captureIO>;
+	// One more than the guard, so the scenario always clears it regardless of
+	// where the constant is tuned to.
+	const n = PARTIAL_REPORT_MIN_COMPARABLE_FILES + 5;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "cov-partial-"));
+		io = captureIO();
+	});
+
+	afterEach(() => {
+		io.restore();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function writeWellCoveredBaseline(): void {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		const files: Record<string, { lines_pct: number; branches_pct: number }> = {};
+		for (let i = 0; i < n; i++) {
+			files[`src/well${i}.ts`] = { lines_pct: 90, branches_pct: 80 };
+		}
+		writeFileSync(
+			join(tmp, ".interlinked", "coverage-baseline.json"),
+			JSON.stringify({ version: 1, updated_at: "2026-01-01T00:00:00Z", files }),
+		);
+	}
+
+	function writeScopedSummary(): void {
+		// Every baseline-known file reads as exactly 0 — the scoped-run shape.
+		const data: Record<string, { lines: number; branches: number }> = {};
+		for (let i = 0; i < n; i++) {
+			data[`src/well${i}.ts`] = { lines: 0, branches: 0 };
+		}
+		writeCoverageSummary(tmp, data);
+	}
+
+	it("suppresses findings and prints the scoped-run cause in normal mode", async () => {
+		writeWellCoveredBaseline();
+		writeScopedSummary();
+		await coverageCheckCommand({ cwd: tmp });
+		const { stdout } = io.mocks();
+		expect(stdout).toContain("PARTIAL");
+		expect(stdout).toContain("scoped");
+		expect(stdout).toContain("vitest run --coverage");
+		expect(stdout).not.toContain("regression(s)");
+		expect(io.mocks().exitCode).toBeFalsy();
+	});
+
+	it("reports partialReport in the JSON payload with zero findings", async () => {
+		writeWellCoveredBaseline();
+		writeScopedSummary();
+		await coverageCheckCommand({ cwd: tmp, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.findings).toEqual([]);
+		expect(parsed.partialReport.partial).toBe(true);
+		expect(parsed.partialReport.comparable).toBe(n);
+		expect(parsed.partialReport.zeroed).toBe(n);
+		expect(io.mocks().exitCode).toBeFalsy();
+	});
+
+	it("does NOT exit non-zero even with --strict — unmeasured is never treated as regressed", async () => {
+		writeWellCoveredBaseline();
+		writeScopedSummary();
+		await coverageCheckCommand({ cwd: tmp, strict: true });
+		expect(io.mocks().exitCode).toBeFalsy();
+	});
+
+	it("--update-baseline does NOT persist a partial report — the baseline file is untouched", async () => {
+		writeWellCoveredBaseline();
+		const before = readFileSync(join(tmp, ".interlinked", "coverage-baseline.json"), "utf-8");
+		writeScopedSummary();
+		await coverageCheckCommand({ cwd: tmp, updateBaseline: true });
+		const after = readFileSync(join(tmp, ".interlinked", "coverage-baseline.json"), "utf-8");
+		expect(after).toBe(before);
+		expect(io.mocks().stderr).not.toContain("Baseline updated");
+		expect(io.mocks().stderr).toContain("NOT updated");
+	});
+
+	it("a real single-file regression among otherwise-healthy baselined files is NOT treated as partial", async () => {
+		writeWellCoveredBaseline();
+		const data: Record<string, { lines: number; branches: number }> = {};
+		for (let i = 0; i < n; i++) {
+			data[`src/well${i}.ts`] = { lines: 90, branches: 80 };
+		}
+		data["src/well0.ts"] = { lines: 40, branches: 80 }; // one genuine regression
+		writeCoverageSummary(tmp, data);
+		await coverageCheckCommand({ cwd: tmp, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.partialReport.partial).toBe(false);
+		expect(parsed.findings).toHaveLength(1);
+		expect(parsed.findings[0].file).toBe("src/well0.ts");
 	});
 });
 
