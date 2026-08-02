@@ -149,7 +149,10 @@ function warnAnalyzerUnavailable(language: "js_ts" | "python"): void {
 	);
 }
 
-function resolveFilePath(toolInput: JsonObject): string {
+/** Exported so the cognitive block guard (cognitive-write-guard.ts) can share
+ *  the exact same file-path resolution — one path-resolution rule for both
+ *  per-function metric gates, no drift between them. */
+export function resolveFilePath(toolInput: JsonObject): string {
 	return (
 		(typeof toolInput.file_path === "string" && toolInput.file_path) ||
 		(typeof toolInput.path === "string" && toolInput.path) ||
@@ -172,8 +175,10 @@ function applyEdit(text: string, oldStr: string, newStr: string, all: boolean): 
 	return idx === -1 ? text : text.slice(0, idx) + newStr + text.slice(idx + oldStr.length);
 }
 
-/** Materialize before/after content for a Write/Edit/MultiEdit, else null. */
-function projectContent(
+/** Materialize before/after content for a Write/Edit/MultiEdit, else null.
+ *  Exported so the cognitive block guard can project the SAME before/after
+ *  pair the cyclomatic gate does — one edit-application rule for both gates. */
+export function projectContent(
 	toolInput: JsonObject,
 	abs: string,
 ): { before: string; after: string } | null {

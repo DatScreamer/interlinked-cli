@@ -16,7 +16,7 @@ import { execFileSync as run } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ErrorHistory } from "../error-history.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { SessionTracker } from "../session-state.js";
@@ -631,15 +631,19 @@ describe("computePostInjectionEscalation", () => {
 // ===========================================================================
 
 describe("evaluatePermissionPatternDetection", () => {
-	let prevCwd: string;
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 	beforeEach(() => {
 		// addPermissionToSettings writes to process.cwd()/.claude/settings.json —
-		// run inside the temp dir so the repo is never touched.
-		prevCwd = process.cwd();
-		process.chdir(tmp);
+		// stub process.cwd() to the temp dir so the repo is never touched.
+		// NOT a real process.chdir(): that throws `TypeError: process.chdir()
+		// is not supported in workers` under vitest's `pool: "threads"`, which
+		// Stryker's own vitest-runner forces unconditionally for every
+		// mutation dry run — a real chdir here poisoned every mutation run
+		// whose graph-selected test scope happened to include this file.
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	});
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy.mockRestore();
 	});
 
 	it("starts a new consecutive_pattern counter on first sight of a pattern", () => {

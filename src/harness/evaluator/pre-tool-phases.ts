@@ -32,7 +32,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
-import { cognitiveWriteWarning } from "./cognitive-write-guard.js";
+import { checkCognitiveComplexityWrite } from "./cognitive-write-guard.js";
 import { recordComplexityPulse } from "./complexity-pulse.js";
 import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
@@ -113,54 +113,78 @@ function maybeWarnTestErosion(
 	if (erosion) warnings.push(erosion);
 }
 
-export function evaluatePreChecksTail(
+/**
+ * GUARD: per-file line cap + per-function cyclomatic/cognitive caps for a
+ * Write/Edit/MultiEdit/apply_patch. Extracted out of `evaluatePreChecksTail`
+ * so the two metric gates' combined branching doesn't inflate the
+ * orchestrator's own complexity (dogfooded: this split is what took
+ * `evaluatePreChecksTail` back under the cognitive cap after cognitive
+ * promotion landed — see scratch/cognitive-verify.mts). A no-op (null) for
+ * non-file-write tools.
+ */
+function checkFileWriteMetricCaps(
+	event: HarnessEvent,
+	eventCwd: string,
+	toolName: string,
+	toolInput: ToolInput,
+): HarnessDecision | null {
+	if (!isFileWrite(toolName)) return null;
+	// GUARD: per-file line cap — block a Write/Edit that would grow a
+	// hand-written code file past the cap (see large-file-policy.ts).
+	const sizeBlock = checkLargeFileLineCountWrite(toolInput, eventCwd);
+	if (sizeBlock?.block) {
+		return {
+			decision: "block",
+			reason: sizeBlock.block,
+			rule_id: "large-file-cap",
+			severity: "medium",
+			category: "file-size",
+		};
+	}
+	// GUARD: per-function cyclomatic cap — block a Write/Edit that introduces
+	// or worsens an over-cap function (delta semantics, no override). See
+	// complexity-write-guard.ts. The observer stashes the gate's already-paid
+	// before/after parses for the PostToolUse pulse (complexity-pulse.ts).
+	const complexityBlock = checkFunctionComplexityWrite(
+		toolInput,
+		eventCwd,
+		(filePath, beforeFns, afterFns, afterContent) => {
+			const absPath = isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath);
+			recordComplexityPulse(event.session_id, absPath, beforeFns, afterFns, afterContent);
+		},
+	);
+	// GUARD: per-function cognitive-complexity cap — promoted from warn-only
+	// to a block (2026-08-01) with the SAME delta-semantics contract, mirrored
+	// in cognitive-write-guard.ts. Runs independently of the cyclomatic gate
+	// above so neither shadows the other: a file can trip cognitive alone,
+	// cyclomatic alone, or both (reasons are concatenated below when both fire).
+	const cognitiveBlock = checkCognitiveComplexityWrite(toolInput, eventCwd);
+	if (!complexityBlock?.block && !cognitiveBlock?.block) return null;
+	// rule_id stays "cyclomatic-cap" when the cyclomatic gate fires (even
+	// alongside cognitive) to preserve the existing rule_id contract other
+	// consumers pin on; a cognitive-only block gets its own distinct id.
+	return {
+		decision: "block",
+		reason: [complexityBlock?.block, cognitiveBlock?.block].filter(Boolean).join("\n\n"),
+		rule_id: complexityBlock?.block ? "cyclomatic-cap" : "cognitive-cap",
+		severity: "medium",
+		category: "complexity",
+	};
+}
+
+/** Tail WARNING-only checks: stale-branch, dirty-tree, byte-size large-file,
+ *  concurrent-edit, test-signal erosion. Never blocks; pushes into `warnings`
+ *  by reference. Split out of `evaluatePreChecksTail` alongside
+ *  `checkFileWriteMetricCaps` for the same complexity-budget reason. */
+function pushTailWarnings(
 	event: HarnessEvent,
 	session: SessionTrajectory | undefined,
 	sessions: SessionTracker | undefined,
+	eventCwd: string,
 	toolName: string,
 	toolInput: ToolInput,
 	warnings: string[],
-): HarnessDecision | null {
-	const eventCwd = event.cwd || process.cwd();
-	// GUARD: per-file line cap — block a Write/Edit that would grow a
-	// hand-written code file past the cap (see large-file-policy.ts).
-	if (isFileWrite(toolName)) {
-		const sizeBlock = checkLargeFileLineCountWrite(toolInput, eventCwd);
-		if (sizeBlock?.block) {
-			return {
-				decision: "block",
-				reason: sizeBlock.block,
-				rule_id: "large-file-cap",
-				severity: "medium",
-				category: "file-size",
-			};
-		}
-		// GUARD: per-function cyclomatic cap — block a Write/Edit that introduces
-		// or worsens an over-cap function (delta semantics, no override). See
-		// complexity-write-guard.ts. The observer stashes the gate's already-paid
-		// before/after parses for the PostToolUse pulse (complexity-pulse.ts).
-		const complexityBlock = checkFunctionComplexityWrite(
-			toolInput,
-			eventCwd,
-			(filePath, beforeFns, afterFns, afterContent) => {
-				const absPath = isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath);
-				recordComplexityPulse(event.session_id, absPath, beforeFns, afterFns, afterContent);
-				// Cognitive companion (W2-2): warn when this edit grows a function
-				// past max_cognitive — delta semantics, never a block (plan 06 §D).
-				const cogWarning = cognitiveWriteWarning(absPath, afterContent, eventCwd);
-				if (cogWarning) warnings.push(cogWarning);
-			},
-		);
-		if (complexityBlock?.block) {
-			return {
-				decision: "block",
-				reason: complexityBlock.block,
-				rule_id: "cyclomatic-cap",
-				severity: "medium",
-				category: "complexity",
-			};
-		}
-	}
+): void {
 	if (session && session.tool_call_count <= STALE_BRANCH_CHECK_LIMIT) {
 		const staleResult = checkStaleBranch(eventCwd, event.session_id);
 		if (staleResult?.warning) warnings.push(staleResult.warning);
@@ -180,15 +204,25 @@ export function evaluatePreChecksTail(
 	if (isFileWrite(toolName) && sessions) {
 		const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 		if (filePath) {
-			const concurrentResult = checkConcurrentEdit(
-				filePath,
-				event.session_id,
-				sessions.getAll(),
-			);
+			const concurrentResult = checkConcurrentEdit(filePath, event.session_id, sessions.getAll());
 			if (concurrentResult?.warning) warnings.push(concurrentResult.warning);
 		}
 	}
 	maybeWarnTestErosion(event, session, eventCwd, warnings);
+}
+
+export function evaluatePreChecksTail(
+	event: HarnessEvent,
+	session: SessionTrajectory | undefined,
+	sessions: SessionTracker | undefined,
+	toolName: string,
+	toolInput: ToolInput,
+	warnings: string[],
+): HarnessDecision | null {
+	const eventCwd = event.cwd || process.cwd();
+	const metricBlock = checkFileWriteMetricCaps(event, eventCwd, toolName, toolInput);
+	if (metricBlock) return metricBlock;
+	pushTailWarnings(event, session, sessions, eventCwd, toolName, toolInput, warnings);
 	return null;
 }
 
