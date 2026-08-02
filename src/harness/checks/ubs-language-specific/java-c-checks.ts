@@ -12,6 +12,29 @@ import {
 import { MATCH_LIMIT } from "./_shared.js";
 
 /**
+ * True when `name`'s `.get()` call on `line` (`strippedLines[i]`, matched by
+ * `callRe`) is guarded — either by an `isPresent()`/`orElse(...)`-family call
+ * earlier on the same line, or by one on any prior line in the file. Same-line
+ * guard wins first (e.g. `name.orElse(x)` — fine); otherwise scans backward.
+ */
+function isOptionalGetGuarded(
+	name: string,
+	callRe: RegExp,
+	line: string,
+	strippedLines: string[],
+	i: number,
+): boolean {
+	const guardRe = new RegExp(
+		`\\b${name}\\.(?:isPresent|orElse|orElseGet|orElseThrow|ifPresent|ifPresentOrElse|map|flatMap|filter)\\s*\\(`,
+	);
+	if (guardRe.test(line.replace(callRe, ""))) return true;
+	for (let j = 0; j < i; j++) {
+		if (guardRe.test(nonNull(strippedLines[j]))) return true;
+	}
+	return false;
+}
+
+/**
  * Row 29: Java `Optional<T>....get()` without an `isPresent()` / `orElse()`
  * guard is a NullPointerException risk. Flagged on `.java` files only.
  *
@@ -52,23 +75,7 @@ export function checkJavaOptionalGet(content: string, filePath: string): InlineM
 
 			// Accept if a guard for this name appears earlier in the file or on
 			// the same line.
-			const guardRe = new RegExp(
-				`\\b${name}\\.(?:isPresent|orElse|orElseGet|orElseThrow|ifPresent|ifPresentOrElse|map|flatMap|filter)\\s*\\(`,
-			);
-			let guarded = false;
-			// Same-line guard wins (e.g. `name.orElse(x)` — fine).
-			if (guardRe.test(line.replace(callRe, ""))) {
-				guarded = true;
-			}
-			if (!guarded) {
-				for (let j = 0; j < i; j++) {
-					if (guardRe.test(nonNull(strippedLines[j]))) {
-						guarded = true;
-						break;
-					}
-				}
-			}
-			if (guarded) continue;
+			if (isOptionalGetGuarded(name, callRe, line, strippedLines, i)) continue;
 
 			matches.push({
 				line: i + 1,

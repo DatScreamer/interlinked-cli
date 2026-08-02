@@ -21,6 +21,13 @@ interface CollectOpts {
 	cwd?: string;
 }
 
+/** Report a fatal CLI error (json envelope or stderr) and set the exit code. Shared by every early-exit path below. */
+function reportCollectError(json: boolean | undefined, message: string): void {
+	if (json) console.log(JSON.stringify({ ok: false, error: message }));
+	else console.error(message);
+	process.exitCode = 2;
+}
+
 export function registerCollectCommand(program: Command): void {
 	program
 		.command("collect")
@@ -39,9 +46,7 @@ export function registerCollectCommand(program: Command): void {
 					provider === "claude" || provider === "claude-code"
 						? "Claude sessions are already captured live by the daemon (and rebuildable via the timeline backfill) — `collect` covers the external-provider gap. Only `--provider codex` is supported today."
 						: `Unknown provider "${provider}". Supported: codex.`;
-				if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
-				else console.error(msg);
-				process.exitCode = 2;
+				reportCollectError(opts.json, msg);
 				return;
 			}
 
@@ -51,9 +56,7 @@ export function registerCollectCommand(program: Command): void {
 					sinceMs = Date.now() - parseDuration(opts.since);
 				} catch (e) {
 					const msg = e instanceof Error ? e.message : String(e);
-					if (opts.json) console.log(JSON.stringify({ ok: false, error: msg }));
-					else console.error(msg);
-					process.exitCode = 2;
+					reportCollectError(opts.json, msg);
 					return;
 				}
 			}

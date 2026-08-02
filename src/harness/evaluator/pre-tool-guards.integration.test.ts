@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { addToAllowlist } from "../package-allowlist.js";
 import { resetRepoProfileCache } from "../repo-profile.js";
@@ -480,9 +480,18 @@ describe("evaluateGitScopeGate", () => {
 
 	it("falls back to process.cwd() when event.cwd is absent", () => {
 		// Drive the `event.cwd || process.cwd()` fallback deterministically by
-		// chdir-ing into a controlled git repo. The added file is session-
-		// written, so the verdict is allow and the guard returns null — no
-		// dependence on the real repo's git state.
+		// stubbing `process.cwd()` itself rather than actually chdir-ing the
+		// process: `process.chdir()` throws `TypeError: process.chdir() is not
+		// supported in workers` under vitest's `pool: "threads"` — which
+		// Stryker's own vitest-runner forces unconditionally for every
+		// mutation dry run (@stryker-mutator/vitest-runner's
+		// VitestTestRunner.init hardcodes `pool: "threads"`), so a real chdir
+		// here poisoned every mutation run whose graph-selected test scope
+		// happened to include this file. `vi.spyOn` changes only what THIS
+		// test observes, with none of the process-global side effects a real
+		// chdir needs and none of the worker-thread incompatibility. The added
+		// file is session-written, so the verdict is allow and the guard
+		// returns null — no dependence on the real repo's git state.
 		const repoRoot = realpathSync(workspace);
 		initRepo(repoRoot);
 		writeFileSync(join(repoRoot, "mine.ts"), "export const x = 1;\n");
@@ -490,9 +499,8 @@ describe("evaluateGitScopeGate", () => {
 		session.files_written.add("mine.ts");
 		const ev = makeEvent();
 		delete ev.cwd;
-		const prevCwd = process.cwd();
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(repoRoot);
 		try {
-			process.chdir(repoRoot);
 			expect(
 				evaluateGitScopeGate(
 					ev,
@@ -504,7 +512,7 @@ describe("evaluateGitScopeGate", () => {
 				),
 			).toBeNull();
 		} finally {
-			process.chdir(prevCwd);
+			cwdSpy.mockRestore();
 		}
 	});
 });

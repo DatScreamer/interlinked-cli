@@ -177,6 +177,54 @@ async function fetchWorkStatus(previous: WorkStatus | null): Promise<WorkStatus>
 // Change Detection
 // ===========================================
 
+/** Unread-message delta: one note when the unread count rose, else none. */
+function detectMessageChanges(
+	curr: WorkStatus["messages"],
+	prev: WorkStatus["messages"],
+): string[] {
+	if (!curr || !prev) return [];
+	const delta = curr.unread_count - prev.unread_count;
+	if (delta <= 0) return [];
+	return [`${delta} new unread message${delta > 1 ? "s" : ""}`];
+}
+
+/** Task-queue deltas: newly-appeared task ids, then unassigned-count growth. */
+function detectTaskChanges(curr: WorkStatus["tasks"], prev: WorkStatus["tasks"]): string[] {
+	if (!curr || !prev) return [];
+	const notes: string[] = [];
+
+	const prevIds = new Set(prev.items.map((t) => t.id));
+	const newTasks = curr.items.filter((t) => !prevIds.has(t.id));
+	for (const t of newTasks) {
+		notes.push(`New task #${t.id}: ${truncate(t.title, 40)}`);
+	}
+
+	// Tasks became unassigned (assignee removed or new unassigned task)
+	if (curr.unassigned > (prev.unassigned || 0)) {
+		const delta = curr.unassigned - (prev.unassigned || 0);
+		notes.push(`${delta} task${delta > 1 ? "s" : ""} waiting for assignment`);
+	}
+
+	return notes;
+}
+
+/** Agent-roster deltas: online growth, then offline shrinkage. */
+function detectAgentChanges(curr: WorkStatus["agents"], prev: WorkStatus["agents"]): string[] {
+	if (!curr || !prev) return [];
+	const notes: string[] = [];
+
+	if (curr.total > prev.total) {
+		const delta = curr.total - prev.total;
+		notes.push(`${delta} new agent${delta > 1 ? "s" : ""} came online`);
+	}
+	if (curr.total < prev.total) {
+		const delta = prev.total - curr.total;
+		notes.push(`${delta} agent${delta > 1 ? "s" : ""} went offline`);
+	}
+
+	return notes;
+}
+
 function detectChanges(
 	prev: WorkStatus | null,
 	curr: {
@@ -186,44 +234,11 @@ function detectChanges(
 	},
 ): string[] {
 	if (!prev) return [];
-	const notes: string[] = [];
-
-	// New unread messages
-	if (curr.messages && prev.messages) {
-		const delta = curr.messages.unread_count - prev.messages.unread_count;
-		if (delta > 0) {
-			notes.push(`${delta} new unread message${delta > 1 ? "s" : ""}`);
-		}
-	}
-
-	// New tasks appeared
-	if (curr.tasks && prev.tasks) {
-		const prevIds = new Set(prev.tasks.items.map((t) => t.id));
-		const newTasks = curr.tasks.items.filter((t) => !prevIds.has(t.id));
-		for (const t of newTasks) {
-			notes.push(`New task #${t.id}: ${truncate(t.title, 40)}`);
-		}
-
-		// Tasks became unassigned (assignee removed or new unassigned task)
-		if (curr.tasks.unassigned > (prev.tasks.unassigned || 0)) {
-			const delta = curr.tasks.unassigned - (prev.tasks.unassigned || 0);
-			notes.push(`${delta} task${delta > 1 ? "s" : ""} waiting for assignment`);
-		}
-	}
-
-	// Agent count changes
-	if (curr.agents && prev.agents) {
-		if (curr.agents.total > prev.agents.total) {
-			const delta = curr.agents.total - prev.agents.total;
-			notes.push(`${delta} new agent${delta > 1 ? "s" : ""} came online`);
-		}
-		if (curr.agents.total < prev.agents.total) {
-			const delta = prev.agents.total - curr.agents.total;
-			notes.push(`${delta} agent${delta > 1 ? "s" : ""} went offline`);
-		}
-	}
-
-	return notes;
+	return [
+		...detectMessageChanges(curr.messages, prev.messages),
+		...detectTaskChanges(curr.tasks, prev.tasks),
+		...detectAgentChanges(curr.agents, prev.agents),
+	];
 }
 
 function truncate(s: string, max: number): string {
@@ -263,21 +278,129 @@ function renderShort(data: WorkStatus): string {
 	return parts.join(" | ");
 }
 
+// Each helper below owns exactly one dashboard section's rendering decision;
+// renderNormal composes them in display order. Every helper returns the lines
+// for its section (header included), so renderNormal only decides ordering
+// and the blank-line separators between sections.
+
+/** Notification banner: nothing when there's nothing new to report. */
+function renderNotifications(notifications: string[]): string[] {
+	if (notifications.length === 0) return [];
+	const lines: string[] = ["", c.bold(c.yellow("  Notifications"))];
+	for (const note of notifications) {
+		lines.push(`    ${c.yellow(">")} ${note}`);
+	}
+	return lines;
+}
+
+/** Messages section: unread count + oldest-unread timestamp, or unavailable. */
+function renderMessagesSection(messages: WorkStatus["messages"]): string[] {
+	const lines: string[] = [c.bold("  Messages")];
+	if (!messages) {
+		lines.push(c.dim("    (unavailable)"));
+		return lines;
+	}
+	if (!messages.has_unread) {
+		lines.push(c.dim("    No unread messages"));
+		return lines;
+	}
+	lines.push(c.yellow(`    ${messages.unread_count} unread messages`));
+	if (messages.oldest_unread_at) {
+		lines.push(c.dim(`    oldest: ${messages.oldest_unread_at}`));
+	}
+	return lines;
+}
+
+/** Display order for the task list: unassigned-pending tasks surface first. */
+function sortTasksForDisplay(items: TaskItem[]): TaskItem[] {
+	return [...items].sort((a, b) => {
+		// Unassigned pending first
+		if (!a.assignee && a.status === "pending" && (b.assignee || b.status !== "pending"))
+			return -1;
+		if (!b.assignee && b.status === "pending" && (a.assignee || a.status !== "pending"))
+			return 1;
+		return 0;
+	});
+}
+
+/** One task row: status badge, id, truncated title, assignee/unassigned suffix. */
+function renderTaskLine(task: TaskItem): string {
+	const badge = taskBadge(task.status);
+	const assignee = task.assignee ? c.dim(` -> ${task.assignee}`) : c.yellow(" (unassigned)");
+	const title = truncate(task.title, 45);
+	return `    ${badge} #${task.id} ${title}${assignee}`;
+}
+
+/** Work Queue section: counts summary, unassigned callout, sorted+capped task list. */
+function renderTasksSection(tasks: WorkStatus["tasks"]): string[] {
+	const lines: string[] = [c.bold("  Work Queue")];
+	if (!tasks) {
+		lines.push(c.dim("    (unavailable)"));
+		return lines;
+	}
+	const { pending, in_progress, blocked, unassigned, items } = tasks;
+	if (pending + in_progress + blocked === 0) {
+		lines.push(c.dim("    No active tasks"));
+		return lines;
+	}
+
+	const summary: string[] = [];
+	if (pending > 0) summary.push(c.yellow(`${pending} pending`));
+	if (in_progress > 0) summary.push(c.green(`${in_progress} in progress`));
+	if (blocked > 0) summary.push(c.red(`${blocked} blocked`));
+	lines.push(`    ${summary.join(" | ")}`);
+	if (unassigned > 0) {
+		lines.push(`    ${c.yellow(`${unassigned} unassigned — needs pickup`)}`);
+	}
+	lines.push("");
+
+	const sorted = sortTasksForDisplay(items);
+	for (const task of sorted.slice(0, 12)) {
+		lines.push(renderTaskLine(task));
+	}
+	if (items.length > 12) {
+		lines.push(c.dim(`    ... and ${items.length - 12} more`));
+	}
+	return lines;
+}
+
+/** One agent row: working/idle dot, role, current-task title (truncated). */
+function renderAgentLine(agent: AgentItem): string {
+	const role = agent.role ? c.dim(` (${agent.role})`) : "";
+	const dot = agent.current_task ? c.green("●") : c.yellow("○");
+	const work = agent.current_task
+		? c.dim(` -> ${truncate(agent.current_task, 35)}`)
+		: c.dim(" idle");
+	return `    ${dot} ${agent.name}${role}${work}`;
+}
+
+/** Agents section: total/working/idle summary + per-agent rows. */
+function renderAgentsSection(agents: WorkStatus["agents"]): string[] {
+	const lines: string[] = [c.bold("  Agents")];
+	if (!agents) {
+		lines.push(c.dim("    (unavailable)"));
+		return lines;
+	}
+	if (agents.total === 0) {
+		lines.push(c.dim("    No active agents"));
+		return lines;
+	}
+	const summary = `${agents.total} total, ${agents.total - agents.idle} working, ${agents.idle} idle`;
+	lines.push(c.dim(`    ${summary}`));
+	lines.push("");
+	for (const agent of agents.items) {
+		lines.push(renderAgentLine(agent));
+	}
+	return lines;
+}
+
 function renderNormal(data: WorkStatus): string {
 	const lines: string[] = [];
 
 	lines.push(c.bold("Interlinked Watch"));
 	lines.push(c.dim(`  ${data.timestamp}`));
 
-	// Notifications (if any)
-	if (data.notifications.length > 0) {
-		lines.push("");
-		lines.push(c.bold(c.yellow("  Notifications")));
-		for (const note of data.notifications) {
-			lines.push(`    ${c.yellow(">")} ${note}`);
-		}
-	}
-
+	lines.push(...renderNotifications(data.notifications));
 	lines.push("");
 
 	if (!data.server.reachable) {
@@ -285,88 +408,11 @@ function renderNormal(data: WorkStatus): string {
 		return lines.join("\n");
 	}
 
-	// Messages section
-	lines.push(c.bold("  Messages"));
-	if (data.messages) {
-		if (data.messages.has_unread) {
-			lines.push(c.yellow(`    ${data.messages.unread_count} unread messages`));
-			if (data.messages.oldest_unread_at) {
-				lines.push(c.dim(`    oldest: ${data.messages.oldest_unread_at}`));
-			}
-		} else {
-			lines.push(c.dim("    No unread messages"));
-		}
-	} else {
-		lines.push(c.dim("    (unavailable)"));
-	}
+	lines.push(...renderMessagesSection(data.messages));
 	lines.push("");
-
-	// Tasks section
-	lines.push(c.bold("  Work Queue"));
-	if (data.tasks) {
-		const { pending, in_progress, blocked, unassigned, items } = data.tasks;
-		if (pending + in_progress + blocked === 0) {
-			lines.push(c.dim("    No active tasks"));
-		} else {
-			const summary: string[] = [];
-			if (pending > 0) summary.push(c.yellow(`${pending} pending`));
-			if (in_progress > 0) summary.push(c.green(`${in_progress} in progress`));
-			if (blocked > 0) summary.push(c.red(`${blocked} blocked`));
-			lines.push(`    ${summary.join(" | ")}`);
-			if (unassigned > 0) {
-				lines.push(`    ${c.yellow(`${unassigned} unassigned — needs pickup`)}`);
-			}
-			lines.push("");
-
-			// Show tasks, unassigned first
-			const sorted = [...items].sort((a, b) => {
-				// Unassigned pending first
-				if (!a.assignee && a.status === "pending" && (b.assignee || b.status !== "pending"))
-					return -1;
-				if (!b.assignee && b.status === "pending" && (a.assignee || a.status !== "pending"))
-					return 1;
-				return 0;
-			});
-
-			for (const task of sorted.slice(0, 12)) {
-				const badge = taskBadge(task.status);
-				const assignee = task.assignee
-					? c.dim(` -> ${task.assignee}`)
-					: c.yellow(" (unassigned)");
-				const title = truncate(task.title, 45);
-				lines.push(`    ${badge} #${task.id} ${title}${assignee}`);
-			}
-			if (items.length > 12) {
-				lines.push(c.dim(`    ... and ${items.length - 12} more`));
-			}
-		}
-	} else {
-		lines.push(c.dim("    (unavailable)"));
-	}
+	lines.push(...renderTasksSection(data.tasks));
 	lines.push("");
-
-	// Agents section
-	lines.push(c.bold("  Agents"));
-	if (data.agents) {
-		if (data.agents.total === 0) {
-			lines.push(c.dim("    No active agents"));
-		} else {
-			const summary = `${data.agents.total} total, ${data.agents.total - data.agents.idle} working, ${data.agents.idle} idle`;
-			lines.push(c.dim(`    ${summary}`));
-			lines.push("");
-
-			for (const agent of data.agents.items) {
-				const role = agent.role ? c.dim(` (${agent.role})`) : "";
-				const dot = agent.current_task ? c.green("●") : c.yellow("○");
-				const work = agent.current_task
-					? c.dim(` -> ${truncate(agent.current_task, 35)}`)
-					: c.dim(" idle");
-				lines.push(`    ${dot} ${agent.name}${role}${work}`);
-			}
-		}
-	} else {
-		lines.push(c.dim("    (unavailable)"));
-	}
+	lines.push(...renderAgentsSection(data.agents));
 
 	return lines.join("\n");
 }

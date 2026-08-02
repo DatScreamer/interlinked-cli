@@ -7,6 +7,7 @@
 import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 import { type CohortManager, getActiveCohort } from "./cohort.js";
+import { classifyTopLevelSplit, nextBracketDepth } from "./command-split-classifiers.js";
 import { classifySpans } from "./evaluator/spans.js";
 import type {
 	AgentRole,
@@ -34,7 +35,14 @@ import { DANGEROUS_ENV_VARS, SAFE_ENV_VARS } from "./types.js";
  *
  *  Heredoc glue rules keep bodies attached to their command: no split on the
  *  header line's operators or newline (`cat <<EOF | grep x` stays whole), and
- *  none inside the body — otherwise body text would be evaluated as commands. */
+ *  none inside the body — otherwise body text would be evaluated as commands.
+ *
+ *  Per-character decisions are delegated to two pure classifiers
+ *  (`command-split-classifiers.ts`) so this orchestrator reads as the
+ *  algorithm's shape: consume atomic spans, track bracket/backtick nesting,
+ *  then (at top level) classify compound operators. Both classifiers take
+ *  plain values and return a decision with no loop state, so each is
+ *  independently testable. */
 export function decomposeCommand(command: string): string[] {
 	const spans = classifySpans(command);
 	const atomic = spans.filter((s) => s.kind !== "executed");
@@ -76,62 +84,27 @@ export function decomposeCommand(command: string): string[] {
 		const next = command[i + 1];
 
 		// Track subshell/substitution depth
-		if (ch === "(" || (ch === "$" && next === "(")) {
-			depth++;
-			current += ch;
-			continue;
-		}
-		if (ch === ")" && depth > 0) {
-			depth--;
-			current += ch;
-			continue;
-		}
-		if (ch === "`") {
-			depth = depth === 0 ? 1 : 0;
+		const newDepth = nextBracketDepth(ch, next, depth);
+		if (newDepth !== null) {
+			depth = newDepth;
 			current += ch;
 			continue;
 		}
 
 		// Only split at top level
 		if (depth === 0) {
-			if (ch === "\n") {
-				// `\` line continuations and heredoc header newlines glue.
-				if (command[i - 1] === "\\" || heredocStartsAt(i + 1)) {
-					current += ch;
-					continue;
-				}
-				push();
-				continue;
-			}
-			if ((ch === "&" && next === "&") || (ch === "|" && next === "|")) {
-				if (pendingHeredocOnLine(i)) {
-					current += ch + (next ?? "");
-					i++;
-					continue;
-				}
-				push();
-				i++;
-				continue;
-			}
-			if (ch === ";" || ch === "|") {
-				if (pendingHeredocOnLine(i)) {
-					current += ch;
-					continue;
-				}
-				push();
-				continue;
-			}
-			if (ch === "&") {
-				// Background `&` — but not the `2>&1` / `&>` redirect forms.
-				if (command[i - 1] === ">" || next === ">") {
-					current += ch;
-					continue;
-				}
-				if (pendingHeredocOnLine(i)) {
-					current += ch;
-					continue;
-				}
-				push();
+			const action = classifyTopLevelSplit(
+				command,
+				i,
+				ch,
+				next,
+				heredocStartsAt,
+				pendingHeredocOnLine,
+			);
+			if (action) {
+				if (action.split) push();
+				current += action.append;
+				i += action.extraChars;
 				continue;
 			}
 		}
@@ -203,6 +176,86 @@ export interface CompoundEvalResult {
 	category?: string | undefined;
 }
 
+/** Per-subcommand verdict from {@link evaluateSubcommand}: either a block
+ *  the caller must return immediately, or a rewritten command string to
+ *  splice back into the subcommand list (absent when nothing matched). */
+interface SubcommandOutcome {
+	block?: CompoundEvalResult;
+	rewritten?: string;
+}
+
+/**
+ * Evaluate one subcommand against every applicable guard rule.
+ *
+ * Extracted from {@link evaluateCompoundCommand} so the per-rule dispatch
+ * (block/warn/rewrite) doesn't nest three levels inside the subcommand loop —
+ * this function IS that nested body, callable and independently testable.
+ * `warnings` is the caller's shared array; this function pushes onto it
+ * directly rather than returning a copy.
+ *
+ * Preserves the original's rewrite semantics exactly: each matching
+ * `rewrite` rule is applied to the ORIGINAL `sub` text (not chained onto a
+ * prior rewrite within the same subcommand), and the last rule to produce a
+ * change wins — matching the pre-extraction loop's repeated
+ * `rewrittenParts[idx] = rewritten` overwrite.
+ */
+function evaluateSubcommand(
+	sub: string,
+	guardRules: GuardRule[],
+	extraExceptions: Record<string, string[]> | undefined,
+	matcher: MatchRuleFn,
+	warnings: string[],
+): SubcommandOutcome {
+	const { stripped, dangerous_var } = stripEnvVarPrefix(sub, "deny");
+
+	if (dangerous_var) {
+		return {
+			block: {
+				decision: "block",
+				reason: `BLOCKED: Dangerous environment variable ${dangerous_var}= detected in command. This can hijack library loading or alter execution.`,
+				warnings,
+				severity: "critical",
+				category: "Security",
+			},
+		};
+	}
+
+	const subInput: JsonObject = { command: stripped };
+	let rewritten: string | null = null;
+
+	for (const rule of guardRules) {
+		if (!shouldEvaluateForBash(rule)) continue;
+		if (!matcher(stripped, subInput, rule, extraExceptions)) continue;
+
+		if (rule.action === "block") {
+			return {
+				block: {
+					decision: "block",
+					reason: `BLOCKED: ${rule.reason} (in subcommand: ${sub.slice(0, 80)})`,
+					warnings,
+					rule_id: rule.id,
+					severity: rule.severity,
+					category: rule.category,
+				},
+			};
+		}
+
+		if (rule.action === "warn") {
+			warnings.push(`[interlinked] Warning: ${rule.reason} (in subcommand: ${sub.slice(0, 60)})`);
+		}
+
+		if (rule.action === "rewrite" && rule.rewrite) {
+			const next = applyRewrite(sub, rule.rewrite);
+			if (next !== sub) {
+				rewritten = next;
+				warnings.push(`[interlinked:rewrite] Rewrote: ${sub.slice(0, 40)} → ${next.slice(0, 40)}`);
+			}
+		}
+	}
+
+	return rewritten !== null ? { rewritten } : {};
+}
+
 /**
  * Evaluate a compound bash command by decomposing it into subcommands
  * and checking each against guard rules individually.
@@ -229,51 +282,13 @@ export function evaluateCompoundCommand(
 
 	for (let idx = 0; idx < subcommands.length; idx++) {
 		const sub = nonNull(subcommands[idx]);
-		const { stripped, dangerous_var } = stripEnvVarPrefix(sub, "deny");
+		const outcome = evaluateSubcommand(sub, guardRules, extraExceptions, matcher, warnings);
 
-		if (dangerous_var) {
-			return {
-				decision: "block",
-				reason: `BLOCKED: Dangerous environment variable ${dangerous_var}= detected in command. This can hijack library loading or alter execution.`,
-				warnings,
-				severity: "critical",
-				category: "Security",
-			};
-		}
+		if (outcome.block) return outcome.block;
 
-		const subInput: JsonObject = { command: stripped };
-
-		for (const rule of guardRules) {
-			if (!shouldEvaluateForBash(rule)) continue;
-			if (!matcher(stripped, subInput, rule, extraExceptions)) continue;
-
-			if (rule.action === "block") {
-				return {
-					decision: "block",
-					reason: `BLOCKED: ${rule.reason} (in subcommand: ${nonNull(sub).slice(0, 80)})`,
-					warnings,
-					rule_id: rule.id,
-					severity: rule.severity,
-					category: rule.category,
-				};
-			}
-
-			if (rule.action === "warn") {
-				warnings.push(
-					`[interlinked] Warning: ${rule.reason} (in subcommand: ${nonNull(sub).slice(0, 60)})`,
-				);
-			}
-
-			if (rule.action === "rewrite" && rule.rewrite) {
-				const rewritten = applyRewrite(sub, rule.rewrite);
-				if (rewritten !== sub) {
-					if (!rewrittenParts) rewrittenParts = [...subcommands];
-					rewrittenParts[idx] = rewritten;
-					warnings.push(
-						`[interlinked:rewrite] Rewrote: ${nonNull(sub).slice(0, 40)} → ${rewritten.slice(0, 40)}`,
-					);
-				}
-			}
+		if (outcome.rewritten !== undefined) {
+			if (!rewrittenParts) rewrittenParts = [...subcommands];
+			rewrittenParts[idx] = outcome.rewritten;
 		}
 	}
 

@@ -85,10 +85,25 @@ describe("interlinked collect", () => {
 		expect(JSON.parse(out[0] ?? "{}").error).toContain("already captured live");
 	});
 
+	it("rejects a non-codex provider with exit 2 and a stderr message (non-json)", () => {
+		const { code, err, out } = run(["--provider", "claude"]);
+		expect(code).toBe(2);
+		expect(err[0]).toContain("already captured live");
+		expect(out).toHaveLength(0);
+	});
+
 	it("rejects a malformed --since", () => {
 		const { dir, cwd } = fixture();
 		const { code, out } = run(["--dir", dir, "--cwd", cwd, "--since", "banana", "--json"]);
 		expect(code).toBe(2);
 		expect(JSON.parse(out[0] ?? "{}").error).toContain("Invalid duration");
+	});
+
+	it("rejects a malformed --since with exit 2 and a stderr message (non-json)", () => {
+		const { dir, cwd } = fixture();
+		const { code, err, out } = run(["--dir", dir, "--cwd", cwd, "--since", "banana"]);
+		expect(code).toBe(2);
+		expect(err[0]).toContain("Invalid duration");
+		expect(out).toHaveLength(0);
 	});
 });

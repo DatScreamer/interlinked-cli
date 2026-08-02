@@ -12,7 +12,7 @@ import {
 	validatePackagesFile,
 	validateTestsFile,
 } from "./schema-validator-artifacts-covers.js";
-import type { ValidationResult } from "./schema-validator-helpers.js";
+import type { ValidationError, ValidationResult } from "./schema-validator-helpers.js";
 import {
 	checkUnknownKeys,
 	err,
@@ -43,6 +43,74 @@ export {
 // public_api
 // -------------------------------------------
 
+// Validates one entry of `modules[].symbols[]`: shape, name, kind, stability,
+// and the three string-array fields. The deepest-nested block in the
+// original monolithic validator — pulled out so it scores against its own
+// (unnested) baseline instead of the module loop's nesting.
+function validateModuleSymbol(s: JsonObject, sp: string): ValidationError[] {
+	const errors: ValidationError[] = [];
+	errors.push(
+		...checkUnknownKeys(s, ["name", "kind", "stability", "docs", "tests", "examples"], sp),
+	);
+
+	if (typeof s.name !== "string" || s.name.length === 0) {
+		errors.push(err(`${sp}.name`, "Must be a non-empty string"));
+	}
+	if (!includes(VALID_SYMBOL_KINDS, s.kind)) {
+		errors.push(err(`${sp}.kind`, `Must be one of: ${VALID_SYMBOL_KINDS.join(", ")}`));
+	}
+	if (!includes(VALID_STABILITY, s.stability)) {
+		errors.push(err(`${sp}.stability`, `Must be one of: ${VALID_STABILITY.join(", ")}`));
+	}
+	errors.push(...validateStringArray(s.docs, `${sp}.docs`));
+	errors.push(...validateStringArray(s.tests, `${sp}.tests`));
+	errors.push(...validateStringArray(s.examples, `${sp}.examples`));
+	return errors;
+}
+
+// Validates a module's `symbols` field: must be an array, each entry checked
+// via validateModuleSymbol above.
+function validateModuleSymbols(symbols: unknown, mp: string): ValidationError[] {
+	const errors: ValidationError[] = [];
+	if (!Array.isArray(symbols)) {
+		errors.push(err(`${mp}.symbols`, "Must be an array"));
+		return errors;
+	}
+	for (let j = 0; j < symbols.length; j++) {
+		const s = symbols[j] as JsonObject;
+		errors.push(...validateModuleSymbol(s, `${mp}.symbols[${j}]`));
+	}
+	return errors;
+}
+
+// Validates one entry of `modules[]`: shape, id (incl. duplicate detection
+// against the caller-owned `moduleIds` set), file, and symbols.
+function validateModuleEntry(
+	m: JsonObject,
+	mp: string,
+	moduleIds: Set<string>,
+): ValidationError[] {
+	const errors: ValidationError[] = [];
+	errors.push(...checkUnknownKeys(m, ["id", "file", "symbols"], mp));
+
+	if (typeof m.id !== "string") {
+		errors.push(err(`${mp}.id`, "Must be a string"));
+	} else {
+		errors.push(...validateLocalId(m.id, `${mp}.id`));
+		if (moduleIds.has(m.id)) errors.push(err(`${mp}.id`, `Duplicate module ID "${m.id}"`));
+		moduleIds.add(m.id);
+	}
+
+	if (typeof m.file !== "string") {
+		errors.push(err(`${mp}.file`, "Must be a string"));
+	} else if (!isRepoRelativePath(m.file)) {
+		errors.push(err(`${mp}.file`, "Must be a repo-relative POSIX path"));
+	}
+
+	errors.push(...validateModuleSymbols(m.symbols, mp));
+	return errors;
+}
+
 export function validatePublicApiFile(data: unknown): ValidationResult {
 	if (typeof data !== "object" || data === null || Array.isArray(data)) {
 		return fail([err("$", "Must be a JSON object")]);
@@ -60,55 +128,7 @@ export function validatePublicApiFile(data: unknown): ValidationResult {
 	const moduleIds = new Set<string>();
 	for (let i = 0; i < obj.modules.length; i++) {
 		const m = obj.modules[i] as JsonObject;
-		const mp = `$.modules[${i}]`;
-		errors.push(...checkUnknownKeys(m, ["id", "file", "symbols"], mp));
-
-		if (typeof m.id !== "string") {
-			errors.push(err(`${mp}.id`, "Must be a string"));
-		} else {
-			errors.push(...validateLocalId(m.id, `${mp}.id`));
-			if (moduleIds.has(m.id)) errors.push(err(`${mp}.id`, `Duplicate module ID "${m.id}"`));
-			moduleIds.add(m.id);
-		}
-
-		if (typeof m.file !== "string") {
-			errors.push(err(`${mp}.file`, "Must be a string"));
-		} else if (!isRepoRelativePath(m.file)) {
-			errors.push(err(`${mp}.file`, "Must be a repo-relative POSIX path"));
-		}
-
-		if (!Array.isArray(m.symbols)) {
-			errors.push(err(`${mp}.symbols`, "Must be an array"));
-		} else {
-			for (let j = 0; j < m.symbols.length; j++) {
-				const s = m.symbols[j] as JsonObject;
-				const sp = `${mp}.symbols[${j}]`;
-				errors.push(
-					...checkUnknownKeys(
-						s,
-						["name", "kind", "stability", "docs", "tests", "examples"],
-						sp,
-					),
-				);
-
-				if (typeof s.name !== "string" || s.name.length === 0) {
-					errors.push(err(`${sp}.name`, "Must be a non-empty string"));
-				}
-				if (!includes(VALID_SYMBOL_KINDS, s.kind)) {
-					errors.push(
-						err(`${sp}.kind`, `Must be one of: ${VALID_SYMBOL_KINDS.join(", ")}`),
-					);
-				}
-				if (!includes(VALID_STABILITY, s.stability)) {
-					errors.push(
-						err(`${sp}.stability`, `Must be one of: ${VALID_STABILITY.join(", ")}`),
-					);
-				}
-				errors.push(...validateStringArray(s.docs, `${sp}.docs`));
-				errors.push(...validateStringArray(s.tests, `${sp}.tests`));
-				errors.push(...validateStringArray(s.examples, `${sp}.examples`));
-			}
-		}
+		errors.push(...validateModuleEntry(m, `$.modules[${i}]`, moduleIds));
 	}
 	return errors.length > 0 ? fail(errors) : ok();
 }
@@ -239,6 +259,68 @@ export function validateConfigFile(data: unknown): ValidationResult {
 // glossary
 // -------------------------------------------
 
+// Validates one entry of the `terms` array: unknown-key check, `id`
+// shape/duplicate detection, `canonical` shape/collision detection, and
+// alias/deprecated shape + collision registration against the running
+// `allCanonicals` map. Mutates `termIds` and `allCanonicals` in place and
+// appends to `errors` — same shared-state-accumulator shape as the
+// `layers` validators below (`validateLayerDeclarations` / `validateLayerRules`).
+function validateGlossaryTerm(
+	t: JsonObject,
+	tp: string,
+	termIds: Set<string>,
+	allCanonicals: Map<string, string>,
+	errors: ValidationError[],
+): void {
+	errors.push(...checkUnknownKeys(t, ["id", "canonical", "aliases", "deprecated", "docs"], tp));
+
+	if (typeof t.id !== "string") errors.push(err(`${tp}.id`, "Must be a string"));
+	else {
+		errors.push(...validateLocalId(t.id, `${tp}.id`));
+		if (termIds.has(t.id)) errors.push(err(`${tp}.id`, `Duplicate term ID "${t.id}"`));
+		termIds.add(t.id);
+	}
+
+	if (typeof t.canonical !== "string" || t.canonical.length === 0) {
+		errors.push(err(`${tp}.canonical`, "Must be a non-empty string"));
+	} else {
+		const lower = t.canonical.toLowerCase();
+		if (allCanonicals.has(lower)) {
+			errors.push(
+				err(
+					`${tp}.canonical`,
+					`"${t.canonical}" collides with term "${allCanonicals.get(lower)}"`,
+				),
+			);
+		}
+		allCanonicals.set(lower, t.id as string);
+	}
+
+	errors.push(...validateStringArray(t.aliases || [], `${tp}.aliases`));
+	errors.push(...validateStringArray(t.deprecated || [], `${tp}.deprecated`));
+	errors.push(...validateStringArray(t.docs || [], `${tp}.docs`));
+
+	// Register aliases and deprecated for collision checking
+	for (const alias of (t.aliases as string[]) || []) {
+		const la = alias.toLowerCase();
+		if (allCanonicals.has(la)) {
+			errors.push(
+				err(`${tp}.aliases`, `"${alias}" collides with term "${allCanonicals.get(la)}"`),
+			);
+		}
+		allCanonicals.set(la, t.id as string);
+	}
+	for (const dep of (t.deprecated as string[]) || []) {
+		const ld = dep.toLowerCase();
+		if (allCanonicals.has(ld)) {
+			errors.push(
+				err(`${tp}.deprecated`, `"${dep}" collides with term "${allCanonicals.get(ld)}"`),
+			);
+		}
+		allCanonicals.set(ld, t.id as string);
+	}
+}
+
 export function validateGlossaryFile(data: unknown): ValidationResult {
 	if (typeof data !== "object" || data === null || Array.isArray(data)) {
 		return fail([err("$", "Must be a JSON object")]);
@@ -256,63 +338,13 @@ export function validateGlossaryFile(data: unknown): ValidationResult {
 	const termIds = new Set<string>();
 	const allCanonicals = new Map<string, string>(); // lowered → owning term id
 	for (let i = 0; i < obj.terms.length; i++) {
-		const t = obj.terms[i] as JsonObject;
-		const tp = `$.terms[${i}]`;
-		errors.push(
-			...checkUnknownKeys(t, ["id", "canonical", "aliases", "deprecated", "docs"], tp),
+		validateGlossaryTerm(
+			obj.terms[i] as JsonObject,
+			`$.terms[${i}]`,
+			termIds,
+			allCanonicals,
+			errors,
 		);
-
-		if (typeof t.id !== "string") errors.push(err(`${tp}.id`, "Must be a string"));
-		else {
-			errors.push(...validateLocalId(t.id, `${tp}.id`));
-			if (termIds.has(t.id)) errors.push(err(`${tp}.id`, `Duplicate term ID "${t.id}"`));
-			termIds.add(t.id);
-		}
-
-		if (typeof t.canonical !== "string" || t.canonical.length === 0) {
-			errors.push(err(`${tp}.canonical`, "Must be a non-empty string"));
-		} else {
-			const lower = t.canonical.toLowerCase();
-			if (allCanonicals.has(lower)) {
-				errors.push(
-					err(
-						`${tp}.canonical`,
-						`"${t.canonical}" collides with term "${allCanonicals.get(lower)}"`,
-					),
-				);
-			}
-			allCanonicals.set(lower, t.id as string);
-		}
-
-		errors.push(...validateStringArray(t.aliases || [], `${tp}.aliases`));
-		errors.push(...validateStringArray(t.deprecated || [], `${tp}.deprecated`));
-		errors.push(...validateStringArray(t.docs || [], `${tp}.docs`));
-
-		// Register aliases and deprecated for collision checking
-		for (const alias of (t.aliases as string[]) || []) {
-			const la = alias.toLowerCase();
-			if (allCanonicals.has(la)) {
-				errors.push(
-					err(
-						`${tp}.aliases`,
-						`"${alias}" collides with term "${allCanonicals.get(la)}"`,
-					),
-				);
-			}
-			allCanonicals.set(la, t.id as string);
-		}
-		for (const dep of (t.deprecated as string[]) || []) {
-			const ld = dep.toLowerCase();
-			if (allCanonicals.has(ld)) {
-				errors.push(
-					err(
-						`${tp}.deprecated`,
-						`"${dep}" collides with term "${allCanonicals.get(ld)}"`,
-					),
-				);
-			}
-			allCanonicals.set(ld, t.id as string);
-		}
 	}
 	return errors.length > 0 ? fail(errors) : ok();
 }
@@ -320,6 +352,74 @@ export function validateGlossaryFile(data: unknown): ValidationResult {
 // -------------------------------------------
 // layers
 // -------------------------------------------
+
+// Validates the `layers` array: each entry's shape, local-ID rules, and
+// duplicate-ID detection. Returns the declared layer IDs so the rules pass
+// (below) can check `from` / `cannot_import` references against them.
+function validateLayerDeclarations(layers: unknown, errors: ValidationError[]): Set<string> {
+	const layerIds = new Set<string>();
+	if (!Array.isArray(layers)) {
+		errors.push(err("$.layers", "Must be an array"));
+		return layerIds;
+	}
+	for (let i = 0; i < layers.length; i++) {
+		const l = layers[i] as JsonObject;
+		const lp = `$.layers[${i}]`;
+		errors.push(...checkUnknownKeys(l, ["id", "globs"], lp));
+
+		if (typeof l.id !== "string") errors.push(err(`${lp}.id`, "Must be a string"));
+		else {
+			errors.push(...validateLocalId(l.id, `${lp}.id`));
+			if (layerIds.has(l.id)) errors.push(err(`${lp}.id`, `Duplicate layer ID "${l.id}"`));
+			layerIds.add(l.id);
+		}
+		errors.push(...validateStringArray(l.globs || [], `${lp}.globs`));
+	}
+	return layerIds;
+}
+
+// Validates the `rules` array: each entry's shape, and that `from` /
+// `cannot_import` reference layer IDs actually declared above (skipped when
+// no layers were declared at all, matching the original "no layers yet"
+// leniency).
+function validateLayerRules(
+	rules: unknown,
+	layerIds: Set<string>,
+	errors: ValidationError[],
+): void {
+	if (!Array.isArray(rules)) {
+		errors.push(err("$.rules", "Must be an array"));
+		return;
+	}
+	for (let i = 0; i < rules.length; i++) {
+		const r = rules[i] as JsonObject;
+		const rp = `$.rules[${i}]`;
+		errors.push(...checkUnknownKeys(r, ["from", "cannot_import", "reason"], rp));
+
+		if (typeof r.from !== "string") errors.push(err(`${rp}.from`, "Must be a string"));
+		else if (layerIds.size > 0 && !layerIds.has(r.from)) {
+			errors.push(err(`${rp}.from`, `References undeclared layer "${r.from}"`));
+		}
+
+		if (!Array.isArray(r.cannot_import)) {
+			errors.push(err(`${rp}.cannot_import`, "Must be an array"));
+		} else {
+			for (const ci of r.cannot_import as string[]) {
+				if (layerIds.size > 0 && !layerIds.has(ci)) {
+					errors.push(
+						err(`${rp}.cannot_import`, `References undeclared layer "${ci}"`),
+					);
+				}
+			}
+		}
+
+		if (typeof r.reason !== "string" || r.reason.length === 0) {
+			errors.push(err(`${rp}.reason`, "Must be a non-empty string"));
+		} else if (r.reason.length > 160) {
+			errors.push(err(`${rp}.reason`, "Should be under 160 characters"));
+		}
+	}
+}
 
 export function validateLayersFile(data: unknown): ValidationResult {
 	if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -330,58 +430,9 @@ export function validateLayersFile(data: unknown): ValidationResult {
 
 	if (obj.version !== 1) errors.push(err("$.version", "Must be 1"));
 
-	const layerIds = new Set<string>();
-	if (!Array.isArray(obj.layers)) {
-		errors.push(err("$.layers", "Must be an array"));
-	} else {
-		for (let i = 0; i < obj.layers.length; i++) {
-			const l = obj.layers[i] as JsonObject;
-			const lp = `$.layers[${i}]`;
-			errors.push(...checkUnknownKeys(l, ["id", "globs"], lp));
+	const layerIds = validateLayerDeclarations(obj.layers, errors);
+	validateLayerRules(obj.rules, layerIds, errors);
 
-			if (typeof l.id !== "string") errors.push(err(`${lp}.id`, "Must be a string"));
-			else {
-				errors.push(...validateLocalId(l.id, `${lp}.id`));
-				if (layerIds.has(l.id))
-					errors.push(err(`${lp}.id`, `Duplicate layer ID "${l.id}"`));
-				layerIds.add(l.id);
-			}
-			errors.push(...validateStringArray(l.globs || [], `${lp}.globs`));
-		}
-	}
-
-	if (!Array.isArray(obj.rules)) {
-		errors.push(err("$.rules", "Must be an array"));
-	} else {
-		for (let i = 0; i < obj.rules.length; i++) {
-			const r = obj.rules[i] as JsonObject;
-			const rp = `$.rules[${i}]`;
-			errors.push(...checkUnknownKeys(r, ["from", "cannot_import", "reason"], rp));
-
-			if (typeof r.from !== "string") errors.push(err(`${rp}.from`, "Must be a string"));
-			else if (layerIds.size > 0 && !layerIds.has(r.from)) {
-				errors.push(err(`${rp}.from`, `References undeclared layer "${r.from}"`));
-			}
-
-			if (!Array.isArray(r.cannot_import)) {
-				errors.push(err(`${rp}.cannot_import`, "Must be an array"));
-			} else {
-				for (const ci of r.cannot_import as string[]) {
-					if (layerIds.size > 0 && !layerIds.has(ci)) {
-						errors.push(
-							err(`${rp}.cannot_import`, `References undeclared layer "${ci}"`),
-						);
-					}
-				}
-			}
-
-			if (typeof r.reason !== "string" || r.reason.length === 0) {
-				errors.push(err(`${rp}.reason`, "Must be a non-empty string"));
-			} else if (r.reason.length > 160) {
-				errors.push(err(`${rp}.reason`, "Should be under 160 characters"));
-			}
-		}
-	}
 	return errors.length > 0 ? fail(errors) : ok();
 }
 

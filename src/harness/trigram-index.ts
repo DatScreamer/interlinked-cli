@@ -28,13 +28,18 @@
 // file discovery lives in ./trigram-git.ts. This file holds the TrigramIndex
 // class — build/query/dirty-layer/serialization — that composes them.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { getHeadCommit, getTrackedFiles } from "./trigram-git.js";
 import {
+	appendDirtyNewFiles,
+	applyDirtyOverrides,
 	clearDirtyState,
+	cloneMutablePostings,
+	computeStopTrigrams,
 	dirtyFileCount,
+	finalizePostings,
 	incrementalUpdateState,
 	isDirtyState,
 	type MutableIndexView,
@@ -74,6 +79,62 @@ export {
 	trigramToString,
 	unpackTrigram,
 } from "./trigram-primitives.js";
+
+/** One file's extracted trigram masks, keyed by packed trigram. */
+interface RawFileEntry {
+	path: string;
+	masks: Map<number, { locMask: number; nextMask: number }>;
+}
+
+/**
+ * Read each candidate file from disk, apply the skip/oversize/binary rules,
+ * and extract per-file trigram masks plus a running trigram→file-count tally
+ * (input to the stop-trigram cutoff). Split out of `build()` because this is
+ * the one loop that mixes a try/catch, a nested for-of, and four independent
+ * skip conditions — by far its most deeply nested block.
+ */
+function collectFileEntries(
+	cwd: string,
+	filePaths: string[],
+	maxFileSize: number,
+	totalFiles: number,
+	onProgress?: (indexed: number, total: number) => void,
+): { fileEntries: RawFileEntry[]; trigramCounts: Map<number, number> } {
+	const fileEntries: RawFileEntry[] = [];
+	const trigramCounts = new Map<number, number>(); // trigram → number of files containing it
+
+	for (let i = 0; i < filePaths.length; i++) {
+		const relPath = nonNull(filePaths[i]);
+		if (shouldSkipFile(relPath)) continue;
+
+		const absPath = join(cwd, relPath);
+		let content: string;
+		try {
+			const stat = readFileSync(absPath);
+			if (stat.length > maxFileSize) continue;
+			if (isBinaryContent(stat)) continue;
+			content = stat.toString("utf-8");
+		} catch {
+			continue; // unreadable file, skip
+		}
+
+		const masks = extractTrigramsWithMasks(content);
+		if (masks.size === 0) continue;
+
+		fileEntries.push({ path: relPath, masks });
+
+		// Count how many files each trigram appears in
+		for (const tri of masks.keys()) {
+			trigramCounts.set(tri, (trigramCounts.get(tri) || 0) + 1);
+		}
+
+		if (onProgress) {
+			onProgress(fileEntries.length, totalFiles);
+		}
+	}
+
+	return { fileEntries, trigramCounts };
+}
 
 // ===========================================
 // TrigramIndex Class
@@ -146,41 +207,13 @@ export class TrigramIndex {
 		const totalFiles = filePaths.length;
 
 		// Extract trigrams per file (with masks for enhanced postings)
-		const fileEntries: Array<{
-			path: string;
-			masks: Map<number, { locMask: number; nextMask: number }>;
-		}> = [];
-		const trigramCounts = new Map<number, number>(); // trigram → number of files containing it
-
-		for (let i = 0; i < filePaths.length; i++) {
-			const relPath = nonNull(filePaths[i]);
-			if (shouldSkipFile(relPath)) continue;
-
-			const absPath = join(cwd, relPath);
-			let content: string;
-			try {
-				const stat = readFileSync(absPath);
-				if (stat.length > maxFileSize) continue;
-				if (isBinaryContent(stat)) continue;
-				content = stat.toString("utf-8");
-			} catch {
-				continue; // unreadable file, skip
-			}
-
-			const masks = extractTrigramsWithMasks(content);
-			if (masks.size === 0) continue;
-
-			fileEntries.push({ path: relPath, masks });
-
-			// Count how many files each trigram appears in
-			for (const tri of masks.keys()) {
-				trigramCounts.set(tri, (trigramCounts.get(tri) || 0) + 1);
-			}
-
-			if (options.onProgress) {
-				options.onProgress(fileEntries.length, totalFiles);
-			}
-		}
+		const { fileEntries, trigramCounts } = collectFileEntries(
+			cwd,
+			filePaths,
+			maxFileSize,
+			totalFiles,
+			options.onProgress,
+		);
 
 		// Determine stop trigrams
 		const fileCount = fileEntries.length;
@@ -299,114 +332,18 @@ export class TrigramIndex {
 	mergeDirty(): void {
 		if (!this.isDirty) return;
 
-		// 1. Rebuild postings as mutable arrays
-		const newPostings = new Map<
-			number,
-			{ fileIds: number[]; locMasks: number[]; nextMasks: number[] }
-		>();
-		for (const [tri, posting] of this.postings) {
-			newPostings.set(tri, {
-				fileIds: [...posting.fileIds],
-				locMasks: [...posting.locMasks],
-				nextMasks: [...posting.nextMasks],
-			});
-		}
+		// Steps live in ./trigram-index-mutation.ts as free functions over
+		// explicit state: clone the base postings mutably, fold in overrides
+		// and new files (each re-reading disk masks where possible), then
+		// convert back to the on-disk PostingList shape and recompute the
+		// stop-trigram set against the merged result.
+		const mutablePostings = cloneMutablePostings(this.postings);
+		applyDirtyOverrides(mutablePostings, this.dirtyOverrides, this.files, this.cwd);
+		appendDirtyNewFiles(mutablePostings, this.dirtyNewFiles, this.files, this.fileToId, this.cwd);
 
-		// 2. Apply overrides (modified/deleted base files)
-		for (const [fileId, trigrams] of this.dirtyOverrides) {
-			// Remove this fileId from all existing postings
-			for (const [, data] of newPostings) {
-				const idx = data.fileIds.indexOf(fileId);
-				if (idx >= 0) {
-					data.fileIds.splice(idx, 1);
-					data.locMasks.splice(idx, 1);
-					data.nextMasks.splice(idx, 1);
-				}
-			}
-			// Re-add with new trigrams (null = deleted, skip)
-			if (trigrams) {
-				// Try to get proper masks from disk
-				let masks: Map<number, { locMask: number; nextMask: number }> | null = null;
-				if (fileId < this.files.length) {
-					try {
-						const absPath = join(this.cwd, nonNull(this.files[fileId]));
-						if (existsSync(absPath)) {
-							const content = readFileSync(absPath, "utf-8");
-							masks = extractTrigramsWithMasks(content);
-						}
-					} catch (err) {
-						void err; /* intentional: fall back to zero masks if file can't be read */
-					}
-				}
+		this.postings = finalizePostings(mutablePostings);
+		this.stopTrigrams = computeStopTrigrams(this.postings, this.files.length);
 
-				for (const tri of trigrams) {
-					let data = newPostings.get(tri);
-					if (!data) {
-						data = { fileIds: [], locMasks: [], nextMasks: [] };
-						newPostings.set(tri, data);
-					}
-					const m = masks?.get(tri);
-					data.fileIds.push(fileId);
-					data.locMasks.push(m?.locMask ?? 0);
-					data.nextMasks.push(m?.nextMask ?? 0);
-				}
-			}
-		}
-
-		// 3. Apply new files (assign permanent IDs starting from files.length)
-		for (const [path, entry] of this.dirtyNewFiles) {
-			const newId = this.files.length;
-			this.files.push(path);
-			this.fileToId.set(path, newId);
-
-			// Try to get proper masks from disk
-			let masks: Map<number, { locMask: number; nextMask: number }> | null = null;
-			try {
-				const absPath = join(this.cwd, path);
-				if (existsSync(absPath)) {
-					const content = readFileSync(absPath, "utf-8");
-					masks = extractTrigramsWithMasks(content);
-				}
-			} catch (err) {
-				void err; /* intentional: fall back to zero masks if file can't be read */
-			}
-
-			for (const tri of entry.trigrams) {
-				let data = newPostings.get(tri);
-				if (!data) {
-					data = { fileIds: [], locMasks: [], nextMasks: [] };
-					newPostings.set(tri, data);
-				}
-				const m = masks?.get(tri);
-				data.fileIds.push(newId);
-				data.locMasks.push(m?.locMask ?? 0);
-				data.nextMasks.push(m?.nextMask ?? 0);
-			}
-		}
-
-		// 4. Convert back to PostingList, remove empty postings
-		this.postings.clear();
-		for (const [tri, data] of newPostings) {
-			if (data.fileIds.length > 0) {
-				// Sort by fileId for binary search
-				const indices = data.fileIds.map((_, i) => i);
-				indices.sort((a, b) => nonNull(data.fileIds[a]) - nonNull(data.fileIds[b]));
-				this.postings.set(tri, {
-					fileIds: new Uint32Array(indices.map((i) => nonNull(data.fileIds[i]))),
-					locMasks: new Uint8Array(indices.map((i) => nonNull(data.locMasks[i]))),
-					nextMasks: new Uint8Array(indices.map((i) => nonNull(data.nextMasks[i]))),
-				});
-			}
-		}
-
-		// 5. Recompute stop trigrams (>40% of files)
-		const threshold = Math.floor(this.files.length * 0.4);
-		this.stopTrigrams.clear();
-		for (const [tri, posting] of this.postings) {
-			if (posting.fileIds.length > threshold) this.stopTrigrams.add(tri);
-		}
-
-		// 6. Reset dirty state
 		this.nextFileId = this.files.length;
 		this.clearDirty();
 	}

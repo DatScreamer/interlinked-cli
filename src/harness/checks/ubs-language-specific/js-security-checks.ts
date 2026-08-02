@@ -328,6 +328,74 @@ function extractTopLevelObject(args: string): string {
 }
 
 /**
+ * Cohesive sub-block of `checkCookieMissingSecurityFlags`: scans
+ * `res.cookie(...)` / `cookies.set(...)` call sites and appends a match for
+ * each one whose options object doesn't declare both `httpOnly: true` AND
+ * `secure: true`. Mutates `matches` in place (shared 10-match budget with the
+ * `setHeader` sibling collector, so the cap must read the live array length).
+ *
+ * Balances parens forward from the opening `(` rather than a non-greedy
+ * `.*?\)` regex, because the latter stops at the first `)` — common secure
+ * cookies whose options object contains nested calls (e.g.
+ * `expires: new Date(...)`) would get truncated before the security flags
+ * can be inspected, producing a pre_block false positive.
+ */
+function collectCookieCallViolations(
+	stripped: string,
+	originalLines: string[],
+	matches: InlineMatch[],
+): void {
+	const cookieCallRe = /\b(?:res\.cookie|cookies\.set)\s*\(/g;
+	for (const m of stripped.matchAll(cookieCallRe)) {
+		if (matches.length >= 10) break;
+		const openIdx = (m.index ?? 0) + m[0].length - 1;
+		const args = sliceBalancedParens(stripped, openIdx);
+		if (args === null) continue;
+		const opts = extractTopLevelObject(args);
+		const hasHttpOnly = /\bhttpOnly\s*:\s*true\b/i.test(opts);
+		const hasSecure = /\bsecure\s*:\s*true\b/i.test(opts);
+		if (hasHttpOnly && hasSecure) continue;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		matches.push({
+			line: lineNum,
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
+		});
+	}
+}
+
+/**
+ * Cohesive sub-block of `checkCookieMissingSecurityFlags`: scans
+ * `res.setHeader('Set-Cookie', ...)` call sites and appends a match for each
+ * one whose header-value text doesn't mention both `HttpOnly` AND `Secure`.
+ * Mutates `matches` in place — reads the shared 10-match budget AND dedupes
+ * against lines the `res.cookie`/`cookies.set` collector already flagged (a
+ * single call site can be caught by both regexes).
+ */
+function collectSetHeaderCookieViolations(
+	stripped: string,
+	originalLines: string[],
+	matches: InlineMatch[],
+): void {
+	const setHeaderRe =
+		/\b(?:[A-Za-z_$]\w*\.)?setHeader\s*\(\s*(['"`])Set-Cookie\1\s*,\s*([\s\S]{0,400}?)\)/g;
+	for (const m of stripped.matchAll(setHeaderRe)) {
+		if (matches.length >= 10) break;
+		const headerValue = m[2] || "";
+		const hasHttpOnly = /\bHttpOnly\b/i.test(headerValue);
+		const hasSecure = /\bSecure\b/i.test(headerValue);
+		if (hasHttpOnly && hasSecure) continue;
+		const idx = m.index ?? 0;
+		const lineNum = stripped.slice(0, idx).split("\n").length;
+		if (matches.some((match) => match.line === lineNum)) continue;
+		matches.push({
+			line: lineNum,
+			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
+		});
+	}
+}
+
+/**
  * `cookie_missing_security_flags` — `Set-Cookie` written via `res.cookie(...)`
  * / `res.setHeader('Set-Cookie', ...)` / `cookies.set(...)` without both
  * `httpOnly: true` AND `secure: true`. Session-fixation / theft vector.
@@ -349,45 +417,8 @@ export function checkCookieMissingSecurityFlags(content: string, filePath: strin
 	const matches: InlineMatch[] = [];
 	const originalLines = content.split("\n");
 
-	// Match `res.cookie(...)` / `cookies.set(...)`, then balance parens forward
-	// from the opening `(`. A non-greedy `.*?\)` regex stops at the first `)`,
-	// so common secure cookies whose options object contains nested calls
-	// (e.g. `expires: new Date(...)`) get truncated before the security flags
-	// can be inspected — and pre_block fires a false positive.
-	const cookieCallRe = /\b(?:res\.cookie|cookies\.set)\s*\(/g;
-	for (const m of stripped.matchAll(cookieCallRe)) {
-		if (matches.length >= 10) break;
-		const openIdx = (m.index ?? 0) + m[0].length - 1;
-		const args = sliceBalancedParens(stripped, openIdx);
-		if (args === null) continue;
-		const opts = extractTopLevelObject(args);
-		const hasHttpOnly = /\bhttpOnly\s*:\s*true\b/i.test(opts);
-		const hasSecure = /\bsecure\s*:\s*true\b/i.test(opts);
-		if (hasHttpOnly && hasSecure) continue;
-		const idx = m.index ?? 0;
-		const lineNum = stripped.slice(0, idx).split("\n").length;
-		matches.push({
-			line: lineNum,
-			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
-		});
-	}
-
-	const setHeaderRe =
-		/\b(?:[A-Za-z_$]\w*\.)?setHeader\s*\(\s*(['"`])Set-Cookie\1\s*,\s*([\s\S]{0,400}?)\)/g;
-	for (const m of stripped.matchAll(setHeaderRe)) {
-		if (matches.length >= 10) break;
-		const headerValue = m[2] || "";
-		const hasHttpOnly = /\bHttpOnly\b/i.test(headerValue);
-		const hasSecure = /\bSecure\b/i.test(headerValue);
-		if (hasHttpOnly && hasSecure) continue;
-		const idx = m.index ?? 0;
-		const lineNum = stripped.slice(0, idx).split("\n").length;
-		if (matches.some((match) => match.line === lineNum)) continue;
-		matches.push({
-			line: lineNum,
-			text: nonNull(originalLines[lineNum - 1]).trim().slice(0, 150),
-		});
-	}
+	collectCookieCallViolations(stripped, originalLines, matches);
+	collectSetHeaderCookieViolations(stripped, originalLines, matches);
 	return matches;
 }
 

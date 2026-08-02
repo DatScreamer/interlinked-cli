@@ -19,6 +19,49 @@ export { checkFloatEquality, checkParseIntRadix } from "./b-series-numeric.js";
 // ===========================================
 
 /**
+ * True when `trimmed` is a return/throw line that hasn't actually completed
+ * on this line — it ends with an open bracket/operator, or lacks a
+ * terminating `;` — so it's a multi-line continuation, not a finished
+ * statement. Non-return/throw lines (break/continue) are never incomplete.
+ */
+function isIncompleteReturnOrThrow(trimmed: string): boolean {
+	if (!/^return\b/.test(trimmed) && !/^throw\b/.test(trimmed)) return false;
+	// Skip if line ends with open paren/bracket/brace/comma/operator (multi-line)
+	if (/[([{,+\-|&?:]$/.test(trimmed)) return true;
+	// Skip if line doesn't end with ; (statement continues on next line)
+	return !trimmed.endsWith(";");
+}
+
+/**
+ * Look at the first non-empty line after `i` (bounded to i+1..i+3) and decide
+ * whether it's unreachable code following the control-flow statement at `i`.
+ * Returns null when the next statement closes a block, is a case/default
+ * label, or sits at a shallower indent than `indent`.
+ */
+function findUnreachableMatch(
+	lines: string[],
+	strippedLines: string[],
+	i: number,
+	indent: number,
+): InlineMatch | null {
+	for (let j = i + 1; j < strippedLines.length && j <= i + 3; j++) {
+		const strippedLineJ = nonNull(strippedLines[j]);
+		const nextTrimmed = strippedLineJ.trim();
+		if (!nextTrimmed) continue;
+		// Closing brace is fine
+		if (nextTrimmed === "}" || nextTrimmed === "};") return null;
+		// Case/default labels are fine
+		if (/^(case\s|default\s*:)/.test(nextTrimmed)) return null;
+		const nextIndent = strippedLineJ.search(/\S/);
+		if (nextIndent >= indent) {
+			return { line: j + 1, text: nonNull(lines[j]).trim().slice(0, 150) };
+		}
+		return null;
+	}
+	return null;
+}
+
+/**
  * Detect unreachable code after return/throw/break/continue.
  * Non-empty lines at the same or deeper indent level after a control flow statement.
  * Returns up to 10 matches.
@@ -47,35 +90,14 @@ export function checkUnreachableCode(content: string, filePath: string): InlineM
 		// Skip multi-line statements — a return/throw that doesn't end with ; or
 		// that ends with ( , { [ + is a continuation, not a completed statement.
 		// Only flag when the statement clearly terminates on this line.
-		if (/^return\b/.test(trimmed) || /^throw\b/.test(trimmed)) {
-			// "return;" or "return value;" — must end with ;
-			// Skip if line ends with open paren/bracket/brace/comma/operator (multi-line)
-			if (/[([{,+\-|&?:]$/.test(trimmed)) continue;
-			// Skip if line doesn't end with ; (statement continues on next line)
-			if (!trimmed.endsWith(";")) continue;
-		}
+		if (isIncompleteReturnOrThrow(trimmed)) continue;
 
 		// Get indent level of current line
 		const indent = strippedLineI.search(/\S/);
 		if (indent < 0) continue;
 		// Check next non-empty line
-		for (let j = i + 1; j < strippedLines.length && j <= i + 3; j++) {
-			const strippedLineJ = nonNull(strippedLines[j]);
-			const nextTrimmed = strippedLineJ.trim();
-			if (!nextTrimmed) continue;
-			// Closing brace is fine
-			if (nextTrimmed === "}" || nextTrimmed === "};") break;
-			// Case/default labels are fine
-			if (/^(case\s|default\s*:)/.test(nextTrimmed)) break;
-			const nextIndent = strippedLineJ.search(/\S/);
-			if (nextIndent >= indent) {
-				matches.push({
-					line: j + 1,
-					text: nonNull(lines[j]).trim().slice(0, 150),
-				});
-			}
-			break;
-		}
+		const match = findUnreachableMatch(lines, strippedLines, i, indent);
+		if (match) matches.push(match);
 	}
 
 	return matches;
@@ -115,6 +137,20 @@ export function checkSilentCatch(content: string, filePath: string): InlineMatch
 }
 
 /**
+ * Net change in brace depth contributed by one source line (naive
+ * char-by-char count — deliberately does not strip string/comment content,
+ * matching the pre-extraction behavior this helper was pulled from).
+ */
+function braceCountDelta(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
  * Detect test blocks without assertions.
  * `it(` or `test(` blocks without `expect(`, `assert(`, or `.should.`.
  * Only runs on test files.
@@ -138,23 +174,16 @@ export function checkAssertionFreeTests(content: string, filePath: string): Inli
 			if (testMatch) {
 				inTestBlock = true;
 				testStartLine = i;
-				braceDepth = 0;
 				hasAssertion = false;
 				testName = trimmed.slice(0, 80);
 				// Count braces on the opening line (arrow function body brace)
-				for (const ch of nonNull(lines[i])) {
-					if (ch === "{") braceDepth++;
-					if (ch === "}") braceDepth--;
-				}
+				braceDepth = braceCountDelta(nonNull(lines[i]));
 			}
 			continue;
 		}
 
 		// Count braces
-		for (const ch of nonNull(lines[i])) {
-			if (ch === "{") braceDepth++;
-			if (ch === "}") braceDepth--;
-		}
+		braceDepth += braceCountDelta(nonNull(lines[i]));
 
 		// Check for assertions
 		if (
@@ -367,6 +396,81 @@ export function checkHardcodedCredentials(content: string, filePath: string): In
 }
 
 /**
+ * Net brace delta for one line: how much `{`/`}` on this line shifts an
+ * outer running brace-depth counter. Used to track whether a scan position
+ * is still inside a function body.
+ */
+function lineBraceDelta(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
+ * Does this line look like a base-case guard (explicit control flow, a
+ * ternary, a logical operator, a length/size check, or a comparison)?
+ * Heuristic only — used to suppress a self-call match when a guard was
+ * seen anywhere between the function definition and the self-call.
+ */
+function lineLooksLikeGuard(line: string): boolean {
+	return (
+		/^(if|switch|return|while|for)\b/.test(line) ||
+		/\?\s*\S/.test(line) ||
+		/\b(&&|\|\|)\b/.test(line) ||
+		/\.(length|size)\b/.test(line) ||
+		/[!=]==?/.test(line) ||
+		/[<>]=?/.test(line)
+	);
+}
+
+/**
+ * Scan forward from a function definition (already known to span multiple
+ * lines) for a self-call that has no preceding guard, stopping at 15 lines
+ * ahead or once the function body closes — whichever comes first.
+ * Returns the first unguarded self-call found, or null.
+ */
+function findUnguardedSelfCall(
+	strippedLines: string[],
+	originalLines: string[],
+	defLineIdx: number,
+	funcName: string,
+	initialBraceDepth: number,
+): InlineMatch | null {
+	// Build a self-call test that doesn't use dynamic RegExp (avoid ReDoS risk)
+	const selfCallNeedle = `${funcName}(`;
+	const selfCallNeedleSpace = `${funcName} (`;
+
+	let fnBraceDepth = initialBraceDepth;
+	let hasGuard = false;
+
+	for (let j = defLineIdx + 1; j < Math.min(defLineIdx + 15, strippedLines.length); j++) {
+		const line = nonNull(strippedLines[j]).trim();
+		// Track brace depth — stop when we leave the function body
+		fnBraceDepth += lineBraceDelta(nonNull(strippedLines[j]));
+		if (fnBraceDepth <= 0) break; // Exited the function body
+
+		if (lineLooksLikeGuard(line)) {
+			hasGuard = true;
+		}
+		// Check for self-call using string matching (no dynamic RegExp)
+		if (line.includes(selfCallNeedle) || line.includes(selfCallNeedleSpace)) {
+			if (!hasGuard) {
+				return {
+					line: j + 1,
+					text: nonNull(originalLines[j]).trim().slice(0, 150),
+				};
+			}
+			break;
+		}
+	}
+
+	return null;
+}
+
+/**
  * Detect functions that call themselves without a visible base case guard.
  * Heuristic: function definition followed by a self-call without an if/switch/return guard.
  * Uses stripped content for self-call detection to avoid matching function names in comments/strings.
@@ -389,52 +493,13 @@ export function checkInfiniteRecursion(content: string, filePath: string): Inlin
 		const funcName = funcMatch[1] || funcMatch[2];
 		if (!funcName) continue;
 
-		// Track brace depth to ensure self-call is inside the function body
-		let fnBraceDepth = 0;
-		for (const ch of nonNull(strippedLines[i])) {
-			if (ch === "{") fnBraceDepth++;
-			if (ch === "}") fnBraceDepth--;
-		}
-		// If braces already balanced on the definition line, it's a one-liner — skip
-		if (fnBraceDepth <= 0) continue;
+		// Track brace depth to ensure self-call is inside the function body.
+		// If braces already balanced on the definition line, it's a one-liner — skip.
+		const initialBraceDepth = lineBraceDelta(nonNull(strippedLines[i]));
+		if (initialBraceDepth <= 0) continue;
 
-		// Build a self-call test that doesn't use dynamic RegExp (avoid ReDoS risk)
-		const selfCallNeedle = `${funcName}(`;
-		const selfCallNeedleSpace = `${funcName} (`;
-
-		// Look ahead up to 15 lines for a self-call without a guard
-		let hasGuard = false;
-		for (let j = i + 1; j < Math.min(i + 15, strippedLines.length); j++) {
-			const line = nonNull(strippedLines[j]).trim();
-			// Track brace depth — stop when we leave the function body
-			for (const ch of nonNull(strippedLines[j])) {
-				if (ch === "{") fnBraceDepth++;
-				if (ch === "}") fnBraceDepth--;
-			}
-			if (fnBraceDepth <= 0) break; // Exited the function body
-
-			// Detect guards: explicit control flow + logical operators + comparisons
-			if (
-				/^(if|switch|return|while|for)\b/.test(line) ||
-				/\?\s*\S/.test(line) ||
-				/\b(&&|\|\|)\b/.test(line) ||
-				/\.(length|size)\b/.test(line) ||
-				/[!=]==?/.test(line) ||
-				/[<>]=?/.test(line)
-			) {
-				hasGuard = true;
-			}
-			// Check for self-call using string matching (no dynamic RegExp)
-			if (line.includes(selfCallNeedle) || line.includes(selfCallNeedleSpace)) {
-				if (!hasGuard) {
-					matches.push({
-						line: j + 1,
-						text: nonNull(originalLines[j]).trim().slice(0, 150),
-					});
-				}
-				break;
-			}
-		}
+		const found = findUnguardedSelfCall(strippedLines, originalLines, i, funcName, initialBraceDepth);
+		if (found) matches.push(found);
 	}
 
 	return matches;

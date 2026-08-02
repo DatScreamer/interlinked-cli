@@ -56,80 +56,119 @@ export function checkSelfImport(content: string, filePath: string): InlineMatch[
  */
 const _pkgDepsCache = new Map<string, Set<string>>();
 
+/** Node.js built-in module names — always "declared" regardless of package.json. */
+const NODE_BUILTIN_MODULES = [
+	"fs",
+	"path",
+	"os",
+	"url",
+	"http",
+	"https",
+	"crypto",
+	"util",
+	"stream",
+	"events",
+	"child_process",
+	"net",
+	"tls",
+	"dns",
+	"assert",
+	"buffer",
+	"querystring",
+	"zlib",
+	"readline",
+	"cluster",
+	"worker_threads",
+	"perf_hooks",
+	"async_hooks",
+	"v8",
+	"vm",
+	"tty",
+	"dgram",
+	"inspector",
+	"trace_events",
+	"string_decoder",
+	"module",
+	"process",
+	"timers",
+	"console",
+];
+
+/**
+ * Parse a package.json into its full declared-dependency-name set — deps,
+ * devDeps, peerDeps, optionalDeps — plus Node.js built-ins (bare and
+ * `node:`-prefixed). Returns undefined if the file can't be read/parsed.
+ */
+function _loadPackageDeps(pkgPath: string): Set<string> | undefined {
+	try {
+		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		const deps = new Set<string>([
+			...Object.keys(pkg.dependencies || {}),
+			...Object.keys(pkg.devDependencies || {}),
+			...Object.keys(pkg.peerDependencies || {}),
+			...Object.keys(pkg.optionalDependencies || {}),
+		]);
+		for (const mod of NODE_BUILTIN_MODULES) {
+			deps.add(mod);
+			deps.add(`node:${mod}`);
+		}
+		return deps;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Walk upward from `startDir` (max 5 levels) for the nearest package.json,
+ * returning its resolved dependency set. Cached per directory since this
+ * runs once per checked file. A package.json that exists but fails to parse
+ * stops the walk immediately (matches the pre-decomposition behavior: it
+ * does not keep searching parent directories past a broken package.json).
+ */
+function _resolvePackageDeps(startDir: string): Set<string> | undefined {
+	let pkgDir = startDir;
+	for (let i = 0; i < 5; i++) {
+		const cached = _pkgDepsCache.get(pkgDir);
+		if (cached) return cached;
+
+		const pkgPath = join(pkgDir, "package.json");
+		if (existsSync(pkgPath)) {
+			const deps = _loadPackageDeps(pkgPath);
+			if (deps) _pkgDepsCache.set(pkgDir, deps);
+			return deps;
+		}
+
+		const parent = dirname(pkgDir);
+		if (parent === pkgDir) return undefined;
+		pkgDir = parent;
+	}
+	return undefined;
+}
+
+/**
+ * Decide whether a bare import specifier names a package missing from the
+ * resolved dependency set. Relative imports, path aliases (`@/`), fragment
+ * imports (`#`), and runtime built-in protocols (node:/cloudflare:/bun:/deno:)
+ * are never "extraneous" and are excluded up front.
+ */
+function _isExtraneousBareImport(specifier: string, pkgDeps: Set<string>): boolean {
+	if (specifier.startsWith(".") || specifier.startsWith("@/") || specifier.startsWith("#"))
+		return false;
+	// node:, cloudflare:, bun:, deno: are runtime built-in protocols — never in package.json
+	if (/^(node|cloudflare|bun|deno):/.test(specifier)) return false;
+
+	// Extract package name (handle scoped packages @org/pkg)
+	const pkgName = specifier.startsWith("@")
+		? specifier.split("/").slice(0, 2).join("/")
+		: nonNull(specifier.split("/")[0]);
+	return !pkgDeps.has(pkgName);
+}
+
 export function checkExtraneousDependencies(content: string, filePath: string): InlineMatch[] {
 	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
 	if (isTestFile(filePath)) return [];
 
-	// Find nearest package.json
-	let pkgDir = dirname(filePath);
-	let pkgDeps: Set<string> | undefined;
-	for (let i = 0; i < 5; i++) {
-		const cached = _pkgDepsCache.get(pkgDir);
-		if (cached) {
-			pkgDeps = cached;
-			break;
-		}
-		const pkgPath = join(pkgDir, "package.json");
-		if (existsSync(pkgPath)) {
-			try {
-				const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-				const deps = new Set<string>([
-					...Object.keys(pkg.dependencies || {}),
-					...Object.keys(pkg.devDependencies || {}),
-					...Object.keys(pkg.peerDependencies || {}),
-					...Object.keys(pkg.optionalDependencies || {}),
-				]);
-				// Add Node.js built-in modules
-				for (const mod of [
-					"fs",
-					"path",
-					"os",
-					"url",
-					"http",
-					"https",
-					"crypto",
-					"util",
-					"stream",
-					"events",
-					"child_process",
-					"net",
-					"tls",
-					"dns",
-					"assert",
-					"buffer",
-					"querystring",
-					"zlib",
-					"readline",
-					"cluster",
-					"worker_threads",
-					"perf_hooks",
-					"async_hooks",
-					"v8",
-					"vm",
-					"tty",
-					"dgram",
-					"inspector",
-					"trace_events",
-					"string_decoder",
-					"module",
-					"process",
-					"timers",
-					"console",
-				]) {
-					deps.add(mod);
-					deps.add(`node:${mod}`);
-				}
-				_pkgDepsCache.set(pkgDir, deps);
-				pkgDeps = deps;
-				break;
-			} catch {
-				break;
-			}
-		}
-		const parent = dirname(pkgDir);
-		if (parent === pkgDir) break;
-		pkgDir = parent;
-	}
+	const pkgDeps = _resolvePackageDeps(dirname(filePath));
 	if (!pkgDeps) return [];
 
 	const stripped = stripCommentsAndStrings(content);
@@ -146,20 +185,8 @@ export function checkExtraneousDependencies(content: string, filePath: string): 
 		if (!fromMatch) continue;
 		const specifier = nonNull(fromMatch[1]);
 
-		// Skip relative imports, aliases (@/), and runtime protocol imports
-		if (specifier.startsWith(".") || specifier.startsWith("@/") || specifier.startsWith("#"))
-			continue;
-		// node:, cloudflare:, bun:, deno: are runtime built-in protocols — never in package.json
-		if (/^(node|cloudflare|bun|deno):/.test(specifier)) continue;
-
-		// Extract package name (handle scoped packages @org/pkg)
-		const pkgName = specifier.startsWith("@")
-			? specifier.split("/").slice(0, 2).join("/")
-			: nonNull(specifier.split("/")[0]);
-
-		if (!pkgDeps.has(pkgName)) {
-			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
-		}
+		if (!_isExtraneousBareImport(specifier, pkgDeps)) continue;
+		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 	return matches;
 }

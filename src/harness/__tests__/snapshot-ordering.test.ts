@@ -42,19 +42,34 @@ describe("processEvent snapshot ordering (Plan 08 review fix)", () => {
 	});
 
 	it("writes the snapshot inside evaluateEventLine's finally block", () => {
-		// Confirm the new home of the durability write — finally clause of
-		// evaluateEventLine. We assert both the function name AND a finally
-		// block AND the write call appear in order, so a partial refactor
-		// can't slip past.
+		// The INVARIANT is that the durability write happens in a `finally`, so a
+		// throw in `processEvent` still persists the session state it mutated.
+		//
+		// This used to assert the literal call `writeLiveSnapshot(CWD,
+		// sessionIdForSnap, snap)` appeared after `} finally {`. That pinned the
+		// call SITE rather than the property: when the write was extracted into
+		// `persistEventSnapshot` (verbatim, same try/catch scope, same fail-open
+		// contract) the assertion went red while the guarantee was untouched —
+		// a test that fails on a safe refactor and would still pass if someone
+		// moved the call OUT of the finally into a differently-named helper.
+		//
+		// Now assert the shape that actually matters: the finally clause invokes
+		// the persistence path, and that path is what performs the write.
 		const fnIdx = EVENT_LOOP_TS.indexOf("async function evaluateEventLine(");
 		expect(fnIdx).toBeGreaterThan(0);
 
 		const fnSlice = EVENT_LOOP_TS.slice(fnIdx, fnIdx + 4000);
 		const finallyIdx = fnSlice.indexOf("} finally {");
-		const writeIdx = fnSlice.indexOf("writeLiveSnapshot(CWD, sessionIdForSnap, snap)");
-
 		expect(finallyIdx).toBeGreaterThan(0);
-		expect(writeIdx).toBeGreaterThan(finallyIdx);
+
+		// The finally must call the persistence path, not merely mention it.
+		const afterFinally = fnSlice.slice(finallyIdx);
+		expect(afterFinally).toContain("persistEventSnapshot(");
+
+		// …and that path must be the thing that actually writes the snapshot.
+		const persistIdx = EVENT_LOOP_TS.indexOf("function persistEventSnapshot(");
+		expect(persistIdx).toBeGreaterThan(0);
+		expect(EVENT_LOOP_TS.slice(persistIdx, persistIdx + 2000)).toContain("writeLiveSnapshot(");
 	});
 
 	it("captures session_id before the try/finally so the finally has it on throw", () => {

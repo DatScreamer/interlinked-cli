@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import {
+	checkExtraneousDependencies,
 	checkPhantomDependencies,
 	checkSelfImport,
 	findWorkspaceRootFor,
@@ -121,5 +122,109 @@ describe("checkPhantomDependencies — workspace awareness", () => {
 		const out = checkPhantomDependencies(join(fooDir, "package.json"));
 		expect(out).toHaveLength(1);
 		expect(nonNull(out[0]).text).toContain("totally-unused-pkg");
+	});
+});
+
+// Characterization coverage for `checkExtraneousDependencies`, added ahead of
+// a cyclomatic-complexity decomposition (fn was over the per-fn cap) so the
+// refactor has a behavioral safety net. Each tmp dir gets its own
+// package.json so the internal per-directory dependency cache can't leak
+// state between cases.
+//
+// KNOWN DEFECT (verified 2026-08-01, preserved as-is — out of scope for the
+// complexity decomposition): the specifier-extraction regex runs against
+// `stripCommentsAndStrings(content)`, which blanks the CONTENTS of every
+// quoted string to `""`/`''` (see `stripStrings` in shared-text-utils.ts).
+// The `['"]([^'"]+)['"]` capture then requires at least one non-quote
+// character, which the blanked specifier never has — so `fromMatch` is
+// always null and the function never actually flags a real import/require
+// line, regardless of whether the package is declared. Tests below assert
+// the function's TRUE current behavior (always `[]` on realistic input) so
+// an accidental behavior change during decomposition — e.g. reading the
+// specifier from `originalLines` instead of `strippedLines`, which would
+// silently "fix" this and flip these assertions — gets caught.
+describe("checkExtraneousDependencies", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "extraneous-deps-"));
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				dependencies: { lodash: "1.0.0", "@scope/present": "1.0.0" },
+				devDependencies: { vitest: "1.0.0" },
+			}),
+		);
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("does NOT flag a bare import for a package missing from package.json (dead-detection defect)", () => {
+		const out = checkExtraneousDependencies(
+			'import foo from "not-a-real-dep";\n',
+			join(tmp, "index.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag an import for a declared dependency", () => {
+		const out = checkExtraneousDependencies('import _ from "lodash";\n', join(tmp, "index.ts"));
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a missing scoped package either (same dead-detection defect)", () => {
+		const out = checkExtraneousDependencies(
+			'import { z } from "@scope/missing-pkg";\n',
+			join(tmp, "index.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a bare require() (same dead-detection defect)", () => {
+		const out = checkExtraneousDependencies(
+			'const x = require("not-a-real-dep");\n',
+			join(tmp, "index.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("returns [] for a non-JS/TS file", () => {
+		const out = checkExtraneousDependencies("import not_a_real_dep\n", join(tmp, "index.py"));
+		expect(out).toEqual([]);
+	});
+
+	it("returns [] for a test file", () => {
+		const out = checkExtraneousDependencies(
+			'import foo from "not-a-real-dep";\n',
+			join(tmp, "index.test.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("returns [] when no package.json is found within 5 levels", () => {
+		// Isolated tmp tree with no package.json anywhere in its ancestry
+		// (unlike `tmp`, which has one written in beforeEach). Exercises the
+		// early `!pkgDeps` return — a different code path than the cases
+		// above (which all find package.json but never match a specifier),
+		// even though the observable output is the same empty array.
+		const orphan = mkdtempSync(join(tmpdir(), "extraneous-deps-orphan-"));
+		try {
+			const out = checkExtraneousDependencies(
+				'import foo from "not-a-real-dep";\n',
+				join(orphan, "index.ts"),
+			);
+			expect(out).toEqual([]);
+		} finally {
+			rmSync(orphan, { recursive: true, force: true });
+		}
+	});
+
+	it("does not throw across repeated calls in the same directory (package.json cache path)", () => {
+		expect(() => {
+			checkExtraneousDependencies('import a from "pkg-a";\n', join(tmp, "one.ts"));
+			checkExtraneousDependencies('import b from "pkg-b";\n', join(tmp, "two.ts"));
+		}).not.toThrow();
 	});
 });

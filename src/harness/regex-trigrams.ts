@@ -95,36 +95,14 @@ export function decomposePattern(
 		};
 	}
 
-	// Check for top-level alternation first — handle at the trigram level
+	// Check for top-level alternation first — handle at the trigram level:
+	// only trigrams common to ALL branches are required (see intersectBranchTrigrams).
 	const topBranches = splitAlternation(pattern);
 	if (topBranches.length > 1) {
-		// For alternation, intersect trigrams across all branches —
-		// only trigrams common to ALL branches are required.
-		let commonTrigrams: Set<number> | null = null;
-		const allSegments: string[] = [];
-
-		for (const branch of topBranches) {
-			const branchResult = decomposePattern(branch, true, caseInsensitive);
-			const branchTris = new Set(branchResult.requiredTrigrams);
-
-			if (commonTrigrams === null) {
-				commonTrigrams = branchTris;
-			} else {
-				const filtered = new Set<number>();
-				for (const t of commonTrigrams) {
-					if (branchTris.has(t)) filtered.add(t);
-				}
-				commonTrigrams = filtered;
-			}
-			allSegments.push(...branchResult.literalSegments);
-
-			if (commonTrigrams.size === 0) break; // no intersection possible
-		}
-
-		const trigrams = commonTrigrams ?? new Set<number>();
+		const { trigrams, segments } = intersectBranchTrigrams(topBranches, caseInsensitive);
 		return {
 			requiredTrigrams: [...trigrams],
-			literalSegments: allSegments,
+			literalSegments: segments,
 			hasLiterals: trigrams.size > 0,
 			isLiteral: false,
 			trigramSequences: [],
@@ -473,6 +451,48 @@ function splitAlternation(pattern: string): string[] {
 	}
 	branches.push(current);
 	return branches;
+}
+
+/**
+ * Intersect required trigrams across the top-level alternation branches of a
+ * pattern: a trigram is required only if EVERY branch requires it. Extracted
+ * from decomposePattern's alternation handling — nesting resets to 0 here,
+ * where in the caller it was four levels deep. Short-circuits once the
+ * running intersection is empty (nothing left that could be required); each
+ * branch's literal segments are still collected regardless — they're
+ * informational only, the trigram set is the actual requirement gate.
+ */
+function intersectBranchTrigrams(
+	branches: string[],
+	caseInsensitive: boolean,
+): { trigrams: Set<number>; segments: string[] } {
+	let commonTrigrams: Set<number> | null = null;
+	const segments: string[] = [];
+
+	for (const branch of branches) {
+		const branchResult = decomposePattern(branch, true, caseInsensitive);
+		const branchTris = new Set(branchResult.requiredTrigrams);
+
+		if (commonTrigrams === null) {
+			commonTrigrams = branchTris;
+		} else {
+			commonTrigrams = intersectTrigramSets(commonTrigrams, branchTris);
+		}
+		segments.push(...branchResult.literalSegments);
+
+		if (commonTrigrams.size === 0) break; // no intersection possible
+	}
+
+	return { trigrams: commonTrigrams ?? new Set<number>(), segments };
+}
+
+/** Trigrams present in both sets — the nested-loop intersection that used to sit inside intersectBranchTrigrams's loop body. */
+function intersectTrigramSets(a: Set<number>, b: Set<number>): Set<number> {
+	const result = new Set<number>();
+	for (const t of a) {
+		if (b.has(t)) result.add(t);
+	}
+	return result;
 }
 
 export type { ParsedGrepCommand } from "./regex-trigrams-grep-parse.js";

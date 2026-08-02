@@ -215,51 +215,84 @@ export function checkSameTypedPrimitiveParams(
 	return matches;
 }
 
+/** Running bracket-depth + started-scanning state for `collectParamList`. */
+interface ParamScanState {
+	depthParen: number;
+	depthAngle: number;
+	depthBrace: number;
+	depthBracket: number;
+	started: boolean;
+}
+
+/**
+ * Classify one character's effect on the parameter-list scan: update the
+ * bracket-depth counters on `state` in place and report what the caller
+ * should do with `ch` — `"stop"` (the list's closing paren was just reached;
+ * caller returns the buffer without appending `ch`), `"skip"` (the list's
+ * opening paren, or any character seen before scanning has started; caller
+ * appends nothing), or `"append"` (caller appends `ch` to its buffer).
+ * Pulled out of `collectParamList` as its own top-level unit so the
+ * character-by-character branching doesn't compound the cost of the two
+ * nested loops it used to sit inside — this function's own branching is
+ * flat, not nested three loops deep.
+ */
+function classifyParamChar(
+	ch: string | undefined,
+	state: ParamScanState,
+): "stop" | "skip" | "append" {
+	if (ch === "(") {
+		state.depthParen++;
+		if (state.depthParen === 1 && !state.started) {
+			state.started = true;
+			return "skip";
+		}
+	} else if (ch === ")") {
+		state.depthParen--;
+		if (state.depthParen === 0 && state.started) {
+			return "stop";
+		}
+	} else if (ch === "<") state.depthAngle++;
+	else if (ch === ">") state.depthAngle = Math.max(0, state.depthAngle - 1);
+	else if (ch === "{") state.depthBrace++;
+	else if (ch === "}") state.depthBrace = Math.max(0, state.depthBrace - 1);
+	else if (ch === "[") state.depthBracket++;
+	else if (ch === "]") state.depthBracket = Math.max(0, state.depthBracket - 1);
+	return state.started ? "append" : "skip";
+}
+
 /**
  * Collect a parenthesized parameter list starting at the opening `(` of a
  * function signature on `lines[startIdx]`. Balances nested parens, brackets,
- * braces, and angle-brackets (generic params). Reads up to 20 subsequent
- * lines — long enough for any sane signature, short enough to never run away.
- * Returns the joined param-list contents (without surrounding parens) or
- * `null` if the signature can't be closed within the window.
+ * braces, and angle-brackets (generic params) via `classifyParamChar`. Reads
+ * up to 20 subsequent lines — long enough for any sane signature, short
+ * enough to never run away. Returns the joined param-list contents (without
+ * surrounding parens) or `null` if the signature can't be closed within the
+ * window.
  */
 function collectParamList(lines: string[], startIdx: number): string | null {
 	const first = lines[startIdx];
 	const openIdx = nonNull(first).indexOf("(");
 	if (openIdx < 0) return null;
-	let depthParen = 0;
-	let depthAngle = 0;
-	let depthBrace = 0;
-	let depthBracket = 0;
+	const state: ParamScanState = {
+		depthParen: 0,
+		depthAngle: 0,
+		depthBrace: 0,
+		depthBracket: 0,
+		started: false,
+	};
 	let buf = "";
-	let started = false;
 	for (let i = startIdx; i < Math.min(startIdx + 20, lines.length); i++) {
 		const line = lines[i];
 		const startCol = i === startIdx ? openIdx : 0;
 		for (let k = startCol; k < nonNull(line).length; k++) {
 			const ch = nonNull(line)[k];
-			if (ch === "(") {
-				depthParen++;
-				if (depthParen === 1 && !started) {
-					started = true;
-					continue;
-				}
-			} else if (ch === ")") {
-				depthParen--;
-				if (depthParen === 0 && started) {
-					return buf;
-				}
-			} else if (ch === "<") depthAngle++;
-			else if (ch === ">") depthAngle = Math.max(0, depthAngle - 1);
-			else if (ch === "{") depthBrace++;
-			else if (ch === "}") depthBrace = Math.max(0, depthBrace - 1);
-			else if (ch === "[") depthBracket++;
-			else if (ch === "]") depthBracket = Math.max(0, depthBracket - 1);
-			if (started) buf += ch;
+			const action = classifyParamChar(ch, state);
+			if (action === "stop") return buf;
+			if (action === "append") buf += ch;
 		}
 		buf += " ";
 		// Sanity: if the depths are way off the signature isn't well-formed.
-		if (depthAngle > 4 || depthBrace > 4 || depthBracket > 4) return null;
+		if (state.depthAngle > 4 || state.depthBrace > 4 || state.depthBracket > 4) return null;
 	}
 	return null;
 }
@@ -272,15 +305,27 @@ interface ParsedParam {
 
 /**
  * Parse a parameter-list buffer into ordered entries with name + surface
- * primitive type. Splits on top-level commas (respecting nested
- * parens/brackets/braces/angle-brackets). For each entry, looks for the
- * pattern `name: <primitive>` where `<primitive>` is exactly `string`,
- * `number`, or `boolean` at the surface (no aliases, no unions, no `| undefined`,
- * no `string[]`, no `Promise<string>`). Rest params and untyped params parse
+ * primitive type. Splits on top-level commas via `splitTopLevelParams`
+ * (respecting nested parens/brackets/braces/angle-brackets), then classifies
+ * each entry via `classifyParamEntry`. Rest params and untyped params parse
  * to `type: null` so they don't pair with anything.
  */
 function parseParamPrimitives(paramStr: string): ParsedParam[] {
 	const out: ParsedParam[] = [];
+	for (const part of splitTopLevelParams(paramStr)) {
+		const trimmed = part.trim();
+		if (trimmed.length === 0) continue;
+		out.push(classifyParamEntry(trimmed));
+	}
+	return out;
+}
+
+/**
+ * Split a parameter-list buffer on top-level commas — commas nested inside
+ * `Foo<A, B>`, `(a, b) => c`, `{ a, b }`, or `[a, b]` don't split the entry
+ * they belong to. Pure tokenizer: no knowledge of what a parameter means.
+ */
+function splitTopLevelParams(paramStr: string): string[] {
 	const parts: string[] = [];
 	let buf = "";
 	let depth = 0;
@@ -295,41 +340,44 @@ function parseParamPrimitives(paramStr: string): ParsedParam[] {
 		buf += ch;
 	}
 	if (buf.trim().length > 0) parts.push(buf);
+	return parts;
+}
 
-	for (const part of parts) {
-		const trimmed = part.trim();
-		if (trimmed.length === 0) continue;
-		// Rest param — orderable-by-mistake doesn't apply to a single rest.
-		if (/^\.\.\./.test(trimmed)) {
-			out.push({ name: "<rest>", type: null });
-			continue;
-		}
-		// Destructured param (`{ a, b }: T`) — no single name to pair with;
-		// the type annotation describes a struct, not a primitive.
-		if (/^\{/.test(trimmed) || /^\[/.test(trimmed)) {
-			out.push({ name: "<destructure>", type: null });
-			continue;
-		}
-		// Match: `[modifiers ]?name[?]: <annotation>[= default]`. The annotation
-		// runs until `=` (default value) or end of part. Modifiers covers
-		// constructor-parameter properties (`public name: string`); we won't
-		// reach those here since we skip constructors, but support is cheap.
-		const m = trimmed.match(
-			/^(?:public\s+|private\s+|protected\s+|readonly\s+)*(\w+)\s*\??\s*:\s*([^=]+?)\s*(?:=|$)/,
-		);
-		if (!m) {
-			out.push({ name: trimmed.split(/[\s:?]/)[0] || "<unknown>", type: null });
-			continue;
-		}
-		const name = nonNull(m[1]);
-		const annotation = nonNull(m[2]).trim();
-		// Surface-primitive match: must be exactly `string` / `number` /
-		// `boolean`, no unions, no arrays, no generics, no `| undefined` etc.
-		let type: "string" | "number" | "boolean" | null = null;
-		if (annotation === "string") type = "string";
-		else if (annotation === "number") type = "number";
-		else if (annotation === "boolean") type = "boolean";
-		out.push({ name, type });
+/**
+ * Classify one trimmed parameter-list entry into a name + surface primitive
+ * type. Looks for the pattern `name: <primitive>` where `<primitive>` is
+ * exactly `string`, `number`, or `boolean` at the surface (no aliases, no
+ * unions, no `| undefined`, no `string[]`, no `Promise<string>`). Rest params
+ * (`...args`) and destructured params (`{ a, b }: T`) parse to `type: null`
+ * — the single-name orderable-by-mistake risk doesn't apply to either shape.
+ */
+function classifyParamEntry(trimmed: string): ParsedParam {
+	// Rest param — orderable-by-mistake doesn't apply to a single rest.
+	if (/^\.\.\./.test(trimmed)) {
+		return { name: "<rest>", type: null };
 	}
-	return out;
+	// Destructured param (`{ a, b }: T`) — no single name to pair with;
+	// the type annotation describes a struct, not a primitive.
+	if (/^\{/.test(trimmed) || /^\[/.test(trimmed)) {
+		return { name: "<destructure>", type: null };
+	}
+	// Match: `[modifiers ]?name[?]: <annotation>[= default]`. The annotation
+	// runs until `=` (default value) or end of part. Modifiers covers
+	// constructor-parameter properties (`public name: string`); we won't
+	// reach those here since we skip constructors, but support is cheap.
+	const m = trimmed.match(
+		/^(?:public\s+|private\s+|protected\s+|readonly\s+)*(\w+)\s*\??\s*:\s*([^=]+?)\s*(?:=|$)/,
+	);
+	if (!m) {
+		return { name: trimmed.split(/[\s:?]/)[0] || "<unknown>", type: null };
+	}
+	const name = nonNull(m[1]);
+	const annotation = nonNull(m[2]).trim();
+	// Surface-primitive match: must be exactly `string` / `number` /
+	// `boolean`, no unions, no arrays, no generics, no `| undefined` etc.
+	let type: "string" | "number" | "boolean" | null = null;
+	if (annotation === "string") type = "string";
+	else if (annotation === "number") type = "number";
+	else if (annotation === "boolean") type = "boolean";
+	return { name, type };
 }

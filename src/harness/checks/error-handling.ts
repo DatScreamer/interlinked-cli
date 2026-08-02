@@ -33,6 +33,11 @@ export function checkBareCatchBlock(content: string, filePath: string): InlineMa
 				line: i + 1,
 				text: `bare catch block silently swallows error: ${nonNull(line).trim().slice(0, 100)}`,
 			});
+			// The shared `matches.length >= 10` cap below is unreachable from this
+			// branch's `continue` — check it here too, or a file with many bare
+			// one-liner catches never caps (source defect found via mutation testing
+			// 2026-07-31: a bound test expecting exactly 10 got 11).
+			if (matches.length >= 10) break;
 			continue;
 		}
 		// catch block with only a comment inside
@@ -218,7 +223,7 @@ export function checkErrorStringComparison(content: string, filePath: string): I
  * existing strip helpers' limitation; quotes in regexes are vanishingly rare in
  * the catch/throw windows this check inspects.)
  */
-function blankStringLiteralsPreserveLength(s: string): string {
+export function blankStringLiteralsPreserveLength(s: string): string {
 	const out = s.split("");
 	const n = s.length;
 	let i = 0;
@@ -292,67 +297,99 @@ export function checkLossyErrorRethrow(content: string, filePath: string): Inlin
 		/\bthrow\s+new\s+(?:[A-Z][A-Za-z0-9_$]*Error|Error|TypeError|RangeError|SyntaxError|EvalError|URIError|AggregateError)\s*\(/g;
 
 	let openMatch: RegExpExecArray | null = catchOpenRe.exec(code);
-	while (openMatch !== null) {
-		if (matches.length >= 10) break;
+	while (openMatch !== null && matches.length < 10) {
 		const catchVar = openMatch[1];
 		const openIdx = openMatch.index + openMatch[0].length - 1;
+		const closeIdx = findBraceClose(code, openIdx);
 
-		let depth = 1;
-		let closeIdx = -1;
-		for (let i = openIdx + 1; i < code.length; i++) {
-			const ch = code[i];
-			if (ch === "{") depth++;
-			else if (ch === "}") {
-				depth--;
-				if (depth === 0) {
-					closeIdx = i;
-					break;
-				}
-			}
-		}
-		if (closeIdx < 0) {
-			openMatch = catchOpenRe.exec(code);
-			continue;
-		}
-
-		const bodyStart = openIdx + 1;
-		ERROR_CTOR_RE.lastIndex = bodyStart;
-		let throwMatch: RegExpExecArray | null = ERROR_CTOR_RE.exec(code);
-		while (throwMatch !== null && throwMatch.index < closeIdx) {
-			if (matches.length >= 10) break;
-
-			const argsStart = throwMatch.index + throwMatch[0].length;
-			let pdepth = 1;
-			let argsEnd = -1;
-			for (let i = argsStart; i < code.length && i < closeIdx; i++) {
-				const ch = code[i];
-				if (ch === "(") pdepth++;
-				else if (ch === ")") {
-					pdepth--;
-					if (pdepth === 0) {
-						argsEnd = i;
-						break;
-					}
-				}
-			}
-			if (argsEnd < 0) break;
-
-			const argsWindow = code.slice(argsStart, argsEnd);
-			const preservesCause = /\bcause\s*[:,}]/.test(argsWindow);
-			if (!preservesCause) {
-				const lineNum = code.slice(0, throwMatch.index).split("\n").length;
-				matches.push({
-					line: lineNum,
-					text: `throw new Error in catch(${catchVar}) without { cause: ${catchVar} } — original stack lost: ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 100)}`,
-				});
-			}
-			throwMatch = ERROR_CTOR_RE.exec(code);
+		if (closeIdx >= 0) {
+			collectLossyRethrowsInCatch(
+				code,
+				catchVar,
+				openIdx + 1,
+				closeIdx,
+				originalLines,
+				ERROR_CTOR_RE,
+				matches,
+			);
 		}
 
 		openMatch = catchOpenRe.exec(code);
 	}
 
 	return matches;
+}
+
+/**
+ * Depth-count forward from just past an opening `{` (whose own index is
+ * `openIdx`) to find the index of its matching `}`. Returns -1 if the brace
+ * never closes before EOF.
+ */
+function findBraceClose(code: string, openIdx: number): number {
+	let depth = 1;
+	for (let i = openIdx + 1; i < code.length; i++) {
+		const ch = code[i];
+		if (ch === "{") depth++;
+		else if (ch === "}") {
+			depth--;
+			if (depth === 0) return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Depth-count forward from the position just after a call's opening `(` to
+ * find the index of its matching `)`, never scanning past `limit` (the
+ * enclosing catch block's own close). Returns -1 if the call's parens never
+ * balance before `limit`.
+ */
+function findParenClose(code: string, argsStart: number, limit: number): number {
+	let depth = 1;
+	for (let i = argsStart; i < code.length && i < limit; i++) {
+		const ch = code[i];
+		if (ch === "(") depth++;
+		else if (ch === ")") {
+			depth--;
+			if (depth === 0) return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Scan one catch block's body (`[bodyStart, closeIdx)` of `code`) for
+ * `throw new *Error(...)` sites that drop the caught exception, pushing a
+ * match for each one that lacks a `{ cause }` option. Stops early once
+ * `matches` reaches the shared 10-match cap.
+ */
+function collectLossyRethrowsInCatch(
+	code: string,
+	catchVar: string | undefined,
+	bodyStart: number,
+	closeIdx: number,
+	originalLines: string[],
+	errorCtorRe: RegExp,
+	matches: InlineMatch[],
+): void {
+	errorCtorRe.lastIndex = bodyStart;
+	let throwMatch: RegExpExecArray | null = errorCtorRe.exec(code);
+	while (throwMatch !== null && throwMatch.index < closeIdx && matches.length < 10) {
+		const argsStart = throwMatch.index + throwMatch[0].length;
+		const argsEnd = findParenClose(code, argsStart, closeIdx);
+		if (argsEnd < 0) break;
+
+		const argsWindow = code.slice(argsStart, argsEnd);
+		const preservesCause = /\bcause\s*[:,}]/.test(argsWindow);
+		if (!preservesCause) {
+			const lineNum = code.slice(0, throwMatch.index).split("\n").length;
+			matches.push({
+				line: lineNum,
+				text: `throw new Error in catch(${catchVar}) without { cause: ${catchVar} } — original stack lost: ${(originalLines[lineNum - 1] ?? "").trim().slice(0, 100)}`,
+			});
+		}
+		throwMatch = errorCtorRe.exec(code);
+	}
 }
 
 /**
@@ -393,7 +430,7 @@ const BUILTIN_ERROR_CLASSES = new Set([
  * `instanceof TypeError` remain genuine dispatch), and the ternary consequent
  * must read a message-ish property off the operand or stringify it.
  */
-function isMessageExtractionGuard(
+export function isMessageExtractionGuard(
 	className: string,
 	stripped: string,
 	afterIdx: number,

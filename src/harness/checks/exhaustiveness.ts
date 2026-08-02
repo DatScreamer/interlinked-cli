@@ -356,7 +356,15 @@ function resolveTypeNodeRaw(
 	return null;
 }
 
-/** Walk up from `ident` to find a parameter/variable declaration with a type. */
+/**
+ * Walk up from `ident` to find a parameter/variable declaration with a type.
+ * Each enclosing scope is checked for a matching parameter first, then a
+ * matching variable declaration — the two searches are extracted below
+ * because the node kinds they match are mutually exclusive (a node is never
+ * both a function-like and a block/source-file/module-block), so trying both
+ * per scope and taking whichever hits reproduces the original nested-if
+ * behavior exactly.
+ */
 function findDeclaredTypeForIdentifier(
 	ts: TsModule,
 	ident: import("typescript").Identifier,
@@ -364,32 +372,88 @@ function findDeclaredTypeForIdentifier(
 	const name = ident.text;
 	let current: import("typescript").Node | undefined = ident.parent;
 	while (current) {
-		if (
-			ts.isFunctionDeclaration(current) ||
-			ts.isFunctionExpression(current) ||
-			ts.isArrowFunction(current) ||
-			ts.isMethodDeclaration(current) ||
-			ts.isConstructorDeclaration(current) ||
-			ts.isGetAccessorDeclaration(current) ||
-			ts.isSetAccessorDeclaration(current)
-		) {
-			for (const param of current.parameters) {
-				if (ts.isIdentifier(param.name) && param.name.text === name && param.type) {
-					return param.type;
-				}
-			}
-		}
-		if (ts.isBlock(current) || ts.isSourceFile(current) || ts.isModuleBlock(current)) {
-			for (const stmt of current.statements) {
-				if (!ts.isVariableStatement(stmt)) continue;
-				for (const decl of stmt.declarationList.declarations) {
-					if (ts.isIdentifier(decl.name) && decl.name.text === name && decl.type) {
-						return decl.type;
-					}
-				}
-			}
-		}
+		const paramType = findParamType(ts, current, name);
+		if (paramType) return paramType;
+		const varType = findVarType(ts, current, name);
+		if (varType) return varType;
 		current = current.parent;
+	}
+	return null;
+}
+
+/**
+ * Node kinds `findDeclaredTypeForIdentifier` treats as a parameter scope: any
+ * function-like declaration whose parameter list may declare `name`.
+ */
+type ParamScopeNode =
+	| import("typescript").FunctionDeclaration
+	| import("typescript").FunctionExpression
+	| import("typescript").ArrowFunction
+	| import("typescript").MethodDeclaration
+	| import("typescript").ConstructorDeclaration
+	| import("typescript").GetAccessorDeclaration
+	| import("typescript").SetAccessorDeclaration;
+
+function isParamScopeNode(
+	ts: TsModule,
+	node: import("typescript").Node,
+): node is ParamScopeNode {
+	return (
+		ts.isFunctionDeclaration(node) ||
+		ts.isFunctionExpression(node) ||
+		ts.isArrowFunction(node) ||
+		ts.isMethodDeclaration(node) ||
+		ts.isConstructorDeclaration(node) ||
+		ts.isGetAccessorDeclaration(node) ||
+		ts.isSetAccessorDeclaration(node)
+	);
+}
+
+/** Search a function-like node's own parameter list for `name`'s declared type. */
+function findParamType(
+	ts: TsModule,
+	node: import("typescript").Node,
+	name: string,
+): import("typescript").TypeNode | null {
+	if (!isParamScopeNode(ts, node)) return null;
+	for (const param of node.parameters) {
+		if (ts.isIdentifier(param.name) && param.name.text === name && param.type) {
+			return param.type;
+		}
+	}
+	return null;
+}
+
+/**
+ * Node kinds `findDeclaredTypeForIdentifier` treats as a variable-statement
+ * scope: block bodies, module (namespace) bodies, and the source file itself.
+ */
+type StatementScopeNode =
+	| import("typescript").Block
+	| import("typescript").SourceFile
+	| import("typescript").ModuleBlock;
+
+function isStatementScopeNode(
+	ts: TsModule,
+	node: import("typescript").Node,
+): node is StatementScopeNode {
+	return ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node);
+}
+
+/** Search a block/module/source-file's own statement list for `name`'s declared type. */
+function findVarType(
+	ts: TsModule,
+	node: import("typescript").Node,
+	name: string,
+): import("typescript").TypeNode | null {
+	if (!isStatementScopeNode(ts, node)) return null;
+	for (const stmt of node.statements) {
+		if (!ts.isVariableStatement(stmt)) continue;
+		for (const decl of stmt.declarationList.declarations) {
+			if (ts.isIdentifier(decl.name) && decl.name.text === name && decl.type) {
+				return decl.type;
+			}
+		}
 	}
 	return null;
 }
@@ -441,7 +505,11 @@ function defaultBranchAssertsNever(
  * idiom this check's own `fix_instruction` recommends, and the clause then
  * holds a single Block — scanning only the top level reported the recommended
  * fix as a finding. Descent is limited to plain blocks: an assertion buried in
- * an `if`/`try` body is conditional, so it still does not count.
+ * an `if`/`try` body is conditional, so it still does not count. Per-statement
+ * idiom matching (everything except block descent) lives in
+ * `matchesAssertNeverIdiom` — a `Block` statement can never itself satisfy any
+ * of those idioms (mutually exclusive `SyntaxKind`s), so recursing and moving
+ * on via `continue` is equivalent to falling through the old combined checks.
  */
 function statementsAssertNever(
 	ts: TsModule,
@@ -449,28 +517,49 @@ function statementsAssertNever(
 	sourceFile: import("typescript").SourceFile,
 ): boolean {
 	for (const stmt of statements) {
-		if (ts.isBlock(stmt) && statementsAssertNever(ts, stmt.statements, sourceFile)) return true;
-		if (ts.isVariableStatement(stmt)) {
-			for (const decl of stmt.declarationList.declarations) {
-				if (decl.type && decl.type.kind === ts.SyntaxKind.NeverKeyword) return true;
-			}
+		if (ts.isBlock(stmt)) {
+			if (statementsAssertNever(ts, stmt.statements, sourceFile)) return true;
+			continue;
 		}
-		if (ts.isThrowStatement(stmt) && stmt.expression) {
-			if (ts.isNewExpression(stmt.expression)) {
-				const exprText = stmt.expression.expression.getText(sourceFile);
-				if (UNREACHABLE_THROW_RE.test(`throw new ${exprText}`)) return true;
-			}
-			if (ts.isCallExpression(stmt.expression)) {
-				if (ASSERT_NEVER_RE.test(stmt.expression.expression.getText(sourceFile))) return true;
-			}
+		if (matchesAssertNeverIdiom(ts, stmt, sourceFile)) return true;
+	}
+	return false;
+}
+
+/**
+ * Does a single (non-block) statement match one of the recognized
+ * exhaustiveness-assertion idioms on its own?
+ *   - `const _: never = <expr>;`
+ *   - `assertNever(<expr>)` (or aliases above), as an expression statement or
+ *     as `return assertNever(<expr>)`
+ *   - `throw new UnreachableError(...)` / `Exhaustive…Error` / etc.
+ *   - `throw assertNever(...)` / `throw exhaustiveCheck(...)` variants
+ */
+function matchesAssertNeverIdiom(
+	ts: TsModule,
+	stmt: import("typescript").Statement,
+	sourceFile: import("typescript").SourceFile,
+): boolean {
+	if (ts.isVariableStatement(stmt)) {
+		for (const decl of stmt.declarationList.declarations) {
+			if (decl.type && decl.type.kind === ts.SyntaxKind.NeverKeyword) return true;
 		}
-		if (
-			(ts.isExpressionStatement(stmt) || ts.isReturnStatement(stmt)) &&
-			stmt.expression &&
-			ts.isCallExpression(stmt.expression)
-		) {
+	}
+	if (ts.isThrowStatement(stmt) && stmt.expression) {
+		if (ts.isNewExpression(stmt.expression)) {
+			const exprText = stmt.expression.expression.getText(sourceFile);
+			if (UNREACHABLE_THROW_RE.test(`throw new ${exprText}`)) return true;
+		}
+		if (ts.isCallExpression(stmt.expression)) {
 			if (ASSERT_NEVER_RE.test(stmt.expression.expression.getText(sourceFile))) return true;
 		}
+	}
+	if (
+		(ts.isExpressionStatement(stmt) || ts.isReturnStatement(stmt)) &&
+		stmt.expression &&
+		ts.isCallExpression(stmt.expression)
+	) {
+		if (ASSERT_NEVER_RE.test(stmt.expression.expression.getText(sourceFile))) return true;
 	}
 	return false;
 }

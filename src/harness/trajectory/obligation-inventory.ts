@@ -240,6 +240,34 @@ function editEvents(events: readonly ToolEvent[]): ToolEvent[] {
 	return out;
 }
 
+/** Net one `(file, kind, signature)` key's added-vs-removed occurrence counts
+ *  into `ledger`, mutating it in place. Opened (delta > 0) accumulates; closed
+ *  (delta < 0) decrements but never below zero, so removing a pre-existing
+ *  obligation we never saw opened can't create a phantom negative. A zero
+ *  (or now-zero) count deletes the entry rather than leaving a stale zero. */
+function mergeKeyDelta(
+	ledger: Map<string, LedgerEntry>,
+	key: string,
+	added: Map<string, LedgerEntry>,
+	removed: Map<string, LedgerEntry>,
+): void {
+	const a = added.get(key)?.count ?? 0;
+	const r = removed.get(key)?.count ?? 0;
+	const delta = a - r;
+	if (delta === 0) return;
+	const meta = added.get(key) ?? removed.get(key);
+	if (!meta) return;
+	const cur = ledger.get(key) ?? {
+		count: 0,
+		kind: meta.kind,
+		file: meta.file,
+		snippet: meta.snippet,
+	};
+	cur.count = Math.max(0, cur.count + delta);
+	if (cur.count === 0) ledger.delete(key);
+	else ledger.set(key, cur);
+}
+
 /** Walk the session's edits in order, netting opened against closed
  *  obligations into a per-`(file, kind, signature)` ledger. */
 function buildLedger(events: readonly ToolEvent[]): Map<string, LedgerEntry> {
@@ -266,24 +294,7 @@ function buildLedger(events: readonly ToolEvent[]): Map<string, LedgerEntry> {
 		const removed = countByKey(extractOccurrences(removedText), file);
 		const keys = new Set<string>([...added.keys(), ...removed.keys()]);
 		for (const key of keys) {
-			const a = added.get(key)?.count ?? 0;
-			const r = removed.get(key)?.count ?? 0;
-			const delta = a - r;
-			if (delta === 0) continue;
-			const meta = added.get(key) ?? removed.get(key);
-			if (!meta) continue;
-			const cur = ledger.get(key) ?? {
-				count: 0,
-				kind: meta.kind,
-				file: meta.file,
-				snippet: meta.snippet,
-			};
-			// Opened (delta > 0) accumulates; closed (delta < 0) decrements but
-			// never below zero, so removing a pre-existing obligation we never
-			// saw opened can't create a phantom negative.
-			cur.count = Math.max(0, cur.count + delta);
-			if (cur.count === 0) ledger.delete(key);
-			else ledger.set(key, cur);
+			mergeKeyDelta(ledger, key, added, removed);
 		}
 	}
 	return ledger;

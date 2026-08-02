@@ -2,14 +2,56 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mock child_process BEFORE importing the module under test — getProtectedPids()
+// calls execSync the first time checkSelfKill runs, and that result is cached for
+// the process lifetime, so the mock must be installed at import time. This mock
+// has no effect on the checkLargeFileLineCountWrite tests below (they never call
+// execSync), so it is safe to install file-wide.
+vi.mock("node:child_process", () => ({
+	execSync: vi.fn(() => ""),
+}));
+
+import { execSync as mockedExecSync } from "node:child_process";
 
 import { DEFAULT_MAX_LINES, resetLargeFileBaselineCache } from "../large-file-policy.js";
-import { checkLargeFileLineCountWrite } from "../pre-checks.js";
+import {
+	checkConcurrentEdit,
+	checkDirtyWorkingTree,
+	checkEnvLeakToGit,
+	checkLargeFileLineCountWrite,
+	checkLargeFileWrite,
+	checkSelfKill,
+	checkStaleBranch,
+} from "../pre-checks.js";
+import type { SessionTrajectory } from "../types.js";
+
+const execSyncMock = vi.mocked(mockedExecSync);
 
 /** Build a string of exactly `n` lines of code. */
 function lines(n: number): string {
 	return Array.from({ length: n }, () => "const x = 1;").join("\n");
+}
+
+/**
+ * Minimal SessionTrajectory fixture. checkConcurrentEdit only reads
+ * session_id / files_written / file_write_times / agent_name, so the cast keeps
+ * the fixture readable without wiring the full (~50-field) interface.
+ */
+function makeSession(over: {
+	id: string;
+	agentName?: string;
+	written?: string[];
+	writeTimes?: Array<[string, string]>;
+}): SessionTrajectory {
+	const base = {
+		session_id: over.id,
+		agent_name: over.agentName ?? "",
+		files_written: new Set<string>(over.written ?? []),
+		file_write_times: new Map<string, string>(over.writeTimes ?? []),
+	};
+	return base as unknown as SessionTrajectory;
 }
 
 describe("checkLargeFileLineCountWrite", () => {
@@ -284,5 +326,904 @@ describe("checkLargeFileLineCountWrite", () => {
 			dir,
 		);
 		expect(result?.block).toBeDefined();
+	});
+
+	// --- Survivor-elimination additions (docs/plans/15-survivor-elimination-campaign.md) ---
+	// Each test below targets a SPECIFIC surviving mutant identified by
+	// `npx tsx scratch/measure-file.mts src/harness/pre-checks.ts` — the line/
+	// mutator noted in each name is the mutant it kills.
+
+	it("falls back to `path` when `file_path` is present but not a string (L377)", () => {
+		const path = file("frompath-fallback.ts");
+		// file_path is a NUMBER (malformed tool input) — the typeof guard must
+		// reject it and fall through to the valid `path` field instead of using
+		// the number as-is.
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: 123, path, content: lines(CAP + 600) },
+			dir,
+		);
+		expect(result?.block).toContain(path);
+	});
+
+	it("uses `path` when `file_path` is absent (L378)", () => {
+		const path = file("viapath-only.ts");
+		const result = checkLargeFileLineCountWrite({ path, content: lines(CAP + 600) }, dir);
+		expect(result?.block).toContain(path);
+	});
+
+	it("ignores a non-string `path` when `file_path` is also absent (L378)", () => {
+		const result = checkLargeFileLineCountWrite({ path: 123, content: lines(CAP + 600) }, dir);
+		expect(result).toBeNull();
+	});
+
+	it("returns null when neither file_path nor path is present (L379/L380)", () => {
+		expect(checkLargeFileLineCountWrite({ content: lines(CAP + 600) }, dir)).toBeNull();
+	});
+
+	it("allows a brand-new file at EXACTLY the cap — boundary of after <= cap (L389)", () => {
+		expect(
+			checkLargeFileLineCountWrite(
+				{ file_path: file("exact-cap-new.ts"), content: lines(CAP) },
+				dir,
+			),
+		).toBeNull();
+	});
+
+	it("allows a hold that swaps comment lines for code lines — raw count is the only signal (L390)", () => {
+		// Line 390's "not growing" bypass looks ONLY at the raw line count, by
+		// design (its own comment: "refactoring down is always allowed"). This
+		// holds even when the swap converts comments into code — the total line
+		// count does not change, so the bypass fires before the code-line check
+		// at line 401 is ever reached.
+		const path = file("hold-swap.ts");
+		const commentBlock = Array.from({ length: 10 }, (_, i) => `// note ${i}`).join("\n");
+		writeFileSync(path, `${lines(CAP)}\n${commentBlock}`);
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, old_string: commentBlock, new_string: lines(10) },
+			dir,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("still allows a genuine shrink whose CODE lines increase — 390 fires before the code-line check (L390)", () => {
+		const path = file("shrink-more-code.ts");
+		// CAP code lines + 200 comment lines = CAP+200 total.
+		const commentBlock = Array.from({ length: 200 }, (_, i) => `// c${i}`).join("\n");
+		writeFileSync(path, `${lines(CAP)}\n${commentBlock}`);
+		// Replace the 200 comment lines with 5 new code lines: -195 net lines.
+		const newCode = Array.from({ length: 5 }, (_, i) => `const nc${i} = 1;`).join("\n");
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, old_string: commentBlock, new_string: newCode },
+			dir,
+		);
+		// before = CAP+200, after = CAP+5: a real shrink (after < before), even
+		// though code lines rose from CAP to CAP+5 — still always-allowed.
+		expect(result).toBeNull();
+	});
+
+	it("says 'grow' (not 'create') when extending an EXISTING file past the cap (L408: before!==0 branch)", () => {
+		// Complements the brand-new-file (before===0) exact-message test below:
+		// that one alone doesn't discriminate a mutant that forces the ternary's
+		// condition to always take the `before === 0` arm, because before
+		// really IS 0 there. This test's before is nonzero (an existing file),
+		// so "always create" and "always grow" mutants disagree with reality.
+		const path = file("grow-wording.ts");
+		writeFileSync(path, lines(10));
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, content: lines(CAP + 50) },
+			dir,
+		);
+		expect(result?.block).toContain(`grow ${path} to`);
+		expect(result?.block).not.toContain(`create ${path} at`);
+	});
+
+	it("emits the exact BLOCKED message for a brand-new over-cap file — pins every literal + the delta arithmetic (L408/L410/L412/L415-L420)", () => {
+		const path = file("exact-message.ts");
+		const after = CAP + 600;
+		const result = checkLargeFileLineCountWrite({ file_path: path, content: lines(after) }, dir);
+		expect(result?.block).toBe(
+			`[interlinked:file-size] BLOCKED: this would create ${path} at ${after} lines — ` +
+				`${after - CAP} over the ${CAP}-line cap for hand-written code files. ` +
+				"Extract a cohesive section into its own module first. This line cap is per-repo " +
+				"configurable: `interlinked caps set lines <n>` (`caps explain lines` for why); " +
+				"generated, test, .d.ts, and non-code files (docs/markdown/HTML/data) are exempt. " +
+				"List: large-files-baseline.json.",
+		);
+	});
+
+	it("does not say 'already' when a growing edit crosses the cap from EXACTLY at it (L410)", () => {
+		const path = file("cross-from-exact-cap.ts");
+		writeFileSync(path, lines(CAP)); // before === cap exactly — not YET over
+		const result = checkLargeFileLineCountWrite(
+			{ file_path: path, old_string: "const x = 1;", new_string: lines(11) },
+			dir,
+		);
+		expect(result?.block).toBeDefined();
+		expect(result?.block).not.toContain("already");
+	});
+});
+
+// =====================================================================
+// checkSelfKill + getProtectedPids()
+// =====================================================================
+// getProtectedPids caches at module scope, populated by the first checkSelfKill
+// call. This block runs first so the very first invocation exercises the ps
+// ancestor-walk and the harness-pid-file read; later cases reuse the cache.
+//
+// NOTE on why this duplicates part of pre-checks.coverage.integration.test.ts:
+// the per-edit mutation runner resolves a file's companion test by EXACT STEM
+// match (`pre-checks.ts` -> a `pre-checks.test.ts`-named file), so a
+// differently-named sibling test file — however thorough — is invisible to it
+// (recorded gap: mutation runner test-file scoping, tracked separately). The
+// tests below give this module's OTHER exported checks real reachability
+// under the file the runner actually measures.
+
+describe("checkSelfKill + getProtectedPids", () => {
+	// A pid we plant as an ancestor of process.ppid so the protected set is
+	// non-trivial and the ancestor-walk loop body executes.
+	const PLANTED_ANCESTOR = 424242;
+	let pidDir: string;
+	let prevCwd: string;
+
+	beforeEach(() => {
+		execSyncMock.mockReset();
+		execSyncMock.mockReturnValue("");
+		prevCwd = process.cwd();
+		pidDir = mkdtempSync(join(tmpdir(), "pre-checks-pid-"));
+		mkdirSync(join(pidDir, ".interlinked"), { recursive: true });
+		// A readable, numeric harness.pid → exercises the parse + add branch.
+		writeFileSync(join(pidDir, ".interlinked", "harness.pid"), "777777\n");
+		process.chdir(pidDir);
+
+		// `ps -ax` listing: map process.ppid -> PLANTED_ANCESTOR -> 1 (init),
+		// so the ancestor walk adds ppid then PLANTED_ANCESTOR then stops at init.
+		// A junk line and a self->1 line exercise the regex filter.
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("ps -o pid=,ppid= -ax")) {
+				return [
+					"garbage line that does not match",
+					`${process.ppid} ${PLANTED_ANCESTOR}`,
+					`${PLANTED_ANCESTOR} 1`,
+					"1 0",
+				].join("\n");
+			}
+			return "";
+		});
+	});
+
+	afterEach(() => {
+		process.chdir(prevCwd);
+		rmSync(pidDir, { recursive: true, force: true });
+	});
+
+	it("returns null for a command that is not a plain `kill <pid>`", () => {
+		expect(checkSelfKill("ls -la")).toBeNull();
+		expect(checkSelfKill("kill -9 1234")).toBeNull(); // signal form not matched
+		expect(checkSelfKill("killall node")).toBeNull();
+	});
+
+	it("blocks killing the current process (self) — primes the protected-pid cache", () => {
+		// First checkSelfKill call in the module: builds + caches the protected
+		// set, walking the planted ancestor chain and reading harness.pid.
+		const result = checkSelfKill(`  kill ${process.pid}  `);
+		expect(result?.block).toContain(`PID ${process.pid}`);
+		expect(result?.block).toContain("terminate this session");
+		// The ps ancestor-walk ran during cache build.
+		expect(execSyncMock).toHaveBeenCalled();
+	});
+
+	it("blocks killing a planted ancestor PID (ancestor-walk populated the set)", () => {
+		// Cache is already warm from the previous test; the planted ancestor is
+		// in the set even though we changed cwd this test.
+		const result = checkSelfKill(`kill ${PLANTED_ANCESTOR}`);
+		expect(result?.block).toContain(`PID ${PLANTED_ANCESTOR}`);
+	});
+
+	it("blocks killing the harness pid read from harness.pid", () => {
+		const result = checkSelfKill("kill 777777");
+		expect(result?.block).toBeDefined();
+	});
+
+	it("warns when target resolves to a live (non-orphan) Claude/Interlinked process", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 555")) {
+				// ppid 999 (>1, non-orphan) + a node interlinked harness arg line.
+				return "  999 node    node /x/interlinked/harness/server.js";
+			}
+			return "";
+		});
+		const result = checkSelfKill("kill 555");
+		expect(result?.warning).toContain("PID 555");
+		expect(result?.warning).toContain("another session");
+	});
+
+	it("allows killing an ORPHAN harness daemon (ppid <= 1) silently", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 556")) {
+				// ppid 1 = orphan → isOrphan true → not blocked, not warned.
+				return "  1 node    node /x/interlinked/harness/server.js";
+			}
+			return "";
+		});
+		expect(checkSelfKill("kill 556")).toBeNull();
+	});
+
+	it("returns null when target is an unrelated process (not claude/interlinked)", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 557")) return "  999 bash    /bin/bash -l";
+			return "";
+		});
+		expect(checkSelfKill("kill 557")).toBeNull();
+	});
+
+	it("warns when the process arg matches the `harness/server` operand (live)", () => {
+		// node + harness/server (no 'claude'/'interlinked' word) → exercises the
+		// third operand of the isClaudeOrInterlinked OR.
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 560")) return "  999 node    node /opt/x/harness/server.js";
+			return "";
+		});
+		expect(checkSelfKill("kill 560")?.warning).toBeDefined();
+	});
+
+	it("returns null when an interpreter runs but the command is unrelated (no claude/interlinked)", () => {
+		// node present but none of claude/interlinked/harness-server → second OR
+		// clause is false → isClaudeOrInterlinked false → no warning.
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 561")) return "  999 node    node /tmp/build-script.js";
+			return "";
+		});
+		expect(checkSelfKill("kill 561")).toBeNull();
+	});
+
+	it("returns null when the ps lookup for the target throws (catch path)", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 558")) throw new Error("no such process");
+			return "";
+		});
+		expect(checkSelfKill("kill 558")).toBeNull();
+	});
+
+	it("returns null when the target ps output has no parseable ppid", () => {
+		// Empty/garbage info → ppidMatch null → targetPpid 0 → isOrphan true.
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 559")) return "node interlinked harness/server no-leading-pid";
+			return "";
+		});
+		expect(checkSelfKill("kill 559")).toBeNull();
+	});
+
+	// --- Regex-precision adversarial cases (kill-command matcher, L95) ---
+	// The `/^\s*kill\s+(\d+)\s*$/` matcher deliberately excludes anything that
+	// ISN'T a bare `kill <pid>` invocation. Each case below is a real command
+	// shape that must NOT be treated as a self-kill, and each one distinguishes
+	// the regex's anchors/quantifiers from a looser or stricter variant.
+
+	it("does not match `xkill` — trailing-substring commands must not fire (anchor precision)", () => {
+		// A real X11 utility. Without the leading `^` anchor, a laxer matcher
+		// would find "kill 1234" inside "xkill 1234" and misfire.
+		expect(checkSelfKill("xkill 1234")).toBeNull();
+	});
+
+	it("does not match `kill <pid> <trailing garbage>` — trailing anchor precision", () => {
+		// Without the trailing `$` anchor, a laxer matcher would match the
+		// "kill 1234" PREFIX and ignore " extra".
+		expect(checkSelfKill("kill 1234 extra")).toBeNull();
+	});
+
+	it("still blocks self-kill across MULTIPLE spaces between `kill` and the pid", () => {
+		// `\s+` (one-or-more) must span more than one space; a matcher
+		// collapsed to a single mandatory whitespace char would fail here.
+		expect(checkSelfKill(`kill  ${process.pid}`)?.block).toBeDefined();
+	});
+
+	// --- Regex-precision adversarial cases (target-ppid matcher, L124) ---
+	// `/^\s*(\d+)\s/` extracts the ppid from `ps -o ppid=,comm=,args=` output.
+
+	it("resolves ppid with NO leading whitespace (leading \\s* is optional, not mandatory)", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			// No leading space before the ppid digits — a matcher that requires
+			// a leading \D+ (character-class negation) or a mandatory leading
+			// \s would fail to parse this, misreading it as orphaned (ppid 0).
+			if (cmd.includes("-p 562")) return "999 node interlinked";
+			return "";
+		});
+		expect(checkSelfKill("kill 562")?.warning).toBeDefined();
+	});
+
+	it("does not treat a digit run PRECEDED by other text as the ppid (leading anchor precision)", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			// "xxx999" — a matcher without the leading `^` anchor would still
+			// find "999 " and misparse ppid=999 (non-orphan); the real
+			// (anchored) regex must fail here, reading ppid as unparseable (0,
+			// orphan) instead.
+			if (cmd.includes("-p 563")) return "xxx999 node interlinked";
+			return "";
+		});
+		expect(checkSelfKill("kill 563")).toBeNull();
+	});
+
+	it("requires WHITESPACE (not any char) immediately after the ppid digits (trailing class precision)", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			// "2node" — digits immediately followed by a letter, no whitespace.
+			// A matcher with the trailing \s negated to \S would wrongly parse
+			// ppid=2 (non-orphan, "2"<=1 is false) and warn; the real regex
+			// requires whitespace there and must fail to parse (ppid 0, orphan,
+			// silent allow).
+			if (cmd.includes("-p 564")) return "2node interlinked";
+			return "";
+		});
+		expect(checkSelfKill("kill 564")).toBeNull();
+	});
+});
+
+// =====================================================================
+// getProtectedPids fail-open branches — fresh module via vi.resetModules()
+// =====================================================================
+// The block above warms the cache with a happy-path ps result. To hit the
+// getProtectedPids catch blocks (ps throws; harness.pid unreadable/NaN) we need
+// a COLD module so getProtectedPids runs again with hostile execSync/fs state.
+
+describe("getProtectedPids fail-open paths (cold module)", () => {
+	let prevCwd: string;
+	let coldDir: string;
+
+	beforeEach(() => {
+		prevCwd = process.cwd();
+		coldDir = mkdtempSync(join(tmpdir(), "pre-checks-cold-"));
+		process.chdir(coldDir);
+		vi.resetModules();
+	});
+
+	afterEach(() => {
+		process.chdir(prevCwd);
+		rmSync(coldDir, { recursive: true, force: true });
+	});
+
+	it("survives ps throwing AND a non-numeric harness.pid (both catch/NaN paths)", async () => {
+		mkdirSync(join(coldDir, ".interlinked"), { recursive: true });
+		// Non-numeric pid → Number.parseInt NaN → the !Number.isNaN guard skips add.
+		writeFileSync(join(coldDir, ".interlinked", "harness.pid"), "not-a-number");
+
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn(() => {
+				throw new Error("ps unavailable");
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		// Self-kill still blocks (process.pid added before the ps walk), proving
+		// getProtectedPids returned a usable set despite both failures.
+		const result = mod.checkSelfKill(`kill ${process.pid}`);
+		expect(result?.block).toBeDefined();
+	});
+
+	it("survives when reading harness.pid itself throws (fs catch path)", async () => {
+		// harness.pid exists as a DIRECTORY → existsSync true but readFileSync
+		// throws (EISDIR) → exercises the inner try/catch around the pid-file
+		// read; and ps throws too.
+		mkdirSync(join(coldDir, ".interlinked", "harness.pid"), { recursive: true });
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn(() => {
+				throw new Error("ps boom");
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill(`kill ${process.pid}`)?.block).toBeDefined();
+	});
+
+	it("works when no harness.pid file exists (existsSync false branch, ps OK)", async () => {
+		// No .interlinked/harness.pid (the common case) → the existsSync guard's
+		// false branch is taken and the pid-file read is skipped. ps returns a
+		// clean ancestor chain so the walk runs normally.
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return `${process.ppid} 1\n1 0`;
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill(`kill ${process.pid}`)?.block).toBeDefined();
+	});
+
+	afterAll(() => {
+		vi.resetModules();
+		vi.doUnmock("node:child_process");
+	});
+});
+
+// =====================================================================
+// getProtectedPids ancestor-listing regex precision (cold module)
+// =====================================================================
+// `/^(\d+)\s+(\d+)$/` parses each `ps -o pid=,ppid= -ax` line into a
+// (pid -> parent) entry BEFORE the ancestor walk runs. A malformed line that
+// slips past a loosened anchor/quantifier can inject a BOGUS entry that
+// silently redirects the walk — turning an unrelated pid into a falsely
+// "protected" one (or the reverse: dropping a real ancestor). Each case below
+// isolates ONE such corruption in its own fresh module (the map is built once
+// per module instance, so these can't share the warm cache from the describe
+// blocks above) and checks its effect via `checkSelfKill('kill <injected>')`.
+
+describe("getProtectedPids ancestor-listing regex precision (cold module)", () => {
+	let prevCwd: string;
+	let coldDir: string;
+	const ppid = process.ppid;
+	const PLANTED = 424242;
+
+	beforeEach(() => {
+		prevCwd = process.cwd();
+		coldDir = mkdtempSync(join(tmpdir(), "pre-checks-ancestor-regex-"));
+		process.chdir(coldDir);
+		vi.resetModules();
+	});
+
+	afterEach(() => {
+		process.chdir(prevCwd);
+		rmSync(coldDir, { recursive: true, force: true });
+	});
+
+	it("does not let a LEADING-garbage line override a valid ancestor mapping (leading anchor precision)", async () => {
+		// "yyy424242 111111" must NOT match (no leading `^` binds it to the
+		// digit run) — so PLANTED's real mapping (->1, from the valid line
+		// before it) survives, and 111111 never enters the protected set.
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return [`${ppid} ${PLANTED}`, `${PLANTED} 1`, `yyy${PLANTED} 111111`].join("\n");
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill(`kill ${PLANTED}`)?.block).toBeDefined(); // sanity: real ancestor still protected
+		expect(mod.checkSelfKill("kill 111111")).toBeNull();
+	});
+
+	it("does not let a TRAILING-garbage line override a valid ancestor mapping (trailing anchor precision)", async () => {
+		// "424242 222222 tail" must NOT match (no trailing `$` binds the
+		// second digit run to end-of-line) — so PLANTED's real mapping
+		// survives and 222222 never enters the protected set.
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return [`${ppid} ${PLANTED}`, `${PLANTED} 1`, `${PLANTED} 222222 tail`].join("\n");
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill(`kill ${PLANTED}`)?.block).toBeDefined();
+		expect(mod.checkSelfKill("kill 222222")).toBeNull();
+	});
+
+	it("DOES follow a two-space-separated ancestor line (\\s+ must accept more than one space)", async () => {
+		// "424242  333333" (two spaces) must MATCH — the separator is `\s+`,
+		// one-or-more. A matcher collapsed to a single mandatory whitespace
+		// char would fail here, silently dropping 333333 from the walk.
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return [`${ppid} ${PLANTED}`, `${PLANTED} 1`, `${PLANTED}  333333`].join("\n");
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		// PLANTED's LAST-parsed mapping wins (Map.set overwrites in line
+		// order), so the walk now goes ppid -> PLANTED -> 333333 -> (no
+		// further entry) -> stop, protecting 333333 too.
+		expect(mod.checkSelfKill("kill 333333")?.block).toBeDefined();
+	});
+
+	afterAll(() => {
+		vi.resetModules();
+		vi.doUnmock("node:child_process");
+	});
+});
+
+// =====================================================================
+// checkEnvLeakToGit()
+// =====================================================================
+
+describe("checkEnvLeakToGit", () => {
+	let envDir: string;
+	beforeEach(() => {
+		execSyncMock.mockReset();
+		execSyncMock.mockReturnValue("");
+		envDir = mkdtempSync(join(tmpdir(), "pre-checks-env-"));
+	});
+	afterEach(() => {
+		rmSync(envDir, { recursive: true, force: true });
+	});
+
+	it("returns null for non-.env files", () => {
+		expect(checkEnvLeakToGit("/p/config.json", "SECRET=abc", envDir)).toBeNull();
+	});
+
+	it("returns null for .env.example / .env.sample / .env.template", () => {
+		expect(checkEnvLeakToGit(".env.example", "API_KEY=x", envDir)).toBeNull();
+		expect(checkEnvLeakToGit(".env.sample", "API_KEY=x", envDir)).toBeNull();
+		expect(checkEnvLeakToGit(".env.template", "API_KEY=x", envDir)).toBeNull();
+	});
+
+	it("matches a suffix .env name (production.env)", () => {
+		// git check-ignore exits non-zero (mock throws) → not ignored → secrets → block.
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		const result = checkEnvLeakToGit("production.env", "DATABASE_URL=postgres://x", envDir);
+		expect(result?.block).toContain("production.env");
+	});
+
+	it("returns null when the file IS gitignored (check-ignore exits 0)", () => {
+		// execSync returning normally == exit 0 == file is ignored == safe.
+		execSyncMock.mockReturnValue("");
+		expect(checkEnvLeakToGit(".env", "API_KEY=supersecret", envDir)).toBeNull();
+	});
+
+	it("blocks when not gitignored and content has secret-like patterns", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		const result = checkEnvLeakToGit(".env.local", "TOKEN=abc123", envDir);
+		expect(result?.block).toContain(".env.local");
+		expect(result?.block).toContain(".gitignore");
+	});
+
+	it("warns (not block) when not gitignored but content has no secrets", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		const result = checkEnvLeakToGit(".env", "JUST_A_FLAG=true", envDir);
+		expect(result?.warning).toContain("env-leak");
+	});
+
+	it("warns when content is undefined (empty-text path, no secrets)", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		expect(checkEnvLeakToGit(".env", undefined, envDir)?.warning).toContain("env-leak");
+	});
+
+	it("resolves a relative path against cwd before check-ignore", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		expect(checkEnvLeakToGit(".env", "PRIVATE_KEY=----", envDir)?.block).toBeDefined();
+	});
+
+	it("uses an absolute path as-is (isAbsolute true branch)", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		const abs = join(envDir, ".env");
+		expect(checkEnvLeakToGit(abs, "SECRET=zzz", envDir)?.block).toBeDefined();
+	});
+
+	// --- Regex-precision adversarial cases (secrets matcher, L184) ---
+	// `/(?:API_KEY|...)\s*=\s*\S+/i` allows optional whitespace on BOTH sides
+	// of `=`. Each case pins one \s* side independently.
+
+	it("detects a secret with whitespace BEFORE the `=` (leading \\s* side)", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		// A matcher requiring \S* (non-whitespace) before "=" instead of \s*
+		// would fail to match this — the space right before "=" is whitespace.
+		expect(checkEnvLeakToGit(".env", "TOKEN =abc123", envDir)?.block).toBeDefined();
+	});
+
+	it("detects a secret with whitespace AFTER the `=` (trailing \\s* side)", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not ignored");
+		});
+		// A matcher requiring \S* (non-whitespace) after "=" instead of \s*
+		// would fail to match this — the space right after "=" is whitespace.
+		expect(checkEnvLeakToGit(".env", "TOKEN= abc123", envDir)?.block).toBeDefined();
+	});
+});
+
+// =====================================================================
+// checkStaleBranch()
+// =====================================================================
+
+describe("checkStaleBranch", () => {
+	let staleDir: string;
+	beforeEach(() => {
+		execSyncMock.mockReset();
+		execSyncMock.mockReturnValue("");
+		staleDir = mkdtempSync(join(tmpdir(), "pre-checks-stale-"));
+	});
+	afterEach(() => {
+		rmSync(staleDir, { recursive: true, force: true });
+	});
+
+	it("returns null (and caches) when not in a git repo — no .git dir", () => {
+		expect(checkStaleBranch(staleDir, "sess-nogit")).toBeNull();
+		expect(execSyncMock).not.toHaveBeenCalled();
+		expect(checkStaleBranch(staleDir, "sess-nogit")).toBeNull();
+		expect(execSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("warns when the branch is far behind the main branch", () => {
+		mkdirSync(join(staleDir, ".git"), { recursive: true });
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("rev-parse")) return "main";
+			if (cmd.includes("rev-list")) return "120"; // > threshold 50
+			return "";
+		});
+		const result = checkStaleBranch(staleDir, "sess-behind");
+		expect(result?.warning).toContain("120 commits behind main");
+	});
+
+	it("returns null when behind count is within the threshold", () => {
+		mkdirSync(join(staleDir, ".git"), { recursive: true });
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("rev-parse")) return "main";
+			if (cmd.includes("rev-list")) return "3";
+			return "";
+		});
+		expect(checkStaleBranch(staleDir, "sess-fresh")).toBeNull();
+	});
+
+	it("returns the cached result on a second call inside the interval (L204: interval must stay minutes-scale)", () => {
+		// Two SYNCHRONOUS calls with no fake-timer advance can land in the same
+		// millisecond, which would mask even a near-zero interval (0ms elapsed
+		// < any positive threshold). Advancing fake time by 100ms is well
+		// within the REAL 5-minute interval but far past a mutated near-zero
+		// one, so this is the only way to make the boundary actually observable.
+		vi.useFakeTimers();
+		try {
+			mkdirSync(join(staleDir, ".git"), { recursive: true });
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.includes("rev-parse")) return "main";
+				if (cmd.includes("rev-list")) return "200";
+				return "";
+			});
+			const first = checkStaleBranch(staleDir, "sess-cache");
+			expect(first?.warning).toBeDefined();
+			const callsAfterFirst = execSyncMock.mock.calls.length;
+			vi.advanceTimersByTime(100);
+			const second = checkStaleBranch(staleDir, "sess-cache");
+			expect(second).toBe(first);
+			expect(execSyncMock.mock.calls.length).toBe(callsAfterFirst);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("returns null (catch path) when git rev-parse throws", () => {
+		mkdirSync(join(staleDir, ".git"), { recursive: true });
+		execSyncMock.mockImplementation(() => {
+			throw new Error("git missing");
+		});
+		expect(checkStaleBranch(staleDir, "sess-throw")).toBeNull();
+	});
+
+	it("returns null when behind count is non-numeric (NaN guard)", () => {
+		mkdirSync(join(staleDir, ".git"), { recursive: true });
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("rev-parse")) return "main";
+			if (cmd.includes("rev-list")) return "not-a-number";
+			return "";
+		});
+		expect(checkStaleBranch(staleDir, "sess-nan")).toBeNull();
+	});
+});
+
+// =====================================================================
+// checkDirtyWorkingTree()
+// =====================================================================
+
+describe("checkDirtyWorkingTree", () => {
+	const dirtyCwd = "/some/repo";
+
+	beforeEach(() => {
+		execSyncMock.mockReset();
+		execSyncMock.mockReturnValue("");
+	});
+
+	it("returns null for git commands that cannot discard changes", () => {
+		expect(checkDirtyWorkingTree("git status", dirtyCwd)).toBeNull();
+		expect(checkDirtyWorkingTree("ls -la", dirtyCwd)).toBeNull();
+		expect(execSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("warns when checkout runs with uncommitted changes", () => {
+		execSyncMock.mockReturnValue(" M src/a.ts\n?? src/b.ts");
+		const result = checkDirtyWorkingTree("git checkout main", dirtyCwd);
+		expect(result?.warning).toContain("2 uncommitted change");
+	});
+
+	it("matches switch / rebase / reset verbs too", () => {
+		execSyncMock.mockReturnValue(" M one.ts");
+		expect(checkDirtyWorkingTree("git switch other", dirtyCwd)?.warning).toBeDefined();
+		expect(checkDirtyWorkingTree("git rebase main", dirtyCwd)?.warning).toBeDefined();
+		expect(checkDirtyWorkingTree("git reset --hard", dirtyCwd)?.warning).toBeDefined();
+	});
+
+	it("returns null when the working tree is clean", () => {
+		execSyncMock.mockReturnValue("");
+		expect(checkDirtyWorkingTree("git checkout main", dirtyCwd)).toBeNull();
+	});
+
+	it("returns null (catch path) when git status throws", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not a git repo");
+		});
+		expect(checkDirtyWorkingTree("git rebase main", dirtyCwd)).toBeNull();
+	});
+
+	it("still matches across MULTIPLE spaces between `git` and the verb (\\s+ precision)", () => {
+		// `/\bgit\s+(checkout|switch|rebase|reset)\b/` — the separator is
+		// `\s+` (one-or-more). A matcher collapsed to a single mandatory
+		// whitespace char would fail to match "git  checkout" (two spaces).
+		execSyncMock.mockReturnValue(" M one.ts");
+		expect(checkDirtyWorkingTree("git  checkout main", dirtyCwd)?.warning).toBeDefined();
+	});
+});
+
+// =====================================================================
+// checkLargeFileWrite()
+// =====================================================================
+
+describe("checkLargeFileWrite", () => {
+	it("returns null when content is undefined", () => {
+		expect(checkLargeFileWrite(undefined)).toBeNull();
+	});
+
+	it("returns null for content under the 50KB threshold (L290: threshold must stay ~50KB, not ~0)", () => {
+		// At 10KB this is comfortably under the REAL 50KB threshold but would
+		// trip a threshold collapsed toward zero by the mutated arithmetic.
+		expect(checkLargeFileWrite("x".repeat(10 * 1024))).toBeNull();
+	});
+
+	it("warns for content over the 50KB threshold", () => {
+		const result = checkLargeFileWrite("x".repeat(51 * 1024));
+		expect(result?.warning).toContain("large-file");
+		expect(result?.warning).toContain("KB");
+	});
+});
+
+// =====================================================================
+// checkConcurrentEdit()
+// =====================================================================
+
+describe("checkConcurrentEdit", () => {
+	const target = "/repo/src/shared.ts";
+	const now = Date.now();
+	const recentIso = new Date(now - 5_000).toISOString();
+	const oldIso = new Date(now - 20 * 60 * 1000).toISOString(); // 20m > 10m window
+
+	it("returns null when no other session has touched the file", () => {
+		const sessions = [makeSession({ id: "me", written: [target] })];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips the current session even if it wrote the file", () => {
+		const sessions = [
+			makeSession({ id: "me", written: [target], writeTimes: [[target, recentIso]] }),
+		];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips a session that did not write THIS file", () => {
+		const sessions = [makeSession({ id: "other", written: ["/repo/src/elsewhere.ts"] })];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips a session with a STALE write-time entry for a file it no longer lists as written (files_written guard, not just writeTimeStr)", () => {
+		// Regression-shaped: a session whose `file_write_times` map still has a
+		// recent entry for `target`, but whose `files_written` set does NOT
+		// contain `target` — an inconsistent-but-realistic shape (e.g. a file
+		// that was reverted/untracked after being recorded). Without its OWN
+		// fixture this scenario is invisible: every other case in this suite
+		// keeps files_written and file_write_times in sync, so a mutant that
+		// forces the `!session.files_written.has(absPath)` guard to `false`
+		// (never skip) is rescued downstream by the writeTimeStr/NaN guards —
+		// UNLESS file_write_times genuinely has a parseable recent entry, as
+		// here, in which case only THIS guard stands between "skip" and a
+		// false-positive warning about a file the session doesn't list as written.
+		const sessions = [
+			makeSession({
+				id: "inconsistent-other",
+				agentName: "Ghost",
+				written: ["/repo/src/elsewhere.ts"], // does NOT include target
+				writeTimes: [[target, recentIso]], // but DOES carry a fresh entry for target
+			}),
+		];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips a session with no recorded write time for the file", () => {
+		const sessions = [makeSession({ id: "other", written: [target] })]; // no writeTimes
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips a session whose write time is unparseable (NaN guard)", () => {
+		const sessions = [
+			makeSession({ id: "other", written: [target], writeTimes: [[target, "not-a-date"]] }),
+		];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("skips a write older than the 10-minute window", () => {
+		const sessions = [
+			makeSession({ id: "other", written: [target], writeTimes: [[target, oldIso]] }),
+		];
+		expect(checkConcurrentEdit(target, "me", sessions)).toBeNull();
+	});
+
+	it("warns using agent_name when a recent concurrent write exists (L19: window must stay minutes-scale)", () => {
+		// At 5s old this is comfortably within the REAL 10-minute window but
+		// would fall OUTSIDE a window collapsed toward zero by the mutated
+		// arithmetic — the mutant would (wrongly) skip it as "too old".
+		const sessions = [
+			makeSession({
+				id: "other-session-id",
+				agentName: "Reviewer",
+				written: [target],
+				writeTimes: [[target, recentIso]],
+			}),
+		];
+		const result = checkConcurrentEdit(target, "me", sessions);
+		expect(result?.warning).toContain('"Reviewer"');
+		expect(result?.warning).toContain("concurrent-edit");
+	});
+
+	it("still warns when a write is EXACTLY at the 10-minute window boundary — ageMs > WINDOW excludes only STRICTLY older writes (L19/L328-329)", () => {
+		// `ageMs > CONCURRENT_EDIT_WINDOW_MS` must be a strict `>`: at ageMs
+		// EXACTLY equal to the window, the write is still "within" it (not yet
+		// too old). A mutant widening this to `>=` would wrongly skip it. Real
+		// wall-clock timing can't hit this boundary deterministically (elapsed
+		// time between capturing "now" and the call always pushes ageMs
+		// slightly past the target), so this pins Date.now() with fake timers.
+		vi.useFakeTimers();
+		try {
+			const fixedNow = new Date("2026-01-01T00:00:00.000Z").getTime();
+			vi.setSystemTime(fixedNow);
+			const windowMs = 10 * 60 * 1000; // CONCURRENT_EDIT_WINDOW_MS in pre-checks.ts
+			const boundaryIso = new Date(fixedNow - windowMs).toISOString();
+			const sessions = [
+				makeSession({
+					id: "boundary-session",
+					agentName: "Boundary",
+					written: [target],
+					writeTimes: [[target, boundaryIso]],
+				}),
+			];
+			const result = checkConcurrentEdit(target, "me", sessions);
+			expect(result?.warning).toContain('"Boundary"');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("falls back to a session_id slice when agent_name is empty", () => {
+		const sessions = [
+			makeSession({
+				id: "abcdef1234567890",
+				agentName: "",
+				written: [target],
+				writeTimes: [[target, recentIso]],
+			}),
+		];
+		const result = checkConcurrentEdit(target, "me", sessions);
+		expect(result?.warning).toContain('"abcdef12"'); // first 8 chars
+	});
+
+	it("resolves a relative target path against cwd before comparison", () => {
+		const rel = "src/rel-target.ts";
+		const abs = join(process.cwd(), rel);
+		const sessions = [
+			makeSession({
+				id: "peer",
+				agentName: "Peer",
+				written: [abs],
+				writeTimes: [[abs, recentIso]],
+			}),
+		];
+		expect(checkConcurrentEdit(rel, "me", sessions)?.warning).toContain('"Peer"');
 	});
 });

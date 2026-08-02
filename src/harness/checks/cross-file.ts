@@ -172,13 +172,9 @@ function nameRoot(name: string): string {
 	return name.replace(/(?:Schema|Type|Shape|Validator|Spec)$/, "").toLowerCase();
 }
 
-/** Public API — flags Zod schema vs TS interface drift in the same file. */
-export function checkSchemaTypeDrift(content: string, filePath: string): InlineMatch[] {
-	if (isTestFile(filePath)) return [];
-	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
-
+/** Finds every `z.object({ ... })`-shaped const and its key set. */
+function collectZodSchemaShapes(content: string): SchemaShape[] {
 	const shapes: SchemaShape[] = [];
-
 	ZOD_SCHEMA_RE.lastIndex = 0;
 	let m: RegExpExecArray | null = ZOD_SCHEMA_RE.exec(content);
 	while (m !== null) {
@@ -194,7 +190,12 @@ export function checkSchemaTypeDrift(content: string, filePath: string): InlineM
 		}
 		m = ZOD_SCHEMA_RE.exec(content);
 	}
+	return shapes;
+}
 
+/** Finds every `interface Foo { ... }` / `type Foo = { ... }` and its key set. */
+function collectTypeOrInterfaceShapes(content: string): SchemaShape[] {
+	const shapes: SchemaShape[] = [];
 	TYPE_OR_INTERFACE_RE.lastIndex = 0;
 	let t: RegExpExecArray | null = TYPE_OR_INTERFACE_RE.exec(content);
 	while (t !== null) {
@@ -213,11 +214,13 @@ export function checkSchemaTypeDrift(content: string, filePath: string): InlineM
 		}
 		t = TYPE_OR_INTERFACE_RE.exec(content);
 	}
+	return shapes;
+}
 
+/** Pairs schemas with same-root types and reports any key-set drift between them. */
+function buildDriftMatches(schemas: SchemaShape[], types: SchemaShape[]): InlineMatch[] {
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 3;
-	const schemas = shapes.filter((s) => s.kind === "schema");
-	const types = shapes.filter((s) => s.kind === "type");
 
 	for (const schema of schemas) {
 		if (matches.length >= MAX_MATCHES) break;
@@ -239,6 +242,20 @@ export function checkSchemaTypeDrift(content: string, filePath: string): InlineM
 		});
 	}
 	return matches;
+}
+
+/** Public API — flags Zod schema vs TS interface drift in the same file. */
+export function checkSchemaTypeDrift(content: string, filePath: string): InlineMatch[] {
+	if (isTestFile(filePath)) return [];
+	if (!JS_TS_EXTS.has(getExtension(filePath))) return [];
+
+	const shapes: SchemaShape[] = [
+		...collectZodSchemaShapes(content),
+		...collectTypeOrInterfaceShapes(content),
+	];
+	const schemas = shapes.filter((s) => s.kind === "schema");
+	const types = shapes.filter((s) => s.kind === "type");
+	return buildDriftMatches(schemas, types);
 }
 
 // ==========================================================================

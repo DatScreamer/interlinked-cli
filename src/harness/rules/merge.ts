@@ -50,25 +50,7 @@ export function mergeTeamRules(config: GuardRulesConfig, team: Partial<GuardRule
 		Object.assign(config.curl_mcp_detection, team.curl_mcp_detection);
 	}
 	if (team.quality_checks) {
-		// Team config can only toggle safe fields on EXISTING checks — not add commands
-		for (const [key, teamCheck] of Object.entries(team.quality_checks)) {
-			const existing = config.quality_checks[key];
-			if (!existing) continue; // Team cannot add new check entries
-			if (!teamCheck || typeof teamCheck !== "object") continue;
-			const checkOverrides: Partial<QualityCheckConfig> = teamCheck;
-			for (const field of Object.keys(checkOverrides)) {
-				if (!QUALITY_CHECK_SAFE_FIELDS.has(field)) continue;
-				// Safe fields: enabled, file_types, timeout_ms, severity, description
-				const safeKey = field as keyof Pick<
-					QualityCheckConfig,
-					"enabled" | "file_types" | "timeout_ms" | "severity" | "description"
-				>;
-				const val = checkOverrides[safeKey];
-				if (val !== undefined) {
-					existing[safeKey] = val as never;
-				}
-			}
-		}
+		applyTeamQualityCheckOverrides(config, team.quality_checks);
 	}
 	if (team.error_memory) {
 		Object.assign(config.error_memory, team.error_memory);
@@ -202,6 +184,38 @@ export function mergeLocalOverrides(
 	// SessionEnd scratchpad archive (default ON) — local can disable or tune
 	// the caps; shallow-merged so a partial override keeps the other knobs.
 	mergeOptionalSection(config, local, "scratchpad_archive");
+}
+
+/**
+ * Team config can only toggle safe fields (see QUALITY_CHECK_SAFE_FIELDS) on
+ * EXISTING quality-check entries — it can neither add new entries nor set a
+ * `command` on one, since a committed config file is attacker-reachable via a
+ * malicious PR. Extracted from `mergeTeamRules` (its deepest-nested block) so
+ * the safe-field iteration reads as one unit answering "what may team config
+ * change on this one existing check".
+ */
+function applyTeamQualityCheckOverrides(
+	config: GuardRulesConfig,
+	teamQualityChecks: Record<string, QualityCheckConfig>,
+): void {
+	for (const [key, teamCheck] of Object.entries(teamQualityChecks)) {
+		const existing = config.quality_checks[key];
+		if (!existing) continue; // Team cannot add new check entries
+		if (!teamCheck || typeof teamCheck !== "object") continue;
+		const checkOverrides: Partial<QualityCheckConfig> = teamCheck;
+		for (const field of Object.keys(checkOverrides)) {
+			if (!QUALITY_CHECK_SAFE_FIELDS.has(field)) continue;
+			// Safe fields: enabled, file_types, timeout_ms, severity, description
+			const safeKey = field as keyof Pick<
+				QualityCheckConfig,
+				"enabled" | "file_types" | "timeout_ms" | "severity" | "description"
+			>;
+			const val = checkOverrides[safeKey];
+			if (val !== undefined) {
+				existing[safeKey] = val as never;
+			}
+		}
+	}
 }
 
 /** Shallow-merge one optional config section: assign into the existing

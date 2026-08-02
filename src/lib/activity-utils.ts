@@ -83,22 +83,12 @@ function tokenSuffix(tokens?: TokenUsage): string {
 }
 
 /**
- * Format an activity event into a human-readable one-line summary.
- * Creates contextual descriptions for common tools (Read, Write, Edit, Bash, etc.).
- * Includes token counts when present.
+ * Render the human-readable action string for a single tool invocation
+ * (the per-tool-kind formatting rules that used to live inline in
+ * `formatActivitySummary`). Split out so that function reads as a summary
+ * of the algorithm rather than the tool-name dispatch table itself.
  */
-export function formatActivitySummary(e: ActivityEvent): string {
-	if (e.event_type === "session_end" || e.type === "session_end") {
-		return "Session ended";
-	}
-	if (e.event_type === "session_start" || e.type === "session_start") {
-		return "Session started";
-	}
-
-	const tool = e.tool_name || e.tool || "unknown tool";
-	const input = e.tool_input_summary || e.summary || "";
-	const tok = tokenSuffix(e.tokens);
-
+function formatToolAction(tool: string, input: string, tok: string): string {
 	switch (tool) {
 		case "Read":
 		case "ReadFile":
@@ -122,4 +112,24 @@ export function formatActivitySummary(e: ActivityEvent): string {
 		default:
 			return input ? `${tool}: ${truncate(input, 50)}${tok}` : `Used ${tool}${tok}`;
 	}
+}
+
+/**
+ * Format an activity event into a human-readable one-line summary.
+ * Creates contextual descriptions for common tools (Read, Write, Edit, Bash, etc.).
+ * Includes token counts when present.
+ */
+export function formatActivitySummary(e: ActivityEvent): string {
+	if (e.event_type === "session_end" || e.type === "session_end") {
+		return "Session ended";
+	}
+	if (e.event_type === "session_start" || e.type === "session_start") {
+		return "Session started";
+	}
+
+	const tool = e.tool_name || e.tool || "unknown tool";
+	const input = e.tool_input_summary || e.summary || "";
+	const tok = tokenSuffix(e.tokens);
+
+	return formatToolAction(tool, input, tok);
 }

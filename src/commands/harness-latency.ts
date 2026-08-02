@@ -160,13 +160,41 @@ export function computeLatencyReport(
 }
 
 /**
- * Compute per-tool stats. Two data sources:
- *  1. **Real per-tool timings** from Phase A.7's `tool_breakdown` field — each
- *     subprocess (tsc, biome, eslint, etc.) reports its own elapsedMs.
- *  2. **Fallback when-present approximation** for legacy log lines without
- *     `tool_breakdown`: bucket the total `checks_timing_ms` against each tool
- *     present in `checks_ran`. Overstates individual cost but preserves the
- *     ordering signal until the user has a fresh log post-A.7.
+ * Bucket one record's REAL per-tool timings from Phase A.7's `tool_breakdown`
+ * field — each subprocess (tsc, biome, eslint, etc.) reports its own
+ * elapsedMs. No-op when the record predates A.7 (no `tool_breakdown`).
+ */
+function addBreakdownTimings(buckets: Map<string, number[]>, r: LatencyRecord): void {
+	if (!Array.isArray(r.tool_breakdown)) return;
+	for (const entry of r.tool_breakdown) {
+		if (!entry || typeof entry.tool !== "string" || typeof entry.ms !== "number") continue;
+		const arr = buckets.get(entry.tool) ?? [];
+		arr.push(entry.ms);
+		buckets.set(entry.tool, arr);
+	}
+}
+
+/**
+ * Fallback for legacy log lines without `tool_breakdown`: bucket the
+ * record's total `checks_timing_ms` against every tool present in
+ * `checks_ran`. Overstates individual cost but preserves the ordering
+ * signal for archived (pre-A.7) logs.
+ */
+function addChecksRanTimings(buckets: Map<string, number[]>, r: LatencyRecord): void {
+	if (!Array.isArray(r.checks_ran)) return;
+	const t = r.checks_timing_ms;
+	for (const tool of r.checks_ran) {
+		if (typeof tool !== "string") continue;
+		const arr = buckets.get(tool) ?? [];
+		if (typeof t === "number") arr.push(t);
+		buckets.set(tool, arr);
+	}
+}
+
+/**
+ * Compute per-tool stats. Two data sources — see `addBreakdownTimings` (real
+ * per-tool elapsed times) and `addChecksRanTimings` (when-present
+ * approximation for legacy logs).
  *
  * When at least one record carries `tool_breakdown`, we prefer the real
  * timings exclusively — mixing apples and oranges across the two would skew
@@ -177,26 +205,9 @@ function computeByToolStats(records: LatencyRecord[]): ByToolStats[] {
 	const hasBreakdown = records.some((r) => Array.isArray(r.tool_breakdown) && r.tool_breakdown.length > 0);
 	const buckets = new Map<string, number[]>();
 	if (hasBreakdown) {
-		for (const r of records) {
-			if (!Array.isArray(r.tool_breakdown)) continue;
-			for (const entry of r.tool_breakdown) {
-				if (!entry || typeof entry.tool !== "string" || typeof entry.ms !== "number") continue;
-				const arr = buckets.get(entry.tool) ?? [];
-				arr.push(entry.ms);
-				buckets.set(entry.tool, arr);
-			}
-		}
+		for (const r of records) addBreakdownTimings(buckets, r);
 	} else {
-		for (const r of records) {
-			if (!Array.isArray(r.checks_ran)) continue;
-			const t = r.checks_timing_ms;
-			for (const tool of r.checks_ran) {
-				if (typeof tool !== "string") continue;
-				const arr = buckets.get(tool) ?? [];
-				if (typeof t === "number") arr.push(t);
-				buckets.set(tool, arr);
-			}
-		}
+		for (const r of records) addChecksRanTimings(buckets, r);
 	}
 	const stats: ByToolStats[] = [];
 	for (const [tool, timings] of buckets.entries()) {

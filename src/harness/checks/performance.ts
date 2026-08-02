@@ -43,6 +43,61 @@ export interface LoopBody {
 	originalBodyLines: string[];
 }
 
+/** Net brace-nesting delta contributed by one (already comment/string-stripped) line. */
+function braceDelta(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
+ * Does this stripped line start a for/while/loop head we track?
+ * Also matches Go/Rust for without parens — for ... {, for ... in ... {
+ * Excludes "for await" — that's an async iterator, not a sequential loop.
+ */
+function isBraceLoopHeadLine(line: string): boolean {
+	if (!/^\s*(for\s*[\s(]|while\s*[\s(]|loop\s*\{)/.test(line)) return false;
+	if (/\bfor\s+await\b/.test(line)) return false;
+	return true;
+}
+
+/**
+ * Find the line — within a 5-line lookahead from `from` — that opens the
+ * loop's brace. It may be on the head line itself or wrap onto later lines.
+ */
+function findLoopBraceLine(strippedLines: string[], from: number): number {
+	const end = Math.min(from + 5, strippedLines.length);
+	for (let k = from; k < end; k++) {
+		if (nonNull(strippedLines[k]).includes("{")) return k;
+	}
+	return -1;
+}
+
+/**
+ * Capture the lines making up a loop body, starting from `bodyStart` at
+ * `initialDepth` open braces, until brace depth returns to (or below) zero.
+ */
+function captureLoopBody(
+	strippedLines: string[],
+	originalLines: string[],
+	bodyStart: number,
+	initialDepth: number,
+): { bodyStrippedLines: string[]; bodyOriginalLines: string[] } {
+	let depth = initialDepth;
+	const bodyStrippedLines: string[] = [];
+	const bodyOriginalLines: string[] = [];
+	for (let j = bodyStart; j < strippedLines.length; j++) {
+		depth += braceDelta(nonNull(strippedLines[j]));
+		if (depth <= 0) break; // Closing brace reached
+		bodyStrippedLines.push(nonNull(strippedLines[j]));
+		bodyOriginalLines.push(nonNull(originalLines[j]));
+	}
+	return { bodyStrippedLines, bodyOriginalLines };
+}
+
 /**
  * Extract loop bodies from brace-delimited languages (JS/TS/Rust/Go/C/C++).
  * Finds for/while/loop heads, tracks brace depth, captures body lines.
@@ -54,46 +109,24 @@ export function extractBraceLoopBodies(content: string): LoopBody[] {
 	const bodies: LoopBody[] = [];
 
 	for (let i = 0; i < strippedLines.length; i++) {
-		const _trimmed = nonNull(strippedLines[i]).trim();
-
-		// Match loop heads: for (...) {, while (...) {, loop {
-		// Also: Go/Rust for without parens — for ... {, for ... in ... {
-		// Skip "for await" — that's an async iterator, not sequential
-		if (!/^\s*(for\s*[\s(]|while\s*[\s(]|loop\s*\{)/.test(nonNull(strippedLines[i]))) continue;
-		if (/\bfor\s+await\b/.test(nonNull(strippedLines[i]))) continue;
+		if (!isBraceLoopHeadLine(nonNull(strippedLines[i]))) continue;
 
 		// Find the opening brace — may be on same line or next few lines
-		let braceLineIdx = -1;
-		for (let k = i; k < Math.min(i + 5, strippedLines.length); k++) {
-			if (nonNull(strippedLines[k]).includes("{")) {
-				braceLineIdx = k;
-				break;
-			}
-		}
+		const braceLineIdx = findLoopBraceLine(strippedLines, i);
 		if (braceLineIdx === -1) continue;
 
 		// Count all braces on the brace line to get initial depth
-		let depth = 0;
-		for (const ch of nonNull(strippedLines[braceLineIdx])) {
-			if (ch === "{") depth++;
-			if (ch === "}") depth--;
-		}
-		if (depth <= 0) continue; // Single-line loop body or empty
+		const initialDepth = braceDelta(nonNull(strippedLines[braceLineIdx]));
+		if (initialDepth <= 0) continue; // Single-line loop body or empty
 
 		// Capture body lines
 		const bodyStart = braceLineIdx + 1;
-		const bodyStrippedLines: string[] = [];
-		const bodyOriginalLines: string[] = [];
-		let j = bodyStart;
-		for (; j < strippedLines.length; j++) {
-			for (const ch of nonNull(strippedLines[j])) {
-				if (ch === "{") depth++;
-				if (ch === "}") depth--;
-			}
-			if (depth <= 0) break; // Closing brace reached
-			bodyStrippedLines.push(nonNull(strippedLines[j]));
-			bodyOriginalLines.push(nonNull(originalLines[j]));
-		}
+		const { bodyStrippedLines, bodyOriginalLines } = captureLoopBody(
+			strippedLines,
+			originalLines,
+			bodyStart,
+			initialDepth,
+		);
 
 		if (bodyStrippedLines.length > 0) {
 			bodies.push({

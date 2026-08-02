@@ -116,6 +116,36 @@ export function checkMagicNumbers(content: string, filePath: string): InlineMatc
 }
 
 /**
+ * Scan forward from the line at index `i` (already known to open an
+ * `if (!x) {` block) tracking brace depth; the moment the if-block's own
+ * opening brace closes, check whether an `else` immediately follows —
+ * either later on the same line or at the start of the next line. Bounded
+ * to a 50-line window; returns false if no closing point is found within it.
+ *
+ * Extracted from `checkNegatedConditionWithElse` — this is the "does the
+ * if-block that starts here have a matching else" question in isolation.
+ */
+function ifBlockHasMatchingElse(strippedLines: string[], i: number): boolean {
+	let braceDepth = 0;
+	for (let j = i; j < Math.min(i + 50, strippedLines.length); j++) {
+		const scanLine = nonNull(strippedLines[j]);
+		for (let k = 0; k < scanLine.length; k++) {
+			const ch = scanLine[k];
+			if (ch === "{") braceDepth++;
+			if (ch !== "}") continue;
+			braceDepth--;
+			// j === i && k === 0 mirrors the original scanner's guard against
+			// the very first character examined (parity, not reachable in practice).
+			if (braceDepth !== 0 || (j === i && k === 0)) continue;
+			const remaining = scanLine.slice(k + 1);
+			if (/\belse\b/.test(remaining)) return true;
+			return j + 1 < strippedLines.length && /^\s*else\b/.test(nonNull(strippedLines[j + 1]));
+		}
+	}
+	return false;
+}
+
+/**
  * Detect `if (!condition) { ... } else { ... }` — negated condition with else.
  * The reader must mentally double-negate. Just flip the branches.
  *
@@ -140,39 +170,49 @@ export function checkNegatedConditionWithElse(content: string, filePath: string)
 		if (!/\bif\s*\(\s*!\s*\w+[\w.]*\s*\)/.test(line)) continue;
 
 		// Must have a corresponding else — scan ahead for } else
-		let braceDepth = 0;
-		let foundElse = false;
-		let scanDone = false;
-		for (let j = i; j < Math.min(i + 50, strippedLines.length) && !scanDone; j++) {
-			const scanLine = strippedLines[j];
-			for (let k = 0; k < nonNull(scanLine).length; k++) {
-				if (nonNull(scanLine)[k] === "{") braceDepth++;
-				if (nonNull(scanLine)[k] === "}") {
-					braceDepth--;
-					// The moment the if-block closes, check for else
-					if (braceDepth === 0 && (j > i || k > 0)) {
-						const remaining = nonNull(scanLine).slice(k + 1);
-						if (/\belse\b/.test(remaining)) {
-							foundElse = true;
-						} else if (
-							j + 1 < strippedLines.length &&
-							/^\s*else\b/.test(nonNull(strippedLines[j + 1]))
-						) {
-							foundElse = true;
-						}
-						scanDone = true;
-						break;
-					}
-				}
-			}
-		}
-
-		if (!foundElse) continue;
+		if (!ifBlockHasMatchingElse(strippedLines, i)) continue;
 
 		matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 	}
 
 	return matches;
+}
+
+/**
+ * Walk one (already comment/string-stripped) line and answer: what is the
+ * deepest ternary-operator nesting reached on it? Optional chaining (`?.`),
+ * nullish coalescing (`??`), and generic type params (`<T>`) are skipped so
+ * none of them are mistaken for a ternary `?`.
+ */
+function maxTernaryNestingDepth(line: string): number {
+	let ternaryDepth = 0;
+	let maxTernaryDepth = 0;
+	let inGeneric = 0;
+
+	for (let j = 0; j < line.length; j++) {
+		const ch = line[j];
+		if (ch === "<") inGeneric++;
+		if (ch === ">") inGeneric = Math.max(0, inGeneric - 1);
+		if (inGeneric > 0) continue;
+
+		// Skip optional chaining ?.
+		if (ch === "?" && j + 1 < line.length && line[j + 1] === ".") continue;
+		// Skip nullish coalescing ??
+		if (ch === "?" && j + 1 < line.length && line[j + 1] === "?") {
+			j++; // skip next ?
+			continue;
+		}
+
+		if (ch === "?") {
+			ternaryDepth++;
+			maxTernaryDepth = Math.max(maxTernaryDepth, ternaryDepth);
+		}
+		if (ch === ":") {
+			if (ternaryDepth > 0) ternaryDepth--;
+		}
+	}
+
+	return maxTernaryDepth;
 }
 
 /**
@@ -199,33 +239,7 @@ export function checkNestedTernary(content: string, filePath: string): InlineMat
 		if (qCount < 2) continue;
 
 		// Verify nesting: walk through and track ternary depth
-		// Skip ?. (optional chaining) and generic type params <T>
-		let ternaryDepth = 0;
-		let maxTernaryDepth = 0;
-		let inGeneric = 0;
-
-		for (let j = 0; j < nonNull(line).length; j++) {
-			const ch = nonNull(line)[j];
-			if (ch === "<") inGeneric++;
-			if (ch === ">") inGeneric = Math.max(0, inGeneric - 1);
-			if (inGeneric > 0) continue;
-
-			// Skip optional chaining ?.
-			if (ch === "?" && j + 1 < nonNull(line).length && nonNull(line)[j + 1] === ".") continue;
-			// Skip nullish coalescing ??
-			if (ch === "?" && j + 1 < nonNull(line).length && nonNull(line)[j + 1] === "?") {
-				j++; // skip next ?
-				continue;
-			}
-
-			if (ch === "?") {
-				ternaryDepth++;
-				maxTernaryDepth = Math.max(maxTernaryDepth, ternaryDepth);
-			}
-			if (ch === ":") {
-				if (ternaryDepth > 0) ternaryDepth--;
-			}
-		}
+		const maxTernaryDepth = maxTernaryNestingDepth(nonNull(line));
 
 		if (maxTernaryDepth >= 2) {
 			matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });

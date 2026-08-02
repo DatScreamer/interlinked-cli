@@ -36,6 +36,77 @@ export const MATCH_LIMIT = 10;
 // Comment/string stripping (preserving string contents)
 // ===========================================
 
+type QuoteChar = "'" | "\"" | "`";
+
+/**
+ * Strip one already-open block comment forward from index `i` in `line`,
+ * looking for its closing `* /` sequence. Returns the still-in-block state
+ * and how many extra characters were consumed (0 or 1, for the closer).
+ */
+function consumeBlockCommentChar(
+	ch: string | undefined,
+	next: string | undefined,
+): { closed: boolean; extraAdvance: number } {
+	if (ch === "*" && next === "/") return { closed: true, extraAdvance: 1 };
+	return { closed: false, extraAdvance: 0 };
+}
+
+/**
+ * Advance the in-string-literal state machine by one character. `stripped`
+ * always keeps the character (string contents are preserved verbatim);
+ * only `quote`/`escaped` change.
+ */
+function consumeQuotedChar(
+	ch: string,
+	quote: QuoteChar,
+	escaped: boolean,
+): { quote: QuoteChar | null; escaped: boolean } {
+	if (escaped) return { quote, escaped: false };
+	if (ch === "\\") return { quote, escaped: true };
+	if (ch === quote) return { quote: null, escaped: false };
+	return { quote, escaped };
+}
+
+/**
+ * Strip comments from a single line, given whether the line starts already
+ * inside a multi-line block comment. String-literal state (`quote`) never
+ * carries across lines — only `inBlock` does.
+ */
+function stripLineComments(line: string, inBlock: boolean): { stripped: string; inBlock: boolean } {
+	let stripped = "";
+	let quote: QuoteChar | null = null;
+	let escaped = false;
+	for (let i = 0; i < line.length; i++) {
+		const ch = line[i];
+		const next = line[i + 1];
+		if (inBlock) {
+			const closer = consumeBlockCommentChar(ch, next);
+			inBlock = !closer.closed;
+			i += closer.extraAdvance;
+			continue;
+		}
+		if (quote) {
+			stripped += ch;
+			({ quote, escaped } = consumeQuotedChar(nonNull(ch), quote, escaped));
+			continue;
+		}
+		if (ch === "'" || ch === "\"" || ch === "`") {
+			quote = ch;
+			stripped += ch;
+			continue;
+		}
+		if (ch === "/" && next === "*") {
+			inBlock = true;
+			i++;
+			continue;
+		}
+		if (ch === "/" && next === "/") break;
+		if (ch === "#") break;
+		stripped += ch;
+	}
+	return { stripped, inBlock };
+}
+
 /**
  * Strip `//` line comments, `#` line comments, and block comments while
  * leaving the contents of string literals intact. Distinct from
@@ -46,45 +117,9 @@ export function stripCommentsPreservingStrings(content: string): string {
 	const out: string[] = [];
 	let inBlock = false;
 	for (const line of lines) {
-		let stripped = "";
-		let quote: "'" | "\"" | "`" | null = null;
-		let escaped = false;
-		for (let i = 0; i < line.length; i++) {
-			const ch = line[i];
-			const next = line[i + 1];
-			if (inBlock) {
-				if (ch === "*" && next === "/") {
-					inBlock = false;
-					i++;
-				}
-				continue;
-			}
-			if (quote) {
-				stripped += ch;
-				if (escaped) {
-					escaped = false;
-				} else if (ch === "\\") {
-					escaped = true;
-				} else if (ch === quote) {
-					quote = null;
-				}
-				continue;
-			}
-			if (ch === "'" || ch === "\"" || ch === "`") {
-				quote = ch;
-				stripped += ch;
-				continue;
-			}
-			if (ch === "/" && next === "*") {
-				inBlock = true;
-				i++;
-				continue;
-			}
-			if (ch === "/" && next === "/") break;
-			if (ch === "#") break;
-			stripped += ch;
-		}
-		out.push(stripped);
+		const result = stripLineComments(line, inBlock);
+		out.push(result.stripped);
+		inBlock = result.inBlock;
 	}
 	return out.join("\n");
 }

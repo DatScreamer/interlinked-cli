@@ -265,13 +265,40 @@ function detectDestructiveSequence(buffer: TrajectoryEvent[]): TrajectoryFinding
 	if (!lastTarget) return null;
 
 	const cutoff = last.ts_ms - DESTRUCTIVE_SEQUENCE_WINDOW_MS;
+	const cycle = findDestructiveCyclePrefix(buffer, cutoff, lastTarget);
+	if (!cycle) return null;
+	const { recreateAt, earlierRmAt } = cycle;
 
-	// Walk backwards looking for a recreate and an earlier rm of the same
-	// target. Order: latest event is rm (we already verified). Need to find
-	// in the buffer (excluding the latest event):
-	//   * a recreate event that touches lastTarget, AND
-	//   * an earlier rm event that targets lastTarget,
-	// with the recreate temporally between the two rms.
+	const evidence = [earlierRmAt, recreateAt, buffer.length - 1]
+		.map((idx) => buffer[idx])
+		.filter((e): e is TrajectoryEvent => Boolean(e))
+		.map((e) => quoteEvidence(summarizeInput(e)));
+
+	return {
+		pattern: "destructive_sequence",
+		severity: "warning",
+		message: `[interlinked:trajectory] destructive cycle on ${lastTarget}; pause and verify`,
+		detected_at_ms: last.ts_ms,
+		window_ms: DESTRUCTIVE_SEQUENCE_WINDOW_MS,
+		evidence,
+	};
+}
+
+/** Walk backward from the second-to-last buffer event looking for a recreate
+ *  of `lastTarget` and, further back, an earlier rm of the same target — the
+ *  two positions `detectDestructiveSequence` needs to confirm a cycle. Order:
+ *  the latest event is rm (caller already verified). Need to find, excluding
+ *  the latest event:
+ *    * a recreate event that touches lastTarget, AND
+ *    * an earlier rm event that targets lastTarget,
+ *  with the recreate temporally between the two rms. Stops scanning once
+ *  `cutoff` is passed. Returns null if the window closes before both are
+ *  found. */
+function findDestructiveCyclePrefix(
+	buffer: TrajectoryEvent[],
+	cutoff: number,
+	lastTarget: string,
+): { recreateAt: number; earlierRmAt: number } | null {
 	let recreateAt = -1;
 	let earlierRmAt = -1;
 	for (let i = buffer.length - 2; i >= 0; i--) {
@@ -299,20 +326,7 @@ function detectDestructiveSequence(buffer: TrajectoryEvent[]): TrajectoryFinding
 	}
 
 	if (recreateAt === -1 || earlierRmAt === -1) return null;
-
-	const evidence = [earlierRmAt, recreateAt, buffer.length - 1]
-		.map((idx) => buffer[idx])
-		.filter((e): e is TrajectoryEvent => Boolean(e))
-		.map((e) => quoteEvidence(summarizeInput(e)));
-
-	return {
-		pattern: "destructive_sequence",
-		severity: "warning",
-		message: `[interlinked:trajectory] destructive cycle on ${lastTarget}; pause and verify`,
-		detected_at_ms: last.ts_ms,
-		window_ms: DESTRUCTIVE_SEQUENCE_WINDOW_MS,
-		evidence,
-	};
+	return { recreateAt, earlierRmAt };
 }
 
 /** Unbacked-off retry: 3+ consecutive trailing PostToolUseFailure events

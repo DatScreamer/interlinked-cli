@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Command } from "commander";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DoctestExec } from "../harness/doctest.js";
-import { findMarkdownFiles, runDoctestSuite } from "./doctest.js";
+import { doctestCommand, findMarkdownFiles, registerDoctestCommand, runDoctestSuite } from "./doctest.js";
 
 const DOC = ["```bash doctest", "cmd-a", "```", "```bash", "rm -rf /", "```", "```sh doctest", "cmd-b", "```"].join(
 	"\n",
@@ -36,6 +37,20 @@ describe("runDoctestSuite", () => {
 		}, () => ({ exitCode: 0 }));
 		expect(r.total).toBe(0);
 	});
+
+	it("skips a file whose blocks are all untagged (continue on empty extraction)", () => {
+		const ran: string[] = [];
+		const r = runDoctestSuite(
+			["plain.md"],
+			() => "# just prose\n\n```bash\necho hi\n```\n",
+			(code) => {
+				ran.push(code);
+				return { exitCode: 0 };
+			},
+		);
+		expect(r).toEqual({ total: 0, failed: 0, failures: [] });
+		expect(ran).toEqual([]);
+	});
 });
 
 describe("findMarkdownFiles", () => {
@@ -56,5 +71,145 @@ describe("findMarkdownFiles", () => {
 		writeFileSync(join(cwd, "notes.txt"), "x");
 		const found = findMarkdownFiles(cwd).map((f) => f.replace(`${cwd}/`, "")).sort();
 		expect(found).toEqual(["README.md", "docs/guide.md"]);
+	});
+
+	it("also skips .git and dist directories", () => {
+		mkdirSync(join(cwd, ".git", "refs"), { recursive: true });
+		mkdirSync(join(cwd, "dist", "sub"), { recursive: true });
+		writeFileSync(join(cwd, "README.md"), "#");
+		writeFileSync(join(cwd, ".git", "refs", "COMMIT_EDITMSG.md"), "#");
+		writeFileSync(join(cwd, "dist", "sub", "bundled.md"), "#");
+		const found = findMarkdownFiles(cwd).map((f) => f.replace(`${cwd}/`, "")).sort();
+		expect(found).toEqual(["README.md"]);
+	});
+});
+
+// ===========================================
+// doctestCommand — the real entry point, real bash
+// ===========================================
+// These drive the actual production path (bashExec spawns real `bash`) against
+// tmpdir fixtures, and assert on rendered console output / process.exitCode —
+// the observable surface a caller (CI) actually depends on.
+describe("doctestCommand", () => {
+	let cwd: string;
+	let logs: string[];
+	let logSpy: ReturnType<typeof vi.spyOn>;
+	let origExitCode: string | number | undefined;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "doctest-cmd-"));
+		logs = [];
+		origExitCode = process.exitCode;
+		process.exitCode = undefined;
+		logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			logs.push(args.map((a) => String(a)).join(" "));
+		});
+	});
+
+	afterEach(() => {
+		logSpy.mockRestore();
+		process.exitCode = origExitCode;
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("runs real bash for each tagged block, prints the failing one + summary, and sets exitCode 1", () => {
+		const file = join(cwd, "guide.md");
+		writeFileSync(file, ["```bash doctest", "true", "```", "```bash doctest", "exit 3", "```"].join("\n"));
+
+		doctestCommand({ path: cwd });
+
+		expect(logs).toEqual([`✗ ${file}:4 — exit 3`, "doctest: 1/2 block(s) passed"]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("prints machine-readable JSON and leaves exitCode untouched when every block passes", () => {
+		writeFileSync(join(cwd, "guide.md"), ["```sh doctest", "true", "```"].join("\n"));
+
+		doctestCommand({ path: cwd, json: true });
+
+		expect(logs).toHaveLength(1);
+		expect(JSON.parse(logs[0] as string)).toEqual({ total: 1, failed: 0, failures: [] });
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("accepts a direct file path (non-directory branch) instead of a directory root", () => {
+		const file = join(cwd, "single.md");
+		writeFileSync(file, ["```bash doctest", "false", "```"].join("\n"));
+
+		doctestCommand({ path: file, json: true });
+
+		expect(JSON.parse(logs[0] as string)).toEqual({
+			total: 1,
+			failed: 1,
+			failures: [{ file, line: 1, exitCode: 1 }],
+		});
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("defaults to process.cwd() when --path is omitted", () => {
+		// Mock process.cwd() rather than actually chdir()-ing: a real chdir
+		// mutates process-wide ambient state for the whole test worker, which
+		// can leak into unrelated concurrently-running code. Mocking the
+		// return value exercises the same `opts.path ?? process.cwd()`
+		// branch with none of that risk, and is restored before this test
+		// returns.
+		writeFileSync(join(cwd, "cwd.md"), ["```bash doctest", "true", "```"].join("\n"));
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+		try {
+			doctestCommand({ json: true });
+		} finally {
+			cwdSpy.mockRestore();
+		}
+
+		expect(JSON.parse(logs[0] as string)).toEqual({ total: 1, failed: 0, failures: [] });
+	});
+
+	it("treats a nonexistent path as zero files found (statSync throws -> catch -> [])", () => {
+		doctestCommand({ path: join(cwd, "does-not-exist"), json: true });
+
+		expect(JSON.parse(logs[0] as string)).toEqual({ total: 0, failed: 0, failures: [] });
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("registerDoctestCommand", () => {
+	let cwd: string;
+	let logs: string[];
+	let logSpy: ReturnType<typeof vi.spyOn>;
+	let origExitCode: string | number | undefined;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "doctest-register-"));
+		logs = [];
+		origExitCode = process.exitCode;
+		process.exitCode = undefined;
+		logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			logs.push(args.map((a) => String(a)).join(" "));
+		});
+	});
+
+	afterEach(() => {
+		logSpy.mockRestore();
+		process.exitCode = origExitCode;
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("wires a `doctest` subcommand with --path/--json options through to doctestCommand", async () => {
+		writeFileSync(join(cwd, "guide.md"), ["```bash doctest", "true", "```"].join("\n"));
+		const program = new Command();
+		program.exitOverride();
+		registerDoctestCommand(program);
+
+		const sub = program.commands.find((c) => c.name() === "doctest");
+		expect(sub).toBeDefined();
+		expect(sub?.description()).toContain("doctest");
+		const pathOpt = sub?.options.find((o) => o.long === "--path");
+		const jsonOpt = sub?.options.find((o) => o.long === "--json");
+		expect(pathOpt?.description).toBe("File or directory to scan (default: cwd)");
+		expect(jsonOpt?.description).toBe("Machine-readable output");
+
+		await program.parseAsync(["doctest", "--path", cwd, "--json"], { from: "user" });
+
+		expect(JSON.parse(logs[0] as string)).toEqual({ total: 1, failed: 0, failures: [] });
 	});
 });

@@ -235,6 +235,22 @@ function toJsonPayload(result: GateResult): {
 }
 
 /**
+ * Print a fatal error — JSON or human, matching whichever mode the caller is
+ * in — then exit with `exitCode`. Shared tail of the three catch blocks below
+ * (entry resolution, path validation, atomic write): same shape, only the
+ * exit code and message prefix differ.
+ */
+function exitWithError(useJson: boolean, err: unknown, exitCode: number, prefix: string): never {
+	const message = err instanceof Error ? err.message : String(err);
+	if (useJson) {
+		console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+	} else {
+		console.error(c.red(`${prefix}${message}`));
+	}
+	process.exit(exitCode);
+}
+
+/**
  * Entry point wired into `src/index.ts`. Thin: parses options, dispatches to
  * single-file or batch mode, runs the gate, writes atomically on success.
  */
@@ -262,13 +278,7 @@ export async function writeCommand(
 			entries = [entry];
 		}
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (useJson) {
-			console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-		} else {
-			console.error(c.red(`interlinked write: ${message}`));
-		}
-		process.exit(EXIT_USAGE);
+		exitWithError(useJson, err, EXIT_USAGE, "interlinked write: ");
 	}
 
 	// Validate each target path before the gate runs — paths outside the
@@ -278,13 +288,7 @@ export async function writeCommand(
 			validateTargetPath(path, opts.unsafeOutsideRepo === true);
 		}
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (useJson) {
-			console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-		} else {
-			console.error(c.red(`interlinked write: ${message}`));
-		}
-		process.exit(EXIT_USAGE);
+		exitWithError(useJson, err, EXIT_USAGE, "interlinked write: ");
 	}
 
 	// Gate — the whole point.
@@ -307,13 +311,7 @@ export async function writeCommand(
 	try {
 		atomicWriteAll(entries);
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (useJson) {
-			console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-		} else {
-			console.error(c.red(`interlinked write: atomic write failed — ${message}`));
-		}
-		process.exit(EXIT_GATE_FAIL);
+		exitWithError(useJson, err, EXIT_GATE_FAIL, "interlinked write: atomic write failed — ");
 	}
 
 	if (useJson) {

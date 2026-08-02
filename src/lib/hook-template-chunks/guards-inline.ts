@@ -387,7 +387,15 @@ function inlineMergeConflictCheck(hookEvent, toolName, toolInput) {
     return null;
 }
 
-const checkDestructiveCommand = ${DESTRUCTIVE_COMMAND_GUARD_SOURCE};
+// Destructive shell-command ladder — joined function declarations from
+// src/lib/hook-template-chunks/destructive-command-guard.ts (the mask/shutdown
+// helpers + one function per rule family + checkDestructiveCommand itself).
+// This is the SAME source src/hook-entry.ts imports for its cold fallback, so
+// the .mjs (harness-down) and hook-entry.ts cold paths cannot diverge. Spliced
+// bare (no wrapping \`const x = \`) because the blob already contains a
+// \`function checkDestructiveCommand(...) {}\` declaration; plain function
+// declarations hoist so call order inside the blob doesn't matter.
+${DESTRUCTIVE_COMMAND_GUARD_SOURCE}
 
 /**
  * Inline supply-chain fail-closed gate. Daemon-down + a package-install

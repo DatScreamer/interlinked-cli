@@ -22,6 +22,7 @@ import {
 	loadStructureConfig,
 } from "../../harness/structure/structure-loader.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import type { StructureConfig, StructureVerifyOutput } from "../../harness/structure/types.js";
 
 const EXIT_INVALID_STRUCTURE_CONFIG = 2;
 const EXIT_DETERMINISTIC_FAILURE = 1;
@@ -118,6 +119,64 @@ const ADOPTION_ACCEPTABLE = 0.5;
 const FULLY_DETERMINISTIC = "fully_deterministic";
 
 /**
+ * Render the human-readable (non-JSON) structure verification report to
+ * stderr: header, mode, finding counts, per-finding details (with their
+ * required-update pointers), and the adoption summary.
+ */
+function writeStructureTextReport(output: StructureVerifyOutput): void {
+	process.stderr.write("\n  \x1b[1minterlinked verify --structure\x1b[0m\n");
+	process.stderr.write(`  mode: ${output.mode}\n`);
+	process.stderr.write(
+		`  findings: ${output.findings.fully_deterministic} deterministic, ${output.findings.partially_deterministic} partial, ${output.findings.heuristic} heuristic\n`,
+	);
+	if (output.details.length > 0) {
+		process.stderr.write("\n");
+		for (const d of output.details) {
+			process.stderr.write(`  \x1b[33m${d.name}\x1b[0m ${d.file}\n`);
+			process.stderr.write(`    artifact: ${d.artifact_id} (${d.determinism})\n`);
+			for (const u of d.required_updates) {
+				process.stderr.write(`    → ${u.file} (${u.kind})\n`);
+			}
+		}
+	}
+	process.stderr.write("\n  \x1b[1madoption:\x1b[0m\n");
+	for (const [cat, val] of Object.entries(output.adoption)) {
+		const pct = (val * 100).toFixed(0);
+		let color = "\x1b[31m";
+		if (val >= ADOPTION_STRONG) color = "\x1b[32m";
+		else if (val >= ADOPTION_ACCEPTABLE) color = "\x1b[33m";
+		process.stderr.write(`    ${cat}: ${color}${pct}%\x1b[0m\n`);
+	}
+	process.stderr.write("\n");
+}
+
+/**
+ * Enforce `--adoption-gate`: compare each category's adoption against its
+ * configured threshold, writing a failure line (text mode only) and setting
+ * the deterministic-failure exit code for every category that misses. Guard
+ * clause makes this a no-op when the gate wasn't requested.
+ */
+function applyAdoptionGate(
+	opts: { json?: boolean; adoptionGate?: boolean },
+	resolvedConfig: StructureConfig,
+	adoption: Record<string, number>,
+): void {
+	if (!opts.adoptionGate) return;
+	const thresholds = resolvedConfig.adoption.coverage_thresholds;
+	for (const [cat, threshold] of Object.entries(thresholds)) {
+		const actual = adoption[cat] ?? 0;
+		if (actual < threshold) {
+			if (!opts.json) {
+				process.stderr.write(
+					`  \x1b[31madoption gate failed:\x1b[0m ${cat} at ${(actual * 100).toFixed(0)}% (threshold: ${(threshold * 100).toFixed(0)}%)\n`,
+				);
+			}
+			process.exitCode = EXIT_DETERMINISTIC_FAILURE;
+		}
+	}
+}
+
+/**
  * Public API — consumed by `verify.ts` (streaming / --structure-only mode).
  *
  * Run the structure verification and write either a JSON object or a
@@ -150,30 +209,7 @@ export async function runStructureVerify(
 		if (opts.json) {
 			process.stdout.write(`${JSON.stringify({ structure: output }, null, 2)}\n`);
 		} else {
-			process.stderr.write("\n  \x1b[1minterlinked verify --structure\x1b[0m\n");
-			process.stderr.write(`  mode: ${output.mode}\n`);
-			process.stderr.write(
-				`  findings: ${output.findings.fully_deterministic} deterministic, ${output.findings.partially_deterministic} partial, ${output.findings.heuristic} heuristic\n`,
-			);
-			if (output.details.length > 0) {
-				process.stderr.write("\n");
-				for (const d of output.details) {
-					process.stderr.write(`  \x1b[33m${d.name}\x1b[0m ${d.file}\n`);
-					process.stderr.write(`    artifact: ${d.artifact_id} (${d.determinism})\n`);
-					for (const u of d.required_updates) {
-						process.stderr.write(`    → ${u.file} (${u.kind})\n`);
-					}
-				}
-			}
-			process.stderr.write("\n  \x1b[1madoption:\x1b[0m\n");
-			for (const [cat, val] of Object.entries(output.adoption)) {
-				const pct = (val * 100).toFixed(0);
-				let color = "\x1b[31m";
-				if (val >= ADOPTION_STRONG) color = "\x1b[32m";
-				else if (val >= ADOPTION_ACCEPTABLE) color = "\x1b[33m";
-				process.stderr.write(`    ${cat}: ${color}${pct}%\x1b[0m\n`);
-			}
-			process.stderr.write("\n");
+			writeStructureTextReport(output);
 		}
 
 		// Exit code logic per spec
@@ -183,20 +219,7 @@ export async function runStructureVerify(
 		}
 
 		// --adoption-gate
-		if (opts.adoptionGate) {
-			const thresholds = resolvedConfig.adoption.coverage_thresholds;
-			for (const [cat, threshold] of Object.entries(thresholds)) {
-				const actual = adoption[cat] ?? 0;
-				if (actual < threshold) {
-					if (!opts.json) {
-						process.stderr.write(
-							`  \x1b[31madoption gate failed:\x1b[0m ${cat} at ${(actual * 100).toFixed(0)}% (threshold: ${(threshold * 100).toFixed(0)}%)\n`,
-						);
-					}
-					process.exitCode = EXIT_DETERMINISTIC_FAILURE;
-				}
-			}
-		}
+		applyAdoptionGate(opts, resolvedConfig, adoption);
 	} catch (e) {
 		process.stderr.write(
 			`  \x1b[31mStructure verification failed:\x1b[0m ${(e as Error).message}\n`,

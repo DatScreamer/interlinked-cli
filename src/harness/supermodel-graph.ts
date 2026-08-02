@@ -123,18 +123,12 @@ export function loadGraphForFile(sourcePath: string, cwd?: string): SupermodelGr
 	return parseGraphFile(content, absSource, absShard);
 }
 
-/** Parse shard text. Exported for tests. Tolerant: unknown lines are ignored,
- *  unknown section names are ignored, malformed fields within a section null
- *  only that section. Returns null only when the input has no recognizable
- *  structure at all (no header, no sections). */
-export function parseGraphFile(
-	content: string,
-	sourcePath: string,
-	shardPath: string,
-): SupermodelGraph | null {
-	if (!content || content.trim() === "") return null;
-	const rawLines = content.split(/\r?\n/);
-
+/** Where the shard's real content starts, and which comment style armors it.
+ *  Skips a leading run of blank lines and the Go `//go:build ignore` /
+ *  `package ignore` preamble, then classifies the first substantive line as
+ *  `//`- or `#`-commented. Returns null when nothing substantive is found, or
+ *  the first substantive line uses neither comment style. */
+function findShardBody(rawLines: string[]): { cursor: number; prefix: "//" | "#" } | null {
 	let cursor = 0;
 	while (cursor < rawLines.length) {
 		const t = nonNull(rawLines[cursor]).trim();
@@ -147,11 +141,15 @@ export function parseGraphFile(
 	if (cursor >= rawLines.length) return null;
 
 	const firstLine = nonNull(rawLines[cursor]).trim();
-	let prefix: string;
-	if (firstLine.startsWith("//")) prefix = "//";
-	else if (firstLine.startsWith("#")) prefix = "#";
-	else return null;
+	if (firstLine.startsWith("//")) return { cursor, prefix: "//" };
+	if (firstLine.startsWith("#")) return { cursor, prefix: "#" };
+	return null;
+}
 
+/** Strip the comment armor from each body line, starting at `cursor`. A
+ *  non-comment (rogue) line becomes an empty placeholder rather than being
+ *  dropped, so section bucketing below still sees one entry per input line. */
+function stripCommentPrefix(rawLines: string[], cursor: number, prefix: string): string[] {
 	const stripped: string[] = [];
 	for (let i = cursor; i < rawLines.length; i++) {
 		const t = nonNull(rawLines[i]).trim();
@@ -165,7 +163,21 @@ export function parseGraphFile(
 			stripped.push("");
 		}
 	}
+	return stripped;
+}
 
+interface SectionBuckets {
+	sawSection: boolean;
+	depsLines: string[];
+	callsLines: string[];
+	impactLines: string[];
+}
+
+/** Group already-uncommented lines by their enclosing `[deps]`/`[calls]`/
+ *  `[impact]` header. Unknown section headers (e.g. `[futuristic]`) reset the
+ *  current section to null so their body lines are dropped without affecting
+ *  known sections. */
+function bucketSections(stripped: string[]): SectionBuckets {
 	let currentSection: "deps" | "calls" | "impact" | null = null;
 	let sawSection = false;
 	const depsLines: string[] = [];
@@ -198,6 +210,27 @@ export function parseGraphFile(
 		else if (currentSection === "impact") impactLines.push(line);
 	}
 
+	return { sawSection, depsLines, callsLines, impactLines };
+}
+
+/** Parse shard text. Exported for tests. Tolerant: unknown lines are ignored,
+ *  unknown section names are ignored, malformed fields within a section null
+ *  only that section. Returns null only when the input has no recognizable
+ *  structure at all (no header, no sections). */
+export function parseGraphFile(
+	content: string,
+	sourcePath: string,
+	shardPath: string,
+): SupermodelGraph | null {
+	if (!content || content.trim() === "") return null;
+	const rawLines = content.split(/\r?\n/);
+
+	const body = findShardBody(rawLines);
+	if (!body) return null;
+
+	const stripped = stripCommentPrefix(rawLines, body.cursor, body.prefix);
+	const { sawSection, depsLines, callsLines, impactLines } = bucketSections(stripped);
+
 	if (!sawSection) {
 		return { shardPath, sourcePath, impact: null, calls: null, deps: null };
 	}
@@ -226,6 +259,52 @@ function parseDeps(lines: string[]): DepsSection | null {
 	return { imports, importedBy };
 }
 
+/** Which side of the arrow a `[calls]` line describes. */
+type CallDirection = "caller" | "callee";
+
+/** Locate the "FuncName ← Caller" / "FuncName → Callee" arrow in a trimmed
+ *  line and report which direction it encodes. Returns null when neither
+ *  arrow glyph is present (line is not a recognizable calls entry). */
+function detectCallDirection(trimmed: string): { direction: CallDirection; arrowIdx: number } | null {
+	const callerIdx = trimmed.indexOf(" ← ");
+	if (callerIdx !== -1) return { direction: "caller", arrowIdx: callerIdx };
+	const calleeIdx = trimmed.indexOf(" → ");
+	if (calleeIdx !== -1) return { direction: "callee", arrowIdx: calleeIdx };
+	return null;
+}
+
+/** Parse the tokens after the arrow ("CallerName    file:line" or just
+ *  "CallerName" or "CallerName    ?") into the other-function name plus an
+ *  optional file:line site. Returns null only for the defensive (in practice
+ *  unreachable, since `rest` is always a non-empty trimmed string) empty-split
+ *  case, mirroring the original inline `continue`. */
+function parseCallTarget(rest: string): { other: string; file: string; line: number } | null {
+	const restTokens = rest.split(/\s+/);
+	if (restTokens.length === 0) return null;
+	if (restTokens.length === 1) {
+		return { other: nonNull(restTokens[0]), file: "", line: 0 };
+	}
+
+	const last = nonNull(restTokens[restTokens.length - 1]);
+	const colonIdx = last.lastIndexOf(":");
+	if (colonIdx !== -1) {
+		const linePart = last.slice(colonIdx + 1);
+		const parsed = Number.parseInt(linePart, 10);
+		if (Number.isFinite(parsed)) {
+			return {
+				other: restTokens.slice(0, -1).join(" "),
+				file: last.slice(0, colonIdx),
+				line: parsed,
+			};
+		}
+		return { other: rest, file: "", line: 0 };
+	}
+	if (last === "?") {
+		return { other: restTokens.slice(0, -1).join(" "), file: "", line: 0 };
+	}
+	return { other: rest, file: "", line: 0 };
+}
+
 function parseCalls(lines: string[]): CallsSection | null {
 	if (lines.length === 0) return null;
 	const callers: CallsSection["callers"] = [];
@@ -235,49 +314,19 @@ function parseCalls(lines: string[]): CallsSection | null {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 
-		let arrowIdx = trimmed.indexOf(" ← ");
-		let direction: "caller" | "callee" | null = null;
-		if (arrowIdx !== -1) direction = "caller";
-		else {
-			arrowIdx = trimmed.indexOf(" → ");
-			if (arrowIdx !== -1) direction = "callee";
-		}
-		if (direction === null) continue;
+		const detected = detectCallDirection(trimmed);
+		if (!detected) continue;
+		const { direction, arrowIdx } = detected;
 
 		const fn = trimmed.slice(0, arrowIdx).trim();
 		const rest = trimmed.slice(arrowIdx + 3).trim();
 		if (!fn || !rest) continue;
 
-		const restTokens = rest.split(/\s+/);
-		if (restTokens.length === 0) continue;
+		const target = parseCallTarget(rest);
+		if (!target) continue;
 
-		let other: string;
-		let file = "";
-		let lineNum = 0;
-		if (restTokens.length === 1) {
-			other = nonNull(restTokens[0]);
-		} else {
-			const last = restTokens[restTokens.length - 1];
-			const colonIdx = nonNull(last).lastIndexOf(":");
-			if (colonIdx !== -1) {
-				const linePart = nonNull(last).slice(colonIdx + 1);
-				const parsed = Number.parseInt(linePart, 10);
-				if (Number.isFinite(parsed)) {
-					file = nonNull(last).slice(0, colonIdx);
-					lineNum = parsed;
-					other = restTokens.slice(0, -1).join(" ");
-				} else {
-					other = rest;
-				}
-			} else if (last === "?") {
-				other = restTokens.slice(0, -1).join(" ");
-			} else {
-				other = rest;
-			}
-		}
-
-		if (direction === "caller") callers.push({ fn, caller: other, file, line: lineNum });
-		else callees.push({ fn, callee: other, file, line: lineNum });
+		if (direction === "caller") callers.push({ fn, caller: target.other, file: target.file, line: target.line });
+		else callees.push({ fn, callee: target.other, file: target.file, line: target.line });
 	}
 
 	if (callers.length === 0 && callees.length === 0) return null;

@@ -246,6 +246,44 @@ export { isTscFindingBlocking };
 // ───────────────────────────────────────────────
 
 /**
+ * Best-effort cleanup of a leftover `.tmp` file after a failed write/rename.
+ * Failure here is secondary — the primary write error is what the caller
+ * surfaces — so we only log, never throw.
+ */
+function cleanupTmpFile(tmp: string): void {
+	try {
+		if (existsSync(tmp)) unlinkSync(tmp);
+	} catch (cleanupErr) {
+		const cleanupMsg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+		console.error(`[multi-edit] warning: failed to clean up ${tmp}: ${cleanupMsg}`);
+	}
+}
+
+/**
+ * Restore every already-written file back to its prior on-disk content.
+ * Best-effort per file — if one rollback fails we still attempt the rest,
+ * logging each failure since there's no way to recover from it here.
+ */
+function rollbackWrittenFiles(
+	written: string[],
+	finals: Array<{ path: string; content: string; priorContent: string }>,
+): void {
+	for (const rollbackPath of written) {
+		const prior = finals.find((f) => f.path === rollbackPath)?.priorContent;
+		if (prior === undefined) continue;
+		try {
+			writeFileSync(rollbackPath, prior, "utf-8");
+		} catch (rollbackErr) {
+			const rollbackMsg =
+				rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+			console.error(
+				`[multi-edit] CRITICAL: rollback of ${rollbackPath} failed: ${rollbackMsg}`,
+			);
+		}
+	}
+}
+
+/**
  * Write a batch of (path, content) pairs atomically.
  *
  * "Atomic across the batch" means: if we can't complete all writes, we roll
@@ -266,37 +304,10 @@ export function atomicBatchWrite(
 			renameSync(tmp, path);
 			written.push(path);
 		} catch (err) {
-			// Rollback: restore everything we already wrote back to its
-			// prior content. Also clean up the leftover .tmp if rename
-			// failed before rename.
-			try {
-				if (existsSync(tmp)) unlinkSync(tmp);
-			} catch (cleanupErr) {
-				// Best-effort tmp cleanup — the primary write error below is
-				// what we'll surface to the caller. Logging the cleanup
-				// failure separately so it's not completely invisible.
-				const cleanupMsg =
-					cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-				console.error(`[multi-edit] warning: failed to clean up ${tmp}: ${cleanupMsg}`);
-			}
-			for (const rollbackPath of written) {
-				const prior = finals.find((f) => f.path === rollbackPath)?.priorContent;
-				if (prior !== undefined) {
-					try {
-						writeFileSync(rollbackPath, prior, "utf-8");
-					} catch (rollbackErr) {
-						// Last-ditch — if rollback itself fails we can't
-						// recover, but surface the failure to the user.
-						const rollbackMsg =
-							rollbackErr instanceof Error
-								? rollbackErr.message
-								: String(rollbackErr);
-						console.error(
-							`[multi-edit] CRITICAL: rollback of ${rollbackPath} failed: ${rollbackMsg}`,
-						);
-					}
-				}
-			}
+			// Rollback: clean up the leftover .tmp, then restore everything
+			// we already wrote back to its prior content.
+			cleanupTmpFile(tmp);
+			rollbackWrittenFiles(written, finals);
 			const msg = err instanceof Error ? err.message : String(err);
 			return { ok: false, failedPath: path, message: msg };
 		}

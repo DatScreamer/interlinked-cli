@@ -181,6 +181,25 @@ function headerHasGuard(content: string): boolean {
 // coverage of exotic tokenizer corner cases — they only need to handle code
 // well enough that a regex probe doesn't false-match text inside a docstring
 // or line comment.
+//
+// Both strippers below (Python and C-style) are small single-pass state
+// machines: the outer loop only dispatches on the current mode (one flat
+// if/else-if chain, cheap regardless of nesting depth); each mode's actual
+// per-character decision lives in its own top-level `step*` function, so none
+// of that decision logic is nested inside the loop *and* inside an outer
+// mode-check. `blankChar` / `blankEscapeSpan` (shared by both strippers)
+// factor out the "replace with a space, but keep real newlines so line
+// numbers survive" rule that recurs across every mode.
+
+/** Blank a single character while preserving newline position (keeps line numbers stable). */
+function blankChar(ch: string | undefined): string {
+	return ch === "\n" ? "\n" : " ";
+}
+
+/** Blank a 2-char `\<escaped>` span, preserving position if the escaped char is a newline. */
+function blankEscapeSpan(escapedCh: string | undefined): string {
+	return escapedCh === "\n" ? "\\\n" : "  ";
+}
 
 function stripForLanguage(content: string, lang: LanguageId): string {
 	switch (lang) {
@@ -216,154 +235,158 @@ function stripForLanguage(content: string, lang: LanguageId): string {
 	}
 }
 
+type PyStringDelim = '"' | "'" | '"""' | "'''";
+
+type PyMode =
+	| { kind: "code" }
+	| { kind: "line" }
+	| { kind: "string"; delim: PyStringDelim };
+
+interface PyStep {
+	/** Text to append to the output, preserving offsets. */
+	text: string;
+	/** Characters of `content` this step consumes. */
+	consumed: number;
+	mode: PyMode;
+}
+
+function pyStepLineMode(ch: string | undefined): PyStep {
+	if (ch === "\n") return { text: "\n", consumed: 1, mode: { kind: "code" } };
+	return { text: " ", consumed: 1, mode: { kind: "line" } };
+}
+
+function pyStepStringMode(
+	ch: string | undefined,
+	next3: string,
+	nextCh: string | undefined,
+	delim: PyStringDelim,
+	hasNext: boolean,
+): PyStep {
+	if (delim.length === 3 && next3 === delim) {
+		return { text: "   ", consumed: 3, mode: { kind: "code" } };
+	}
+	if (delim.length === 1 && ch === delim) {
+		return { text: nonNull(ch), consumed: 1, mode: { kind: "code" } };
+	}
+	if (ch === "\\" && hasNext) {
+		// Preserve newline positions; blank otherwise.
+		return { text: blankEscapeSpan(nextCh), consumed: 2, mode: { kind: "string", delim } };
+	}
+	return { text: blankChar(ch), consumed: 1, mode: { kind: "string", delim } };
+}
+
+function pyStepCodeMode(ch: string | undefined, next3: string): PyStep {
+	if (ch === "#") return { text: " ", consumed: 1, mode: { kind: "line" } };
+	if (next3 === '"""' || next3 === "'''") {
+		return { text: next3, consumed: 3, mode: { kind: "string", delim: next3 as '"""' | "'''" } };
+	}
+	if (ch === '"' || ch === "'") {
+		return { text: ch, consumed: 1, mode: { kind: "string", delim: ch } };
+	}
+	return { text: nonNull(ch), consumed: 1, mode: { kind: "code" } };
+}
+
 /** Strip Python comments (#) and string literals (single, double, triple-quoted). */
 function stripPython(content: string): string {
 	const out: string[] = [];
 	let i = 0;
 	const n = content.length;
-	// null = not in string; otherwise the closing delimiter we're waiting for.
-	let inString: null | '"' | "'" | '"""' | "'''" = null;
-	let inLineComment = false;
+	let mode: PyMode = { kind: "code" };
 
 	while (i < n) {
 		const ch = content[i];
 		const next3 = content.slice(i, i + 3);
-
-		if (inLineComment) {
-			if (ch === "\n") {
-				inLineComment = false;
-				out.push("\n");
-			} else {
-				out.push(" ");
-			}
-			i++;
-			continue;
+		let step: PyStep;
+		if (mode.kind === "line") {
+			step = pyStepLineMode(ch);
+		} else if (mode.kind === "string") {
+			step = pyStepStringMode(ch, next3, content[i + 1], mode.delim, i + 1 < n);
+		} else {
+			step = pyStepCodeMode(ch, next3);
 		}
-
-		if (inString) {
-			const closing = inString;
-			if (closing.length === 3 && next3 === closing) {
-				out.push("   ");
-				i += 3;
-				inString = null;
-				continue;
-			}
-			if (closing.length === 1 && ch === closing) {
-				out.push(ch);
-				i++;
-				inString = null;
-				continue;
-			}
-			if (ch === "\\" && i + 1 < n) {
-				// Preserve newline positions; blank otherwise.
-				out.push(content[i + 1] === "\n" ? "\\\n" : "  ");
-				i += 2;
-				continue;
-			}
-			out.push(ch === "\n" ? "\n" : " ");
-			i++;
-			continue;
-		}
-
-		// Not in string/comment
-		if (ch === "#") {
-			inLineComment = true;
-			out.push(" ");
-			i++;
-			continue;
-		}
-		if (next3 === '"""' || next3 === "'''") {
-			out.push(next3);
-			inString = next3 as '"""' | "'''";
-			i += 3;
-			continue;
-		}
-		if (ch === '"' || ch === "'") {
-			out.push(ch);
-			inString = ch as '"' | "'";
-			i++;
-			continue;
-		}
-		out.push(nonNull(ch));
-		i++;
+		out.push(step.text);
+		i += step.consumed;
+		mode = step.mode;
 	}
 
 	return out.join("");
 }
 
 // Strip C-style single-line (//) + block (/* */) comments and quoted strings.
+// Same small state-machine shape as stripPython above (see the shared comment
+// there); this stripper adds a fourth mode ("block") for /* */ comments.
+
+type CStyleMode =
+	| { kind: "code" }
+	| { kind: "line" }
+	| { kind: "block" }
+	| { kind: "string"; delim: '"' | "'" | "`" };
+
+interface CStyleStep {
+	/** Text to append to the output, preserving offsets. */
+	text: string;
+	/** Characters of `content` this step consumes. */
+	consumed: number;
+	mode: CStyleMode;
+}
+
+function stepLineMode(ch: string | undefined): CStyleStep {
+	if (ch === "\n") return { text: "\n", consumed: 1, mode: { kind: "code" } };
+	return { text: " ", consumed: 1, mode: { kind: "line" } };
+}
+
+function stepBlockMode(ch: string | undefined, next: string | undefined): CStyleStep {
+	if (ch === "*" && next === "/") return { text: "  ", consumed: 2, mode: { kind: "code" } };
+	return { text: blankChar(ch), consumed: 1, mode: { kind: "block" } };
+}
+
+function stepStringMode(
+	ch: string | undefined,
+	next: string | undefined,
+	delim: '"' | "'" | "`",
+	hasNext: boolean,
+): CStyleStep {
+	if (ch === "\\" && hasNext) {
+		// Preserve newline positions inside escapes.
+		return { text: blankEscapeSpan(next), consumed: 2, mode: { kind: "string", delim } };
+	}
+	if (ch === delim) {
+		return { text: ch, consumed: 1, mode: { kind: "code" } };
+	}
+	return { text: blankChar(ch), consumed: 1, mode: { kind: "string", delim } };
+}
+
+function stepCodeMode(ch: string | undefined, next: string | undefined): CStyleStep {
+	if (ch === "/" && next === "/") return { text: "  ", consumed: 2, mode: { kind: "line" } };
+	if (ch === "/" && next === "*") return { text: "  ", consumed: 2, mode: { kind: "block" } };
+	if (ch === '"' || ch === "'" || ch === "`") {
+		return { text: ch, consumed: 1, mode: { kind: "string", delim: ch } };
+	}
+	return { text: nonNull(ch), consumed: 1, mode: { kind: "code" } };
+}
+
 function stripCStyle(content: string): string {
 	const out: string[] = [];
 	let i = 0;
 	const n = content.length;
-	let inLine = false;
-	let inBlock = false;
-	let inString: null | '"' | "'" | "`" = null;
+	let mode: CStyleMode = { kind: "code" };
 
 	while (i < n) {
 		const ch = content[i];
 		const next = content[i + 1];
-
-		if (inLine) {
-			if (ch === "\n") {
-				inLine = false;
-				out.push("\n");
-			} else {
-				out.push(" ");
-			}
-			i++;
-			continue;
+		let step: CStyleStep;
+		if (mode.kind === "line") {
+			step = stepLineMode(ch);
+		} else if (mode.kind === "block") {
+			step = stepBlockMode(ch, next);
+		} else if (mode.kind === "string") {
+			step = stepStringMode(ch, next, mode.delim, i + 1 < n);
+		} else {
+			step = stepCodeMode(ch, next);
 		}
-		if (inBlock) {
-			if (ch === "*" && next === "/") {
-				out.push("  ");
-				i += 2;
-				inBlock = false;
-				continue;
-			}
-			out.push(ch === "\n" ? "\n" : " ");
-			i++;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\" && i + 1 < n) {
-				// Preserve newline positions inside escapes.
-				out.push(content[i + 1] === "\n" ? "\\\n" : "  ");
-				i += 2;
-				continue;
-			}
-			if (ch === inString) {
-				out.push(ch);
-				i++;
-				inString = null;
-				continue;
-			}
-			out.push(ch === "\n" ? "\n" : " ");
-			i++;
-			continue;
-		}
-
-		// Not in string/comment
-		if (ch === "/" && next === "/") {
-			inLine = true;
-			out.push("  ");
-			i += 2;
-			continue;
-		}
-		if (ch === "/" && next === "*") {
-			inBlock = true;
-			out.push("  ");
-			i += 2;
-			continue;
-		}
-		if (ch === '"' || ch === "'" || ch === "`") {
-			out.push(ch);
-			inString = ch as '"' | "'" | "`";
-			i++;
-			continue;
-		}
-		out.push(nonNull(ch));
-		i++;
+		out.push(step.text);
+		i += step.consumed;
+		mode = step.mode;
 	}
 
 	return out.join("");

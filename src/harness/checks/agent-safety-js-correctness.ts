@@ -142,6 +142,22 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		if (isSelfDescribingToken(raw)) return false;
 		return true;
 	}
+	// Shared "does this captured literal deserve a flag" decision. Both the
+	// `===`/`!==`/`==`/`!=` comparison branch and the `case` label branch parse
+	// into the same (num, dq, sq) capture triple from NUM_CMP / CASE_CMP, so the
+	// hit logic (opaque number OR opaque quoted string) lives here once instead
+	// of being duplicated at each call site.
+	function isMagicLiteralHit(
+		num: string | undefined,
+		dq: string | undefined,
+		sq: string | undefined,
+	): boolean {
+		return (
+			(num !== undefined && isMagicNumber(num)) ||
+			(dq !== undefined && isMagicString(dq)) ||
+			(sq !== undefined && isMagicString(sq))
+		);
+	}
 
 	for (const [i, line] of strippedLines.entries()) {
 		if (matches.length >= 10) break;
@@ -159,11 +175,7 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 				TYPEOF_RESULTS.has(strLiteral) &&
 				/\btypeof\b/.test(line);
 			if (!isTypeofCheck) {
-				const hit =
-					(num !== undefined && isMagicNumber(num)) ||
-					(dq !== undefined && isMagicString(dq)) ||
-					(sq !== undefined && isMagicString(sq));
-				if (hit) {
+				if (isMagicLiteralHit(num, dq, sq)) {
 					matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 					continue;
 				}
@@ -174,11 +186,7 @@ export function checkMagicLiteralInConditional(content: string, filePath: string
 		const caseMatch = CASE_CMP.exec(line);
 		if (caseMatch) {
 			const [, num, dq, sq] = caseMatch;
-			const hit =
-				(num !== undefined && isMagicNumber(num)) ||
-				(dq !== undefined && isMagicString(dq)) ||
-				(sq !== undefined && isMagicString(sq));
-			if (hit) {
+			if (isMagicLiteralHit(num, dq, sq)) {
 				matches.push({ line: i + 1, text: nonNull(originalLines[i]).trim().slice(0, 150) });
 			}
 		}

@@ -361,6 +361,77 @@ function isOptionalParam(param: string): boolean {
 }
 
 /**
+ * Net `{`/`}` count over `line[startCol..]`, plus whether any `{` was seen —
+ * the single question the body-collection loop below needs per scanned line.
+ */
+function braceDelta(line: string, startCol: number): { delta: number; sawOpen: boolean } {
+	let delta = 0;
+	let sawOpen = false;
+	for (let k = startCol; k < line.length; k++) {
+		if (line[k] === "{") {
+			sawOpen = true;
+			delta++;
+		}
+		if (line[k] === "}") delta--;
+	}
+	return { delta, sawOpen };
+}
+
+/**
+ * Collect a catch block's body text (up to 8 lines), starting from the catch
+ * header line's opening brace, tracking brace depth to find the matching close.
+ * Returns both the comment-stripped body (for logging/rethrow detection) and
+ * the original-source body (for explanatory-comment detection).
+ */
+function collectCatchBody(
+	strippedLines: string[],
+	originalLines: string[],
+	startLine: number,
+	catchOpenBrace: number,
+): { bodyText: string; originalBodyText: string } {
+	const bodyLines: string[] = [];
+	const originalBodyLines: string[] = [];
+	let braceDepth = 0;
+	let started = false;
+
+	for (let j = startLine; j < Math.min(startLine + 8, strippedLines.length); j++) {
+		const line = nonNull(strippedLines[j]);
+		const startCol = j === startLine ? catchOpenBrace : 0;
+		const { delta, sawOpen } = braceDelta(line, startCol);
+		started = started || sawOpen;
+		braceDepth += delta;
+		if (started) {
+			bodyLines.push(j === startLine ? line.slice(catchOpenBrace) : line);
+			originalBodyLines.push(
+				j === startLine
+					? nonNull(originalLines[j]).slice(catchOpenBrace)
+					: nonNull(originalLines[j]),
+			);
+		}
+		if (started && braceDepth === 0) break;
+	}
+
+	return { bodyText: bodyLines.join("\n"), originalBodyText: originalBodyLines.join("\n") };
+}
+
+/**
+ * True if a catch body already handles its error (logging/rethrow/emit) or
+ * carries an explanatory comment in the original source — either means the
+ * default-return pattern below should NOT be flagged.
+ */
+function isHandledCatchBody(bodyText: string, originalBodyText: string): boolean {
+	// Body has logging, rethrowing, or emitting.
+	// Use loose prefix matching so reportError, logWarning, etc. are caught.
+	if (
+		/\b(console\.\w+|log\w*|logger|throw|emit|warn\w*|error|report\w*|notify)\b/i.test(bodyText)
+	) {
+		return true;
+	}
+	// Original body has explanatory comments.
+	return /\/\/|\/\*/.test(originalBodyText);
+}
+
+/**
  * Detect catch blocks that silently swallow errors by returning a default value.
  * Extends checkSilentCatch — that flags empty catch blocks, this catches the
  * more insidious pattern where the error is discarded via a default return.
@@ -389,47 +460,14 @@ export function checkCatchAndIgnore(content: string, filePath: string): InlineMa
 		const catchIdx = catchLine.search(/\bcatch\b/);
 		const catchOpenBrace = catchLine.indexOf("{", catchIdx);
 
-		// Collect the catch body (up to 8 lines)
-		const bodyLines: string[] = [];
-		const originalBodyLines: string[] = [];
-		let braceDepth = 0;
-		let started = false;
+		const { bodyText, originalBodyText } = collectCatchBody(
+			strippedLines,
+			originalLines,
+			i,
+			catchOpenBrace,
+		);
 
-		for (let j = i; j < Math.min(i + 8, strippedLines.length); j++) {
-			const line = nonNull(strippedLines[j]);
-			const startCol = j === i ? catchOpenBrace : 0;
-			for (let k = startCol; k < line.length; k++) {
-				if (line[k] === "{") {
-					started = true;
-					braceDepth++;
-				}
-				if (line[k] === "}") braceDepth--;
-			}
-			if (started) {
-				bodyLines.push(j === i ? line.slice(catchOpenBrace) : line);
-				originalBodyLines.push(
-					j === i
-						? nonNull(originalLines[j]).slice(catchOpenBrace)
-						: nonNull(originalLines[j]),
-				);
-			}
-			if (started && braceDepth === 0) break;
-		}
-
-		const bodyText = bodyLines.join("\n");
-		const originalBodyText = originalBodyLines.join("\n");
-
-		// Skip if body has logging, rethrowing, or emitting
-		// Use loose prefix matching so reportError, logWarning, etc. are caught
-		if (
-			/\b(console\.\w+|log\w*|logger|throw|emit|warn\w*|error|report\w*|notify)\b/i.test(
-				bodyText,
-			)
-		)
-			continue;
-
-		// Skip if original body has explanatory comments
-		if (/\/\/|\/\*/.test(originalBodyText)) continue;
+		if (isHandledCatchBody(bodyText, originalBodyText)) continue;
 
 		// Check if body is just a return of a default value
 		const returnMatch = bodyText.match(

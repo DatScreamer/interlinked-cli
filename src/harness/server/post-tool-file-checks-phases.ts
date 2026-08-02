@@ -354,78 +354,85 @@ export function runBehavioralPhase(
 	const { allCheckResults } = acc;
 
 	// --- Session-level behavioral checks ---
-	if (session && editedFilePath) {
-		// Capture fileContent once — both `countSuppressionDirectives`
-		// and `checkAssertionDensity` need it. Reading twice would
-		// double the I/O on every PostToolUse Edit.
-		let fileContent: string | undefined;
-		let currentSuppressionCount = 0;
-		try {
-			if (existsSync(editedFilePath)) {
-				fileContent = readFileSync(editedFilePath, "utf-8");
-				currentSuppressionCount = countSuppressionDirectives(fileContent);
-			}
-		} catch (e) {
-			void e;
-		}
-		// Refinement 2026-05: derive the set of lines this edit actually
-		// touched from tool_input + post-edit file content. Threaded into
-		// `runBehavioralChecks` → `checkPersistentWarningEscalation` so
-		// the escalation only fires for persistent findings within ±3
-		// lines of an edit, suppressing the FP where stale findings in
-		// untouched regions amplified on every unrelated re-edit.
-		const editedLines = deriveEditedLineNumbers(
-			checkEvent.tool_name,
-			checkEvent.tool_input,
-			fileContent,
-		);
-		const behavioralResults = runBehavioralChecks(
-			session,
-			editedFilePath,
-			allCheckResults,
-			previousSuppressionCount,
-			currentSuppressionCount,
-			editedLines,
-		);
+	// Guard clause (was `if (session && editedFilePath) { ...whole body... }`):
+	// de-indenting the rest of the function is behavior-preserving here
+	// because the wrapped block was the last statement in the function —
+	// there is no fall-through code after it to skip.
+	if (!session || !editedFilePath) return;
 
-		// Plan 09 Phase 1: assertion-density runs outside
-		// `runBehavioralChecks` because it's session-delta-based and
-		// needs the post-edit content (which the orchestrator's
-		// signature doesn't carry). The internal `TEST_FILE_RE` short-
-		// circuit handles the test-file gate.
-		if (fileContent !== undefined) {
-			const r = checkAssertionDensity(session, editedFilePath, fileContent);
-			if (r) behavioralResults.push(r);
+	// Capture fileContent once — both `countSuppressionDirectives`
+	// and `checkAssertionDensity` need it. Reading twice would
+	// double the I/O on every PostToolUse Edit.
+	let fileContent: string | undefined;
+	let currentSuppressionCount = 0;
+	try {
+		if (existsSync(editedFilePath)) {
+			fileContent = readFileSync(editedFilePath, "utf-8");
+			currentSuppressionCount = countSuppressionDirectives(fileContent);
 		}
+	} catch (e) {
+		void e;
+	}
+	// Refinement 2026-05: derive the set of lines this edit actually
+	// touched from tool_input + post-edit file content. Threaded into
+	// `runBehavioralChecks` → `checkPersistentWarningEscalation` so
+	// the escalation only fires for persistent findings within ±3
+	// lines of an edit, suppressing the FP where stale findings in
+	// untouched regions amplified on every unrelated re-edit.
+	const editedLines = deriveEditedLineNumbers(
+		checkEvent.tool_name,
+		checkEvent.tool_input,
+		fileContent,
+	);
+	const behavioralResults = runBehavioralChecks(
+		session,
+		editedFilePath,
+		allCheckResults,
+		previousSuppressionCount,
+		currentSuppressionCount,
+		editedLines,
+	);
 
-		// Filter-first: only push *shown* results into
-		// `allCheckResults` so the recurrence and effectiveness loops
-		// downstream don't see acknowledged-skipped findings.
-		// Errors bypass the ack check by design — match the
-		// suggestion-check pattern at server.ts:1970 and the quality-
-		// check pattern at :1661 (`r.severity === "error" ||
-		// !isAcknowledged(...)`). Acknowledging an error means "I saw
-		// it"; it should still surface until actually fixed.
-		if (behavioralResults.length > 0) {
-			if (!decision.warnings) decision.warnings = [];
-			for (const r of behavioralResults) {
-				if (r.severity !== "warning" && r.severity !== "error") {
-					// Info-level — record but don't surface, matching
-					// the pre-existing `checkTddGreenConfirmation`
-					// behavior.
-					allCheckResults.push(r);
-					continue;
-				}
-				const shouldShow =
-					r.severity === "error" ||
-					!isAcknowledged(session, editedFilePath, r.name);
-				if (!shouldShow) continue;
+	// Plan 09 Phase 1: assertion-density runs outside
+	// `runBehavioralChecks` because it's session-delta-based and
+	// needs the post-edit content (which the orchestrator's
+	// signature doesn't carry). The internal `TEST_FILE_RE` short-
+	// circuit handles the test-file gate.
+	if (fileContent !== undefined) {
+		const r = checkAssertionDensity(session, editedFilePath, fileContent);
+		if (r) behavioralResults.push(r);
+	}
 
-				allCheckResults.push(r);
-				const tag =
-					r.determinism === "fully_deterministic" ? "[proven]" : "[heuristic]";
-				decision.warnings.push(`${tag} ${r.name}: ${r.message}`);
-			}
+	// Filter-first: only push *shown* results into
+	// `allCheckResults` so the recurrence and effectiveness loops
+	// downstream don't see acknowledged-skipped findings.
+	// Errors bypass the ack check by design — match the
+	// suggestion-check pattern at server.ts:1970 and the quality-
+	// check pattern at :1661 (`r.severity === "error" ||
+	// !isAcknowledged(...)`). Acknowledging an error means "I saw
+	// it"; it should still surface until actually fixed.
+	// Second guard clause (was `if (behavioralResults.length > 0) { ... }`):
+	// again the wrapped block was the last statement, so returning early
+	// on the empty case is equivalent to falling through to the end.
+	if (behavioralResults.length === 0) return;
+
+	if (!decision.warnings) decision.warnings = [];
+	for (const r of behavioralResults) {
+		if (r.severity !== "warning" && r.severity !== "error") {
+			// Info-level — record but don't surface, matching
+			// the pre-existing `checkTddGreenConfirmation`
+			// behavior.
+			allCheckResults.push(r);
+			continue;
 		}
+		const shouldShow =
+			r.severity === "error" ||
+			!isAcknowledged(session, editedFilePath, r.name);
+		if (!shouldShow) continue;
+
+		allCheckResults.push(r);
+		const tag =
+			r.determinism === "fully_deterministic" ? "[proven]" : "[heuristic]";
+		decision.warnings.push(`${tag} ${r.name}: ${r.message}`);
 	}
 }

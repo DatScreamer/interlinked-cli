@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
 import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
-import type { ExportedSymbol, StructuralCheckResult } from "../types.js";
+import type { ExportedSymbol, ImportEdge, StructuralCheckResult } from "../types.js";
 import { escapeRegex } from "./helpers.js";
 
 /**
@@ -126,13 +126,51 @@ export function checkDeadImports(filePath: string, relPath: string): StructuralC
 	}
 
 	const lines = content.split("\n");
+	const { importBindings, lastImportLine } = collectImportBindings(lines);
 
-	// Extract import bindings and find where imports end
+	if (importBindings.length === 0) return [];
+
+	// Get file body after imports
+	const body = lines.slice(lastImportLine + 1).join("\n");
+	const deadBindings: string[] = [];
+
+	for (const { name } of importBindings) {
+		if (!name || name.length < 2) continue;
+		const regex = new RegExp(`\\b${escapeRegex(name)}\\b`);
+		if (!regex.test(body)) {
+			deadBindings.push(name);
+		}
+	}
+
+	if (deadBindings.length === 0) return [];
+
+	return [
+		{
+			check: "dead_imports",
+			severity: "warning",
+			message: `Unused imports in ${relPath}: \`${deadBindings.join("`, `")}\`. Remove them to reduce dependencies.`,
+			file: filePath,
+		},
+	];
+}
+
+/**
+ * Scan a file's leading import section, collecting the local names bound by
+ * each import statement. Stops at the first non-import, non-blank,
+ * non-comment line (prevents matching import-like text inside string
+ * literals, template HTML, or generated scripts further down the file).
+ * Returns the last line index that was part of the import section so the
+ * caller can slice the remaining body.
+ */
+function collectImportBindings(lines: string[]): {
+	importBindings: Array<{ name: string }>;
+	lastImportLine: number;
+} {
 	const importBindings: Array<{ name: string }> = [];
 	let lastImportLine = 0;
 	let buffer = "";
-
 	let importSectionEnded = false;
+
 	for (let i = 0; i < lines.length; i++) {
 		const trimmed = nonNull(lines[i]).trim();
 
@@ -172,30 +210,7 @@ export function checkDeadImports(filePath: string, relPath: string): StructuralC
 	}
 	if (buffer) processImportLine(buffer, importBindings);
 
-	if (importBindings.length === 0) return [];
-
-	// Get file body after imports
-	const body = lines.slice(lastImportLine + 1).join("\n");
-	const deadBindings: string[] = [];
-
-	for (const { name } of importBindings) {
-		if (!name || name.length < 2) continue;
-		const regex = new RegExp(`\\b${escapeRegex(name)}\\b`);
-		if (!regex.test(body)) {
-			deadBindings.push(name);
-		}
-	}
-
-	if (deadBindings.length === 0) return [];
-
-	return [
-		{
-			check: "dead_imports",
-			severity: "warning",
-			message: `Unused imports in ${relPath}: \`${deadBindings.join("`, `")}\`. Remove them to reduce dependencies.`,
-			file: filePath,
-		},
-	];
+	return { importBindings, lastImportLine };
 }
 
 /** Extract local binding names from an import statement line. */
@@ -304,6 +319,25 @@ const BUILTIN_MODULES = new Set([
 ]);
 
 /**
+ * Bare-specifier package name to check against declared deps, or `null` when
+ * this edge should be skipped entirely: relative/absolute specifiers,
+ * path-alias prefixes (`@/`, `#`, `~/`), and specifiers already resolved into
+ * `node_modules`. Scoped packages (`@scope/pkg/deep/path`) collapse to
+ * `@scope/pkg`; unscoped deep imports (`lodash/fp`) collapse to `lodash`.
+ */
+function resolveBarePackageName(edge: ImportEdge): string | null {
+	const spec = edge.specifier;
+	// Skip relative, absolute, already-resolved paths, and path aliases (@/, #, ~/)
+	if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) return null;
+	if (spec.startsWith("@/") || spec.startsWith("#") || spec.startsWith("~/")) return null;
+	// Skip if it resolves to a node_modules path (already found)
+	if (edge.toFile?.includes("/node_modules/")) return null;
+
+	// Extract package name (handle scoped packages)
+	return spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : nonNull(spec.split("/")[0]);
+}
+
+/**
  * Public API — consumed by structural-checks.runStructuralChecks.
  *
  * Tier 1: Detect bare-specifier imports not found in package.json dependencies.
@@ -354,16 +388,8 @@ export function checkHallucinatedImports(
 
 	for (const edge of edges) {
 		const spec = edge.specifier;
-		// Skip relative, absolute, already-resolved paths, and path aliases (@/, #, ~/)
-		if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) continue;
-		if (spec.startsWith("@/") || spec.startsWith("#") || spec.startsWith("~/")) continue;
-		// Skip if it resolves to a node_modules path (already found)
-		if (edge.toFile?.includes("/node_modules/")) continue;
-
-		// Extract package name (handle scoped packages)
-		const pkgName = spec.startsWith("@")
-			? spec.split("/").slice(0, 2).join("/")
-			: nonNull(spec.split("/")[0]);
+		const pkgName = resolveBarePackageName(edge);
+		if (pkgName === null) continue;
 
 		if (BUILTIN_MODULES.has(spec) || BUILTIN_MODULES.has(pkgName)) continue;
 		if (allDeps.has(pkgName)) continue;

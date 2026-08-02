@@ -68,20 +68,35 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		expect(body).not.toContain("FRAMED_PATHS.pid");
 	});
 
-	it("session-daemon.ts is the sole writer of paths.pid (the framed file)", () => {
-		// Confirm the framed PID write *does* live in session-daemon, AFTER
-		// its ownership check. This pairs with the deletions above to prove
-		// the responsibility moved, not vanished.
-		expect(SESSION_DAEMON_TS).toContain("writeFileSync(paths.pid, String(process.pid))");
+	it("session-daemon.ts is the sole writer of paths.pid (the framed file), via an atomic claim", () => {
+		// The ownership check-then-write was extracted into the exported
+		// `claimSessionPid` helper (fix for a same-tick TOCTOU: two starts
+		// close enough together could both pass a plain "does a live pid
+		// already own this" read before either had written, both proceed to
+		// bind, one silently stomping the other's socket — confirmed
+		// empirically, see session-daemon.test.ts). The write is now an
+		// exclusive-create (`wx`) so at most one caller's create can win.
+		expect(SESSION_DAEMON_TS).toContain("export function claimSessionPid(");
+		expect(SESSION_DAEMON_TS).toContain('writeFileSync(pidPath, String(pid), { flag: "wx" })');
 
 		// Sanity: the ownership check (process-alive guard) must come before
 		// that write, otherwise we'd still have the same race.
 		const checkIdx = SESSION_DAEMON_TS.indexOf("isProcessAlive(existingPid)");
 		const writeIdx = SESSION_DAEMON_TS.indexOf(
-			"writeFileSync(paths.pid, String(process.pid))",
+			'writeFileSync(pidPath, String(pid), { flag: "wx" })',
 		);
 		expect(checkIdx).toBeGreaterThan(0);
 		expect(writeIdx).toBeGreaterThan(checkIdx);
+
+		// `startSessionDaemon` must call the claim BEFORE it ever touches the
+		// socket — that ordering (not the bind) is what makes two racing
+		// starts resolve to exactly one winner.
+		const claimCallIdx = SESSION_DAEMON_TS.indexOf(
+			"claimSessionPid(paths.pid, process.pid)",
+		);
+		const listenIdx = SESSION_DAEMON_TS.indexOf(".listen(paths.socket");
+		expect(claimCallIdx).toBeGreaterThan(0);
+		expect(listenIdx).toBeGreaterThan(claimCallIdx);
 	});
 
 	it("session-daemon.handle.stop removes paths.pid", () => {

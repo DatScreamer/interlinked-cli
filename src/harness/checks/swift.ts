@@ -137,6 +137,43 @@ export function checkSwiftTaskDetached(content: string, filePath: string): Inlin
 	return scanLinesStripped(originalLines, strippedLines, /\bTask\s*\.\s*detached\s*[({]/, 10);
 }
 
+/** Net brace-depth change contributed by a single (comment-stripped) line. */
+function braceDeltaForLine(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/** Is there a `catch` on a line strictly after `fromIndex`, within `bound`? */
+function hasCatchAfter(strippedLines: string[], fromIndex: number, bound: number): boolean {
+	for (let k = fromIndex + 1; k < bound; k++) {
+		if (/\bcatch\b/.test(nonNull(strippedLines[k]))) return true;
+	}
+	return false;
+}
+
+/**
+ * Scan a Task body starting at `startIndex` (up to 30 lines, brace-depth
+ * bounded) for a `try` that is never wrapped in its own `do`/`catch`.
+ */
+function taskBodyHasUnhandledTry(strippedLines: string[], startIndex: number): boolean {
+	const bound = Math.min(startIndex + 30, strippedLines.length);
+	let depth = 0;
+	let hasTry = false;
+	let hasDoCatch = false;
+	for (let j = startIndex; j < bound; j++) {
+		const bodyLine = nonNull(strippedLines[j]);
+		depth += braceDeltaForLine(bodyLine);
+		if (/\btry\b/.test(bodyLine) && !/\btry[?!]/.test(bodyLine)) hasTry = true;
+		if (/\bdo\s*\{/.test(bodyLine) && hasCatchAfter(strippedLines, j, bound)) hasDoCatch = true;
+		if (depth <= 0 && j > startIndex) break;
+	}
+	return hasTry && !hasDoCatch;
+}
+
 /**
  * Detect unhandled errors in Task closures — errors silently swallowed.
  * Pattern: Task { try ... } without a do/catch inside.
@@ -156,30 +193,7 @@ export function checkSwiftUnhandledTaskError(content: string, filePath: string):
 		// Match Task { or Task.detached { on this line
 		if (!/\bTask\s*(?:\.\s*detached\s*)?\{/.test(line)) continue;
 
-		// Scan the task body (up to 30 lines) for try without do/catch
-		let depth = 0;
-		let hasTry = false;
-		let hasDoCatch = false;
-		for (let j = i; j < Math.min(i + 30, strippedLines.length); j++) {
-			const bodyLine = nonNull(strippedLines[j]);
-			for (const ch of bodyLine) {
-				if (ch === "{") depth++;
-				if (ch === "}") depth--;
-			}
-			if (/\btry\b/.test(bodyLine) && !/\btry[?!]/.test(bodyLine)) hasTry = true;
-			if (/\bdo\s*\{/.test(bodyLine)) {
-				// Look ahead for a matching catch within the task body
-				for (let k = j + 1; k < Math.min(i + 30, strippedLines.length); k++) {
-					if (/\bcatch\b/.test(nonNull(strippedLines[k]))) {
-						hasDoCatch = true;
-						break;
-					}
-				}
-			}
-			if (depth <= 0 && j > i) break;
-		}
-
-		if (hasTry && !hasDoCatch) {
+		if (taskBodyHasUnhandledTry(strippedLines, i)) {
 			matches.push({
 				line: i + 1,
 				text: nonNull(originalLines[i]).trim().slice(0, 150),
@@ -290,42 +304,41 @@ export function checkSwiftFilterCount(content: string, filePath: string): Inline
 // P0 Checks: Agent-Specific Failure Modes
 // -------------------------------------------
 
+/** fs surface `parseEnvDocumentation` and its helpers need, injected by the caller. */
+type EnvDocFs = {
+	existsSync: (p: string) => boolean;
+	readFileSync: (p: string, e: BufferEncoding) => string;
+	readdirSync: (p: string) => string[];
+};
+type PathJoin = (...parts: string[]) => string;
+
 /**
- * Parse documented env vars from .env.example, wrangler.toml, wrangler.jsonc, CI files.
- * Returns set of documented env var names.
- * NOTE: This function requires fs access. Import existsSync/readFileSync/readdirSync
- * and join from the caller's scope, or use it in contexts with Node.js require() available.
+ * In a monorepo, env-docs often live at the workspace root, not in the
+ * sub-package being verified (e.g. `cli/` inside a parent repo). Walk
+ * ancestor directories so `.env.example`, wrangler configs, and workflow
+ * files are discovered wherever they sit — mirroring how git locates
+ * `.git/` upward from the cwd. Capped to avoid unbounded walks.
  */
-export function parseEnvDocumentation(
-	projectRoot: string,
-	fs: {
-		existsSync: (p: string) => boolean;
-		readFileSync: (p: string, e: BufferEncoding) => string;
-		readdirSync: (p: string) => string[];
-	},
-	pathJoin: (...parts: string[]) => string,
-): Set<string> {
-	const { existsSync, readFileSync, readdirSync } = fs;
-	const join = pathJoin;
-	const documented = new Set<string>();
-
-	// In a monorepo, env-docs often live at the workspace root, not in the
-	// sub-package being verified (e.g. `cli/` inside a parent repo). Walk
-	// ancestor directories so `.env.example`, wrangler configs, and workflow
-	// files are discovered wherever they sit — mirroring how git locates
-	// `.git/` upward from the cwd. Capped to avoid unbounded walks.
+function computeEnvDocRoots(projectRoot: string): string[] {
 	const roots: string[] = [];
-	{
-		let current = projectRoot;
-		for (let i = 0; i < 8; i++) {
-			roots.push(current);
-			const parent = current.replace(/\/[^/]+\/?$/, "");
-			if (!parent || parent === current || parent === "/") break;
-			current = parent;
-		}
+	let current = projectRoot;
+	for (let i = 0; i < 8; i++) {
+		roots.push(current);
+		const parent = current.replace(/\/[^/]+\/?$/, "");
+		if (!parent || parent === current || parent === "/") break;
+		current = parent;
 	}
+	return roots;
+}
 
-	// .env.example / .env.sample / .env.template
+/** Scan `.env.example` / `.env.sample` / `.env.template` across every root. */
+function scanEnvExampleFiles(
+	roots: string[],
+	fs: EnvDocFs,
+	join: PathJoin,
+	documented: Set<string>,
+): void {
+	const { existsSync, readFileSync } = fs;
 	for (const root of roots) {
 		for (const name of [".env.example", ".env.sample", ".env.template"]) {
 			const envPath = join(root, name);
@@ -342,40 +355,68 @@ export function parseEnvDocumentation(
 			}
 		}
 	}
+}
 
-	// wrangler.toml / wrangler.jsonc [vars] + binding names. Parse one config file,
-	// adding any var keys / binding names it declares to `documented`.
+/**
+ * Extract `[vars]`-block keys and top-level `binding`/`name` values from the
+ * body of a wrangler.toml file, adding each to `documented` in place.
+ */
+function extractWranglerTomlVars(content: string, documented: Set<string>): void {
+	let inVars = false;
+	for (const line of content.split("\n")) {
+		const binding = line.match(/^\s*(?:binding|name)\s*=\s*"([A-Z][A-Z0-9_]+)"/);
+		if (binding) documented.add(nonNull(binding[1]));
+		if (/^\[vars\]/.test(line.trim())) {
+			inVars = true;
+			continue;
+		}
+		if (/^\[/.test(line.trim())) {
+			inVars = false;
+			continue;
+		}
+		if (inVars) {
+			const m = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/);
+			if (m) documented.add(nonNull(m[1]));
+		}
+	}
+}
+
+/**
+ * Extract env-var-shaped keys and `binding`/`name` values from the body of a
+ * wrangler.jsonc file, adding each to `documented` in place.
+ */
+function extractWranglerJsoncVars(content: string, documented: Set<string>): void {
+	for (const line of content.split("\n")) {
+		const m = line.match(/"([A-Z][A-Z0-9_]+)"\s*:/);
+		if (m) documented.add(nonNull(m[1]));
+		const binding = line.match(/"(?:binding|name)"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
+		if (binding) documented.add(nonNull(binding[1]));
+	}
+}
+
+/**
+ * wrangler.toml / wrangler.jsonc [vars] + binding names, across ancestor roots
+ * AND the immediate subdirectories of `projectRoot` (Worker bindings frequently
+ * live in a sibling sub-app, e.g. `landing/wrangler.jsonc`, that the upward
+ * ancestor walk never reaches — bounded to one level deep, skipping vendored /
+ * build / dot dirs so it stays a small, fixed-cost scan).
+ */
+function scanWranglerConfigs(
+	projectRoot: string,
+	roots: string[],
+	fs: EnvDocFs,
+	join: PathJoin,
+	documented: Set<string>,
+): void {
+	const { existsSync, readFileSync, readdirSync } = fs;
+
+	// Parse one config file, adding any var keys / binding names it declares to `documented`.
 	const parseWranglerFile = (wranglerPath: string, isToml: boolean): void => {
 		if (!existsSync(wranglerPath)) return;
 		try {
 			const content = readFileSync(wranglerPath, "utf-8");
-			if (isToml) {
-				let inVars = false;
-				for (const line of content.split("\n")) {
-					const binding = line.match(/^\s*(?:binding|name)\s*=\s*"([A-Z][A-Z0-9_]+)"/);
-					if (binding) documented.add(nonNull(binding[1]));
-					if (/^\[vars\]/.test(line.trim())) {
-						inVars = true;
-						continue;
-					}
-					if (/^\[/.test(line.trim())) {
-						inVars = false;
-						continue;
-					}
-					if (inVars) {
-						const m = line.match(/^\s*([A-Z][A-Z0-9_]+)\s*=/);
-						if (m) documented.add(nonNull(m[1]));
-					}
-				}
-			} else {
-				// JSONC: look for keys that look like env vars
-				for (const line of content.split("\n")) {
-					const m = line.match(/"([A-Z][A-Z0-9_]+)"\s*:/);
-					if (m) documented.add(nonNull(m[1]));
-					const binding = line.match(/"(?:binding|name)"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
-					if (binding) documented.add(nonNull(binding[1]));
-				}
-			}
+			if (isToml) extractWranglerTomlVars(content, documented);
+			else extractWranglerJsoncVars(content, documented);
 		} catch {
 			/* intentional: unreadable Wrangler config should not break env discovery */
 		}
@@ -387,10 +428,7 @@ export function parseEnvDocumentation(
 		parseWranglerFile(join(root, "wrangler.jsonc"), false);
 	}
 
-	// Immediate subdirectories of projectRoot. Worker bindings frequently live in
-	// a sibling sub-app (e.g. `landing/wrangler.jsonc`) that the upward ancestor
-	// walk never reaches. Bounded to one level deep; skip vendored / build / dot
-	// dirs so this stays a small, fixed-cost scan.
+	// Immediate subdirectories of projectRoot.
 	try {
 		for (const entry of readdirSync(projectRoot)) {
 			if (entry.startsWith(".") || entry === "node_modules" || entry === "dist") continue;
@@ -401,8 +439,16 @@ export function parseEnvDocumentation(
 	} catch {
 		/* intentional: unreadable project root should not break env discovery */
 	}
+}
 
-	// GitHub Actions workflows
+/** Scan GitHub Actions workflow files (`env:` blocks + `${{ secrets.X }}` refs) across every root. */
+function scanGithubWorkflowEnvVars(
+	roots: string[],
+	fs: EnvDocFs,
+	join: PathJoin,
+	documented: Set<string>,
+): void {
+	const { existsSync, readFileSync, readdirSync } = fs;
 	for (const root of roots) {
 		const workflowDir = join(root, ".github", "workflows");
 		if (!existsSync(workflowDir)) continue;
@@ -423,6 +469,25 @@ export function parseEnvDocumentation(
 			/* intentional: unreadable workflow files should not break env discovery */
 		}
 	}
+}
+
+/**
+ * Parse documented env vars from .env.example, wrangler.toml, wrangler.jsonc, CI files.
+ * Returns set of documented env var names.
+ * NOTE: This function requires fs access. Import existsSync/readFileSync/readdirSync
+ * and join from the caller's scope, or use it in contexts with Node.js require() available.
+ */
+export function parseEnvDocumentation(
+	projectRoot: string,
+	fs: EnvDocFs,
+	pathJoin: PathJoin,
+): Set<string> {
+	const documented = new Set<string>();
+	const roots = computeEnvDocRoots(projectRoot);
+
+	scanEnvExampleFiles(roots, fs, pathJoin, documented);
+	scanWranglerConfigs(projectRoot, roots, fs, pathJoin, documented);
+	scanGithubWorkflowEnvVars(roots, fs, pathJoin, documented);
 
 	return documented;
 }

@@ -108,6 +108,123 @@ export interface GateOptions {
 }
 
 /**
+ * Per-file context threaded through each pipeline phase below. Bundles the
+ * four values every phase needs (the failure sink is shared/mutated across
+ * phases by design — one accumulator per batch entry).
+ */
+interface GatePhaseContext {
+	path: string;
+	content: string;
+	projectRoot: string;
+	failures: GateFailure[];
+}
+
+/**
+ * Phase 1: pre_block registry — introduced-only vs the on-disk snapshot,
+ * suppression-aware (shared semantics with the PreToolUse write guard; see
+ * pre-block-gate.ts). A pre-existing finding is a warning, not a
+ * transaction-killer; a new-file write has no baseline, so every finding is
+ * introduced (strict) — matching how phases 2-3 treat new files.
+ */
+function applyPreBlockPhase(ctx: GatePhaseContext): void {
+	const { path, content, projectRoot, failures } = ctx;
+	const preBlockOutcomes = runPreBlockRegistryGate({
+		content,
+		filePath: path,
+		baselineContent: resolveDiskBaseline(path),
+		projectRoot,
+	});
+	for (const o of preBlockOutcomes) {
+		if (o.introduced.length > 0) {
+			failures.push({
+				path,
+				tool: "pre_block",
+				code: o.checkId,
+				line: nonNull(o.introduced[0]).line,
+				message: `introduces ${o.introduced.length} violation(s) at ${lineList(o.introduced)}`,
+				severity: "error",
+				hint: [o.instruction, suppressionHint(o.checkId)].filter(Boolean).join(" "),
+			});
+		}
+		if (o.preexisting.length > 0) {
+			failures.push({
+				path,
+				tool: "pre_block",
+				code: o.checkId,
+				line: nonNull(o.preexisting[0]).line,
+				message:
+					`${o.preexisting.length} pre-existing violation(s) at ${lineList(o.preexisting)} ` +
+					"(already on disk — not introduced by this write)",
+				severity: "warning",
+			});
+		}
+	}
+}
+
+/** Phase 2: biome diff-overlay. No-op for new-file writes (nothing to diff). */
+function applyBiomeOverlayPhase(ctx: GatePhaseContext): void {
+	const { path, content, projectRoot, failures } = ctx;
+	if (!existsSync(path)) return;
+	const biomeOverlay = evaluateBiomeDiffOverlay(path, content, projectRoot);
+	for (const f of biomeOverlay.newFindings) {
+		failures.push({
+			path,
+			tool: "biome",
+			code: f.ruleId ?? "biome",
+			line: f.line,
+			column: f.column,
+			message: f.message,
+			severity: "error",
+		});
+	}
+}
+
+/** Phase 3: tsc diff-overlay. No-op for new-file writes (nothing to diff). */
+function applyTscOverlayPhase(ctx: GatePhaseContext): void {
+	const { path, content, projectRoot, failures } = ctx;
+	if (!existsSync(path)) return;
+	const tscOverlay = evaluateTscDiffOverlay(path, content, projectRoot);
+	for (const f of tscOverlay.newFindings) {
+		const blocking = isTscFindingBlocking(f);
+		failures.push({
+			path,
+			tool: "tsc",
+			code: f.ruleId ?? "tsc",
+			line: f.line,
+			column: f.column,
+			message: f.message,
+			severity: blocking ? "error" : "warning",
+		});
+	}
+}
+
+/** Phase 4: pre_warn registry — informational, skipped entirely by default. */
+function applyPreWarnPhase(
+	ctx: GatePhaseContext,
+	instructions: Record<string, string>,
+	skipPreWarn: boolean,
+): void {
+	if (skipPreWarn) return;
+	const { path, content, failures } = ctx;
+	const preWarnChecks = buildAgentSafetyChecks(content, path, "pre_warn");
+	for (const check of preWarnChecks) {
+		const matches = check.fn();
+		if (matches.length === 0) continue;
+		const first = nonNull(matches[0]);
+		const hint = instructions[check.name];
+		failures.push({
+			path,
+			tool: "pre_warn",
+			code: check.name,
+			line: first.line,
+			message: `${matches.length} violation(s) at ${matches.map((m) => `L${m.line}`).join(", ")}`,
+			severity: "warning",
+			...(hint !== undefined ? { hint } : {}),
+		});
+	}
+}
+
+/**
  * Run the deterministic content-quality pipeline against a batch of proposed
  * writes. Pure: no disk writes, no harness socket. Returns every failure
  * encountered so the caller can decide transactional policy.
@@ -130,108 +247,13 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 	for (const { path, content } of batch) {
 		const projectRoot =
 			opts.projectRoot ?? findProjectRoot(path, process.cwd()) ?? process.cwd();
-
-		// -------------------------------------------
-		// 1. pre_block registry — introduced-only vs the on-disk snapshot,
-		//    suppression-aware (shared semantics with the PreToolUse write
-		//    guard; see pre-block-gate.ts). A pre-existing finding is a
-		//    warning, not a transaction-killer; a new-file write has no
-		//    baseline, so every finding is introduced (strict) — matching
-		//    how steps 2-3 treat new files.
-		// -------------------------------------------
 		const instructions = buildCheckInstructions();
-		const preBlockOutcomes = runPreBlockRegistryGate({
-			content,
-			filePath: path,
-			baselineContent: resolveDiskBaseline(path),
-			projectRoot,
-		});
-		for (const o of preBlockOutcomes) {
-			if (o.introduced.length > 0) {
-				failures.push({
-					path,
-					tool: "pre_block",
-					code: o.checkId,
-					line: nonNull(o.introduced[0]).line,
-					message: `introduces ${o.introduced.length} violation(s) at ${lineList(o.introduced)}`,
-					severity: "error",
-					hint: [o.instruction, suppressionHint(o.checkId)].filter(Boolean).join(" "),
-				});
-			}
-			if (o.preexisting.length > 0) {
-				failures.push({
-					path,
-					tool: "pre_block",
-					code: o.checkId,
-					line: nonNull(o.preexisting[0]).line,
-					message:
-						`${o.preexisting.length} pre-existing violation(s) at ${lineList(o.preexisting)} ` +
-						"(already on disk — not introduced by this write)",
-					severity: "warning",
-				});
-			}
-		}
+		const ctx: GatePhaseContext = { path, content, projectRoot, failures };
 
-		// -------------------------------------------
-		// 2. biome diff-overlay
-		// -------------------------------------------
-		if (existsSync(path)) {
-			const biomeOverlay = evaluateBiomeDiffOverlay(path, content, projectRoot);
-			for (const f of biomeOverlay.newFindings) {
-				failures.push({
-					path,
-					tool: "biome",
-					code: f.ruleId ?? "biome",
-					line: f.line,
-					column: f.column,
-					message: f.message,
-					severity: "error",
-				});
-			}
-		}
-
-		// -------------------------------------------
-		// 3. tsc diff-overlay
-		// -------------------------------------------
-		if (existsSync(path)) {
-			const tscOverlay = evaluateTscDiffOverlay(path, content, projectRoot);
-			for (const f of tscOverlay.newFindings) {
-				const blocking = isTscFindingBlocking(f);
-				failures.push({
-					path,
-					tool: "tsc",
-					code: f.ruleId ?? "tsc",
-					line: f.line,
-					column: f.column,
-					message: f.message,
-					severity: blocking ? "error" : "warning",
-				});
-			}
-		}
-
-		// -------------------------------------------
-		// 4. pre_warn registry — informational
-		// -------------------------------------------
-		if (!skipPreWarn) {
-			const preWarnChecks = buildAgentSafetyChecks(content, path, "pre_warn");
-			for (const check of preWarnChecks) {
-				const matches = check.fn();
-				if (matches.length === 0) continue;
-				const first = nonNull(matches[0]);
-				const hint = instructions[check.name];
-				failures.push({
-					path,
-					tool: "pre_warn",
-					code: check.name,
-					line: first.line,
-					message: `${matches.length} violation(s) at ${matches
-						.map((m) => `L${m.line}`)
-						.join(", ")}`,
-					severity: "warning",
-					...(hint !== undefined ? { hint } : {}),
-				});
-			}
-		}
+		applyPreBlockPhase(ctx);
+		applyBiomeOverlayPhase(ctx);
+		applyTscOverlayPhase(ctx);
+		applyPreWarnPhase(ctx, instructions, skipPreWarn);
 	}
 
 	const elapsedMs = Date.now() - start;

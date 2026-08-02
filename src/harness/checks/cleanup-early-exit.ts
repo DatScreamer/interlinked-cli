@@ -84,6 +84,27 @@ const NAMED_ACQUISITIONS: NamedAcquisition[] = [
 ];
 
 /**
+ * Within the lookahead window after an acquisition, find the char offset
+ * (relative to `window`) of an early `throw`/`return` that precedes the
+ * cleanup call matched by `cleanupRe` — but only when no `try {` sits
+ * between them (conservative: assume that guards a `finally`-based
+ * cleanup). Returns null when there's no cleanup match in the window, no
+ * early exit before it, or the try guard applies.
+ */
+function findEarlyExitOffset(window: string, cleanupRe: RegExp): number | null {
+	const cleanupMatch = window.match(cleanupRe);
+	if (!cleanupMatch || cleanupMatch.index === undefined) return null;
+
+	const between = window.slice(0, cleanupMatch.index);
+	if (/\btry\s*\{/.test(between)) return null;
+
+	const exitMatch = between.match(/\b(?:throw|return)\b/);
+	if (!exitMatch || exitMatch.index === undefined) return null;
+
+	return exitMatch.index;
+}
+
+/**
  * Detect resource acquisitions whose paired cleanup is bypassed on a
  * throw/return path with no try/finally wrap.
  *
@@ -124,17 +145,9 @@ export function checkCleanupSkippedOnEarlyExit(
 			const windowEnd = Math.min(stripped.length, acqHit.index + LOOKAHEAD_CHARS);
 			const window = stripped.slice(acqEnd, windowEnd);
 
-			const cleanupMatch = window.match(cleanupReFor(name));
-			if (!cleanupMatch || cleanupMatch.index === undefined) continue;
-
-			const between = window.slice(0, cleanupMatch.index);
-			if (/\btry\s*\{/.test(between)) continue;
-
-			const exitMatch = between.match(/\b(?:throw|return)\b/);
-			if (!exitMatch || exitMatch.index === undefined) continue;
-
-			const exitOffset = acqEnd + exitMatch.index;
-			if (recordExit(exitOffset)) return matches;
+			const exitIndex = findEarlyExitOffset(window, cleanupReFor(name));
+			if (exitIndex === null) continue;
+			if (recordExit(acqEnd + exitIndex)) return matches;
 		}
 	}
 
@@ -151,17 +164,9 @@ export function checkCleanupSkippedOnEarlyExit(
 		const window = stripped.slice(acqEnd, windowEnd);
 
 		const removeRe = new RegExp(`\\b${receiver}\\.removeEventListener\\s*\\(`);
-		const removeMatch = window.match(removeRe);
-		if (!removeMatch || removeMatch.index === undefined) continue;
-
-		const between = window.slice(0, removeMatch.index);
-		if (/\btry\s*\{/.test(between)) continue;
-
-		const exitMatch = between.match(/\b(?:throw|return)\b/);
-		if (!exitMatch || exitMatch.index === undefined) continue;
-
-		const exitOffset = acqEnd + exitMatch.index;
-		if (recordExit(exitOffset)) return matches;
+		const exitIndex = findEarlyExitOffset(window, removeRe);
+		if (exitIndex === null) continue;
+		if (recordExit(acqEnd + exitIndex)) return matches;
 	}
 
 	return matches;

@@ -138,6 +138,87 @@ function readDistilledRulesOverrides(cwd: string): DistilledRulesOverrides {
 	}
 }
 
+/** Normalized override lookup structures, derived once per load from the raw overrides file. */
+interface OverrideLookups {
+	removedGroups: Set<string>;
+	removedIds: Set<string>;
+	disabledIds: Set<string>;
+	mods: Record<string, RuleModification>;
+}
+
+/** Turns the raw overrides file into the four lookup structures the per-rule pass consults. */
+function buildOverrideLookups(overrides: DistilledRulesOverrides): OverrideLookups {
+	return {
+		removedGroups: new Set(overrides.removed_groups ?? []),
+		removedIds: new Set(overrides.removed_rule_ids ?? []),
+		disabledIds: new Set(overrides.disabled_rule_ids ?? []),
+		mods: overrides.modifications ?? {},
+	};
+}
+
+/**
+ * Whether `raw` should be dropped entirely (not just disabled) — its
+ * `source.group_id` is in the removed-groups list, or its `id` is in the
+ * removed-ids list.
+ */
+function isRuleRemoved(
+	raw: DistilledRule,
+	removedGroups: Set<string>,
+	removedIds: Set<string>,
+): boolean {
+	const groupId = raw.source?.group_id;
+	if (groupId && removedGroups.has(groupId)) return true;
+	return removedIds.has(raw.id);
+}
+
+/**
+ * ReDoS gate. `/enforce`-distilled rules can carry regexes from arbitrary
+ * third-party AGENTS.md / CLAUDE.md files; a nested-quantifier or
+ * prefix-overlap shape hangs the daemon on adversarial input. Returns true
+ * (and logs one stderr line so the operator notices) when any of the rule's
+ * patterns fails the shape check — the caller skips the whole rule.
+ */
+function hasUnsafePattern(raw: DistilledRule): boolean {
+	if (!Array.isArray(raw.patterns)) return false;
+	const unsafe = raw.patterns.find(
+		(p) => p && typeof p.regex === "string" && looksLikeReDoS(p.regex),
+	);
+	if (!unsafe) return false;
+	process.stderr.write(
+		`[interlinked] skipping distilled rule ${raw.id}: ReDoS-prone pattern ${
+			unsafe.regex?.slice(0, 120) ?? ""
+		}\n`,
+	);
+	return true;
+}
+
+/**
+ * Applies the override `modifications{}` entry for this rule, if any, onto
+ * the (already-cloned) rule in place. Only action/severity/enabled are
+ * honored; structural fields (patterns, tool_match, trigger) are owned by
+ * the distiller and must not be hand-edited via overrides.
+ */
+function applyRuleModification(rule: DistilledRule, mod: RuleModification | undefined): void {
+	if (!mod) return;
+	if (mod.action !== undefined) rule.action = mod.action;
+	if (mod.severity !== undefined) rule.severity = mod.severity;
+	if (mod.enabled !== undefined) rule.enabled = mod.enabled;
+	rule.user_modified = true;
+}
+
+/**
+ * Settles the final `enabled` flag: the disabled-ids list always wins (forces
+ * `false`); otherwise a still-unset `enabled` (no modification touched it)
+ * defaults to `true`.
+ */
+function resolveEnabledState(rule: DistilledRule, ruleId: string, disabledIds: Set<string>): void {
+	if (disabledIds.has(ruleId)) {
+		rule.enabled = false;
+	} else if (rule.enabled === undefined) {
+		rule.enabled = true;
+	}
+}
+
 /**
  * Public API — consumed by `rules-loader.ts` via `loadRules()`.
  *
@@ -160,10 +241,7 @@ export function loadDistilledRules(cwd: string): GuardRule[] {
 	if (!file?.rules || !Array.isArray(file.rules)) return [];
 
 	const overrides = readDistilledRulesOverrides(cwd);
-	const removedGroups = new Set(overrides.removed_groups ?? []);
-	const removedIds = new Set(overrides.removed_rule_ids ?? []);
-	const disabledIds = new Set(overrides.disabled_rule_ids ?? []);
-	const mods = overrides.modifications ?? {};
+	const { removedGroups, removedIds, disabledIds, mods } = buildOverrideLookups(overrides);
 
 	const out: GuardRule[] = [];
 	for (const raw of file.rules) {
@@ -172,50 +250,17 @@ export function loadDistilledRules(cwd: string): GuardRule[] {
 
 		// Filter by group + rule-id removal lists. Removed rules don't reach
 		// the evaluator at all — they're not just disabled, they're absent.
-		const groupId = raw.source?.group_id;
-		if (groupId && removedGroups.has(groupId)) continue;
-		if (removedIds.has(raw.id)) continue;
+		if (isRuleRemoved(raw, removedGroups, removedIds)) continue;
 
-		// ReDoS gate. `/enforce`-distilled rules can carry regexes from
-		// arbitrary third-party AGENTS.md / CLAUDE.md files; a nested-
-		// quantifier or prefix-overlap shape hangs the daemon on adversarial
-		// input. Skip the entire rule (don't add to `out`) if any of its
-		// patterns fails the shape check, and emit one stderr line so the
-		// operator notices their distilled output had a poisoned pattern.
-		if (Array.isArray(raw.patterns)) {
-			const unsafe = raw.patterns.find(
-				(p) => p && typeof p.regex === "string" && looksLikeReDoS(p.regex),
-			);
-			if (unsafe) {
-				process.stderr.write(
-					`[interlinked] skipping distilled rule ${raw.id}: ReDoS-prone pattern ${
-						unsafe.regex?.slice(0, 120) ?? ""
-					}\n`,
-				);
-				continue;
-			}
-		}
+		if (hasUnsafePattern(raw)) continue;
 
 		// Clone so we don't mutate the source object.
 		const rule: DistilledRule = { ...raw };
 
-		// Apply per-rule modifications. Only action/severity/enabled are
-		// honored; structural fields (patterns, tool_match, trigger) are
-		// owned by the distiller and must not be hand-edited via overrides.
-		const mod = mods[raw.id];
-		if (mod) {
-			if (mod.action !== undefined) rule.action = mod.action;
-			if (mod.severity !== undefined) rule.severity = mod.severity;
-			if (mod.enabled !== undefined) rule.enabled = mod.enabled;
-			rule.user_modified = true;
-		}
+		applyRuleModification(rule, mods[raw.id]);
 
 		// Disabled list overrides any modifications.enabled.
-		if (disabledIds.has(raw.id)) {
-			rule.enabled = false;
-		} else if (rule.enabled === undefined) {
-			rule.enabled = true;
-		}
+		resolveEnabledState(rule, raw.id, disabledIds);
 
 		out.push(rule);
 	}

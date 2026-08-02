@@ -2,7 +2,7 @@
 // Extracted from generic-checks.ts. These are internal to the checks/ package.
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripCommentsAndStrings } from "./shared-text-utils.js";
 
@@ -157,7 +157,16 @@ export function __setPackageRootForTesting(root: string | null | undefined): voi
  *  `duplicate_test_names` fire on the `it.skip(` examples inside
  *  verification-stop-checks.ts. Hence the strict/broad split. */
 function isHarnessInternalDataFile(filePath: string): boolean {
-	const normalized = filePath.replace(/\\/g, "/");
+	const raw = filePath.replace(/\\/g, "/");
+	// Resolve a RELATIVE path against cwd before prefix-matching. Without this,
+	// the exemption only ever fired for an ABSOLUTE caller — measured (plan
+	// `docs/plans/16-monotonic-quality-enforcement.md` §11.3): 217 harness-
+	// internal files exempt when addressed absolutely, 0 when addressed
+	// relatively, so a relative-path caller silently lost the exemption. A
+	// relative path here is only ever meaningful relative to THIS package's
+	// own checkout (the exemption concerns interlinked-cli's own source), so
+	// cwd is the correct base. Absolute inputs are left untouched.
+	const normalized = isAbsolute(raw) ? raw : resolve(raw).replace(/\\/g, "/");
 	const pkgRoot = resolveInterlinkedCliPackageRoot();
 	if (!pkgRoot || !normalized.startsWith(`${pkgRoot.replace(/\\/g, "/")}/`)) {
 		return false;
@@ -200,12 +209,61 @@ function isHarnessInternalDataFile(filePath: string): boolean {
 	);
 }
 
+/**
+ * QUESTION 1 — "is this file a TEST, an oracle the runner executes?" THE
+ * canonical answer (plan `docs/plans/16-monotonic-quality-enforcement.md`
+ * §11.3, Audit B, "path-domain predicates — one question, N answers"). Before
+ * this, three implementations answered the same question independently and
+ * disagreed on corpus + synthetic-convention measurement:
+ * `coverage-test-selector.ts::isTestPath` (mutation gate + manifest choke
+ * point), `large-file-policy.ts::isTestOrSpecPath` (the line-cap's test
+ * clause), and this file's `isStrictTestFile` (test-hygiene checks). This is
+ * the UNION of all three convention lists. Widening is the SAFE direction for
+ * an oracle question — excluding more files from mutation targeting /
+ * baselining / the line cap only ever removes files that genuinely are test
+ * files by convention; none of the three lists' conventions names product
+ * code. `isTestPath` and `isTestOrSpecPath` now delegate here as thin
+ * re-exports.
+ *
+ * `isStrictTestFile` is DELIBERATELY NOT folded into this union (unlike the
+ * other two) — see its docstring below. Its ~9 consumers are test-hygiene
+ * checks; unioning would also fix its real directory-anchor bug (tracked in
+ * the plan) but the combined blast radius across those consumers was not
+ * verified safe within this consolidation's scope, so it stays a separate,
+ * open follow-up rather than a silent behavior change bundled in here.
+ *
+ * Directory match is anchored `(?:^|\/)`, so a TOP-LEVEL `tests/`/`test/`/
+ * `__tests__/` directory addressed via a repo-relative path (no leading
+ * slash) still matches — `isStrictTestFile`'s `.includes("/tests/")`
+ * substring check does not anchor start-of-string, so it misses exactly this
+ * case (verified against the corpus: `tests/README.md` flips purely on
+ * absolute-vs-relative spelling there). The filename match accepts ANY
+ * extension after `.test.`/`.spec.` (the broadest of the three original
+ * lists — `isTestPath`'s convention), not just the JS/TS extension set the
+ * other two restrict to.
+ */
+export function isTestSourcePath(relPath: string): boolean {
+	const norm = relPath.replace(/\\/g, "/");
+	if (/(?:^|\/)(?:__tests__|tests?)\//.test(norm)) return true;
+	const name = norm.split("/").pop() ?? "";
+	if (/\.(?:test|spec)\.[^/]+$/.test(name)) return true;
+	if (name.startsWith("test_") && (name.endsWith(".py") || name.endsWith(".swift"))) return true;
+	if (/_test\.(?:py|go)$/.test(name)) return true;
+	if (/Tests?\.(?:java|swift)$/.test(name)) return true;
+	return false;
+}
+
 /** STRICT test-file detection — directory + filename conventions ONLY, no
  *  harness-internal-data exemption. Use this when a check should run *only* on
  *  genuine test files (every test-hygiene / test-quality check). The broad
- *  `isTestFile` additionally returns true for interlinked-cli's own data files
- *  so content scans skip them — but that exemption must NOT make a test-hygiene
- *  check fire on a data file. */
+ *  `isPatternDataFile` (formerly `isTestFile`) additionally returns true for
+ *  interlinked-cli's own data files so content scans skip them — but that
+ *  exemption must NOT make a test-hygiene check fire on a data file.
+ *
+ *  NOT a re-export of `isTestSourcePath` above, even though both answer
+ *  "is this a test file" — see that function's docstring for why the merge
+ *  was deliberately deferred (known anchor bug + unverified blast radius
+ *  across this function's ~9 consumers, plan §11.3). */
 export function isStrictTestFile(filePath: string): boolean {
 	const normalized = filePath.replace(/\\/g, "/");
 
@@ -241,14 +299,50 @@ export function isStrictTestFile(filePath: string): boolean {
 	return false;
 }
 
-/** BROAD test-or-exempt predicate — BEHAVIOR-PRESERVING vs the pre-split
- *  `isTestFile`. True for genuine test files AND for interlinked-cli's own
- *  data / detector files. Content scans gate `if (isTestFile) return []` on
- *  this so they skip both. Checks that must run ONLY on genuine test files use
- *  `isStrictTestFile` instead, so the data-file exemption can't make them
- *  fire (the `duplicate_test_names`-on-`verification-stop-checks` FP). */
-export function isTestFile(filePath: string): boolean {
+/**
+ * QUESTION 3 — "does this file hold detection patterns as DATA, so a
+ * regex-driven content scan can only false-positive on it?" (plan §11.3,
+ * Audit B, recommendation 3 — this is the rename that fix calls for). True
+ * for genuine test files (fixtures legitimately contain test-shaped strings)
+ * AND for interlinked-cli's own detector/registry source (which legitimately
+ * contains dangerous-shaped strings AS DATA — pattern catalogs, rule
+ * descriptions, secret-shaped examples). Content scans gate
+ * `if (isPatternDataFile) return []` on this so they skip both. Checks that
+ * must run ONLY on genuine test files use `isStrictTestFile` instead, so the
+ * data-file exemption can't make them fire (the
+ * `duplicate_test_names`-on-`verification-stop-checks` FP).
+ *
+ * Defined as `isStrictTestFile(p) || isHarnessInternalDataFile(p)` — NOT
+ * `isTestSourcePath(p) || isHarnessInternalDataFile(p)`, even though the
+ * plan's recommendation names the latter. Widening the test-half to the
+ * full cross-question union would newly exempt real, currently-scanned
+ * files across this predicate's ~100 content-scan call sites (concretely:
+ * `test/agent-driven/run-scenario.ts` today, and any future top-level
+ * `test/`/`tests/`-directory source file) — the DANGEROUS direction for a
+ * security-relevant "skip this file" predicate, unlike widening a
+ * test-DISCOVERY (`isTestPath`) or line-cap-exemption (`isTestOrSpecPath`)
+ * question, where over-inclusion only ever drops files that are genuinely
+ * test files. Auditing all ~100 callers to confirm that widening is safe
+ * is out of this consolidation's scope; left as an explicit, tracked
+ * follow-up rather than folded in silently.
+ */
+export function isPatternDataFile(filePath: string): boolean {
 	return isStrictTestFile(filePath) || isHarnessInternalDataFile(filePath);
+}
+
+/**
+ * @deprecated Compat alias for {@link isPatternDataFile} — the name
+ * `isTestFile` is what made this predicate read as a third copy of "is this
+ * a test file" (question 1) instead of the deliberately different question
+ * 3 it actually answers, which is exactly the confusion that invited past
+ * near-misses (the `duplicate_test_names` FP referenced above). Kept,
+ * unchanged, for this predicate's ~100 existing call sites across
+ * `checks/*.ts` so this consolidation does not force a tree-wide mechanical
+ * rename as a side effect. New call sites should import `isPatternDataFile`
+ * directly.
+ */
+export function isTestFile(filePath: string): boolean {
+	return isPatternDataFile(filePath);
 }
 
 /**

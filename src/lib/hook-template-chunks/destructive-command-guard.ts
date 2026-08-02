@@ -5,8 +5,9 @@
 //      it in the cold-fallback path (when the harness daemon is unreachable).
 //   2. The generated `.interlinked/hooks/interlinked-activity.mjs` cannot
 //      `import` anything — it must run standalone. `guards-inline.ts` embeds
-//      `DESTRUCTIVE_COMMAND_GUARD_SOURCE` (the `Function.toString()` of
-//      `checkDestructiveCommand`) verbatim into the .mjs template string.
+//      `DESTRUCTIVE_COMMAND_GUARD_SOURCE` (the joined `Function.toString()` of
+//      every helper below plus `checkDestructiveCommand` itself) verbatim into
+//      the .mjs template string, as a run of plain function declarations.
 //
 // Before this module existed, the destructive-command regexes lived ONLY in
 // the .mjs template string, and `hook-entry.ts`'s cold fallback ran none of
@@ -14,10 +15,13 @@
 // hook-entry.ts path. One shared function makes the two hook paths
 // destructive-guard-identical by construction; no hand-kept parity.
 //
-// IMPORTANT: `checkDestructiveCommand` MUST stay fully self-contained — no
-// module-scope references, every helper nested inside it. `Function.toString()`
-// serializes only the function's own body, so any outside reference would be
-// undefined in the emitted .mjs. The `new Function` round-trip test in
+// IMPORTANT: every function in this module MUST stay a free-standing, self-
+// contained `function` declaration (no module-scope constants, no imports
+// referenced from inside a serialized body) — `Function.prototype.toString()`
+// serializes only that function's own text, and `DESTRUCTIVE_COMMAND_GUARD_SOURCE`
+// is the concatenation of all of them. Plain function declarations hoist, so
+// `checkDestructiveCommand` can call the `dcg*` helpers regardless of the
+// order they're joined in. The `new Function` round-trip test in
 // `__tests__/destructive-command-guard.test.ts` pins this invariant.
 
 /** A destructive-command block verdict. `reason` is shown to the agent. */
@@ -26,99 +30,95 @@ export interface DestructiveCommandVerdict {
 	reason: string;
 }
 
-/**
- * Detect destructive shell commands — process killing, recursive deletes,
- * history-rewriting git, DROP/TRUNCATE, infra teardown, and so on. A pure
- * function of the command string: no fs, no env, no state, so it is safe to
- * run inline on any hook path. Returns a block verdict, or `null` when the
- * command is not destructive.
- *
- * Kept as one flat ladder (rather than split into per-family helpers) so it
- * stays self-contained for `Function.toString()` embedding — see the module
- * header.
- */
-export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict | null {
-	// Blank out quoted/escaped/commented spans so a destructive verb that only
-	// appears as quoted DATA (e.g. 'echo "reboot"') is not mistaken for an
-	// executable verb.
-	function maskInlineQuotedShell(value: string): string {
-		const out: string[] = [];
-		let quote: string | null = null;
-		let escaped = false;
-		let comment = false;
-		const backtick = String.fromCharCode(96);
-		for (let i = 0; i < value.length; i++) {
-			const ch = value[i] ?? "";
-			if (comment) {
-				if (ch === "\n") {
-					comment = false;
-					out.push(ch);
-				} else {
-					out.push(" ");
-				}
-				continue;
-			}
-			if (quote) {
-				if (escaped) {
-					escaped = false;
-					out.push(" ");
-					continue;
-				}
-				if (ch === "\\") {
-					escaped = true;
-					out.push(" ");
-					continue;
-				}
-				if (ch === quote) quote = null;
-				out.push(" ");
-				continue;
-			}
-			if (ch === "#" && (i === 0 || /\s/.test(value[i - 1] || ""))) {
-				comment = true;
-				out.push(" ");
-				continue;
-			}
-			if (ch === "'" || ch === '"' || ch === backtick) {
-				quote = ch;
-				out.push(" ");
-				continue;
-			}
-			out.push(ch);
+type DestructiveCheck = (cmd: string) => DestructiveCommandVerdict | null;
+
+interface MaskState {
+	quote: string | null;
+	escaped: boolean;
+	comment: boolean;
+}
+
+/** One character inside a `#...` shell comment: masked until end-of-line. */
+function dcgMaskCommentStep(ch: string, state: MaskState): string {
+	if (ch === "\n") {
+		state.comment = false;
+		return ch;
+	}
+	return " ";
+}
+
+/** One character inside a quoted span (`'`, `"`, or backtick): always masked. */
+function dcgMaskQuoteStep(ch: string, state: MaskState): string {
+	if (state.escaped) {
+		state.escaped = false;
+		return " ";
+	}
+	if (ch === "\\") {
+		state.escaped = true;
+		return " ";
+	}
+	if (ch === state.quote) state.quote = null;
+	return " ";
+}
+
+/** One character outside any quote/comment: detects the start of either. */
+function dcgMaskUnquotedStep(ch: string, i: number, value: string, state: MaskState): string {
+	const backtick = String.fromCharCode(96);
+	if (ch === "#" && (i === 0 || /\s/.test(value[i - 1] || ""))) {
+		state.comment = true;
+		return " ";
+	}
+	if (ch === "'" || ch === '"' || ch === backtick) {
+		state.quote = ch;
+		return " ";
+	}
+	return ch;
+}
+
+// Blank out quoted/escaped/commented spans so a destructive verb that only
+// appears as quoted DATA (e.g. 'echo "reboot"') is not mistaken for an
+// executable verb. Dispatches per-character to the three step helpers above
+// so no single function carries the whole state machine's complexity.
+function dcgMaskInlineQuotedShell(value: string): string {
+	const out: string[] = [];
+	const state: MaskState = { quote: null, escaped: false, comment: false };
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i] ?? "";
+		if (state.comment) {
+			out.push(dcgMaskCommentStep(ch, state));
+			continue;
 		}
-		return out.join("");
+		if (state.quote) {
+			out.push(dcgMaskQuoteStep(ch, state));
+			continue;
+		}
+		out.push(dcgMaskUnquotedStep(ch, i, value, state));
 	}
+	return out.join("");
+}
 
-	// Shutdown/reboot detection. Anchored to a command-start position and
-	// tolerant of wrapper chains ('sudo', 'env VAR=v', 'bash -c "..."').
-	function matchesInlineShutdown(cmdValue: string): boolean {
-		const masked = maskInlineQuotedShell(cmdValue);
-		const directRe =
-			/(^|\|\||&&|[;|\n])\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+|(?:bash|sh)\s+-c\s*["']?\s*)*(shutdown|reboot|halt|poweroff|init\s+[06]|systemctl\s+(poweroff|reboot|halt))\b/i;
-		const quotedShellRe =
-			/(^|\|\||&&|[;|\n])\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+)*(?:bash|sh)\s+-c\s*["']\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+)*(shutdown|reboot|halt|poweroff|init\s+[06]|systemctl\s+(poweroff|reboot|halt))\b/i;
-		return directRe.test(masked) || quotedShellRe.test(cmdValue);
-	}
+// Shutdown/reboot detection. Anchored to a command-start position and
+// tolerant of wrapper chains ('sudo', 'env VAR=v', 'bash -c "..."').
+function dcgMatchesShutdown(cmdValue: string): boolean {
+	const masked = dcgMaskInlineQuotedShell(cmdValue);
+	const directRe =
+		/(^|\|\||&&|[;|\n])\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+|(?:bash|sh)\s+-c\s*["']?\s*)*(shutdown|reboot|halt|poweroff|init\s+[06]|systemctl\s+(poweroff|reboot|halt))\b/i;
+	const quotedShellRe =
+		/(^|\|\||&&|[;|\n])\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+)*(?:bash|sh)\s+-c\s*["']\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+)*(shutdown|reboot|halt|poweroff|init\s+[06]|systemctl\s+(poweroff|reboot|halt))\b/i;
+	return directRe.test(masked) || quotedShellRe.test(cmdValue);
+}
 
-	if (matchesInlineShutdown(cmd)) {
-		return { decision: "block", reason: "BLOCKED: System shutdown/reboot commands." };
-	}
-
-	// Context detection: skip data-only references (grep/echo/cat examining strings).
-	if (
-		/^\s*(grep|egrep|fgrep|rg|ag|echo|printf|cat|head|tail|less|more|wc|diff|test|\[)\s/.test(cmd)
-	) {
-		return null;
-	}
-
-	// --- Sleep ---
+function dcgCheckSleep(cmd: string): DestructiveCommandVerdict | null {
 	if (/^\s*(sleep|bash\s+-c\s+.*sleep)\s+/i.test(cmd) || /;\s*sleep\s+/i.test(cmd)) {
 		return {
 			decision: "block",
 			reason: "Do not use bash sleep. Use the wait_for_work MCP tool instead.",
 		};
 	}
+	return null;
+}
 
-	// --- Process killing ---
+function dcgCheckProcessKilling(cmd: string): DestructiveCommandVerdict | null {
 	// "skill" (procps signal-by-name) only counts in COMMAND position — as a
 	// bare word, \bskill\s matched the English noun in any commit message or
 	// path ("enforce skill copy", .agents/skills/) and blocked the whole
@@ -155,8 +155,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 			reason: "BLOCKED: Pattern kills processes system-wide. Use specific PID.",
 		};
 	}
+	return null;
+}
 
-	// --- Filesystem destruction ---
+function dcgCheckFilesystemDestruction(cmd: string): DestructiveCommandVerdict | null {
 	if (/\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--force\s+--recursive)\s/i.test(cmd)) {
 		return {
 			decision: "block",
@@ -201,8 +203,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	if (/\bsudo\s+rm\b/.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: sudo rm is extremely dangerous." };
 	}
+	return null;
+}
 
-	// --- Git destruction ---
+function dcgCheckGitDestruction(cmd: string): DestructiveCommandVerdict | null {
 	if (/\bgit\s+push\s+.*--force(?!-with-lease)\b/i.test(cmd) || /\bgit\s+push\s+-f\b/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: git push --force. Use --force-with-lease instead." };
 	}
@@ -284,8 +288,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 				"BLOCKED: git add -i/-p/-e opens an interactive prompt that hangs a non-interactive agent. Use git add <pathspec>.",
 		};
 	}
+	return null;
+}
 
-	// --- Database destruction ---
+function dcgCheckDatabaseDestruction(cmd: string): DestructiveCommandVerdict | null {
 	if (/\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE)/i.test(cmd)) {
 		return {
 			decision: "block",
@@ -301,8 +307,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	if (/\bredis-cli\s.*(FLUSHALL|FLUSHDB)/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: Redis FLUSHALL/FLUSHDB clears all data." };
 	}
+	return null;
+}
 
-	// --- Container/orchestration ---
+function dcgCheckContainerOrchestration(cmd: string): DestructiveCommandVerdict | null {
 	if (/\bdocker\s+(system|volume|image)\s+prune/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: docker prune removes potentially important data." };
 	}
@@ -321,8 +329,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	if (/\bkubectl\s+drain\s/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: kubectl drain evicts all pods from a node." };
 	}
+	return null;
+}
 
-	// --- Infrastructure-as-Code ---
+function dcgCheckInfraAsCode(cmd: string): DestructiveCommandVerdict | null {
 	if (/\bterraform\s+destroy/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: terraform destroy removes infrastructure." };
 	}
@@ -332,8 +342,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	if (/\bpulumi\s+destroy/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: pulumi destroy removes infrastructure." };
 	}
+	return null;
+}
 
-	// --- Cloud provider ---
+function dcgCheckCloudProvider(cmd: string): DestructiveCommandVerdict | null {
 	if (/\baws\s.*(terminate-instances|delete-db-instance|delete-stack|delete-bucket)/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: AWS destructive operations." };
 	}
@@ -346,10 +358,12 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 			reason: "BLOCKED: rsync --delete can wipe files at the destination.",
 		};
 	}
+	return null;
+}
 
-	// --- System-level ---
-	// Re-checks shutdown/reboot directly (the early matchesInlineShutdown
-	// gate also runs, before the data-only skip); kept so this ladder mirrors
+function dcgCheckSystemLevel(cmd: string): DestructiveCommandVerdict | null {
+	// Re-checks shutdown/reboot directly (the early dcgMatchesShutdown gate
+	// also runs, before the data-only skip); kept so this ladder mirrors
 	// the harness rule at builtin-rules-processes.ts one-to-one.
 	if (
 		/(^|\|\||&&|[;|\n])\s*(?:(?:env(?:\s+[A-Za-z_]\w*=\S+)*|command|exec|nohup|sudo)\s+|(?:bash|sh)\s+-c\s*["']?\s*)*(shutdown|reboot|halt|poweroff|init\s+[06]|systemctl\s+(poweroff|reboot|halt))\b/i.test(cmd)
@@ -359,8 +373,10 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 	if (/\b(lvremove|vgremove|pvremove)\s/i.test(cmd)) {
 		return { decision: "block", reason: "BLOCKED: LVM removal commands." };
 	}
+	return null;
+}
 
-	// --- Embedded destructive commands ---
+function dcgCheckEmbeddedDestructive(cmd: string): DestructiveCommandVerdict | null {
 	if (/(python3?|node|ruby|perl)\s+-(c|e)\s+.*\b(os\.remove|shutil\.rmtree|unlink|rimraf)\b/i.test(cmd)) {
 		return {
 			decision: "block",
@@ -374,13 +390,80 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 				"BLOCKED: Destructive command embedded in bash -c. Run directly so it can be properly reviewed.",
 		};
 	}
-
 	return null;
 }
 
 /**
- * Source text of `checkDestructiveCommand`, for embedding into the
- * zero-import generated .mjs hook (which cannot `import`). `guards-inline.ts`
- * splices this in so the .mjs and `hook-entry.ts` run identical code.
+ * Detect destructive shell commands — process killing, recursive deletes,
+ * history-rewriting git, DROP/TRUNCATE, infra teardown, and so on. A pure
+ * function of the command string: no fs, no env, no state, so it is safe to
+ * run inline on any hook path. Returns a block verdict, or `null` when the
+ * command is not destructive.
+ *
+ * Two early gates (shutdown/reboot, then the data-only skip) run first, then
+ * one rule-family check per line of shell activity, in the same priority
+ * order as the original flat ladder. Every family is its own top-level
+ * function (see above) so no single unit carries the whole ladder's
+ * complexity — see the module header for why they all stay free-standing
+ * function declarations rather than nested closures.
  */
-export const DESTRUCTIVE_COMMAND_GUARD_SOURCE: string = checkDestructiveCommand.toString();
+export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict | null {
+	if (dcgMatchesShutdown(cmd)) {
+		return { decision: "block", reason: "BLOCKED: System shutdown/reboot commands." };
+	}
+
+	// Context detection: skip data-only references (grep/echo/cat examining strings).
+	if (
+		/^\s*(grep|egrep|fgrep|rg|ag|echo|printf|cat|head|tail|less|more|wc|diff|test|\[)\s/.test(cmd)
+	) {
+		return null;
+	}
+
+	const checks: DestructiveCheck[] = [
+		dcgCheckSleep,
+		dcgCheckProcessKilling,
+		dcgCheckFilesystemDestruction,
+		dcgCheckGitDestruction,
+		dcgCheckDatabaseDestruction,
+		dcgCheckContainerOrchestration,
+		dcgCheckInfraAsCode,
+		dcgCheckCloudProvider,
+		dcgCheckSystemLevel,
+		dcgCheckEmbeddedDestructive,
+	];
+	for (const check of checks) {
+		const verdict = check(cmd);
+		if (verdict) return verdict;
+	}
+	return null;
+}
+
+/**
+ * Source text of every helper above plus `checkDestructiveCommand`, joined as
+ * a run of plain function declarations, for embedding into the zero-import
+ * generated .mjs hook (which cannot `import`). `guards-inline.ts` splices
+ * this in verbatim (no wrapping `const x = ` — the blob already contains a
+ * `function checkDestructiveCommand(...) {}` declaration) so the .mjs and
+ * `hook-entry.ts` run identical code. Function declarations hoist, so
+ * call order inside the joined blob doesn't matter.
+ */
+export const DESTRUCTIVE_COMMAND_GUARD_SOURCE: string = [
+	dcgMaskCommentStep,
+	dcgMaskQuoteStep,
+	dcgMaskUnquotedStep,
+	dcgMaskInlineQuotedShell,
+	dcgMatchesShutdown,
+	dcgCheckSleep,
+	dcgCheckProcessKilling,
+	dcgCheckFilesystemDestruction,
+	dcgCheckGitDestruction,
+	dcgCheckDatabaseDestruction,
+	dcgCheckContainerOrchestration,
+	dcgCheckInfraAsCode,
+	dcgCheckCloudProvider,
+	dcgCheckSystemLevel,
+	dcgCheckEmbeddedDestructive,
+	checkDestructiveCommand,
+]
+	.map((fn) => fn.toString())
+	.join("\n");

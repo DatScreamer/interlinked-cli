@@ -145,8 +145,13 @@ describe("DESTRUCTIVE_COMMAND_GUARD_SOURCE — embeddable into the .mjs", () => 
 	// has no external references — `Function.toString()` serializes only the
 	// function's own body, so any module-scope reference would be undefined.
 	function rebuildFromSource(): (cmd: string) => { decision: string; reason: string } | null {
+		// The blob is now a run of plain function declarations (mask/shutdown
+		// helpers + one per rule family + checkDestructiveCommand itself), not a
+		// single function expression — so it's spliced bare, then
+		// `checkDestructiveCommand` (hoisted, like every function declaration)
+		// is returned by name. Mirrors exactly how guards-inline.ts embeds it.
 		return new Function(
-			`"use strict"; const checkDestructiveCommand = ${DESTRUCTIVE_COMMAND_GUARD_SOURCE}; return checkDestructiveCommand;`,
+			`"use strict"; ${DESTRUCTIVE_COMMAND_GUARD_SOURCE}; return checkDestructiveCommand;`,
 		)() as (cmd: string) => { decision: string; reason: string } | null;
 	}
 
@@ -156,15 +161,80 @@ describe("DESTRUCTIVE_COMMAND_GUARD_SOURCE — embeddable into the .mjs", () => 
 		expect(rebuilt("ls -la")).toBeNull();
 	});
 
-	it("the embedded copy agrees with the imported function", () => {
+	it("the embedded copy agrees with the imported function across every rule family", () => {
 		const rebuilt = rebuildFromSource();
+		// One (or more) case per family the guard's helper functions dispatch
+		// to, plus the two early gates and a spread of allowed commands — this
+		// is the test that would catch a family silently dropped or a helper
+		// left out of the DESTRUCTIVE_COMMAND_GUARD_SOURCE join list.
 		const corpus = [
-			"git push --force origin x",
+			// early gates
 			"sudo reboot",
+			'bash -c "reboot"',
+			"echo 'rm -rf /'",
+			"grep -rn 'rm -rf' src",
+			// sleep
+			"sleep 30",
+			// process killing
+			"pkill -f node",
+			"kill -9 1234",
+			"kill 100 200",
+			"kill $(pgrep node)",
+			"pgrep node | xargs kill",
+			// filesystem destruction
+			"rm -rf build",
+			"rm -r /usr",
+			"rm -r .wrangler",
+			"rm -r node_modules",
+			"dd if=/dev/zero of=/dev/sda",
+			"mkfs /dev/sda1",
+			"chmod -R 777 /etc",
+			"sudo rm /etc/hosts",
+			// git destruction
+			"git push --force origin x",
+			"git reset --hard HEAD~1",
+			"git clean -fd",
+			"git checkout -- .",
+			"git restore --worktree src/foo.ts",
+			"git branch -D feature",
+			"git stash drop",
+			"git restore .",
+			"git filter-branch --tree-filter x HEAD",
+			"git rebase -i HEAD~3",
+			"git add -p",
+			// database destruction
+			"psql -c 'DROP TABLE users'",
+			"mysql -e 'DELETE FROM users;'",
+			"mongo --eval 'db.dropDatabase()'",
+			"redis-cli FLUSHALL",
+			// container / orchestration
+			"docker system prune",
+			"docker-compose down -v",
+			"kubectl delete namespace prod",
 			"kubectl drain node-1",
+			// infrastructure-as-code
+			"terraform destroy",
+			"terraform apply -auto-approve",
+			"pulumi destroy",
+			// cloud provider
+			"aws ec2 terminate-instances --instance-ids i-1",
+			"aws s3 rm s3://bucket --recursive",
+			"rsync -a --delete src/ dst/",
+			// system-level
+			"lvremove /dev/vg/lv",
+			// embedded destructive commands
+			'python -c "import shutil; shutil.rmtree(\'/\')"',
+			"bash -c 'rm -rf /tmp/x'",
+			// allowed (no family fires)
 			"ls -la",
 			"npm run build",
-			"echo 'rm -rf /'",
+			"git status",
+			"git push origin main",
+			"git push --force-with-lease origin main",
+			"kill 1234",
+			"git rebase main",
+			"docker compose up -d",
+			"mkdir -p x && git add .",
 		];
 		for (const cmd of corpus) {
 			expect(rebuilt(cmd), cmd).toEqual(checkDestructiveCommand(cmd));

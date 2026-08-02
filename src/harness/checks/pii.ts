@@ -66,31 +66,21 @@ function isPiiExcludedFile(filePath: string): boolean {
 	return false;
 }
 
+/** Config shape accepted by {@link checkPiiInSource} for opt-in + custom PII patterns. */
+type PiiScanOpts = {
+	optIn?: string[];
+	customPatterns?: Array<{ name: string; pattern: string; severity?: string }>;
+};
+
 /**
- * Detect PII patterns in source code.
- * Default-on: SSN (high signal). Opt-in: email, phone, IP (need per-project tuning).
- * Skips test files, fixtures, .env.example, mock data.
- * Custom patterns and opt-in selection via config.
+ * Resolve the full set of active PII patterns for a scan: the default-on set,
+ * plus any named opt-in patterns, plus any admin-authored custom patterns
+ * (length-capped at 200 chars; patterns that fail to compile are dropped
+ * rather than aborting the whole rule load).
  */
-export function checkPiiInSource(
-	content: string,
-	filePath: string,
-	opts?: {
-		optIn?: string[];
-		customPatterns?: Array<{ name: string; pattern: string; severity?: string }>;
-	},
-): InlineMatch[] {
-	if (isPiiExcludedFile(filePath)) return [];
-
-	const stripped = stripComments(content);
-	const originalLines = content.split("\n");
-	const strippedLines = stripped.split("\n");
-	const matches: InlineMatch[] = [];
-
-	// Collect active patterns
+function resolveActivePiiPatterns(opts?: PiiScanOpts): PiiPattern[] {
 	const activePatterns: PiiPattern[] = [...DEFAULT_PII_PATTERNS];
 
-	// Add opt-in patterns
 	if (opts?.optIn) {
 		for (const name of opts.optIn) {
 			const found = OPTIN_PII_PATTERNS.find((p) => p.name === name);
@@ -98,7 +88,6 @@ export function checkPiiInSource(
 		}
 	}
 
-	// Add custom patterns from config (validated: max 200 chars, must compile)
 	if (opts?.customPatterns) {
 		for (const cp of opts.customPatterns) {
 			if (typeof cp.pattern !== "string" || cp.pattern.length > 200) continue;
@@ -119,6 +108,24 @@ export function checkPiiInSource(
 		}
 	}
 
+	return activePatterns;
+}
+
+/**
+ * Detect PII patterns in source code.
+ * Default-on: SSN (high signal). Opt-in: email, phone, IP (need per-project tuning).
+ * Skips test files, fixtures, .env.example, mock data.
+ * Custom patterns and opt-in selection via config.
+ */
+export function checkPiiInSource(content: string, filePath: string, opts?: PiiScanOpts): InlineMatch[] {
+	if (isPiiExcludedFile(filePath)) return [];
+
+	const stripped = stripComments(content);
+	const originalLines = content.split("\n");
+	const strippedLines = stripped.split("\n");
+	const matches: InlineMatch[] = [];
+	const activePatterns = resolveActivePiiPatterns(opts);
+
 	for (const piiPattern of activePatterns) {
 		for (let i = 0; i < strippedLines.length; i++) {
 			if (matches.length >= 20) return matches;
@@ -136,6 +143,55 @@ export function checkPiiInSource(
 	}
 
 	return matches;
+}
+
+const MIXED_STRATEGY_FUNC_START =
+	/(?:^|[\s;])(?:(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>|(?:async\s+)?\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{)/;
+const MIXED_STRATEGY_THROW_PAT = /\bthrow\s+(?:new\s+\w+|err|e|error)\b/;
+const MIXED_STRATEGY_RETURN_ERROR_PAT =
+	/\breturn\s+\{[^}]*(?:success\s*:\s*false|error\s*:|err\s*:)|return\s+(?:null|undefined)\s*;?\s*\/\/.*error/i;
+
+/** Net brace-depth change contributed by a single (comment-stripped) line. */
+function braceDeltaForLine(line: string): number {
+	let delta = 0;
+	for (const ch of line) {
+		if (ch === "{") delta++;
+		if (ch === "}") delta--;
+	}
+	return delta;
+}
+
+/**
+ * Records a throw / return-error occurrence on `line`, but only within the
+ * function's own body (depth 1) or one level in — if/else/try blocks at
+ * depth 2. Deeper nesting is treated as noise and skipped.
+ */
+function trackErrorExitAtDepth(
+	line: string,
+	lineIndex: number,
+	funcDepth: number,
+	throwLines: number[],
+	returnErrorLines: number[],
+): void {
+	if (funcDepth < 1 || funcDepth > 2) return;
+	if (MIXED_STRATEGY_THROW_PAT.test(line)) throwLines.push(lineIndex);
+	if (MIXED_STRATEGY_RETURN_ERROR_PAT.test(line)) returnErrorLines.push(lineIndex);
+}
+
+/** Pushes a mixed-error-strategy finding when a just-ended function body used both a throw and a return-error exit. */
+function recordMixedStrategyIfPresent(
+	throwLines: number[],
+	returnErrorLines: number[],
+	funcStartLine: number,
+	originalLines: string[],
+	matches: InlineMatch[],
+): void {
+	if (throwLines.length === 0 || returnErrorLines.length === 0) return;
+	const funcLine = nonNull(originalLines[funcStartLine]).trim().slice(0, 120);
+	matches.push({
+		line: funcStartLine + 1,
+		text: `mixed error strategy: function both throws (L${nonNull(throwLines[0]) + 1}) and returns error object (L${nonNull(returnErrorLines[0]) + 1}): ${funcLine}`,
+	});
 }
 
 /**
@@ -169,17 +225,11 @@ export function checkMixedErrorStrategy(content: string, filePath: string): Inli
 	let throwLines: number[] = [];
 	let returnErrorLines: number[] = [];
 
-	const FUNC_START =
-		/(?:^|[\s;])(?:(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>|(?:async\s+)?\w+\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{)/;
-	const THROW_PAT = /\bthrow\s+(?:new\s+\w+|err|e|error)\b/;
-	const RETURN_ERROR_PAT =
-		/\breturn\s+\{[^}]*(?:success\s*:\s*false|error\s*:|err\s*:)|return\s+(?:null|undefined)\s*;?\s*\/\/.*error/i;
-
 	for (let i = 0; i < lines.length; i++) {
 		const line = nonNull(lines[i]);
 
 		// Detect function start
-		if (!inFunc && FUNC_START.test(line) && line.includes("{")) {
+		if (!inFunc && MIXED_STRATEGY_FUNC_START.test(line) && line.includes("{")) {
 			inFunc = true;
 			funcStartLine = i;
 			funcDepth = 0;
@@ -188,29 +238,12 @@ export function checkMixedErrorStrategy(content: string, filePath: string): Inli
 		}
 
 		if (inFunc) {
-			// Track brace depth
-			for (const ch of line) {
-				if (ch === "{") funcDepth++;
-				if (ch === "}") funcDepth--;
-			}
-
-			// Only flag throw/return-error at the function's own level (depth 1)
-			// or one level in (if/else/try blocks at depth 2). Skip deeply nested.
-			if (funcDepth >= 1 && funcDepth <= 2) {
-				if (THROW_PAT.test(line)) throwLines.push(i);
-				if (RETURN_ERROR_PAT.test(line)) returnErrorLines.push(i);
-			}
+			funcDepth += braceDeltaForLine(line);
+			trackErrorExitAtDepth(line, i, funcDepth, throwLines, returnErrorLines);
 
 			// Function ended
 			if (funcDepth <= 0) {
-				if (throwLines.length > 0 && returnErrorLines.length > 0) {
-					// Report on the function start line
-					const funcLine = nonNull(originalLines[funcStartLine]).trim().slice(0, 120);
-					matches.push({
-						line: funcStartLine + 1,
-						text: `mixed error strategy: function both throws (L${nonNull(throwLines[0]) + 1}) and returns error object (L${nonNull(returnErrorLines[0]) + 1}): ${funcLine}`,
-					});
-				}
+				recordMixedStrategyIfPresent(throwLines, returnErrorLines, funcStartLine, originalLines, matches);
 				inFunc = false;
 				if (matches.length >= 5) break;
 			}

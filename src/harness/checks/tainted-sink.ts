@@ -109,6 +109,72 @@ function extractFirstArg(
 	return { arg: s.slice(openParenIdx + 1, close), endIdx: close };
 }
 
+interface TaintedAssignment {
+	offset: number;
+	validatedAtAssignment: boolean;
+}
+
+/** Shared read-only state for evaluating each sink-call occurrence found in the file. */
+interface SinkScanContext {
+	stripped: string;
+	externalInputRe: RegExp;
+	taintedAssignments: Map<string, TaintedAssignment>;
+	/** Records a match at `offset`; returns true once the per-file limit is hit. */
+	recordMatch: (offset: number) => boolean;
+}
+
+/**
+ * Decide whether one sink-call occurrence (its opening paren located by
+ * `sinkOffset`/`openParenIdx` in `ctx.stripped`) is a tainted-to-sink flow:
+ * either the first argument directly contains external input, or it is a
+ * bare identifier bound to unvalidated external input with no validator call
+ * between the assignment and this sink.
+ *
+ * Returns true when a match was recorded AND the per-file limit is now
+ * reached — the caller's signal to stop scanning entirely. Returns false
+ * both when nothing was recorded and when a match was recorded but the
+ * limit isn't reached yet (the caller's while loop simply advances either
+ * way, exactly as the original inline `continue`/fallthrough did).
+ */
+function evaluateSinkOccurrence(
+	sinkOffset: number,
+	openParenIdx: number,
+	ctx: SinkScanContext,
+): boolean {
+	const { stripped, externalInputRe, taintedAssignments, recordMatch } = ctx;
+	const argInfo = extractFirstArg(stripped, openParenIdx);
+	if (!argInfo) return false;
+	const arg = argInfo.arg;
+
+	// Direct: external-input expression appears inside the first arg.
+	if (externalInputRe.test(arg)) {
+		return recordMatch(sinkOffset);
+	}
+
+	// Two-step: arg is a bare identifier matching a tainted assignment, and no
+	// validator runs between the assignment and the sink call.
+	const bareName = arg.trim().match(/^([A-Za-z_$][\w$]*)$/);
+	if (!bareName) return false;
+	const bareIdent = nonNull(bareName[1]);
+	const tainted = taintedAssignments.get(bareIdent);
+	if (!tainted) return false;
+	if (tainted.validatedAtAssignment) return false;
+	if (tainted.offset > sinkOffset) return false;
+
+	const between = stripped.slice(tainted.offset, sinkOffset);
+	const escaped = bareIdent.replace(/[$]/g, "\\$");
+	// Validator check is two-tier: any of the generic VALIDATOR_PATTERNS
+	// firing somewhere between the assignment and the sink is enough, AND
+	// the validator has to plausibly involve `name` (a `.parse(` elsewhere
+	// on a different value doesn't count). We check both.
+	const namedValidator = new RegExp(
+		String.raw`(?:\.(?:parse|safeParse|validate)\s*\(\s*${escaped}\b|\btypeof\s+${escaped}\b|\bArray\.isArray\s*\(\s*${escaped}\b|\b${escaped}\s+instanceof\b|\.has\s*\(\s*${escaped}\b|\bif\b[^;]*\b${escaped}\b[^;]*[;\n])`,
+	);
+	if (namedValidator.test(between)) return false;
+
+	return recordMatch(sinkOffset);
+}
+
 /**
  * Detect external-input values reaching privileged sinks without a
  * recognized validator on the path between source and sink.
@@ -144,10 +210,7 @@ export function checkTaintedToPrivilegedSink(
 	// Track tainted variable names assigned from external input in this file.
 	// Map from name -> assignment offset. Only the most recent assignment per
 	// name is considered (later assignments shadow earlier ones).
-	const taintedAssignments = new Map<
-		string,
-		{ offset: number; validatedAtAssignment: boolean }
-	>();
+	const taintedAssignments = new Map<string, TaintedAssignment>();
 	const assignRe =
 		/\b(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*([^;]+)/g;
 	let assignHit: RegExpExecArray | null;
@@ -168,6 +231,8 @@ export function checkTaintedToPrivilegedSink(
 		});
 	}
 
+	const scanCtx: SinkScanContext = { stripped, externalInputRe, taintedAssignments, recordMatch };
+
 	// Walk each sink pattern.
 	for (const { re } of SINK_PATTERNS) {
 		const local = new RegExp(re.source, "g");
@@ -176,38 +241,7 @@ export function checkTaintedToPrivilegedSink(
 			if (exitCheck()) return matches;
 			const sinkOffset = sinkHit.index;
 			const openParenIdx = sinkOffset + sinkHit[0].length - 1;
-			const argInfo = extractFirstArg(stripped, openParenIdx);
-			if (!argInfo) continue;
-			const arg = argInfo.arg;
-
-			// Direct: external-input expression appears inside the first arg.
-			if (externalInputRe.test(arg)) {
-				if (recordMatch(sinkOffset)) return matches;
-				continue;
-			}
-
-			// Two-step: arg is a bare identifier matching a tainted assignment,
-			// and no validator runs between the assignment and the sink call.
-			const bareName = arg.trim().match(/^([A-Za-z_$][\w$]*)$/);
-			if (!bareName) continue;
-			const bareIdent = nonNull(bareName[1]);
-			const tainted = taintedAssignments.get(bareIdent);
-			if (!tainted) continue;
-			if (tainted.validatedAtAssignment) continue;
-			if (tainted.offset > sinkOffset) continue;
-
-			const between = stripped.slice(tainted.offset, sinkOffset);
-			const escaped = bareIdent.replace(/[$]/g, "\\$");
-			// Validator check is two-tier: any of the generic VALIDATOR_PATTERNS
-			// firing somewhere between the assignment and the sink is enough,
-			// AND the validator has to plausibly involve `name` (a `.parse(`
-			// elsewhere on a different value doesn't count). We check both.
-			const namedValidator = new RegExp(
-				String.raw`(?:\.(?:parse|safeParse|validate)\s*\(\s*${escaped}\b|\btypeof\s+${escaped}\b|\bArray\.isArray\s*\(\s*${escaped}\b|\b${escaped}\s+instanceof\b|\.has\s*\(\s*${escaped}\b|\bif\b[^;]*\b${escaped}\b[^;]*[;\n])`,
-			);
-			if (namedValidator.test(between)) continue;
-
-			if (recordMatch(sinkOffset)) return matches;
+			if (evaluateSinkOccurrence(sinkOffset, openParenIdx, scanCtx)) return matches;
 		}
 	}
 

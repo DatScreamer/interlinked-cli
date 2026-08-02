@@ -220,6 +220,47 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		}
 	}
 
+	/** Per-event durability: write the live snapshot AFTER `processEvent`
+	 *  completes so it reflects every post-event state mutation — PostToolUse
+	 *  handlers updating `tdd_cycles`, `assertion_counts`, `active_skills`,
+	 *  etc. The earlier "snapshot right after recordEvent" placement lost
+	 *  those mutations on a daemon restart between events. Best-effort: write
+	 *  failures are logged but never block the decision return (called from
+	 *  `evaluateEventLine`'s `finally`, so its own errors must not escape).
+	 *  Extracted from `evaluateEventLine` verbatim — same try/catch scope,
+	 *  same fail-open contract, just a fresh function so the nesting the
+	 *  enclosing `if (sessionIdForSnap)` + `finally` added doesn't count
+	 *  against the caller's cognitive-complexity budget. */
+	function persistEventSnapshot(
+		sessionId: string,
+		hookEventForSnap: string | undefined,
+		toolUseIdForSnap: string | null,
+	): void {
+		try {
+			const snap = sessions.serialize(sessionId);
+			if (snap) {
+				const writeResult = writeLiveSnapshot(CWD, sessionId, snap);
+				if (!writeResult.ok) {
+					log(`Live snapshot write failed (non-fatal): ${writeResult.error.message}`);
+				}
+				// G2 replay capture (env-gated, fail-open): tree snapshot +
+				// per-step state archive at tool boundaries. `snap.last_seq`
+				// IS this event's seq — the mint ran inside processEvent.
+				maybeRecordReplaySnapshots({
+					cwd: CWD,
+					sessionId,
+					seq: typeof snap.last_seq === "number" ? snap.last_seq : null,
+					toolUseId: toolUseIdForSnap,
+					phase: phaseForHookEvent(hookEventForSnap),
+					liveSnapshot: snap,
+					log,
+				});
+			}
+		} catch (e) {
+			log(`Live snapshot write threw: ${e instanceof Error ? e.message : String(e)}`);
+		}
+	}
+
 	async function evaluateEventLine(
 		line: string,
 		protocol: "raw" | "framed",
@@ -255,36 +296,11 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			}
 			return decision;
 		} finally {
-			// Per-event durability: write the live snapshot AFTER processEvent so
-			// the snapshot reflects every post-event state mutation — PostToolUse
-			// handlers updating `tdd_cycles`, `assertion_counts`, `active_skills`,
-			// etc. The earlier "snapshot right after recordEvent" placement lost
-			// those mutations on a daemon restart between events. Best-effort:
-			// write failures are logged but never block the decision return.
+			// See persistEventSnapshot's doc comment for the durability
+			// rationale (why this runs here, in the `finally`, after
+			// `processEvent` returns rather than right after `recordEvent`).
 			if (sessionIdForSnap) {
-				try {
-					const snap = sessions.serialize(sessionIdForSnap);
-					if (snap) {
-						const writeResult = writeLiveSnapshot(CWD, sessionIdForSnap, snap);
-						if (!writeResult.ok) {
-							log(`Live snapshot write failed (non-fatal): ${writeResult.error.message}`);
-						}
-						// G2 replay capture (env-gated, fail-open): tree snapshot +
-						// per-step state archive at tool boundaries. `snap.last_seq`
-						// IS this event's seq — the mint ran inside processEvent.
-						maybeRecordReplaySnapshots({
-							cwd: CWD,
-							sessionId: sessionIdForSnap,
-							seq: typeof snap.last_seq === "number" ? snap.last_seq : null,
-							toolUseId: toolUseIdForSnap,
-							phase: phaseForHookEvent(hookEventForSnap),
-							liveSnapshot: snap,
-							log,
-						});
-					}
-				} catch (e) {
-					log(`Live snapshot write threw: ${e instanceof Error ? e.message : String(e)}`);
-				}
+				persistEventSnapshot(sessionIdForSnap, hookEventForSnap, toolUseIdForSnap);
 			}
 		}
 	}

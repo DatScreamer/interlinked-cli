@@ -234,6 +234,31 @@ export function parseGitVerb(rawCommand: string): ParsedGitCommand | null {
 
 	// Skip git's global options (`-c key=val`, `-C path`, `--git-dir`,
 	// `--work-tree`, etc.) until we hit the subcommand.
+	i = skipGitGlobalOptions(tokens, i);
+
+	const sub = tokens[i];
+	if (sub !== "add" && sub !== "commit" && sub !== "push") return null;
+	const args = tokens.slice(i + 1);
+
+	if (sub === "push") {
+		// Defer all force-push variants to the existing rule.
+		for (const a of args) {
+			if (a === "--force" || a === "-f" || a === "--force-with-lease" || /^--force/.test(a)) {
+				return { verb: "push", args, deferToForcePush: true };
+			}
+		}
+	}
+
+	return { verb: sub, args, deferToForcePush: false };
+}
+
+/** Advances past git's global options (`-c key=val`, `-C path`, `--git-dir`,
+ *  `--work-tree=...`, and any other leading `-`-prefixed flag) starting at
+ *  `startIndex`, stopping at the first token that looks like the
+ *  subcommand. Returns that token's index (== `tokens.length` if every
+ *  remaining token was consumed as a flag). */
+function skipGitGlobalOptions(tokens: string[], startIndex: number): number {
+	let i = startIndex;
 	while (i < tokens.length) {
 		const tok = tokens[i];
 		if (tok === "-c" || tok === "--git-dir" || tok === "--work-tree" || tok === "-C") {
@@ -251,21 +276,7 @@ export function parseGitVerb(rawCommand: string): ParsedGitCommand | null {
 		}
 		break;
 	}
-
-	const sub = tokens[i];
-	if (sub !== "add" && sub !== "commit" && sub !== "push") return null;
-	const args = tokens.slice(i + 1);
-
-	if (sub === "push") {
-		// Defer all force-push variants to the existing rule.
-		for (const a of args) {
-			if (a === "--force" || a === "-f" || a === "--force-with-lease" || /^--force/.test(a)) {
-				return { verb: "push", args, deferToForcePush: true };
-			}
-		}
-	}
-
-	return { verb: sub, args, deferToForcePush: false };
+	return i;
 }
 
 /** Minimal shell-aware splitter for the parser. Handles single + double

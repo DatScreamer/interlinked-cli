@@ -501,6 +501,39 @@ describe("per-language comment/string stripping", () => {
 		expect(stripped).not.toContain("unwrap()");
 	});
 
+	it("stripCStyle blanks single-quoted string contents", async () => {
+		const src = `let x = 'unwrap()';\n`;
+		const stripped = stripCStyle(src);
+		expect(stripped).not.toContain("unwrap()");
+	});
+
+	it("stripCStyle blanks backtick template-string contents", async () => {
+		const src = "let x = `unwrap()`;\n";
+		const stripped = stripCStyle(src);
+		expect(stripped).not.toContain("unwrap()");
+	});
+
+	it("stripCStyle treats an escaped quote inside a string as not closing it", async () => {
+		const src = `let x = "a\\"unwrap()";\n`;
+		const stripped = stripCStyle(src);
+		expect(stripped).not.toContain("unwrap()");
+		// Opening + closing quotes of the (still single, unterminated-early)
+		// string literal survive; only the escaped interior quote is blanked.
+		expect(stripped).toContain('"');
+	});
+
+	it("stripCStyle keeps a multi-line block comment's newlines as real newlines", async () => {
+		const src = "/* unwrap()\nstill a comment\n*/\nlet x = 1;\n";
+		const stripped = stripCStyle(src);
+		expect(stripped.split("\n").length).toBe(src.split("\n").length);
+		expect(stripped).not.toContain("unwrap()");
+	});
+
+	it("stripCStyle: offset preservation across mixed comments/strings/code", async () => {
+		const src = '// unwrap()\nlet x = 1; // trail\n/* block\nspans */\nlet y = "z";\n';
+		expect(stripCStyle(src).split("\n").length).toBe(src.split("\n").length);
+	});
+
 	it("offset preservation: stripped line count equals original", async () => {
 		const src = `# comment\nprint(1)\n# another\n`;
 		expect(stripPython(src).split("\n").length).toBe(src.split("\n").length);

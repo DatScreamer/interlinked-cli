@@ -98,6 +98,61 @@ function findBodyOpen(s: string, headerEnd: number): number {
 }
 
 /**
+ * Resolve the brace-delimited `{ ... }` body range for one iteration
+ * candidate, or null if this candidate has no body to scan.
+ *
+ * forEach-style: the callback's brace body must sit INSIDE the call's own
+ * parens. An expression-arrow callback (e.g. `arr.some((e) => e.x === y)`)
+ * has no statement body; without this bound, `findBodyOpen` latches onto the
+ * next unrelated `{` block (the enclosing if/for) and reports mutations that
+ * aren't in the callback at all. Bounding to the call's `)` drops those FPs.
+ */
+function resolveLoopBodyRange(
+	stripped: string,
+	headerIdx: number,
+	callParenIdx: number | undefined,
+): { bodyOpen: number; bodyClose: number } | null {
+	const bodyOpen = findBodyOpen(stripped, headerIdx);
+	if (bodyOpen < 0) return null;
+	if (callParenIdx !== undefined) {
+		const callClose = findMatchingParen(stripped, callParenIdx);
+		if (callClose < 0 || bodyOpen > callClose) return null;
+	}
+	const bodyClose = findMatchingBrace(stripped, bodyOpen);
+	if (bodyClose < 0) return null;
+	return { bodyOpen, bodyClose };
+}
+
+/**
+ * Absolute offsets (into `stripped`) of mutating-method calls, index
+ * assignments, and `delete` expressions targeting `collection` within the
+ * body spanning `(bodyOpen, bodyClose)`.
+ */
+function findMutationOffsets(
+	stripped: string,
+	collection: string,
+	bodyOpen: number,
+	bodyClose: number,
+): number[] {
+	const body = stripped.slice(bodyOpen + 1, bodyClose);
+	const escaped = collection.replace(/[$]/g, "\\$");
+	const methodAlt = MUTATING_METHODS.join("|");
+	const methodRe = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:${methodAlt})\\s*\\(`, "g");
+	// `<name>[expr] = <not-equality>`. Negative lookahead `=(?!=)` rules
+	// out `===`/`==`; we also exclude `>=`/`<=`/`!=` by anchoring the
+	// preceding bracket pair with no operator on the LHS.
+	const indexAssignRe = new RegExp(`\\b${escaped}\\s*\\[[^\\]\\n]*\\]\\s*=(?!=)`, "g");
+	const deleteRe = new RegExp(`\\bdelete\\s+${escaped}\\s*\\[`, "g");
+
+	let hit: RegExpExecArray | null;
+	const found: number[] = [];
+	while ((hit = methodRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
+	while ((hit = indexAssignRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
+	while ((hit = deleteRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
+	return found;
+}
+
+/**
  * Detect mutating an array/Map/Set inside iteration over the same collection.
  *
  * Positive shapes:
@@ -140,42 +195,10 @@ export function checkIteratorInvalidation(content: string, filePath: string): In
 	const seen = new Set<number>();
 	for (const { collection, headerIdx, callParenIdx } of candidates) {
 		if (matches.length >= 10) break;
-		const bodyOpen = findBodyOpen(stripped, headerIdx);
-		if (bodyOpen < 0) continue;
-		// forEach-style: the body we care about is the callback's brace body,
-		// which must sit INSIDE the call's parens. An expression-arrow callback
-		// (e.g. `arr.some((e) => e.x === y)`) has no statement body; without
-		// this bound, findBodyOpen latches onto the next unrelated `{` block
-		// (the enclosing if/for) and reports mutations that aren't in the
-		// callback at all. Bounding to the call's `)` drops those FPs.
-		if (callParenIdx !== undefined) {
-			const callClose = findMatchingParen(stripped, callParenIdx);
-			if (callClose < 0 || bodyOpen > callClose) continue;
-		}
-		const bodyClose = findMatchingBrace(stripped, bodyOpen);
-		if (bodyClose < 0) continue;
+		const range = resolveLoopBodyRange(stripped, headerIdx, callParenIdx);
+		if (!range) continue;
 
-		const body = stripped.slice(bodyOpen + 1, bodyClose);
-		const escaped = collection.replace(/[$]/g, "\\$");
-		const methodAlt = MUTATING_METHODS.join("|");
-		const methodRe = new RegExp(
-			`\\b${escaped}\\s*\\.\\s*(?:${methodAlt})\\s*\\(`,
-			"g",
-		);
-		// `<name>[expr] = <not-equality>`. Negative lookahead `=(?!=)` rules
-		// out `===`/`==`; we also exclude `>=`/`<=`/`!=` by anchoring the
-		// preceding bracket pair with no operator on the LHS.
-		const indexAssignRe = new RegExp(
-			`\\b${escaped}\\s*\\[[^\\]\\n]*\\]\\s*=(?!=)`,
-			"g",
-		);
-		const deleteRe = new RegExp(`\\bdelete\\s+${escaped}\\s*\\[`, "g");
-
-		let hit: RegExpExecArray | null;
-		const found: number[] = [];
-		while ((hit = methodRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
-		while ((hit = indexAssignRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
-		while ((hit = deleteRe.exec(body))) found.push(bodyOpen + 1 + hit.index);
+		const found = findMutationOffsets(stripped, collection, range.bodyOpen, range.bodyClose);
 
 		for (const offset of found) {
 			if (matches.length >= 10) break;

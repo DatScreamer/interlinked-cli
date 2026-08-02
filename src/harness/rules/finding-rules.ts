@@ -105,6 +105,18 @@ function copyStringSourceField(
 }
 
 /**
+ * Apply a user override's action/severity to a rule and mark it modified.
+ * No-op when there is no override for this rule id — the caller passes
+ * `mods[raw.id]` (possibly `undefined`) straight through.
+ */
+function applyRuleModification(rule: FindingRule, mod: RuleModification | undefined): void {
+	if (!mod) return;
+	if (mod.action !== undefined) rule.action = mod.action;
+	if (mod.severity !== undefined) rule.severity = mod.severity;
+	rule.user_modified = true;
+}
+
+/**
  * Public API — consumed by `rules-loader.ts` via `loadRules()`. Reads the
  * pristine file, applies overrides, drops ReDoS-prone AND disabled rules, and
  * returns the active GuardRules. Mirrors `loadDistilledRules` minus the group
@@ -142,12 +154,7 @@ export function loadFindingRules(cwd: string): GuardRule[] {
 		const source = normalizeFindingRuleSource(raw.source);
 		delete rule.source;
 		if (source) rule.source = source;
-		const mod = mods[raw.id];
-		if (mod) {
-			if (mod.action !== undefined) rule.action = mod.action;
-			if (mod.severity !== undefined) rule.severity = mod.severity;
-			rule.user_modified = true;
-		}
+		applyRuleModification(rule, mods[raw.id]);
 		rule.enabled = disabled.has(raw.id) ? false : raw.enabled !== false;
 		if (rule.enabled) out.push(rule); // return only the active set
 	}

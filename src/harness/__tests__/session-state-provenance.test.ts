@@ -112,4 +112,26 @@ describe("isFileTrackedAsWritten — shape-agnostic lookup", () => {
 		const session = tracker.get("prov-session");
 		expect(isFileTrackedAsWritten(session!, "src/foo.ts", cwd)).toBe(false);
 	});
+
+	it("falls back to process.cwd() when no cwd argument is given", () => {
+		const tracker = new SessionTracker();
+		// Record the write using the REAL process.cwd() (not the fixture "/repo"),
+		// so the resolved-absolute form matches what the default fallback computes.
+		tracker.recordEvent(
+			baseWrite({
+				tool_input: { file_path: "sub/dir/foo.ts" },
+				cwd: process.cwd(),
+				tool_outcome: "success",
+			}),
+		);
+		const session = tracker.get("prov-session");
+		// A differently-spelled relative path that normalizes to the SAME
+		// absolute file. The raw-form check on line 1 must MISS (the stored
+		// raw string is "sub/dir/foo.ts", not this one), forcing the lookup
+		// through the `cwd ?? process.cwd()` fallback (no third argument) to
+		// find it via the resolved-absolute form instead.
+		expect(isFileTrackedAsWritten(session!, "sub/dir/../dir/foo.ts")).toBe(true);
+		// A path that resolves nowhere near the write must still be false.
+		expect(isFileTrackedAsWritten(session!, "completely/unrelated.ts")).toBe(false);
+	});
 });

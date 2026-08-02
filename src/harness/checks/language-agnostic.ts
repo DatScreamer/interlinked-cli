@@ -85,74 +85,12 @@ export function checkEmptyFile(content: string): boolean {
  * - C/C++: `printf(` (heuristic, skips files named `main.*`)
  */
 export function checkConsoleDebug(content: string, filePath: string): InlineMatch[] {
-	if (isTestFile(filePath)) return [];
-	// Skip CLI entry points and command files — console.log is the correct output method
-	if (isCliFile(filePath)) return [];
-	// 139-repo audit: also exempt `cli/<deeper>`, `tools/`, and
-	// `tutorial[s]/` — `isCliFile`'s heuristics miss `cli/internal/setup/
-	// wizard.go` (Supermodel, 13 fmt.Println — interactive wizard) and
-	// tutorial fixtures intentionally print example output.
-	if (isScriptOrCliPath(filePath)) return [];
-	// Shebang / package.json-bin entrypoints (field report 2026-07-06): a
-	// file invoked as a command prints its output via console.log by design.
-	if (isCliEntrypoint(filePath, content)) return [];
-
-	const normalized = filePath.replace(/\\/g, "/");
-	// Skip server entry points and scripts — console.log is the correct logging
-	// mechanism for Cloudflare Workers (goes to wrangler tail), Node servers,
-	// and CLI scripts.
-	if (
-		/\bservers?\b/i.test(normalized) ||
-		/\bscripts?\b/i.test(normalized) ||
-		/\bevals?\b/i.test(normalized) ||
-		/\/workers?\//i.test(normalized)
-	) {
-		return [];
-	}
+	if (isConsoleDebugExempt(filePath, content)) return [];
 
 	const ext = getExtension(filePath);
 	const fileName = filePath.split(/[/\\]/).pop() || "";
-	let pattern: RegExp | null = null;
-
-	// JS/TS
-	if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
-		pattern = /\bconsole\.(log|debug|info)\s*\(|^\s*debugger\s*;/;
-	}
-	// Python — only flag in app/lib code, skip standalone scripts and sandboxes.
-	// Python print() is the standard output mechanism for scripts, CLIs, and notebooks.
-	else if (ext === ".py") {
-		if (/sandbox|script|cli|main|test|__main__/i.test(fileName)) return [];
-		// Only flag breakpoint/pdb — print() is too common and usually intentional
-		pattern = /\bbreakpoint\s*\(|\bpdb\.set_trace\s*\(/;
-	}
-	// Rust
-	else if (ext === ".rs") {
-		pattern = /\bdbg!\s*\(/;
-	}
-	// Go — fmt.Println is standard output in Go. Only flag when 3+ occurrences
-	// suggest debug sprawl rather than intentional output.
-	else if (ext === ".go") {
-		const goStripped = stripCommentsAndStrings(content);
-		const goCount = (goStripped.match(/\bfmt\.Println\s*\(/g) || []).length;
-		if (goCount < 3) return [];
-		pattern = /\bfmt\.Println\s*\(/;
-	}
-	// C/C++ — printf is standard output. Skip main files, example/demo dirs.
-	else if ([".c", ".cpp", ".cc", ".cxx", ".h", ".hpp"].includes(ext)) {
-		const cFileName = filePath.split(/[/\\]/).pop() || "";
-		if (cFileName.startsWith("main.")) return [];
-		if (/\b(examples?|samples?|demos?)\b/i.test(normalized)) return [];
-		if (/\b(example|demo|sample)/i.test(cFileName)) return [];
-		pattern = /\bprintf\s*\(/;
-	}
-	// Swift — flag debug-intent APIs only. `print(` is too common (CLIs,
-	// SwiftPM tools, examples) to flag globally; `debugPrint(` / `dump(` /
-	// `NSLog(` are unambiguous debug breadcrumbs that ship to logs. Modern
-	// Swift apps should use `os.Logger` / `Logger` instead of `NSLog`.
-	else if (ext === ".swift") {
-		pattern = /\b(?:debugPrint|dump|NSLog)\s*\(/;
-	}
-
+	const normalized = filePath.replace(/\\/g, "/");
+	const pattern = consoleDebugPatternFor(ext, fileName, normalized, content);
 	if (!pattern) return [];
 
 	// Strip comments and strings to avoid false positives from commented-out
@@ -161,6 +99,90 @@ export function checkConsoleDebug(content: string, filePath: string): InlineMatc
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
 	return scanLinesStripped(originalLines, strippedLines, pattern, 10);
+}
+
+/**
+ * Whole-file exemptions for {@link checkConsoleDebug}: files where console/debug
+ * output is either not scanned (tests) or IS the file's legitimate output
+ * mechanism (CLI entry points, scripts, server/eval/worker code), so a fired
+ * pattern would be a false positive regardless of language.
+ */
+function isConsoleDebugExempt(filePath: string, content: string): boolean {
+	if (isTestFile(filePath)) return true;
+	// Skip CLI entry points and command files — console.log is the correct output method
+	if (isCliFile(filePath)) return true;
+	// 139-repo audit: also exempt `cli/<deeper>`, `tools/`, and
+	// `tutorial[s]/` — `isCliFile`'s heuristics miss `cli/internal/setup/
+	// wizard.go` (Supermodel, 13 fmt.Println — interactive wizard) and
+	// tutorial fixtures intentionally print example output.
+	if (isScriptOrCliPath(filePath)) return true;
+	// Shebang / package.json-bin entrypoints (field report 2026-07-06): a
+	// file invoked as a command prints its output via console.log by design.
+	if (isCliEntrypoint(filePath, content)) return true;
+
+	const normalized = filePath.replace(/\\/g, "/");
+	// Skip server entry points and scripts — console.log is the correct logging
+	// mechanism for Cloudflare Workers (goes to wrangler tail), Node servers,
+	// and CLI scripts.
+	return (
+		/\bservers?\b/i.test(normalized) ||
+		/\bscripts?\b/i.test(normalized) ||
+		/\bevals?\b/i.test(normalized) ||
+		/\/workers?\//i.test(normalized)
+	);
+}
+
+/**
+ * Per-language debug-statement pattern for {@link checkConsoleDebug}, or `null`
+ * when the language isn't recognized or its own narrower exemption applies
+ * (Python scripts/CLIs/tests, C/C++ main/example files, Go with fewer than 3
+ * `fmt.Println` occurrences — too few to read as debug sprawl rather than
+ * intentional output).
+ */
+function consoleDebugPatternFor(
+	ext: string,
+	fileName: string,
+	normalized: string,
+	content: string,
+): RegExp | null {
+	// JS/TS
+	if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
+		return /\bconsole\.(log|debug|info)\s*\(|^\s*debugger\s*;/;
+	}
+	// Python — only flag in app/lib code, skip standalone scripts and sandboxes.
+	// Python print() is the standard output mechanism for scripts, CLIs, and notebooks.
+	if (ext === ".py") {
+		if (/sandbox|script|cli|main|test|__main__/i.test(fileName)) return null;
+		// Only flag breakpoint/pdb — print() is too common and usually intentional
+		return /\bbreakpoint\s*\(|\bpdb\.set_trace\s*\(/;
+	}
+	// Rust
+	if (ext === ".rs") {
+		return /\bdbg!\s*\(/;
+	}
+	// Go — fmt.Println is standard output in Go. Only flag when 3+ occurrences
+	// suggest debug sprawl rather than intentional output.
+	if (ext === ".go") {
+		const goStripped = stripCommentsAndStrings(content);
+		const goCount = (goStripped.match(/\bfmt\.Println\s*\(/g) || []).length;
+		if (goCount < 3) return null;
+		return /\bfmt\.Println\s*\(/;
+	}
+	// C/C++ — printf is standard output. Skip main files, example/demo dirs.
+	if ([".c", ".cpp", ".cc", ".cxx", ".h", ".hpp"].includes(ext)) {
+		if (fileName.startsWith("main.")) return null;
+		if (/\b(examples?|samples?|demos?)\b/i.test(normalized)) return null;
+		if (/\b(example|demo|sample)/i.test(fileName)) return null;
+		return /\bprintf\s*\(/;
+	}
+	// Swift — flag debug-intent APIs only. `print(` is too common (CLIs,
+	// SwiftPM tools, examples) to flag globally; `debugPrint(` / `dump(` /
+	// `NSLog(` are unambiguous debug breadcrumbs that ship to logs. Modern
+	// Swift apps should use `os.Logger` / `Logger` instead of `NSLog`.
+	if (ext === ".swift") {
+		return /\b(?:debugPrint|dump|NSLog)\s*\(/;
+	}
+	return null;
 }
 
 // ===========================================

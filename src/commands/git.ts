@@ -91,6 +91,52 @@ function sanitizeShellArg(value: string): string {
 	return value.replace(/[`$\\!"'\n\r\t\0]/g, "");
 }
 
+/**
+ * Render a list of "Key: Value" trailer strings (server response shape) as
+ * indented display lines, splitting each on its first colon; a trailer with
+ * no colon renders as a raw indented line. Shared by gitContextCommand's and
+ * gitLinkCheckpointCommand's normal-mode trailer sections.
+ */
+function formatTrailerLines(trailerList: string[]): string[] {
+	const lines: string[] = [];
+	for (const trailer of trailerList) {
+		const colonIdx = trailer.indexOf(":");
+		if (colonIdx > 0) {
+			lines.push(
+				kvLine(trailer.slice(0, colonIdx).trim(), trailer.slice(colonIdx + 1).trim(), 28),
+			);
+		} else {
+			lines.push(`    ${trailer}`);
+		}
+	}
+	return lines;
+}
+
+/**
+ * Render the "Server Context" section of `git context`'s normal-mode output:
+ * a blank separator, then either the fetch error or the checkpoint/agent/
+ * trailers block. Returns [] when there is no server result at all.
+ */
+function formatServerContextLines(server: GitContextResult["server"]): string[] {
+	if (!server) return [];
+	const lines: string[] = [""];
+	if (server.error) {
+		lines.push(kvLine("Server", c.yellow(server.error), 18));
+		return lines;
+	}
+	lines.push(c.bold("  Server Context"));
+	if (server.checkpoint) {
+		lines.push(kvLine("Checkpoint", server.checkpoint, 18));
+	}
+	if (server.agent) {
+		lines.push(kvLine("Agent", server.agent, 18));
+	}
+	if (server.trailers && server.trailers.length > 0) {
+		lines.push(...formatTrailerLines(server.trailers));
+	}
+	return lines;
+}
+
 // ===========================================
 // git context
 // ===========================================
@@ -192,36 +238,7 @@ export async function gitContextCommand(opts: { commit?: string; json?: boolean 
 					}
 				}
 
-				if (result.server) {
-					lines.push("");
-					if (result.server.error) {
-						lines.push(kvLine("Server", c.yellow(result.server.error), 18));
-					} else {
-						lines.push(c.bold("  Server Context"));
-						if (result.server.checkpoint) {
-							lines.push(kvLine("Checkpoint", result.server.checkpoint, 18));
-						}
-						if (result.server.agent) {
-							lines.push(kvLine("Agent", result.server.agent, 18));
-						}
-						if (result.server.trailers && result.server.trailers.length > 0) {
-							for (const trailer of result.server.trailers) {
-								const colonIdx = trailer.indexOf(":");
-								if (colonIdx > 0) {
-									lines.push(
-										kvLine(
-											trailer.slice(0, colonIdx).trim(),
-											trailer.slice(colonIdx + 1).trim(),
-											28,
-										),
-									);
-								} else {
-									lines.push(`    ${trailer}`);
-								}
-							}
-						}
-					}
-				}
+				lines.push(...formatServerContextLines(result.server));
 
 				return lines.join("\n");
 			},
@@ -366,20 +383,7 @@ export async function gitLinkCheckpointCommand(opts: {
 				if (result.trailers && result.trailers.length > 0) {
 					lines.push("");
 					lines.push(c.bold("  Trailers"));
-					for (const trailer of result.trailers) {
-						const colonIdx = trailer.indexOf(":");
-						if (colonIdx > 0) {
-							lines.push(
-								kvLine(
-									trailer.slice(0, colonIdx).trim(),
-									trailer.slice(colonIdx + 1).trim(),
-									28,
-								),
-							);
-						} else {
-							lines.push(`    ${trailer}`);
-						}
-					}
+					lines.push(...formatTrailerLines(result.trailers));
 				}
 
 				if (result.notes_json) {

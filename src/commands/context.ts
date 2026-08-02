@@ -43,6 +43,125 @@ function detectInstalledHookVersion(cwd: string): string | null {
 	}
 }
 
+/**
+ * Shape consumed by `renderNormalOutput`. Matches the `data` object built in
+ * `contextCommand` field-for-field so the renderer can be a plain top-level
+ * function (not a closure nested inside the command) — nesting it there was
+ * the sole driver of its cognitive-complexity score.
+ */
+interface ContextRenderData {
+	server_url: string;
+	is_local: boolean;
+	workspace_id: string | null;
+	workspace_key: string;
+	project_key: string;
+	agent_name: string | null;
+	sync_mode: string;
+	active_server: string;
+	auth: {
+		has_token: boolean;
+		token_source: string;
+		expires_at: string | null;
+	};
+	hooks: {
+		installed_version: string | null;
+		current_version: string;
+		stale: boolean;
+	};
+	clients: {
+		all: { name: string; installed: boolean }[];
+	};
+	paths: {
+		config_dir: string;
+		data_dir: string;
+	};
+	env_overrides: string[];
+}
+
+/**
+ * Renders the human-readable "normal" mode output. Extracted to module scope
+ * (from a closure inside `contextCommand`) so its cognitive-complexity
+ * attribution starts at nesting 0 instead of 1 — every `data` field it reads
+ * already carries the same fallback logic the original closure applied
+ * inline (see the `data` object literal in `contextCommand`), except the raw
+ * agent handle: `data.agent_handle` is truncated to 12 chars for JSON, while
+ * this renderer truncates to 20, so the raw value is passed separately.
+ */
+function renderNormalOutput(data: ContextRenderData, rawAgentHandle: string | undefined): string {
+	const lines: string[] = [];
+
+	lines.push(c.bold("Interlinked CLI — Effective Context"));
+	lines.push(c.dim("─".repeat(40)));
+
+	lines.push(header("Server"));
+	lines.push(kvLine("URL", data.server_url));
+	lines.push(kvLine("Type", data.is_local ? c.cyan("local") : c.green("production")));
+	lines.push(kvLine("Active server key", data.active_server));
+
+	lines.push(header("Identity"));
+	lines.push(
+		kvLine(
+			"Agent name",
+			data.agent_name || c.yellow("not set (run: interlinked attach --agent <name>)"),
+		),
+	);
+	if (rawAgentHandle) {
+		lines.push(kvLine("Agent handle", `${rawAgentHandle.substring(0, 20)}...`));
+	}
+	lines.push(kvLine("Workspace ID", data.workspace_id || c.dim("not set")));
+	lines.push(kvLine("Workspace key", data.workspace_key));
+	lines.push(kvLine("Project key", data.project_key));
+
+	lines.push(header("Authentication"));
+	lines.push(
+		kvLine(
+			"Status",
+			data.auth.has_token ? c.green("authenticated") : c.yellow("not authenticated"),
+		),
+	);
+	lines.push(kvLine("Token source", data.auth.token_source));
+	if (data.auth.expires_at) {
+		const expires = new Date(data.auth.expires_at);
+		const isExpired = expires < new Date();
+		lines.push(
+			kvLine(
+				"Expires",
+				isExpired ? c.red(`${data.auth.expires_at} (EXPIRED)`) : data.auth.expires_at,
+			),
+		);
+	}
+
+	lines.push(header("Hooks"));
+	if (data.hooks.installed_version) {
+		const staleLabel = data.hooks.stale
+			? c.yellow(` → ${data.hooks.current_version} available (run: interlinked enable)`)
+			: c.green(" (current)");
+		lines.push(kvLine("Installed version", `${data.hooks.installed_version}${staleLabel}`));
+	} else {
+		lines.push(kvLine("Status", c.yellow("not installed (run: interlinked enable)")));
+	}
+
+	lines.push(header("Clients"));
+	for (const client of data.clients.all) {
+		const status = client.installed ? c.green("detected") : c.dim("not found");
+		lines.push(kvLine(`  ${client.name}`, status));
+	}
+
+	lines.push(header("Sync"));
+	lines.push(kvLine("Mode", data.sync_mode));
+	lines.push(kvLine("Config dir", data.paths.config_dir));
+	lines.push(kvLine("Data dir", data.paths.data_dir));
+
+	if (data.env_overrides.length > 0) {
+		lines.push(header("Environment Overrides"));
+		for (const env of data.env_overrides) {
+			lines.push(`  ${c.cyan(env)}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
 export async function contextCommand(options: ContextOptions): Promise<void> {
 	const cwd = process.cwd();
 	const mode = getOutputMode(options);
@@ -126,82 +245,6 @@ export async function contextCommand(options: ContextOptions): Promise<void> {
 			if (data.hooks.stale) parts.push("hooks:STALE");
 			return parts.join(" | ");
 		},
-		normal: () => {
-			const lines: string[] = [];
-
-			lines.push(c.bold("Interlinked CLI — Effective Context"));
-			lines.push(c.dim("─".repeat(40)));
-
-			lines.push(header("Server"));
-			lines.push(kvLine("URL", config.server_url));
-			lines.push(kvLine("Type", isLocalServer ? c.cyan("local") : c.green("production")));
-			lines.push(kvLine("Active server key", activeServer));
-
-			lines.push(header("Identity"));
-			lines.push(
-				kvLine(
-					"Agent name",
-					config.agent_name ||
-						c.yellow("not set (run: interlinked attach --agent <name>)"),
-				),
-			);
-			if (config.agent_handle) {
-				lines.push(kvLine("Agent handle", `${config.agent_handle.substring(0, 20)}...`));
-			}
-			lines.push(kvLine("Workspace ID", config.workspace_id || c.dim("not set")));
-			lines.push(kvLine("Workspace key", config.default_workspace_key || "main"));
-			lines.push(kvLine("Project key", config.default_project || "main"));
-
-			lines.push(header("Authentication"));
-			lines.push(
-				kvLine(
-					"Status",
-					hasToken ? c.green("authenticated") : c.yellow("not authenticated"),
-				),
-			);
-			lines.push(kvLine("Token source", tokenSource));
-			if (config.token_expires_at) {
-				const expires = new Date(config.token_expires_at);
-				const isExpired = expires < new Date();
-				lines.push(
-					kvLine(
-						"Expires",
-						isExpired
-							? c.red(`${config.token_expires_at} (EXPIRED)`)
-							: config.token_expires_at,
-					),
-				);
-			}
-
-			lines.push(header("Hooks"));
-			if (hookVersion) {
-				const staleLabel = data.hooks.stale
-					? c.yellow(` → ${HOOK_SCRIPT_VERSION} available (run: interlinked enable)`)
-					: c.green(" (current)");
-				lines.push(kvLine("Installed version", `${hookVersion}${staleLabel}`));
-			} else {
-				lines.push(kvLine("Status", c.yellow("not installed (run: interlinked enable)")));
-			}
-
-			lines.push(header("Clients"));
-			for (const client of clients) {
-				const status = client.exists ? c.green("detected") : c.dim("not found");
-				lines.push(kvLine(`  ${client.name}`, status));
-			}
-
-			lines.push(header("Sync"));
-			lines.push(kvLine("Mode", config.sync_mode));
-			lines.push(kvLine("Config dir", getConfigDir(cwd)));
-			lines.push(kvLine("Data dir", getDataDir(cwd)));
-
-			if (envOverrides.length > 0) {
-				lines.push(header("Environment Overrides"));
-				for (const env of envOverrides) {
-					lines.push(`  ${c.cyan(env)}`);
-				}
-			}
-
-			return lines.join("\n");
-		},
+		normal: () => renderNormalOutput(data, config.agent_handle),
 	});
 }

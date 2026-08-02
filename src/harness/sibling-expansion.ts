@@ -188,39 +188,58 @@ export function expandSiblings(args: ExpandSiblingsArgs): SiblingFinding[] {
 		let emittedForTrigger = 0;
 		for (const candidatePath of candidatePaths) {
 			if (emittedForTrigger >= maxSiblings) break;
-			if (originFiles.has(candidatePath)) continue;
-			// Markdown / doc files embed code snippets as illustration, not
-			// as lintable source — skip them so a `JSON.parse` in a fenced
-			// block in `docs/design/*.md` is never emitted as a sibling.
-			if (isDocFile(candidatePath)) continue;
-			// Test files and one-off scripts parse JSON / cast freely by
-			// nature — suggesting schema validators there is pure noise.
-			if (isExemptSiblingPath(candidatePath)) continue;
-
-			const content = args.reader.read(candidatePath);
-			if (content === undefined) continue;
-
-			const match = findFirstMatch(content, spec.pattern);
-			if (!match) continue;
-
-			const message = spec.messageTemplate(candidatePath, match.line, match.snippet);
-			// Cross-edit dedup: identical (rule, file, line, message) —
-			// message embeds the snippet, so unchanged content emits once.
-			const dedupKey = `${spec.siblingRuleId}|${candidatePath}|${match.line}|${message}`;
-			if (emittedKeys.has(dedupKey)) continue;
-			emittedKeys.add(dedupKey);
-
-			out.push({
-				triggerName: spec.triggerName,
-				siblingRuleId: spec.siblingRuleId,
-				file: candidatePath,
-				line: match.line,
-				message,
-			});
+			const sibling = tryBuildSibling(candidatePath, spec, originFiles, args.reader, emittedKeys);
+			if (!sibling) continue;
+			out.push(sibling);
 			emittedForTrigger++;
 		}
 	}
 	return out;
+}
+
+/** Answers "does this candidate path produce a sibling finding for this
+ *  trigger spec" — the per-candidate qualification chain pulled out of
+ *  `expandSiblings`'s innermost loop. Returns `null` on the first
+ *  disqualifying reason (already the origin file, a doc file, an exempt
+ *  path, unreadable, no pattern match, or already emitted this session).
+ *  Mutates `emittedKeys` on a successful build, same as the inline code
+ *  it replaces — the Set is shared by reference with the caller. */
+function tryBuildSibling(
+	candidatePath: string,
+	spec: SiblingTrigger,
+	originFiles: Set<string>,
+	reader: FileReader,
+	emittedKeys: Set<string>,
+): SiblingFinding | null {
+	if (originFiles.has(candidatePath)) return null;
+	// Markdown / doc files embed code snippets as illustration, not as
+	// lintable source — skip them so a `JSON.parse` in a fenced block in
+	// `docs/design/*.md` is never emitted as a sibling.
+	if (isDocFile(candidatePath)) return null;
+	// Test files and one-off scripts parse JSON / cast freely by nature —
+	// suggesting schema validators there is pure noise.
+	if (isExemptSiblingPath(candidatePath)) return null;
+
+	const content = reader.read(candidatePath);
+	if (content === undefined) return null;
+
+	const match = findFirstMatch(content, spec.pattern);
+	if (!match) return null;
+
+	const message = spec.messageTemplate(candidatePath, match.line, match.snippet);
+	// Cross-edit dedup: identical (rule, file, line, message) — message
+	// embeds the snippet, so unchanged content emits once.
+	const dedupKey = `${spec.siblingRuleId}|${candidatePath}|${match.line}|${message}`;
+	if (emittedKeys.has(dedupKey)) return null;
+	emittedKeys.add(dedupKey);
+
+	return {
+		triggerName: spec.triggerName,
+		siblingRuleId: spec.siblingRuleId,
+		file: candidatePath,
+		line: match.line,
+		message,
+	};
 }
 
 function findFirstMatch(
@@ -280,6 +299,27 @@ export interface ExpandEndpointDetectorSiblingsOpts {
 	readFile?: (p: string) => string;
 }
 
+/** Look up `key` in `cache`; on a first-ever miss, run `compute` and store
+ *  the result — or `null` if `compute` throws. Returns the cached (or
+ *  just-computed) value; `null` means either this call's compute failed or
+ *  a prior call already tried and failed for this key. Pulled out of
+ *  `expandEndpointDetectorSiblings`'s two structurally-identical blocks
+ *  (file-content read, then detector rescan) — both were answering the
+ *  same question: "memoize a fallible call per key, treating a throw as a
+ *  cached failure." */
+function cachedOrCompute<T>(cache: Map<string, T | null>, key: string, compute: () => T): T | null {
+	const cached = cache.get(key);
+	if (cached !== undefined) return cached;
+	let value: T | null;
+	try {
+		value = compute();
+	} catch {
+		value = null;
+	}
+	cache.set(key, value);
+	return value;
+}
+
 /**
  * Group findings by `(check_id, file)`, rescan each file once for siblings,
  * and append a `Same shape on N sibling endpoints in <file>: <line>, …`
@@ -318,29 +358,13 @@ export function expandEndpointDetectorSiblings(
 
 		// Load file content (once per file, regardless of how many groups
 		// share it). A null cache entry means we already tried and failed.
-		let content = contentCache.get(file);
-		if (content === undefined) {
-			try {
-				content = readFileFn(file);
-			} catch {
-				content = null;
-			}
-			contentCache.set(file, content);
-		}
+		const content = cachedOrCompute(contentCache, file, () => readFileFn(file));
 		if (content === null) continue;
 
 		// Rescan once per file. The detector typically returns findings for
 		// all five check_ids on the file; we filter to the current group's
 		// check_id below.
-		let rescanned = rescanCache.get(file);
-		if (rescanned === undefined) {
-			try {
-				rescanned = opts.rescan(file, content);
-			} catch {
-				rescanned = null;
-			}
-			rescanCache.set(file, rescanned);
-		}
+		const rescanned = cachedOrCompute(rescanCache, file, () => opts.rescan(file, content));
 		if (rescanned === null) continue;
 
 		const sameCheck = rescanned.filter((f) => f.check_id === checkId);

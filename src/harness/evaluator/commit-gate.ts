@@ -78,6 +78,7 @@ import {
 } from "./commit-gate-decision.js";
 import { type CommitGateDeps, runSuiteAndScan } from "./commit-gate-suite.js";
 import { parseGitCommit } from "./commit-parse.js";
+import type { CommitParse } from "./commit-parse.js";
 import { materializeIndexSnapshot } from "./staged-snapshot.js";
 
 export type { GitChangedFilesFn } from "./commit-gate-changes.js";
@@ -181,6 +182,168 @@ function resolveEvalTarget(
 	return snap ? { root: snap.root, cleanup: snap.cleanup } : { root: projectRoot, cleanup: null };
 }
 
+// ===========================================
+// checkCommitGate helpers — each answers ONE question the orchestrator asks
+// ===========================================
+// Extracted 2026-07-31 to bring checkCommitGate's own cyclomatic complexity
+// under the 22-branch cap (measured 26 before). Every finding-note comment
+// from the original inline code moved with its logic — no behavior changed;
+// `commit-gate.integration.test.ts` covers this whole call graph end-to-end
+// through the same public `checkCommitGate` entry, unchanged.
+
+/** `rules.per_edit_coverage`, narrowed to defined+usable (see PerEditCoverageConfig). */
+type ResolvedCoverageConfig = NonNullable<GuardRulesConfig["per_edit_coverage"]>;
+
+/** The resolved config + parsed commit for an event the gate should evaluate. */
+interface CommitGateApplicability {
+	cfg: ResolvedCoverageConfig;
+	parse: CommitParse;
+}
+
+/**
+ * Gate 1: is there anything for `checkCommitGate` to do at all? Three pure
+ * no-op cases, all zero-cost (no git shell-out, no suite): the feature is OFF,
+ * `mode` is `"warn"` (the documented loaded-but-non-blocking opt-out — the
+ * commit gate checking only `enabled` made this ineffective at commit time,
+ * finding 2026-06; same contract as the per-edit guard), or the command isn't
+ * a real `git commit`. Returns null for all three; otherwise the resolved
+ * config + parse the rest of the gate needs.
+ */
+function commitGateApplicability(
+	event: HarnessEvent,
+	rules: GuardRulesConfig,
+): CommitGateApplicability | null {
+	const cfg = rules.per_edit_coverage;
+	if (!cfg?.enabled || cfg.mode !== "block") return null;
+	const command = (event.tool_input?.command as string) || "";
+	const parse = parseGitCommit(command);
+	if (!parse?.isCommit) return null;
+	return { cfg, parse };
+}
+
+/** Where + how {@link checkCommitGate} evaluates this commit. */
+interface CommitContext {
+	commandCwd: string;
+	projectRoot: string;
+	mode: EvalMode;
+}
+
+/**
+ * Resolve the command's effective cwd, the repo toplevel it's anchored at, and
+ * which tree model (`EvalMode`) applies:
+ *   - `commandCwd` honors a `cd <dir>` / `git -C <dir>` redirect (finding 4):
+ *     evaluate the repository the commit actually runs in, not the shell's
+ *     parent cwd — a monorepo `cd packages/x && git commit` must gate
+ *     packages/x, not the root.
+ *   - `projectRoot` anchors at the git TOPLEVEL: git emits toplevel-relative
+ *     changed paths, so a commit run from an ordinary subdirectory (`cd src &&
+ *     git commit -a`) would otherwise resolve `src/a.ts` against `/repo/src` →
+ *     `/repo/src/src/a.ts` and silently skip every changed source (finding
+ *     2026-06). Fail-open to the command's own cwd when the toplevel can't be
+ *     resolved.
+ *   - `mode`: a commit that constructs content at run time (preceding `git
+ *     add`, or a pathspec) → the WORKTREE (the index is stale
+ *     pre-execution); `-a` → tracked snapshot; a plain commit → the INDEX.
+ */
+function resolveCommitContext(event: HarnessEvent, parse: CommitParse, deps: CommitGateDeps): CommitContext {
+	const baseCwd = event.cwd || process.cwd();
+	const commandCwd = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
+	const projectRoot = deps.resolveRepoRoot?.(commandCwd) ?? commandCwd;
+	const mode: EvalMode = parse.constructsContent ? "worktree" : parse.all === true ? "tracked" : "index";
+	return { commandCwd, projectRoot, mode };
+}
+
+/** The narrow-commit pathspec plumbing + the final changed-file set. */
+interface PathspecContext {
+	/** Constructed-content pathspecs rebased onto the repo toplevel; `null`
+	 *  when the rebase couldn't resolve (degrade to broad), `undefined` when
+	 *  the commit had no pathspec at all. */
+	constructed: string[] | null | undefined;
+	/** The tracked-only subset of `constructed`, when the parser found one. */
+	trackedOnly: string[] | null | undefined;
+	/** Which tree a NARROW worktree snapshot should start from. */
+	baseTree: "index" | "head";
+	/** The changed-file set the gate actually evaluates for this commit. */
+	changed: string[];
+}
+
+/**
+ * Resolve which paths a NARROW constructed-content commit (`git commit
+ * src/a.ts`, `git add src/a.ts && git commit`) actually stages, so an
+ * UNRELATED dirty worktree file does not block the commit (finding 2026-06:
+ * evaluating the whole worktree over-blocked, breaking the zero-FP contract)
+ * — UNIONED with the staged set when the commit also captures the
+ * pre-existing index (`includesIndex` — finding 2026-06: staged files
+ * bypassed otherwise). The parser's pathspecs are relative to the COMMAND's
+ * directory while git's changed paths are TOPLEVEL-relative, so both
+ * `constructed` and its tracked-only subset are rebased first; an unrebasable
+ * spec degrades to broad (finding 2026-06: `cd packages/app && git add
+ * src/a.ts && git commit` filtered toplevel paths against the raw spec and
+ * the staged file bypassed). `baseTree` is the index only when the commit
+ * CAPTURES the index; a pathspec `--only` commit builds from HEAD, so
+ * unrelated staged content stays out of its snapshot (round 5).
+ */
+function resolvePathspecContext(
+	parse: CommitParse,
+	commandCwd: string,
+	projectRoot: string,
+	mode: EvalMode,
+	allChanged: string[],
+	deps: CommitGateDeps,
+): PathspecContext {
+	const constructed = parse.constructedPaths
+		? rebaseConstructedPaths(parse.constructedPaths, commandCwd, projectRoot)
+		: undefined;
+	// trackedOnlyPaths ⊆ constructedPaths, so when `constructed` survived the
+	// rebase (non-null) the tracked subset rebases too; when it degraded to
+	// broad, the subset is irrelevant.
+	const trackedOnly =
+		constructed && parse.trackedOnlyPaths
+			? rebaseConstructedPaths(parse.trackedOnlyPaths, commandCwd, projectRoot)
+			: undefined;
+	const changed = changedSetForCommit(
+		allChanged,
+		{
+			...(constructed ? { constructedPaths: constructed } : {}),
+			...(parse.includesIndex ? { includesIndex: true } : {}),
+		},
+		mode,
+		() => deps.gitChangedFiles(projectRoot, true),
+	);
+	const baseTree = parse.includesIndex ? "index" : "head";
+	return { constructed, trackedOnly, baseTree, changed };
+}
+
+/**
+ * Is there nothing here for the suite to decide? Returns the decision
+ * `checkCommitGate` should return immediately — an `allow` carrying any
+ * `--no-verify` warning, or `null` — for either no-decidable-axis case below,
+ * or `undefined` to mean "keep going, run the suite":
+ *   - Nothing gated changed at all (docs / config / declaration-only).
+ *   - A red-bar-ONLY run (tests / generated / deletions, nothing scannable)
+ *     with `block_on_test_failure` off: no block is possible, so no suite is
+ *     spent (mirrors the per-edit delete-only path's "no decidable axis"
+ *     skip). Test-only and generated-only changes DO still reach the suite
+ *     when `block_on_test_failure` is on: their language is in
+ *     `suiteLanguages` even though there is nothing to scan, because a
+ *     failing test edit must not be committed (finding 2026-06) — the same
+ *     red-bar-only treatment delete-only commits already get.
+ */
+function noGatedSourcesDecision(
+	sourceCount: number,
+	suiteLanguages: CoverageLanguage[],
+	cfg: ResolvedCoverageConfig,
+	warnings: string[],
+): HarnessDecision | null | undefined {
+	if (sourceCount === 0 && suiteLanguages.length === 0) {
+		return warnings.length > 0 ? { decision: "allow", warnings } : null;
+	}
+	if (sourceCount === 0 && cfg.block_on_test_failure !== true) {
+		return warnings.length > 0 ? { decision: "allow", warnings } : null;
+	}
+	return undefined;
+}
+
 /**
  * PreToolUse commit gate. Returns a `block` HarnessDecision when the command is a
  * real `git commit` AND `per_edit_coverage.enabled` AND the working tree fails the
@@ -195,38 +358,16 @@ export async function checkCommitGate(
 	rules: GuardRulesConfig,
 	deps: CommitGateDeps = DEFAULT_DEPS,
 ): Promise<HarnessDecision | null> {
-	// Gate 1: feature OFF, or mode is not "block" → pure no-op. `mode: "warn"` is
-	// the documented loaded-but-non-blocking setting (see PerEditCoverageConfig) and
-	// the per-edit guard already honors it — the commit gate checking only `enabled`
-	// made the opt-out ineffective at commit time and unconditionally blocked
-	// (finding 2026-06). Same contract on both enforcement surfaces.
-	const cfg = rules.per_edit_coverage;
-	if (!cfg?.enabled || cfg.mode !== "block") return null;
-
-	const command = (event.tool_input?.command as string) || "";
-	const parse = parseGitCommit(command);
-	if (!parse?.isCommit) return null;
+	const applicability = commitGateApplicability(event, rules);
+	if (!applicability) return null;
+	const { cfg, parse } = applicability;
 
 	// `--no-verify` is a bypass of git's hooks (not this gate). Note it so the
 	// attempt is visible whether we end up blocking or allowing.
 	const warnings = noVerifyWarnings(parse.noVerify);
 
 	try {
-		// Honor a `cd <dir>` / `git -C <dir>` redirect (finding 4): evaluate the
-		// repository the commit actually runs in, not the shell's parent cwd. In a
-		// monorepo `cd packages/x && git commit` must gate packages/x, not the root.
-		const baseCwd = event.cwd || process.cwd();
-		const commandCwd = parse.cwd ? resolve(baseCwd, parse.cwd) : baseCwd;
-		// Anchor at the git TOPLEVEL: git emits toplevel-relative changed paths, so a
-		// commit run from an ordinary subdirectory (`cd src && git commit -a`) would
-		// otherwise resolve `src/a.ts` against `/repo/src` → `/repo/src/src/a.ts` and
-		// silently skip every changed source (finding 2026-06). Fail-open to the
-		// command's own cwd when the toplevel can't be resolved.
-		const projectRoot = deps.resolveRepoRoot?.(commandCwd) ?? commandCwd;
-		// How to model the commit (findings 3 & 4): a commit that constructs content
-		// at run time (preceding `git add`, or a pathspec) → the WORKTREE (the index is
-		// stale pre-execution); `-a` → tracked snapshot; a plain commit → the INDEX.
-		const mode: EvalMode = parse.constructsContent ? "worktree" : parse.all === true ? "tracked" : "index";
+		const { commandCwd, projectRoot, mode } = resolveCommitContext(event, parse, deps);
 		// Changed files: staged-only ONLY for the plain index commit; the broader
 		// worktree query for `-a` / constructed commits — and untracked files ONLY for
 		// CONSTRUCTED commits, whose `git add` stages new files at run time (finding
@@ -235,63 +376,28 @@ export async function checkCommitGate(
 		if (allChanged === null) {
 			return degradeWithWarnings("git diff unavailable — cannot determine changed files", warnings);
 		}
-		// A NARROW constructed-content commit (`git commit src/a.ts`, `git add src/a.ts
-		// && git commit`) stages only specific paths — evaluate ONLY those, so an
-		// UNRELATED dirty worktree file does not block the commit (finding 2026-06: the
-		// round-3 worktree-everything approach over-blocked, breaking the zero-FP
-		// contract) — UNIONED with the staged set when the commit also captures the
-		// pre-existing index (`includesIndex` — finding 2026-06: staged files bypassed).
-		// The specs are parsed relative to the COMMAND's directory while git's changed
-		// paths are TOPLEVEL-relative — rebase first; an unrebasable spec degrades to
-		// broad (finding 2026-06: `cd packages/app && git add src/a.ts && git commit`
-		// filtered toplevel paths against the raw spec and the staged file bypassed).
-		const constructed = parse.constructedPaths
-			? rebaseConstructedPaths(parse.constructedPaths, commandCwd, projectRoot)
-			: undefined;
-		// trackedOnlyPaths ⊆ constructedPaths, so when `constructed` survived the
-		// rebase (non-null) the tracked subset rebases too; when it degraded to
-		// broad, the subset is irrelevant.
-		const trackedOnly =
-			constructed && parse.trackedOnlyPaths
-				? rebaseConstructedPaths(parse.trackedOnlyPaths, commandCwd, projectRoot)
-				: undefined;
-		const changed = changedSetForCommit(
-			allChanged,
-			{
-				...(constructed ? { constructedPaths: constructed } : {}),
-				...(parse.includesIndex ? { includesIndex: true } : {}),
-			},
-			mode,
-			() => deps.gitChangedFiles(projectRoot, true),
-		);
-
+		const pathspec = resolvePathspecContext(parse, commandCwd, projectRoot, mode, allChanged, deps);
 		// A NARROW constructed commit evaluates its base tree + its own staged
 		// paths, not the raw worktree (finding 2026-06: an untracked test could
 		// cover the staged source and approve a commit whose actual snapshot is
-		// uncovered). The base is the index only when the commit CAPTURES the
-		// index; a pathspec `--only` commit builds from HEAD, so unrelated staged
-		// content stays out of its snapshot (round 5).
-		const baseTree = parse.includesIndex ? "index" : "head";
-		const target = resolveEvalTarget(projectRoot, mode, deps, constructed, trackedOnly, baseTree);
+		// uncovered).
+		const target = resolveEvalTarget(
+			projectRoot,
+			mode,
+			deps,
+			pathspec.constructed,
+			pathspec.trackedOnly,
+			pathspec.baseTree,
+		);
 		try {
-			const selected = selectChangedSources(changed, target.root, cfg.languages, deps.readFile);
-			const { sources, deletedPaths, suiteLanguages } = selected;
-			// Nothing gated changed at all (docs / config / declaration-only) → allow,
-			// but still surface the --no-verify note if present. Test-only and
-			// generated-only changes DO proceed: their language is in suiteLanguages
-			// even though there is nothing to scan, because a failing test edit must
-			// not be committed (finding 2026-06: it skipped the suite entirely) —
-			// the same red-bar-only treatment delete-only commits already get.
-			if (sources.length === 0 && suiteLanguages.length === 0) {
-				return warnings.length > 0 ? { decision: "allow", warnings } : null;
-			}
-			// A red-bar-ONLY run (tests / generated / deletions, nothing scannable)
-			// has exactly one decidable axis; with `block_on_test_failure` off no
-			// block is possible, so no suite is spent (mirrors the per-edit
-			// delete-only path's "no decidable axis" skip).
-			if (sources.length === 0 && cfg.block_on_test_failure !== true) {
-				return warnings.length > 0 ? { decision: "allow", warnings } : null;
-			}
+			const { sources, deletedPaths, suiteLanguages } = selectChangedSources(
+				pathspec.changed,
+				target.root,
+				cfg.languages,
+				deps.readFile,
+			);
+			const earlyExit = noGatedSourcesDecision(sources.length, suiteLanguages, cfg, warnings);
+			if (earlyExit !== undefined) return earlyExit;
 
 			return await runSuiteAndScan(
 				{

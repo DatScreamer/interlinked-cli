@@ -196,97 +196,106 @@ function collectSmugglingCasts(
 		// `foo as Bar` — AsExpression
 		// `<Bar>foo`  — TypeAssertionExpression (legacy syntax; rare in .tsx
 		//                because of JSX collision, but legal in .ts/.mts/.cts)
-		if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
-			const typeNode = node.type;
+		// Guard clause (not a de-nested extraction): everything below only
+		// applies to As/TypeAssertion nodes, so bail early and recurse for
+		// every other node shape. Same branches, same order, same
+		// forEachChild-always-runs-once invariant as before, just de-indented
+		// by one nesting level (32 -> lower cognitive score; see
+		// scratch/type-smuggling-cognitive-probe-2026-08-01.mts).
+		if (!(ts.isAsExpression(node) || ts.isTypeAssertionExpression(node))) {
+			ts.forEachChild(node, visit);
+			return;
+		}
 
-			// Skip `as const` — literal-narrowing, not smuggling.
-			if (
-				ts.isAsExpression(node) &&
-				ts.isTypeReferenceNode(typeNode) &&
-				ts.isIdentifier(typeNode.typeName) &&
-				typeNode.typeName.text === "const"
-			) {
-				ts.forEachChild(node, visit);
-				return;
-			}
+		const typeNode = node.type;
 
-			// Skip casts whose target is `any` / `unknown` — those are
-			// legitimate widening escape hatches re-narrowed later.
-			if (targetIsAnyOrUnknownSyntax(ts, typeNode)) {
-				ts.forEachChild(node, visit);
-				return;
-			}
+		// Skip `as const` — literal-narrowing, not smuggling.
+		if (
+			ts.isAsExpression(node) &&
+			ts.isTypeReferenceNode(typeNode) &&
+			ts.isIdentifier(typeNode.typeName) &&
+			typeNode.typeName.text === "const"
+		) {
+			ts.forEachChild(node, visit);
+			return;
+		}
 
-			// Detect the classic `as unknown as T` double-cast escape: the
-			// CHILD of an outer AsExpression is itself an AsExpression whose
-			// target is `unknown`. We flag it with a specific message, since
-			// the double-cast is even more diagnostic than a single
-			// shape-mismatch cast.
-			let isDoubleCast = false;
-			let doubleCastTargetText: string | null = null;
-			if (
-				ts.isAsExpression(node) &&
-				ts.isAsExpression(node.expression) &&
-				node.expression.type.kind === ts.SyntaxKind.UnknownKeyword
-			) {
-				isDoubleCast = true;
-				doubleCastTargetText = typeNode.getText(sourceFile);
-			}
+		// Skip casts whose target is `any` / `unknown` — those are
+		// legitimate widening escape hatches re-narrowed later.
+		if (targetIsAnyOrUnknownSyntax(ts, typeNode)) {
+			ts.forEachChild(node, visit);
+			return;
+		}
 
-			let sourceType: TS.Type | undefined;
-			let targetType: TS.Type | undefined;
-			try {
-				sourceType = checker.getTypeAtLocation(node.expression);
-				targetType = checker.getTypeFromTypeNode(typeNode);
-			} catch {
-				// Checker threw — skip silently rather than false-fire.
-				ts.forEachChild(node, visit);
-				return;
-			}
+		// Detect the classic `as unknown as T` double-cast escape: the
+		// CHILD of an outer AsExpression is itself an AsExpression whose
+		// target is `unknown`. We flag it with a specific message, since
+		// the double-cast is even more diagnostic than a single
+		// shape-mismatch cast.
+		let isDoubleCast = false;
+		let doubleCastTargetText: string | null = null;
+		if (
+			ts.isAsExpression(node) &&
+			ts.isAsExpression(node.expression) &&
+			node.expression.type.kind === ts.SyntaxKind.UnknownKeyword
+		) {
+			isDoubleCast = true;
+			doubleCastTargetText = typeNode.getText(sourceFile);
+		}
 
-			if (!sourceType || !targetType) {
-				ts.forEachChild(node, visit);
-				return;
-			}
+		let sourceType: TS.Type | undefined;
+		let targetType: TS.Type | undefined;
+		try {
+			sourceType = checker.getTypeAtLocation(node.expression);
+			targetType = checker.getTypeFromTypeNode(typeNode);
+		} catch {
+			// Checker threw — skip silently rather than false-fire.
+			ts.forEachChild(node, visit);
+			return;
+		}
 
-			// For double-cast: we always flag regardless of overlap result,
-			// because the inner `as unknown` is itself the lie — the source
-			// type at the outer `as T` level is already `unknown` (which
-			// would normally be exempt), so the structural-overlap test
-			// would say "fine" when the user is actually doing the most
-			// suspicious thing. Override that.
-			if (isDoubleCast) {
-				const { line } = ts.getLineAndCharacterOfPosition(
-					sourceFile,
-					node.getStart(sourceFile),
-				);
-				matches.push({
-					line: line + 1,
-					text: buildDoubleCastReportText(
-						lines[line] || "",
-						doubleCastTargetText || "<unknown>",
-					),
-				});
-				ts.forEachChild(node, visit);
-				return;
-			}
+		if (!sourceType || !targetType) {
+			ts.forEachChild(node, visit);
+			return;
+		}
 
-			if (isSmugglingCast(ts, checker, sourceType, targetType)) {
-				const { line } = ts.getLineAndCharacterOfPosition(
-					sourceFile,
-					node.getStart(sourceFile),
-				);
-				const sourceTypeText = safeTypeToString(checker, sourceType);
-				const targetTypeText = typeNode.getText(sourceFile);
-				matches.push({
-					line: line + 1,
-					text: buildSmugglingReportText(
-						lines[line] || "",
-						sourceTypeText,
-						targetTypeText,
-					),
-				});
-			}
+		// For double-cast: we always flag regardless of overlap result,
+		// because the inner `as unknown` is itself the lie — the source
+		// type at the outer `as T` level is already `unknown` (which
+		// would normally be exempt), so the structural-overlap test
+		// would say "fine" when the user is actually doing the most
+		// suspicious thing. Override that.
+		if (isDoubleCast) {
+			const { line } = ts.getLineAndCharacterOfPosition(
+				sourceFile,
+				node.getStart(sourceFile),
+			);
+			matches.push({
+				line: line + 1,
+				text: buildDoubleCastReportText(
+					lines[line] || "",
+					doubleCastTargetText || "<unknown>",
+				),
+			});
+			ts.forEachChild(node, visit);
+			return;
+		}
+
+		if (isSmugglingCast(ts, checker, sourceType, targetType)) {
+			const { line } = ts.getLineAndCharacterOfPosition(
+				sourceFile,
+				node.getStart(sourceFile),
+			);
+			const sourceTypeText = safeTypeToString(checker, sourceType);
+			const targetTypeText = typeNode.getText(sourceFile);
+			matches.push({
+				line: line + 1,
+				text: buildSmugglingReportText(
+					lines[line] || "",
+					sourceTypeText,
+					targetTypeText,
+				),
+			});
 		}
 
 		ts.forEachChild(node, visit);

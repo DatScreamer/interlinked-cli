@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { acknowledgeChecks, SessionTracker } from "../session-state.js";
+import { recordSkillEnter } from "../session-skills.js";
 import type { HarnessEvent } from "../types.js";
 
 const baseEvent = (overrides: Partial<HarnessEvent>): HarnessEvent => ({
@@ -306,5 +307,104 @@ describe("SessionTracker round-trip", () => {
 		});
 		expect(mixed?.observed_checks?.size).toBe(1);
 		expect(mixed?.observed_checks?.get("typecheck")?.status).toBe("red");
+	});
+
+	it("returns null when serializing an unknown session id", () => {
+		const writer = new SessionTracker();
+		expect(writer.serialize("does-not-exist")).toBeNull();
+	});
+
+	it("hydrates a malformed (non-null, non-number) step_limit to Infinity", () => {
+		const reader = new SessionTracker();
+		const restored = reader.hydrate({
+			session_id: "weird-step-limit",
+			step_limit: "unlimited", // not null, not a finite number
+		});
+		expect(restored?.step_limit).toBe(Number.POSITIVE_INFINITY);
+	});
+
+	it("serializes real active_skills entries, then falls back to {} once hydrate leaves it unset", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) recordSkillEnter(session, { name: "interlinked-verify", ttl_seconds: 600 });
+
+		const snap = writer.serialize("rtt-session");
+		const activeSkills = snap?.active_skills as Record<string, { name: string }>;
+		expect(activeSkills["interlinked-verify"]?.name).toBe("interlinked-verify");
+
+		// A snapshot that never recorded a skill hydrates active_skills to
+		// undefined (readActiveSkills' empty-map contract) — re-serializing
+		// THAT session must fall back to the empty-object branch, not throw.
+		const reader = new SessionTracker();
+		const bare = reader.hydrate({ session_id: "no-skills" });
+		expect(bare?.active_skills).toBeUndefined();
+		const reSnap = reader.serialize("no-skills");
+		expect(reSnap?.active_skills).toEqual({});
+	});
+
+	it("serializes git_session_baseline as null once hydrate leaves it unset", () => {
+		const reader = new SessionTracker();
+		// No git_session_baseline field at all — readGitSessionBaseline returns
+		// undefined, unlike a freshly-created session (which always captures one).
+		const restored = reader.hydrate({ session_id: "no-git-baseline" });
+		expect(restored?.git_session_baseline).toBeUndefined();
+		const snap = reader.serialize("no-git-baseline");
+		expect(snap?.git_session_baseline).toBeNull();
+	});
+
+	it("serializes real content for failed_files, warnings_issued, tdd_cycles, test_runs, stubs_introduced", () => {
+		const writer = new SessionTracker();
+		writer.recordEvent(baseEvent({}));
+		const session = writer.get("rtt-session");
+		if (session) {
+			session.failed_files.set("src/broken.ts", {
+				failure_count: 2,
+				checks: ["typescript"],
+				recorded_at: "2026-05-05T10:00:00Z",
+				tool_call_count: 1,
+			});
+			session.warnings_issued.set("src/broken.ts::typescript", {
+				check_name: "typescript",
+				issue_count: 2,
+				first_issued_at: 1,
+				last_issued_at: 2,
+				resolved: false,
+			});
+			session.tdd_cycles.set("src/foo.ts", {
+				source_file: "src/foo.ts",
+				test_file: "src/foo.test.ts",
+				state: "red",
+				impl_edits_before_test: 0,
+			});
+			session.test_runs.set("src/foo.test.ts", { status: "fail", at_step: 3 });
+			session.stubs_introduced = [{ file: "src/foo.ts", kind: "TODO", snippet: "// TODO: fix" }];
+		}
+
+		const snap = writer.serialize("rtt-session");
+
+		const failedFiles = snap?.failed_files as Record<string, { failure_count: number }>;
+		expect(failedFiles["src/broken.ts"]?.failure_count).toBe(2);
+
+		const warningsIssued = snap?.warnings_issued as Record<string, { issue_count: number }>;
+		expect(warningsIssued["src/broken.ts::typescript"]?.issue_count).toBe(2);
+
+		const tddCycles = snap?.tdd_cycles as Record<string, { state: string }>;
+		expect(tddCycles["src/foo.ts"]?.state).toBe("red");
+
+		const testRuns = snap?.test_runs as Record<string, { status: string }>;
+		expect(testRuns["src/foo.test.ts"]?.status).toBe("fail");
+
+		const stubsIntroduced = snap?.stubs_introduced as Array<{ kind: string }>;
+		expect(stubsIntroduced).toHaveLength(1);
+		expect(stubsIntroduced[0]?.kind).toBe("TODO");
+
+		// Round-trip: the hydrated copy must carry the same content forward.
+		const reader = new SessionTracker();
+		const restored = reader.hydrate(snap as Record<string, unknown>);
+		expect(restored?.failed_files.get("src/broken.ts")?.failure_count).toBe(2);
+		expect(restored?.tdd_cycles.get("src/foo.ts")?.state).toBe("red");
+		expect(restored?.test_runs.get("src/foo.test.ts")?.status).toBe("fail");
+		expect(restored?.stubs_introduced).toHaveLength(1);
 	});
 });

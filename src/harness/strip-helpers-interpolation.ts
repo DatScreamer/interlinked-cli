@@ -24,50 +24,36 @@ function scanTemplateLiterals(
 	recursionDepth: number,
 ): void {
 	let i = 0;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
+	// Same comment/string skip logic `readBalancedTemplateExpression` uses below —
+	// shared via `stepPastCommentOrString` instead of re-inlined, which is also
+	// what keeps this loop flat (no nested if-inside-if per lexer state).
+	const state: CommentStringLexerState = {
+		inLineComment: false,
+		inBlockComment: false,
+		inString: null,
+	};
 
 	while (i < content.length) {
+		const stepped = stepPastCommentOrString(content, i, state);
+		if (stepped !== null) {
+			i = stepped;
+			continue;
+		}
 		const ch = content[i];
 		const next = content[i + 1];
 
-		if (inLineComment) {
-			if (ch === "\n") inLineComment = false;
-			i++;
-			continue;
-		}
-		if (inBlockComment) {
-			if (ch === "*" && next === "/") {
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			i++;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\" && i + 1 < content.length) {
-				i += 2;
-				continue;
-			}
-			if (ch === inString) inString = null;
-			i++;
-			continue;
-		}
-
 		if (ch === "/" && next === "/") {
-			inLineComment = true;
+			state.inLineComment = true;
 			i += 2;
 			continue;
 		}
 		if (ch === "/" && next === "*") {
-			inBlockComment = true;
+			state.inBlockComment = true;
 			i += 2;
 			continue;
 		}
 		if (ch === '"' || ch === "'") {
-			inString = ch;
+			state.inString = ch;
 			i++;
 			continue;
 		}
@@ -111,56 +97,78 @@ function collectTemplateExpressions(
 	return null;
 }
 
+type CommentStringLexerState = {
+	inLineComment: boolean;
+	inBlockComment: boolean;
+	inString: '"' | "'" | null;
+};
+
+/**
+ * Advance one step while `i` sits inside a line comment, a block comment, or
+ * a quoted string (mutating `state` to match). Returns the next index, or
+ * `null` when `i` is not inside any of those states — the caller then falls
+ * through to normal-mode dispatch (comment/string start, backtick, brace).
+ */
+function stepPastCommentOrString(
+	content: string,
+	i: number,
+	state: CommentStringLexerState,
+): number | null {
+	const ch = content[i];
+	const next = content[i + 1];
+
+	if (state.inLineComment) {
+		if (ch === "\n") state.inLineComment = false;
+		return i + 1;
+	}
+	if (state.inBlockComment) {
+		if (ch === "*" && next === "/") {
+			state.inBlockComment = false;
+			return i + 2;
+		}
+		return i + 1;
+	}
+	if (state.inString) {
+		if (ch === "\\" && i + 1 < content.length) return i + 2;
+		if (ch === state.inString) state.inString = null;
+		return i + 1;
+	}
+	return null;
+}
+
 function readBalancedTemplateExpression(
 	content: string,
 	start: number,
 ): { body: string; end: number } | null {
 	let depth = 1;
 	let i = start;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
+	const state: CommentStringLexerState = {
+		inLineComment: false,
+		inBlockComment: false,
+		inString: null,
+	};
 
 	while (i < content.length) {
+		const stepped = stepPastCommentOrString(content, i, state);
+		if (stepped !== null) {
+			i = stepped;
+			continue;
+		}
 		const ch = content[i];
 		const next = content[i + 1];
 
-		if (inLineComment) {
-			if (ch === "\n") inLineComment = false;
-			i++;
-			continue;
-		}
-		if (inBlockComment) {
-			if (ch === "*" && next === "/") {
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			i++;
-			continue;
-		}
-		if (inString) {
-			if (ch === "\\" && i + 1 < content.length) {
-				i += 2;
-				continue;
-			}
-			if (ch === inString) inString = null;
-			i++;
-			continue;
-		}
-
 		if (ch === "/" && next === "/") {
-			inLineComment = true;
+			state.inLineComment = true;
 			i += 2;
 			continue;
 		}
 		if (ch === "/" && next === "*") {
-			inBlockComment = true;
+			state.inBlockComment = true;
 			i += 2;
 			continue;
 		}
 		if (ch === '"' || ch === "'") {
-			inString = ch;
+			state.inString = ch;
 			i++;
 			continue;
 		}

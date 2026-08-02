@@ -54,6 +54,84 @@ export function getGitSourceFiles(cwd: string): string[] {
 	}
 }
 
+/** Invariant identity of the module under test, threaded through per-importer scans. */
+interface RippleTarget {
+	readonly cwd: string;
+	readonly noExt: string;
+	readonly baseName: string;
+	readonly currentExports: Set<string>;
+}
+
+/**
+ * Scan one importer file's lines for named imports of `target`'s module that
+ * reference a name no longer in `target.currentExports`.
+ *
+ * `startCount` is the number of matches already accumulated across earlier
+ * importers (the caller's `matches.length` at call time). Checking
+ * `startCount + found.length >= 15` at the top of each line iteration
+ * reproduces the original inline loop's shared `matches.length >= 15` break
+ * exactly — including that a single line's named imports are never
+ * mid-line-capped, only checked at the next line boundary.
+ */
+function collectImporterMatches(
+	importerRel: string,
+	importerContent: string,
+	target: RippleTarget,
+	startCount: number,
+): InlineMatch[] {
+	const { cwd, noExt, baseName, currentExports } = target;
+	const importerLines = importerContent.split("\n");
+	const importerDir = dirname(join(cwd, importerRel));
+	const found: InlineMatch[] = [];
+
+	for (const [i, importerLine] of importerLines.entries()) {
+		if (startCount + found.length >= 15) break;
+		const trimmed = importerLine.trim();
+
+		// Match: import { A, B, C } from "..." or import type { A } from "..."
+		const importMatch = trimmed.match(
+			/^import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+["']([^"']+)["']/,
+		);
+		if (!importMatch) continue;
+
+		const specifier = nonNull(importMatch[2]);
+		// Only check relative imports
+		if (!specifier.startsWith(".") && !specifier.startsWith("@/")) continue;
+
+		// Resolve the import specifier relative to the importer's directory
+		// to verify it actually points to our file (not a different file with the same basename)
+		const specBase = specifier.replace(/\.(js|ts|tsx|jsx|mjs|cjs)$/, "");
+		const specTail = specBase.split("/").pop() || "";
+		if (specTail !== baseName) continue;
+
+		// Resolve the full path and check if it's actually our target file
+		const resolvedImport = resolve(importerDir, specBase);
+		const targetNoExt = resolve(cwd, noExt);
+		if (resolvedImport !== targetNoExt) continue;
+
+		// Parse named imports
+		const namedImports = nonNull(importMatch[1])
+			.split(",")
+			.map((n) => {
+				const parts = n.trim().split(/\s+as\s+/);
+				return nonNull(parts[0]).trim().replace(/^type\s+/, ""); // Strip inline type prefix and 'as' alias
+			})
+			.filter((n) => n.length > 0);
+
+		// Check each imported name against current exports
+		for (const name of namedImports) {
+			if (!currentExports.has(name)) {
+				found.push({
+					line: 0,
+					text: `${importerRel}:${i + 1} imports "${name}" which no longer exists in exports`,
+				});
+			}
+		}
+	}
+
+	return found;
+}
+
 export function checkExportRipple(content: string, filePath: string, cwd: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	if (![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) return [];
@@ -98,6 +176,7 @@ export function checkExportRipple(content: string, filePath: string, cwd: string
 	if (importerFiles.length === 0) return [];
 
 	// Step 4: For each importer, parse its imports and check against current exports
+	const target: RippleTarget = { cwd, noExt, baseName, currentExports };
 	const matches: InlineMatch[] = [];
 
 	for (const importerRel of importerFiles) {
@@ -109,53 +188,7 @@ export function checkExportRipple(content: string, filePath: string, cwd: string
 			continue;
 		}
 
-		const importerLines = importerContent.split("\n");
-		const importerDir = dirname(join(cwd, importerRel));
-
-		for (const [i, importerLine] of importerLines.entries()) {
-			if (matches.length >= 15) break;
-			const trimmed = importerLine.trim();
-
-			// Match: import { A, B, C } from "..." or import type { A } from "..."
-			const importMatch = trimmed.match(
-				/^import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+["']([^"']+)["']/,
-			);
-			if (!importMatch) continue;
-
-			const specifier = nonNull(importMatch[2]);
-			// Only check relative imports
-			if (!specifier.startsWith(".") && !specifier.startsWith("@/")) continue;
-
-			// Resolve the import specifier relative to the importer's directory
-			// to verify it actually points to our file (not a different file with the same basename)
-			const specBase = specifier.replace(/\.(js|ts|tsx|jsx|mjs|cjs)$/, "");
-			const specTail = specBase.split("/").pop() || "";
-			if (specTail !== baseName) continue;
-
-			// Resolve the full path and check if it's actually our target file
-			const resolvedImport = resolve(importerDir, specBase);
-			const targetNoExt = resolve(cwd, noExt);
-			if (resolvedImport !== targetNoExt) continue;
-
-			// Parse named imports
-			const namedImports = nonNull(importMatch[1])
-				.split(",")
-				.map((n) => {
-					const parts = n.trim().split(/\s+as\s+/);
-					return nonNull(parts[0]).trim().replace(/^type\s+/, ""); // Strip inline type prefix and 'as' alias
-				})
-				.filter((n) => n.length > 0);
-
-			// Check each imported name against current exports
-			for (const name of namedImports) {
-				if (!currentExports.has(name)) {
-					matches.push({
-						line: 0,
-						text: `${importerRel}:${i + 1} imports "${name}" which no longer exists in exports`,
-					});
-				}
-			}
-		}
+		matches.push(...collectImporterMatches(importerRel, importerContent, target, matches.length));
 	}
 
 	return matches;
