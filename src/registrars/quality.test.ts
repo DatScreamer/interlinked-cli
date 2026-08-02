@@ -139,7 +139,11 @@ describe("registerQualityCommands — structure", () => {
 		// `accept` (2026-07-29) is the audited equivalent-mutant annotation for the
 		// LIVE per-edit manifest — the escape the gate's block message promises.
 		expect(sub(program, "mutation").commands.map((c) => c.name()).sort()).toEqual(
-			["accept", "baseline", "check"].sort(),
+			// `measure` (2026-08-01) closed the gap where out-of-band re-measurement
+			// reported to a human but never reached the manifest, so campaign work
+			// was invisible to the ratchet (files hardened 261 -> 25 survivors still
+			// read 261). Read-only by default; `--record` writes via applyMeasuredRun.
+			["accept", "baseline", "check", "measure"].sort(),
 		);
 	});
 

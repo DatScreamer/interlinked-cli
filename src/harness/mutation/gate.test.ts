@@ -295,6 +295,38 @@ describe("gate messaging — the reader can act on the difference", () => {
 		expect(d?.warnings?.join("\n")).toContain("runner failed");
 	});
 
+	it("P: says the runner is BUSY, not that the file has no tests, when the runner throws the dedicated busy error", async () => {
+		// The measurement-integrity property under test: a contended runner must
+		// never read as "no test exercises this file" — that would silently drop
+		// a perfectly-tested file out of the campaign's denominator every time
+		// the fleet is loaded.
+		const busyErr = Object.assign(new Error("mutation runner is busy with another job (HTTP 503)"), {
+			name: "MutationRunnerBusyError",
+		});
+		const d = await runPerEditMutationGate(nmGateCtx(busyErr));
+		expect(d?.warnings?.join("\n")).toContain("busy");
+		expect(d?.warnings?.join("\n")).not.toContain("no test exercises this file");
+		expect(d?.warnings?.join("\n")).not.toContain("runner failed");
+	});
+
+	it("P: also recognizes a generic HTTP 503 error (a runner with no dedicated busy type) as busy, not as a plain failure", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("mutation runner HTTP 503")));
+		expect(d?.warnings?.join("\n")).toContain("busy");
+		expect(d?.warnings?.join("\n")).not.toContain("no test exercises this file");
+	});
+
+	it("N: a non-503 HTTP error stays a plain failure, never mislabeled busy", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("mutation runner HTTP 500")));
+		expect(d?.warnings?.join("\n")).toContain("runner failed");
+		expect(d?.warnings?.join("\n")).not.toContain("busy");
+	});
+
+	it("N: a genuine no_tests verdict is unaffected by the busy check — still terminal, still says no tests", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new MutationNotMeasurableError("no_tests")));
+		expect(d?.warnings?.join("\n")).toContain("no test exercises this file");
+		expect(d?.warnings?.join("\n")).not.toContain("busy");
+	});
+
 	it("prefers the still-running message when handles came back", async () => {
 		// Budget expiry outranks everything: results are genuinely still coming.
 		const pendingErr = Object.assign(new Error("pending"), {

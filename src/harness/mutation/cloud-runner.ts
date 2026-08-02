@@ -31,8 +31,10 @@ export interface CloudRunnerConfig {
  * not-measured for this window and only upgrade if the harvest succeeds.
  */
 
-/** Structured "nothing to measure" payload, if the runner sent one. */
-function readNotMeasurable(body: unknown): { reason: string; detail?: string } | null {
+/** Structured "nothing to measure" payload, if the runner sent one. Exported so
+ *  `measure.ts` (the out-of-band single-file path) shares this ONE parser
+ *  rather than growing its own second reading of the same wire shape. */
+export function readNotMeasurable(body: unknown): { reason: string; detail?: string } | null {
 	if (typeof body !== "object" || body === null) return null;
 	const raw = (body as { not_measurable?: unknown }).not_measurable;
 	if (typeof raw !== "object" || raw === null) return null;
@@ -74,6 +76,26 @@ export class MutationRunPendingError extends Error {
 	}
 }
 
+/**
+ * The runner answered HTTP 503 — a single-worktree runner's honest "I am
+ * currently running someone else's job" signal (`scratch/two-box-runner/runner.mjs`'s
+ * `busy` lock), never a body the runner composed by actually attempting the run.
+ *
+ * This MUST stay distinct from both `MutationNotMeasurableError` (a completed,
+ * definitive "no test exercises this file" verdict the runner reached BY
+ * running) and a generic non-ok Error (an actually broken runner). Collapsing
+ * "busy" into either of those is exactly the measurement-integrity defect this
+ * type exists to prevent: a contended runner is not evidence of an absent
+ * test, and a caller that cannot tell the two apart silently drops the file
+ * out of the denominator every time the fleet is loaded.
+ */
+export class MutationRunnerBusyError extends Error {
+	constructor() {
+		super("mutation runner is busy with another job (HTTP 503) — not measured, not evidence of no_tests");
+		this.name = "MutationRunnerBusyError";
+	}
+}
+
 /** Distinct per request; the runner keys its retained report by this. */
 function mintJobId(): string {
 	return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -97,7 +119,7 @@ function headersFor(config: CloudRunnerConfig): Record<string, string> {
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object";
+	return v !== null && typeof v === "object"; // probe
 }
 
 /** Parse the optional overlay test-run signal from the Worker response (spec §7).

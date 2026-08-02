@@ -7,6 +7,7 @@ import {
 	mutationAcceptCommand,
 	mutationBaselineCommand,
 	mutationCheckCommand,
+	mutationMeasureCommand,
 } from "./mutation.js";
 
 function captureIO(): {
@@ -549,5 +550,174 @@ describe("mutationAcceptCommand", () => {
 		}
 		expect(io.mocks().exitCode).toBe(1);
 		expect(io.mocks().stderr).toContain("Usage: interlinked mutation accept");
+	});
+});
+
+describe("mutationMeasureCommand", () => {
+	let tmp: string;
+	let io: ReturnType<typeof captureIO>;
+
+	const FILE = "src/foo.ts";
+	const SRC = "export function f(x: number): boolean {\n\treturn x > 0;\n}\n";
+	const manifestPath = (cwd: string) => join(cwd, ".interlinked", "mutation-manifest.json");
+
+	/** A Stryker-shaped whole-file report for SRC, one mutant at the `>`. */
+	function strykerBody(status: string): unknown {
+		const col = (SRC.split("\n")[1] ?? "").indexOf(">") + 1;
+		return {
+			files: {
+				[FILE]: {
+					source: SRC,
+					mutants: [
+						{
+							mutatorName: "EqualityOperator",
+							replacement: ">=",
+							status,
+							location: { start: { line: 2, column: col }, end: { line: 2, column: col + 1 } },
+						},
+					],
+				},
+			},
+		};
+	}
+
+	function manifestFileRecord(cwd: string): { mutants: Record<string, { status: string }> }[] | undefined {
+		const raw = JSON.parse(readFileSync(manifestPath(cwd), "utf-8")) as {
+			files: Record<string, Record<string, { mutants: Record<string, { status: string }> }>>;
+		};
+		const symbols = raw.files[FILE];
+		return symbols ? Object.values(symbols) : undefined;
+	}
+
+	function manifestExists(cwd: string): boolean {
+		try {
+			readFileSync(manifestPath(cwd), "utf-8");
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "mut-measure-"));
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, FILE), SRC);
+		io = captureIO();
+	});
+
+	afterEach(() => {
+		io.restore();
+		vi.unstubAllGlobals();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("N1: errors when the target file cannot be read, and touches nothing", async () => {
+		await mutationMeasureCommand("src/does-not-exist.ts", { cwd: tmp, runnerUrl: "http://runner/" });
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("Cannot read");
+		expect(manifestExists(tmp)).toBe(false);
+	});
+
+	it("N2: errors when no runner is configured (no --runner-url, no local rules)", async () => {
+		await mutationMeasureCommand(FILE, { cwd: tmp });
+		expect(io.mocks().exitCode).toBe(1);
+		expect(io.mocks().stderr).toContain("No mutation runner configured");
+	});
+
+	it("P1: measures without recording by default — the manifest is untouched", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Survived") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/", json: true });
+		expect(io.mocks().exitCode).toBeFalsy();
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.status).toBe("measured");
+		expect(parsed.mutants).toBe(1);
+		expect(parsed.survivors).toBe(1);
+		expect(parsed.record).toBeNull();
+		expect(manifestExists(tmp)).toBe(false);
+	});
+
+	it("P2: --record folds a clean run into mutation-manifest.json with a real before/after delta", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Survived") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/", record: true, json: true });
+		expect(io.mocks().exitCode).toBeFalsy();
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.record.recorded).toBe(true);
+		expect(parsed.record.before).toEqual({ mutants: 0, survivors: 0 });
+		expect(parsed.record.after).toEqual({ mutants: 1, survivors: 1 });
+
+		// The manifest ON DISK actually reflects the survivor — not just the
+		// command's own report of what it did.
+		const symbols = manifestFileRecord(tmp);
+		expect(symbols).toBeDefined();
+		const statuses = Object.values(symbols?.[0]?.mutants ?? {}).map((m) => m.status);
+		expect(statuses).toEqual(["survived"]);
+	});
+
+	it("N3: --record on a not_measurable response writes NOTHING, even though --record was requested", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				status: 200,
+				json: async () => ({ not_measurable: { reason: "no_tests" } }),
+			})),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/", record: true, json: true });
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.status).toBe("not_measurable");
+		expect(parsed.record.recorded).toBe(false);
+		expect(parsed.record.reason).toContain("not_measurable");
+		expect(manifestExists(tmp)).toBe(false);
+	});
+
+	it("reads the runner endpoint from .interlinked/guard-rules.local.json when --runner-url is omitted", async () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "guard-rules.local.json"),
+			JSON.stringify({ per_edit_mutation: { runner_url: "http://configured-runner/" } }),
+		);
+		const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Killed") }));
+		vi.stubGlobal("fetch", fetchMock);
+		await mutationMeasureCommand(FILE, { cwd: tmp, json: true });
+		expect(io.mocks().exitCode).toBeFalsy();
+		expect(fetchMock).toHaveBeenCalledWith("http://configured-runner/", expect.anything());
+	});
+
+	it("renders human-readable survivor lines and the recorded delta in normal mode", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Survived") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/", record: true });
+		const out = io.mocks().stdout;
+		expect(out).toContain("Mutation Measure");
+		expect(out).toContain("Survivors");
+		expect(out).toContain("L2");
+		expect(out).toContain("EqualityOperator");
+		expect(out).toContain("Recorded");
+		expect(out).toContain("0/0");
+		expect(out).toContain("1/1");
+	});
+
+	it("N4: exits non-zero when the runner answers with an HTTP error, and writes nothing", async () => {
+		// A non-503 HTTP error is reported immediately (no retry/backoff), so this
+		// stays a fast, deterministic unit test rather than exercising the real
+		// jittered-retry timer (which the command does not expose a fake clock for).
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://down/", json: true });
+		expect(io.mocks().exitCode).toBe(1);
+		const parsed = JSON.parse(io.mocks().stdout);
+		expect(parsed.status).toBe("error");
+		expect(parsed.reason).toContain("HTTP 500");
+		expect(manifestExists(tmp)).toBe(false);
 	});
 });

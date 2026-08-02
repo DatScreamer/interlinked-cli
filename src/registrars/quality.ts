@@ -339,6 +339,21 @@ export function registerQualityCommands(program: Command): void {
 		});
 
 	mutationCmd
+		.command("measure <file>")
+		.description(
+			"Measure one file against the mutation runner. Read-only by default; --record folds a CLEAN report into the SAME manifest the per-edit gate enforces against, via seedFileBaseline — closes the gap where out-of-band re-measurement (e.g. scratch/measure-file.mts) never reached the ratchet.",
+		)
+		.option("--record", "Persist the measured result into .interlinked/mutation-manifest.json")
+		.option("--runner-url <url>", "Override the configured runner endpoint(s)")
+		.option("--budget-ms <ms>", "Total time to keep retrying busy/unreachable endpoints (default: 900000)")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (file: string, opts: OptionValues) => {
+			const { mutationMeasureCommand } = await import("../commands/mutation.js");
+			await mutationMeasureCommand(file, opts);
+		});
+
+	mutationCmd
 		.command("accept")
 		.description(
 			"Explain why a surviving mutant cannot be accepted by prose. Since typed dispositions (plan 16 §7) status \"equivalent\" requires a verifier-issued certificate bound to the mutant's current symbol hash, which this command cannot mint — so it reports the refusal instead of writing one.",

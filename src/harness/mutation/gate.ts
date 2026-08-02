@@ -158,12 +158,32 @@ export function pendingHandlesFrom(err: unknown): PendingHandle[] {
  */
 function notMeasuredReason(err: unknown, pendingCount: number): string {
 	if (pendingCount > 0) return "mutation still running past the budget";
+	if (isRunnerBusy(err)) {
+		return "the mutation runner is busy with another job right now — not measured this edit, and NOT evidence this file has no tests (retry on the next edit)";
+	}
 	const reason = notMeasurableReasonOf(err);
 	if (reason === "no_tests") {
 		return "no test exercises this file, so mutation cannot measure it — add one and the gate starts protecting this code";
 	}
 	if (reason !== null) return `mutation not measurable here (${reason})`;
 	return "the mutation runner failed";
+}
+
+/**
+ * A contended runner is not a broken one, and it is definitely not a
+ * "no tests" verdict — collapsing "busy" into either is the exact
+ * measurement-integrity defect this check exists to prevent (a contended
+ * runner silently drops the file out of the denominator). Detected
+ * structurally — by error name (a runner that throws the dedicated
+ * `MutationRunnerBusyError`) or by message (the generic HTTP-status error a
+ * plain non-ok response produces) — rather than `instanceof`, so this module
+ * stays free of an import cycle with the runners it evaluates.
+ */
+function isRunnerBusy(err: unknown): boolean {
+	const name = (err as { name?: unknown })?.name;
+	if (name === "MutationRunnerBusyError") return true;
+	const message = (err as { message?: unknown })?.message;
+	return typeof message === "string" && /\bHTTP 503\b/.test(message);
 }
 
 /** Structural read, so this module stays free of an import cycle with the runners. */

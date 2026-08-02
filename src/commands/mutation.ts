@@ -20,6 +20,7 @@ import {
 	mutationBaselinePath,
 	saveMutationBaseline,
 } from "../harness/mutation-gate.js";
+import { maybeRecordMeasurement, renderMeasureCommand, testScopeNote } from "./mutation-measure-support.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -303,4 +304,124 @@ export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promis
 		`Refused: a reason is not a mechanism. "${mutantId}" (${file}) stays a survivor. Since typed dispositions (plan 16 §7) the manifest only records an equivalence from a verifier-issued certificate bound to the mutant's current symbol hash; this command cannot mint one. Kill the mutant with a test, or fix/delete the code if the mutant is unkillable because the code should not exist.`,
 	);
 	process.exitCode = 1;
+}
+
+// ===========================================
+// interlinked mutation measure — out-of-band single-file measurement,
+// with an explicit --record path into the SAME manifest the per-edit gate
+// enforces against (docs/design/per-edit-cloud-mutation-testing.md).
+// ===========================================
+// Closes the campaign feedback-loop gap: re-measuring a file after hardening
+// used to mean running `scratch/measure-file.mts`, which prints survivors and
+// writes nothing — so hardening work never reached the manifest the ratchet
+// reads. This command is the first-class replacement. Measuring is always
+// safe (read-only); recording is opt-in via `--record` and goes ONLY through
+// `recordMeasurement` (harness/mutation/measure.ts), which itself goes ONLY
+// through `seedFileBaseline` / `applyMeasuredRun` — never a hand-built
+// manifest record. See measure.ts's module docstring for why this path talks
+// to exactly one runner endpoint per attempt (no sharding, no partial writes).
+
+export interface MutationMeasureOptions {
+	record?: boolean;
+	runnerUrl?: string;
+	budgetMs?: string;
+	cwd?: string;
+	json?: boolean;
+}
+
+// Render + record helpers live in mutation-measure-support.ts (extracted to
+// stay under the per-file line cap; no behavior change).
+
+export async function mutationMeasureCommand(file: string, opts: MutationMeasureOptions): Promise<void> {
+	const mode = getOutputMode(opts);
+	const cwd = resolve(opts.cwd || process.cwd());
+	const configDir = getConfigDir(cwd);
+
+	const { buildScopedMeasureOverlays, configuredRunnerEndpoints, measureFile, readDiskSafe } = await import(
+		"../harness/mutation/measure.js"
+	);
+	const { normalizeManifestKey } = await import("../harness/mutation/manifest.js");
+
+	const key = normalizeManifestKey(file, cwd);
+	const content = readDiskSafe(resolve(cwd, key));
+	if (content === null) {
+		outputError(mode, `Cannot read "${key}" (resolved from "${file}").`);
+		process.exitCode = 1;
+		return;
+	}
+
+	const endpointCfg = opts.runnerUrl
+		? { endpoints: [opts.runnerUrl] }
+		: configuredRunnerEndpoints(cwd, readDiskSafe);
+	if (endpointCfg.endpoints.length === 0) {
+		outputError(
+			mode,
+			"No mutation runner configured. Pass --runner-url <url>, or set per_edit_mutation.runner_url (or .runner_urls) in .interlinked/guard-rules.local.json.",
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	// Reverse-import-graph test selection (test-scope.ts), not the runner's own
+	// filename-glob guess — a hub file's real tests often aren't named after it.
+	// Computed BEFORE the overlay set so the overlay set can ship a COMPLETE
+	// CLOSURE over the selected scope: every test file the runner will load,
+	// plus their transitive deps, must travel as overlay content — the
+	// runner's worktree resets to HEAD before each run, so anything not
+	// overlaid comes from the runner's own (possibly stale) commit.
+	const { computeMutationTestScopeForRepo } = await import("../harness/mutation/test-scope.js");
+	const scope = computeMutationTestScopeForRepo({ editedRelPath: key, projectRoot: cwd });
+
+	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(cwd, p)), scope.tests ?? []);
+	const overlays = scoped.overlays;
+
+	if (mode !== "json") {
+		process.stderr.write(
+			`measuring ${key} (${overlays.length} overlay(s)) via ${endpointCfg.endpoints.length} runner(s)…\n${testScopeNote(scope)}`,
+		);
+		if (scoped.unreadable.length > 0) {
+			process.stderr.write(
+				`WARNING: ${scoped.unreadable.length} file(s) in the closure could not be read and are MISSING from the overlay set: ${scoped.unreadable.join(", ")}\n`,
+			);
+		}
+		if (scoped.capped) {
+			process.stderr.write(
+				`WARNING: overlay closure had ${scoped.capped.candidateCount} candidates, capped to ${scoped.capped.limit}; dropped ${scoped.capped.dropped.length} dependency file(s): ${scoped.capped.dropped.join(", ")}\n`,
+			);
+		}
+	}
+
+	const budgetMs = opts.budgetMs ? Number.parseInt(opts.budgetMs, 10) : undefined;
+	const outcome = await measureFile({
+		file: key,
+		content,
+		overlays,
+		endpoints: endpointCfg.endpoints,
+		fetchImpl: (url, init) => fetch(url, init),
+		...(endpointCfg.token !== undefined ? { token: endpointCfg.token } : {}),
+		...(budgetMs !== undefined && Number.isFinite(budgetMs) ? { deadlineMs: budgetMs } : {}),
+		...(scope.tests ? { testScope: scope.tests } : {}),
+	});
+
+	const record = await maybeRecordMeasurement({ record: opts.record, outcome, configDir, key, content, cwd });
+
+	const payload = {
+		file: key,
+		status: outcome.status,
+		reason: outcome.reason,
+		mutants: outcome.mutantCount,
+		survivors: outcome.survivorCount,
+		survivorList: outcome.survivors,
+		record,
+	};
+
+	output(mode, payload, {
+		json: () => payload,
+		normal: () => renderMeasureCommand(key, outcome, record),
+	});
+
+	// "busy" is nonzero too (a sweep script must not treat it as success), but
+	// stays a DISTINCT status in the payload/render above — never coerced into
+	// "error" or "not_measurable" text a caller might grep for.
+	if (outcome.status === "error" || outcome.status === "busy") process.exitCode = 1;
 }
