@@ -206,6 +206,89 @@ a point; properties pin a region.
 5. **Bounded exhaustive comparison** where the input domain is genuinely small
    (enum × enum, small tagged unions). Real proof over the enumerated domain.
 
+### 6.3 Status (2026-08-01) — registry-wide liveness sweep + generated property harness
+
+Every registered check shares one signature (`(content, filePath) => InlineMatch[]`),
+so six properties were built ONCE and run against the whole ~252-check registry
+instead of hand-written per detector. Liveness ran first, as a standalone sweep;
+the other five are a generated vitest file.
+
+**Liveness — the headline.** `scratch/registry-properties/liveness-sweep.mts`
+(`npx tsx`, wall clock ~13s) tries to make each check fire using (a) real
+fixtures harvested from the check's OWN test file(s) via a small TS-AST walker
+(`scratch/registry-properties/harvest-fixtures.mts` — resolves thin
+one-hop wrapper helpers, `[...].join()`, `Array.from({length},...)`, spread
+elements, and scope-aware `const`/`let` lookup so `const code = …` redeclared
+across sibling `it()` blocks resolves to the right one) and (b) a bounded
+fallback scan of the repo's own 2147 source files. The sweep's first pass
+found 112 "unresolved" checks; three harvester bugs (recursion-depth cap,
+missing `Array.from`/spread handling, whole-file-first-match identifier
+resolution instead of scope-aware) accounted for all but 27 of those once
+fixed. Every one of the remaining 27 was individually verified by hand against
+its own source and test file — this is the part that took the effort, and
+it mattered: **21 of the 27 were false positives of the sweep method**, not
+dead checks (harvester still can't fold `String.fromCharCode(n)` into a
+control byte, resolve `for (const x of positives)` loop bindings, or satisfy
+filesystem-coupled checks like `package_json_publish_invariants` /
+`tsconfig_strictness` / the endpoint-security adapters without real files on
+disk — all confirmed alive by direct hand-built-fixture calls).
+
+**Confirmed dead: 6 of 252 registered checks (2.4%).**
+
+| id | Cause | Precedent |
+|---|---|---|
+| `self_import` | `checkSelfImport` regexes the import specifier against `stripCommentsAndStrings(content)`, which blanks every quoted string to `''`/`""` before the specifier-matching regex runs — the specifier is always quoted, so it can never survive stripping. **New finding.** | Same class as `checkExtraneousDependencies` below |
+| `extraneous_deps` | `checkExtraneousDependencies` — identical bug: `fromMatch` regexes a quoted specifier against stripped content. This is the task's own seed example, independently reproduced by the sweep. | — |
+| `test_importing_test` | `checkTestImportingTest` — same class again (fourth instance in the registry). **Already self-documented as dead in its own test file's comment** (`testing.test.ts`, "BEHAVIORAL REALITY: … The detector therefore returns [] for ALL inputs that reach the scan") — not a new discovery, but the sweep independently reproduced it with no prior knowledge of that comment. | — |
+| `migration_ordering` | `checkMigrationOrdering` in `checks/compat-stubs.ts` is a literal `return [];` stub, alongside two siblings below. File header: "Compatibility stubs — referenced by check-registry but their full implementations live in other modules (or are pending refactor). Returning an empty match list keeps the registry build green." Deliberate, but still fully registered with real severity/phase/fix_instruction as if live — `interlinked harness checks` counts it as one of the working checks. | — |
+| `sql_schema_consistency` | Same file, same stub pattern. | — |
+| `visibility_filter_missing` | Same file, same stub pattern. | — |
+
+The stripped-quoted-specifier bug is now a confirmed **recurring class**
+(4 instances: `extraneous_deps`, `self_import`, `test_importing_test`, and by
+extension any future import-specifier detector built on
+`stripCommentsAndStrings`) — worth a `detector-scans-stripped-specifier`
+meta-check candidate for `docs/plans/16` §11.2's backlog, not built this pass.
+
+Also surfaced, not fixed: three registry entries (`circular_imports`,
+`dead_exports`, `untested_inverse_pair`, plus `untested_idempotent`) are
+registered via an inline arrow `fn: (content, filePath) => checkX(content,
+filePath, process.cwd())` — the object-literal-key name-inference rule gives
+that arrow the literal name `"fn"`, which breaks `check-evidence/resolve.ts`'s
+name-based detector→test-file resolution (0 test files reported) even though
+the underlying detectors are real, substantial, project-graph-aware
+implementations. Cosmetic/tooling gap, not a check defect — worth a follow-up
+so `check-evidence` doesn't misreport these four as untested.
+
+**The generated five-property harness** ships at
+`src/harness/__tests__/check-registry-properties.test.ts` (1010 test cases
+over 252 checks + 6 strip-helper idempotence checks, ~6.4s wall clock,
+`npx vitest run` verified green, `npm run typecheck` clean):
+- **Totality** — `fc.string({ unit: "binary" })` (full code-unit range incl.
+  lone surrogates) plus fixed edge cases (empty, NUL, lone surrogates, a
+  20k-char single line, 500 unclosed `{`, all-blank-lines). Zero throws.
+- **Determinism** — same `(content, filePath)` called twice, `toEqual`.
+- **Output well-formedness** — every `InlineMatch.line` is a finite integer
+  within `[1, lineCount]`; `text` is a string.
+- **Termination** — the repo's own calibrated coarse-ratio pattern from
+  `checks/reinterpret-alignment.test.ts` (2KB control vs 64KB/32x subject,
+  min-of-N timing, ratio `< 150`), NOT an absolute-ms bound (see §11.2's
+  `absolute_ms_assertion_in_test` — this is deliberately the fix already
+  applied elsewhere, reused rather than re-invented). Skipped only for the
+  four `process.cwd()`-coupled checks above, to keep the whole file in
+  seconds rather than re-walking the project graph 252×32×.
+- **Idempotence** — `stripComments` / `stripStrings` / `stripCommentsAndStrings`
+  / `stripAllLiterals` / `stripTemplateLiterals` (the genuinely idempotent
+  shared helpers actually used by the check families) — applying twice equals
+  once, for all of them.
+
+All 1010 cases pass; nothing threw or produced non-deterministic output during
+this run. Not built: fuzz/negative-boundary generation from types (§6.2 item
+3), differential fuzzing against the prior revision (item 4), and bounded
+exhaustive comparison (item 5) — those still need a per-symbol "what changed"
+hook this task didn't build. This section's harness is a session-scoped
+verifier, per the task's scope discipline: not wired into any blocking path.
+
 ### 6.3 The asymmetry that must be encoded
 
 > Counterexample search can prove a mutant/edit **wrong**. Failing to find a
@@ -406,6 +489,81 @@ precisely. Do this once per area as an audit — not as a gate.
 
 Deferred deliberately: SMT/symbolic equivalence, whole-repo formal methods,
 adaptive multi-hour Stop phases (not affordable on the current dev box).
+
+### 10.5 Model-perceived complexity, and where learned signals may live
+
+Raised 2026-08-01 from *"Rethinking Code Complexity Through the Lens of Large
+Language Models"* (arXiv 2602.07882, ICML 2026). Its two claims that bear on this
+plan:
+
+1. Classical complexity metrics show **no consistent correlation with LLM
+   performance** — a mismatch between what we cap and what a model finds hard.
+2. **Semantics-preserving reductions in their metric (LM-CC) consistently improve
+   downstream task performance.** That is a causal claim about precisely the
+   activity this repo just spent a campaign on — 49 semantics-preserving
+   decompositions — except we optimised cyclomatic and cognitive.
+
+**Why LM-CC cannot be a gate here.** It is entropy-guided: it needs a next-token
+distribution to measure "cumulative uncertainty", so computing it requires causal
+LM inference. That breaks two invariants at once — `feedback_harness_deterministic_only`
+(no LLM in the check pipeline) and the T1 budget (§3). Worse for a ratchet: a
+nondeterministic verdict means two agents editing one function can disagree, and a
+re-run can unblock a previously-blocked edit. **A metric you cannot reproduce
+cannot be a water-line.**
+
+**Where it fits instead:** T3 / cloud, reported and never enforced — the same slot
+as the fuzzing ladder (§6), where inference is affordable and latency blocks nobody.
+
+**The experiment worth running first.** We have an unusually clean natural
+experiment already on disk: 49 functions decomposed 2026-08-01, semantics-preserving,
+with verified before/after on both control-flow metrics and zero regressions. Run
+LM-CC over those 49 pairs. If it barely moves, we optimised the wrong target and the
+caps are theatre for model-facing work. If it drops in step, the cheap deterministic
+metrics are adequate proxies and nothing was lost. Either answer is worth having, and
+it costs compute rather than design.
+
+Note we already carry one non-control-flow metric: `halstead_difficulty`
+(verify-only, calibrated to 80 against a 9023-function corpus) — vocabulary and
+operand density, "the dimension the control-flow metrics cannot see". Closer in
+spirit to cumulative uncertainty than branch counting, and deterministic.
+
+### 10.6 Local embedding models — three uses, and one trap
+
+Assessed 2026-08-01. **Embeddings cannot compute LM-CC** — that needs a token
+distribution; an embedding model yields a fixed vector and no distribution at all.
+It is a model-class mismatch, not a size one. But three uses stand on their own,
+each derived from a failure this campaign actually hit:
+
+1. **Seam quality — is an extraction cohesive or cosmetic?** Every decomposition
+   audit had to judge "real or cosmetic" by hand. Embed the statements of a
+   function and measure variance: low variance = one job, high variance = several.
+   This converts a judgement call into a measurement — the same conversion that let
+   decomposition run 22/22 while mutation hardening was refuted repeatedly.
+2. **Defect-pattern propagation — the highest-value one.** The recurring shape all
+   session was *"fixed here, the same defect exists in N places nobody looked"*:
+   three checks sharing the strip-then-match bug (`self_import`, `extraneous_deps`,
+   `test_importing_test`), three test-file predicates, two path spellings, two
+   daemon argv builders. Embed check/function bodies; when one is found broken,
+   retrieve its nearest neighbours and inspect them. We found the third dead check
+   by luck. This is the mechanism that replaces luck.
+3. **Corpus dedup** for the fuzz/counterexample corpus (§6), so near-duplicate
+   counterexamples do not consume replay budget.
+
+**The trap: do NOT use embedding similarity to check behaviour preservation.** It is
+backwards — a good semantics-preserving refactor SHOULD change the text
+substantially, so similarity penalises the best decompositions while passing a
+subtly broken one that happens to read alike. Behavioural equivalence needs
+differential execution, which is what the auditors actually did (one ran 20,038
+differential cases).
+
+**Determinism, carefully.** A fixed local embedding model with fixed weights is
+deterministic — same input, same vector — so this does NOT violate the no-LLM-in-the-
+pipeline rule the way sampling would. But the model VERSION becomes a baseline
+dependency: upgrade it and every stored score shifts, silently invalidating any
+ratchet built on it. Survivable for advisory and retrieval use; disqualifying for a
+water-line. Note also that no embedding infrastructure exists today — CLAUDE.md
+describes `error-history.ts` as having "optional embeddings support", but there is
+no implementation and no dependency in `package.json`.
 
 ### 11.1 Design note — item 2, module-scope identity anchoring
 
@@ -616,6 +774,74 @@ third.**
    during `interlinked verify`, and report any disagreement. Deterministic, no
    LLM, no new machinery — and it fails the moment a fifth answer to an existing
    question is added, which is the actual recurrence being defended against.
+
+**Status (2026-08-01) — items 1–2 landed; item 3 landed with one deliberate
+deviation from the letter of the recommendation; item 4 NOT built.**
+
+- Item 1 shipped as `checks/shared.ts::isTestSourcePath` — the union,
+  correctly anchored. `coverage-test-selector.ts::isTestPath` and
+  `large-file-policy.ts::isTestOrSpecPath` are now one-line delegates to it
+  (both had exactly one external consumer set each — mutation/evaluator/server
+  call sites for the former, none besides `isCappableFile` for the latter —
+  so re-pointing them cost zero call-site churn). `isCappableFile`'s test
+  clause now calls `isTestSourcePath` directly (item 2), not through the
+  `isTestOrSpecPath` indirection.
+- Item 3 shipped as `isPatternDataFile` (real implementation) with `isTestFile`
+  kept as an unchanged-behavior compat alias, **not** a tree-wide rename.
+  `isTestFile` has ~100 call sites (almost all content-scan checks under
+  `checks/*.ts`); mechanically renaming all of them was out of scope for one
+  consolidation pass. More importantly: the recommendation's literal
+  definition — `isTestSourcePath(p) || isHarnessInternalDataFile(p)` — was
+  **not** implemented as written. It stayed
+  `isStrictTestFile(p) || isHarnessInternalDataFile(p)` (i.e., `isPatternDataFile`
+  is behavior-identical to the pre-consolidation `isTestFile`, modulo the
+  latent-defect-2 fix below). Reason: unlike question 1 (test discovery) or
+  question 2 (line-cap exemption), question 3 is a **security-relevant
+  "skip this file" predicate** — widening it is the dangerous direction, not
+  the safe one. Concretely, unioning would have newly exempted
+  `test/agent-driven/run-scenario.ts` (a real file, verified via `wc -l` and
+  `rg` against the tracked tree) from ~100 content-scan checks, and any future
+  top-level `test/`/`tests/`-directory source file with it. Auditing all ~100
+  callers to confirm that's safe was not attempted. Left as an explicit,
+  tracked follow-up, not folded in.
+  - Latent defect 2 (the absolute-vs-relative-path gap in
+    `isHarnessInternalDataFile`) WAS fixed — it resolves a relative input
+    against `cwd` before the package-root prefix match now. This is narrower
+    and independently safe: it only changes behavior for a caller that (a)
+    passes a relative path AND (b) that path resolves under this package's
+    own root. Both of `verify`'s and PostToolUse's live call paths already
+    pass absolute paths (checked: `discoverFiles` in
+    `commands/verify/file-discovery.ts` maps every entry through
+    `join(root, f)` before handing it to the checks), so this fix closes a
+    gap that was latent for the two paths that matter today, not a live
+    regression risk.
+  - The `isStrictTestFile` directory-anchor bug (top-level `tests/`/`test/`
+    addressed via a relative path) was **not** fixed. It has ~9 consumers,
+    all test-hygiene checks, outside the three predicates' home files; fixing
+    it changes which files those checks fire on repo-wide, which is a
+    separate, larger, not-yet-audited change. Left as a documented, open gap
+    (not pinned as "intended" in any test — a bug fixed later shouldn't have
+    to fight a regression test asserting the bug).
+- Item 4 (registry-parity predicate-agreement check) was not built. In its
+  place: `src/harness/__tests__/predicate-consolidation.test.ts` pins (a) the
+  three convention lists' union behavior directly, (b) that `isTestPath` /
+  `isTestOrSpecPath` never again drift from `isTestSourcePath` (a battery
+  parity test), and (c) the deliberate three-way split — the same detector
+  file (`checks/shared.ts` itself) is `isPatternDataFile`-true,
+  `isStrictTestFile`-false, and `isTestSourcePath`-false, all three asserted
+  side by side — so a future drive-by merge is caught by a normal test run,
+  not just by `verify`.
+- Verified: `npm run typecheck` (one unrelated pre-existing error in
+  `trajectory/helpers-commands.ts`, part of a concurrent in-flight edit —
+  zero references to any of these predicates); the three predicates' own test
+  files plus every real external consumer test file found via `rg` (mutation/
+  manifest, gate, measure, evaluate, adopt, manifest-heal; evaluator
+  coverage-edit-targets, pre-tool-test-integrity; server post-tool-flake-phase;
+  coverage-runner-failing-tests; checks test-hygiene-quality, test-portability,
+  over-mocking, procfs-probe, esm-cjs, test-hygiene-isolation, introverted-test;
+  untested-exports-stop-check; write-content-guards ×2;
+  cli-spec-surface; all five generic-checks-extended files) — all pass
+  unchanged.
 
 ## 12. Non-goals
 

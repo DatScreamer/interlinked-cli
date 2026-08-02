@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import { encodeFrame, type RpcMessage, splitFrames } from "./daemon-protocol.js";
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
-import { type SessionDaemonHandle, startSessionDaemon } from "./session-daemon.js";
+import {
+	claimSessionPid,
+	DaemonOwnershipConflictError,
+	type SessionDaemonHandle,
+	startSessionDaemon,
+} from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
 
@@ -225,13 +230,79 @@ describe("startSessionDaemon", () => {
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
 
-		await expect(
-			startSessionDaemon({
+		let caught: unknown;
+		try {
+			await startSessionDaemon({
 				paths,
 				session_id: "owned",
 				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			});
+		} catch (err) {
+			caught = err;
+		}
+		// Typed so server.ts can route it through the anti-stomp loser
+		// contract instead of the generic survive-on-error crash handler.
+		expect(caught).toBeInstanceOf(DaemonOwnershipConflictError);
+		expect((caught as DaemonOwnershipConflictError).ownerPid).toBe(1);
+		expect((caught as Error).message).toContain("already running");
+		// A losing claim must never touch the socket path — the pre-seeded
+		// placeholder content proves nothing rebound over it.
+		expect(readFileSync(paths.socket, "utf-8")).toBe("");
+	});
+
+	it("releases its pid claim if the socket bind subsequently fails", async () => {
+		// Force a genuine bind failure (ENOTDIR) unrelated to file existence:
+		// the socket's parent path component is a plain FILE, not a
+		// directory. `paths.pid` lives in a normal directory so the claim
+		// still succeeds; only the LATER bind fails, exercising the release
+		// path without the pre-bind `rmSync(paths.socket, …)` cleanup (which
+		// only ever removes a STALE artifact — never a live rival's socket,
+		// since a live rival would already have failed the pid claim above)
+		// masking the scenario.
+		const notADir = join(tmp, "not-a-directory");
+		writeFileSync(notADir, "");
+		const paths = {
+			socket: join(notADir, "harness-bindfail.sock"),
+			pid: join(tmp, "harness-bindfail.pid"),
+			log: join(tmp, "logs", "daemon-bindfail.log"),
+		};
+		await expect(
+			startSessionDaemon({
+				paths,
+				session_id: "bindfail",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
 			}),
-		).rejects.toThrow("already running");
+		).rejects.toThrow();
+		expect(existsSync(paths.pid)).toBe(false);
+	});
+
+	it("claimSessionPid: two different (both-alive) pids racing for the same path — exactly one wins, regardless of call order", () => {
+		const pidPath = join(tmp, "claim-race.pid");
+
+		const a = claimSessionPid(pidPath, process.pid);
+		const b = claimSessionPid(pidPath, process.ppid);
+		expect([a.claimed, b.claimed].filter(Boolean)).toHaveLength(1);
+		expect(a.claimed).toBe(true);
+		expect(b).toEqual({ claimed: false, ownerPid: process.pid });
+
+		rmSync(pidPath, { force: true });
+
+		// Reversed order: confirms the winner is whoever claims FIRST, not a
+		// fixed argument-position bias.
+		const c = claimSessionPid(pidPath, process.ppid);
+		const d = claimSessionPid(pidPath, process.pid);
+		expect([c.claimed, d.claimed].filter(Boolean)).toHaveLength(1);
+		expect(c.claimed).toBe(true);
+		expect(d).toEqual({ claimed: false, ownerPid: process.ppid });
+	});
+
+	it("claimSessionPid: a dead process's stale claim is stolen, not treated as a conflict", () => {
+		const pidPath = join(tmp, "stale-claim.pid");
+		writeFileSync(pidPath, "2147480000"); // effectively never live on a test host
+
+		const claim = claimSessionPid(pidPath, process.pid);
+		expect(claim).toEqual({ claimed: true });
+		expect(readFileSync(pidPath, "utf-8")).toBe(String(process.pid));
 	});
 
 	it("stop() removes the pid and socket files", async () => {

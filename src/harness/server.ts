@@ -54,6 +54,7 @@ import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
 import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity-writer.js";
+import { type AntiStompDeps, loseAntiStompRace } from "./server/anti-stomp.js";
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import { installCrashResilience } from "./server/crash-resilience.js";
@@ -75,7 +76,7 @@ import { createStatusWriters } from "./server/status-writers.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
 import { createEventLoop } from "./server-event-loop.js";
 import { createSocketLifecycle } from "./server-socket-lifecycle.js";
-import { startSessionDaemon } from "./session-daemon.js";
+import { DaemonOwnershipConflictError, startSessionDaemon } from "./session-daemon.js";
 import { daemonPathsFor, liveForeignDaemonPid } from "./session-paths.js";
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
@@ -567,24 +568,25 @@ const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, 
 // Start Server
 // ===========================================
 
-// Refuse to start if a live daemon already owns this project's raw socket.
-// This is the anti-stomp guard: `cleanupSocket()` unconditionally unlinks
-// `harness.sock`, so a second `node server.js` for the same project — or a
-// stray `import('dist/harness/server.js')`, which runs this whole startup as
-// an import side effect — used to silently delete the live daemon's socket
-// file out from under it, leaving every hook to fall through to cold
-// fallback (an unguarded agent). The framed path already does this PID check
-// (`session-daemon.ts`); the raw path lacked it. A stale pid (dead process)
-// returns null (crash-restart proceeds); a live pid with no socket file also proceeds.
+// Shared anti-stomp loser contract (server/anti-stomp.ts): log, record the
+// ledger row, exit — deliberately NOT the full shutdown(), since nothing
+// bound in THIS process yet and shutdown()'s cleanup unconditionally unlinks
+// the raw socket a WINNER may already be live on.
+const antiStompDeps: AntiStompDeps = {
+	logAlways,
+	recordExit: () =>
+		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" }),
+	exit: () => process.exit(0),
+};
+
+// Refuse to start if a live daemon already owns this project's raw socket —
+// `cleanupSocket()` unconditionally unlinks `harness.sock`, so a second
+// `node server.js` for the same project used to silently delete the live
+// daemon's socket out from under it. A stale pid (dead process) returns
+// null (crash-restart proceeds); a live pid with no socket file also proceeds.
 const __foreignDaemonPid = liveForeignDaemonPid(PID_PATH);
 if (__foreignDaemonPid !== null && existsSync(SOCKET_PATH)) {
-	logAlways(
-		`[interlinked] A harness daemon (PID ${__foreignDaemonPid}) is already ` +
-			`serving ${CWD}. Refusing to start a second one (would stomp its ` +
-			`socket). Use \`interlinked harness restart\` to replace it.`,
-	);
-	recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" });
-	process.exit(0);
+	loseAntiStompRace({ ownerPid: __foreignDaemonPid, detail: "the raw socket", cwd: CWD, deps: antiStompDeps });
 }
 
 // Clean up stale raw socket from previous run. Framed startup performs its own
@@ -753,27 +755,38 @@ process.on("SIGHUP", () => {
 const tsgoRunner = createTsgoRunner();
 
 if (RUN_FRAMED_SOCKET) {
-	setFramedDaemon(
-		await startSessionDaemon({
-			paths: FRAMED_PATHS,
-			session_id: FRAMED_SESSION_ID,
-			idle_shutdown_ms: IDLE_TIMEOUT_MS,
-			state: {
-				tsgo: tsgoRunner,
-				getEvaluatorContext: () => ({
-					rules,
-					session: sessions.get(FRAMED_SESSION_ID),
-					reservations,
-					cohort,
-					graph: getGraphForFile(CWD),
-					sessions,
-					routeMap,
-					errorHistory,
-				}),
-				evaluateHook: evaluateUnifiedViaRuntime,
-			},
-		}),
-	);
+	try {
+		setFramedDaemon(
+			await startSessionDaemon({
+				paths: FRAMED_PATHS,
+				session_id: FRAMED_SESSION_ID,
+				idle_shutdown_ms: IDLE_TIMEOUT_MS,
+				state: {
+					tsgo: tsgoRunner,
+					getEvaluatorContext: () => ({
+						rules,
+						session: sessions.get(FRAMED_SESSION_ID),
+						reservations,
+						cohort,
+						graph: getGraphForFile(CWD),
+						sessions,
+						routeMap,
+						errorHistory,
+					}),
+					evaluateHook: evaluateUnifiedViaRuntime,
+				},
+			}),
+		);
+	} catch (err) {
+		// Sibling daemon won the session's ownership race — see server/anti-stomp.ts.
+		if (!(err instanceof DaemonOwnershipConflictError)) throw err;
+		loseAntiStompRace({
+			ownerPid: err.ownerPid,
+			detail: `the framed session "${FRAMED_SESSION_ID}"`,
+			cwd: CWD,
+			deps: antiStompDeps,
+		});
+	}
 }
 
 if (RUN_RAW_SOCKET) {

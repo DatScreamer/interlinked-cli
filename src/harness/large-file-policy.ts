@@ -20,7 +20,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-import { isGeneratedFile } from "./checks/shared.js";
+import { isGeneratedFile, isTestSourcePath } from "./checks/shared.js";
 import { maxLinesOverride } from "./metric-caps.js";
 
 /**
@@ -234,22 +234,20 @@ export { countCodeLines } from "./code-line-count.js";
 /**
  * Test/spec file detection — purely path/filename based.
  *
- * Deliberately NOT `checks/shared.ts::isTestFile`: that function also
- * treats interlinked-cli's own `harness/checks/`, `harness/check-registry/`
- * etc. as "test files" (a content-scan FP exemption for detector files
- * that hold scary patterns as DATA). A line count is a line count
- * regardless — `check-registry/entries-warnings.ts` being 1763 lines is a
- * real fact — so the cap must use a narrow, exemption-free predicate.
+ * THIN RE-EXPORT of `checks/shared.ts::isTestSourcePath` (plan
+ * `docs/plans/16-monotonic-quality-enforcement.md` §11.3, Audit B) — kept as
+ * a separately named export for this module's own callers (its
+ * `isCappableFile` test clause below, and its pinned test file) rather than
+ * removing it outright. Deliberately NOT `checks/shared.ts::isTestFile` (aka
+ * `isPatternDataFile`): that function ALSO treats interlinked-cli's own
+ * `harness/checks/`, `harness/check-registry/` etc. as "test files" (a
+ * content-scan FP exemption for detector files that hold scary patterns as
+ * DATA). A line count is a line count regardless —
+ * `check-registry/entries-warnings.ts` being 1763 lines is a real fact — so
+ * the cap must use the narrow, exemption-free question-1 predicate.
  */
 export function isTestOrSpecPath(filePath: string): boolean {
-	const norm = filePath.replace(/\\/g, "/");
-	if (/(?:^|\/)(?:__tests__|tests?)\//.test(norm)) return true;
-	const name = norm.split("/").pop() || "";
-	if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name)) return true;
-	if (/_test\.(?:py|go)$/.test(name)) return true;
-	if (/Tests?\.(?:java|swift)$/.test(name)) return true;
-	if (name.startsWith("test_") && /\.(?:py|swift)$/.test(name)) return true;
-	return false;
+	return isTestSourcePath(filePath);
 }
 
 /**
@@ -358,7 +356,7 @@ export function isCappableFile(file: { filePath: string; content: string; root?:
 	if (isRepoScratchPath(norm, file.root)) return false;
 	if (FILE_SIZE_SKIP_EXT_RE.test(norm)) return false;
 	if (GENERATED_PATH_RE.test(norm)) return false;
-	if (isTestOrSpecPath(norm)) return false;
+	if (isTestSourcePath(norm)) return false;
 	if (isGeneratedFile(file.content)) return false;
 	if (hasCodegenDataMarker(file.content)) return false;
 	return true;

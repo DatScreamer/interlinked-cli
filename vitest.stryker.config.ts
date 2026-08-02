@@ -12,6 +12,33 @@
 // mis-scoped.
 //
 // The fallback keeps a standalone `stryker run` working without the env var.
+//
+// CORRECTNESS SETTINGS BELOW (env/setupFiles/timeouts) were missing until this
+// widened import-graph test scoping (test-scope.ts) started forwarding real,
+// previously-never-scoped test files instead of just one hand-picked
+// companion. Measured live 2026-08-01: a graph-selected 60-test scope for
+// `session-state.ts` failed Stryker's dry run with "There were failed tests
+// in the initial test run" — several of the selected tests (evaluator/
+// rules-loader tests among them) assume the isolation `vitest.config.ts` sets
+// up globally (`INTERLINKED_SKIP_DISTILLED_RULES=1`, notably) and read the
+// wrong ambient state without it. A one-file scope never happened to include
+// one of those, so the gap was invisible until the scope widened — this file
+// mirrors the CORRECTNESS-relevant settings from `vitest.config.ts` (not its
+// coverage instrumentation, which Stryker has no use for and which only costs
+// time here).
+//
+// DELIBERATELY NOT copying `retry: 1`: Stryker's own dry run under
+// `coverageAnalysis: perTest` (stryker.conf.json) needs a stable 1:1
+// test-to-coverage mapping to build its per-mutant test map. A retried test —
+// even one that passes on the retry, which plain `vitest run` reports as a
+// clean pass — still recorded an initial FAILED attempt, and Stryker's dry-run
+// validator appears to key off of "did any attempt fail" rather than the
+// vitest-level final verdict (measured live: the full 60-file/1804-test scope
+// passes 100% under vitest's own Node API directly, but the identical scope
+// fails Stryker's dry run with the generic ConfigError). Importing `retry`
+// here would only reintroduce that failure mode at a wider scope than the
+// original bug — the mutation dry run needs zero-tolerance for a first-attempt
+// failure, not the CI-style flake tolerance `vitest.config.ts` opts into.
 import { defineConfig } from "vitest/config";
 
 const DEFAULT_SCOPE = ["src/harness/mutation/*.test.ts"];
@@ -31,5 +58,11 @@ function scopeFromEnv(): string[] {
 export default defineConfig({
 	test: {
 		include: scopeFromEnv(),
+		setupFiles: ["./src/test-setup/property-budget.ts"],
+		testTimeout: 30_000,
+		hookTimeout: 30_000,
+		env: {
+			INTERLINKED_SKIP_DISTILLED_RULES: "1",
+		},
 	},
 });

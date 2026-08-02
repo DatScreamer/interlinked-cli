@@ -33,6 +33,7 @@
 
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { isTestSourcePath } from "./checks/shared.js";
 import type { DependencyView } from "./dependency-view.js";
 
 /** A test file materialized in the current edit's overlay (a co-created test
@@ -72,20 +73,31 @@ export interface SelectAffectedTestsInput {
 const MAX_TRANSITIVE_HOPS = 1000;
 
 /**
- * Is `relPath` a test/spec file? Matches the cross-language conventions the task
- * pins explicitly: `*.test.*` / `*.spec.*` (JS/TS and friends), `test_*.py`,
- * `*_test.py`, `*_test.go`, and anything under a `__tests__/` directory. Purely
- * path-based — the file need not exist on disk.
+ * Is `relPath` a test/spec file? THIN RE-EXPORT of
+ * `checks/shared.ts::isTestSourcePath` (plan
+ * `docs/plans/16-monotonic-quality-enforcement.md` §11.3, Audit B) — kept as
+ * a separately named export for this module's own callers (the mutation
+ * gate + manifest choke point, and this module's own BFS below) and its
+ * pinned test file, rather than removing it outright. Matches the
+ * cross-language conventions the task pins explicitly: `*.test.*` /
+ * `*.spec.*` (any extension, JS/TS and friends), `test_*.py`, `*_test.py`,
+ * `*_test.go`, `*Test(s).java/.swift`, and anything under a
+ * `__tests__/`/`tests/`/`test/` directory. Purely path-based — the file
+ * need not exist on disk.
+ *
+ * Widened vs the pre-consolidation implementation to also match a bare
+ * `tests/`/`test/` directory segment (previously only `__tests__/`) — the
+ * union of all three convention lists that used to answer "is this a test"
+ * independently. Safe direction for an oracle: it only ever EXCLUDES more
+ * files from mutation targeting / manifest tracking, never pulls in product
+ * code. Concretely affects `test/agent-driven/run-scenario.ts` in this repo
+ * (a helper script living under `test/`, not itself an oracle) — it now
+ * reads as a test path here, matching what `isTestOrSpecPath` /
+ * `isStrictTestFile` already concluded for it (measured divergence in the
+ * plan doc).
  */
 export function isTestPath(relPath: string): boolean {
-	const norm = relPath.replace(/\\/g, "/");
-	if (/(?:^|\/)__tests__\//.test(norm)) return true;
-	const name = norm.split("/").pop() ?? "";
-	if (/\.(?:test|spec)\.[^/]+$/.test(name)) return true;
-	if (name.startsWith("test_") && name.endsWith(".py")) return true;
-	if (/_test\.py$/.test(name)) return true;
-	if (/_test\.go$/.test(name)) return true;
-	return false;
+	return isTestSourcePath(relPath);
 }
 
 /** Resolve a graph path (absolute or relative) to a repo-relative POSIX path, or

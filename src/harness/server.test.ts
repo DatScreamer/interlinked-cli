@@ -319,12 +319,21 @@ const sessionDaemonHandle = {
 	stop: vi.fn(async () => {}),
 	rpcInflight: vi.fn(() => 0),
 };
-vi.mock("./session-daemon.js", () => ({
-	startSessionDaemon: vi.fn(async (opts: SessionDaemonOptsCapture) => {
-		cap.sessionDaemonOpts = opts;
-		return sessionDaemonHandle;
-	}),
-}));
+vi.mock("./session-daemon.js", async () => {
+	// Re-export the REAL `DaemonOwnershipConflictError` alongside the mocked
+	// `startSessionDaemon` so a test can construct a genuine instance and
+	// server.ts's real `instanceof` check in its catch handler narrows on it
+	// (a fake/duck-typed class here would silently make that branch dead).
+	const actual =
+		await vi.importActual<typeof import("./session-daemon.js")>("./session-daemon.js");
+	return {
+		DaemonOwnershipConflictError: actual.DaemonOwnershipConflictError,
+		startSessionDaemon: vi.fn(async (opts: SessionDaemonOptsCapture) => {
+			cap.sessionDaemonOpts = opts;
+			return sessionDaemonHandle;
+		}),
+	};
+});
 
 // ---------------------------------------------------------------------------
 // session-paths — deterministic framed paths.
@@ -1170,6 +1179,81 @@ describe("harness server.ts — early shutdown fired DURING startup (pre-readine
 		expect(() => vi.advanceTimersByTime(1500)).toThrow(/process\.exit\(0\)/);
 		expect(processExitSpy).toHaveBeenCalledWith(0);
 		errSpy.mockRestore();
+	});
+});
+
+// ===========================================================================
+// Anti-stomp loser paths (regression: orphaned daemons from an unhandled
+// framed-ownership conflict — see server/anti-stomp.ts and session-daemon.ts).
+// Both losing paths must record the `anti-stomp` ledger row (via the REAL,
+// unmocked `daemon-ledger.js` writing through the globally-mocked
+// `node:fs.appendFileSync`) and call `process.exit(0)` — never silently stay
+// resident.
+// ===========================================================================
+describe("harness server.ts — anti-stomp loser paths", () => {
+	// Defensive, LOCAL to this block: the outer `beforeEach`'s
+	// `vi.resetModules()` does not clear every mock's call history (only a
+	// short explicit list — see its own comment), so `fs.appendFileSync`'s
+	// call log otherwise accumulates across every test in this large file.
+	// Each of these tests inspects "the ledger row THIS test just wrote", so
+	// each must start from a clean slate regardless of run order.
+	beforeEach(async () => {
+		const fs = await import("node:fs");
+		vi.mocked(fs.appendFileSync).mockClear();
+		// `node:fs`'s mock instance is NOT recreated per `resetModules()`
+		// generation the way local project-relative mocks are, so an
+		// EARLIER test's `existsSync` override (e.g. the reservation-sink
+		// test that sets it to `false`) otherwise leaks in — which silently
+		// defeats the raw-legacy anti-stomp condition's `existsSync(SOCKET_PATH)`
+		// half, regardless of `liveForeignDaemonPid`'s return value.
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
+	});
+
+	async function ledgerRows(): Promise<string[]> {
+		const fs = await import("node:fs");
+		return vi
+			.mocked(fs.appendFileSync)
+			.mock.calls.map((c) => String(c[1]))
+			.filter((line) => line.includes('"event":"exit"'));
+	}
+
+	it("raw-legacy path: a live foreign PID on harness.pid exits and records anti-stomp", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(0);
+		const rows = await ledgerRows();
+		// The ledger row records THIS (losing) process's own pid, not the
+		// winner's (13579) — matching the "start"/"handover" rows' convention.
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"') && r.includes(`"pid":${process.pid}`))).toBe(
+			true,
+		);
+	});
+
+	it("framed path: DaemonOwnershipConflictError exits and records anti-stomp (does not silently stay resident)", async () => {
+		const sd = await import("./session-daemon.js");
+		vi.mocked(sd.startSessionDaemon).mockRejectedValueOnce(
+			new sd.DaemonOwnershipConflictError("default", 24680),
+		);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(0);
+		const rows = await ledgerRows();
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"') && r.includes(`"pid":${process.pid}`))).toBe(
+			true,
+		);
+	});
+
+	it("framed path: a genuine (non-ownership) startup failure is NOT swallowed as anti-stomp", async () => {
+		const sd = await import("./session-daemon.js");
+		vi.mocked(sd.startSessionDaemon).mockRejectedValueOnce(new Error("disk full"));
+
+		await expect(loadServer()).rejects.toThrow("disk full");
+		expect(processExitSpy).not.toHaveBeenCalled();
+		expect((await ledgerRows()).some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
 	});
 });
 

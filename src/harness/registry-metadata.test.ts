@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import type { Ecosystem } from "./package-install-parser.js";
 import {
+	fetchNpmPublishDates,
 	fetchRegistryMetadata,
 	fetchVersionMetadata,
 	queryOsvAdvisories,
@@ -30,6 +31,10 @@ function urlOf(f: FetchImpl): string {
 	return nonNull((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0])[0] as string;
 }
 
+function initOf(f: FetchImpl): RequestInit {
+	return nonNull((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0])[1] as RequestInit;
+}
+
 describe("fetchRegistryMetadata — per ecosystem", () => {
 	it("npm: reads version + license from the /latest dist-tag endpoint", async () => {
 		const f = fakeFetch({ version: "4.17.21", license: "MIT" });
@@ -42,6 +47,17 @@ describe("fetchRegistryMetadata — per ecosystem", () => {
 		const f = fakeFetch({ version: "1.0.0", license: "MIT" });
 		await fetchRegistryMetadata("npm", "@types/node", { fetchImpl: f });
 		expect(urlOf(f)).toBe("https://registry.npmjs.org/@types%2Fnode/latest");
+	});
+
+	// Proves the ternary actually GATES on startsWith("@") rather than always
+	// escaping — a non-scoped name's slash must reach the URL untouched. (npm
+	// itself never issues such a name, but the function doesn't validate input,
+	// and this is the only way to distinguish "always escape" from "escape only
+	// when scoped".)
+	it("npm: a non-scoped name's slash is left unescaped (the @ guard actually gates the replace)", async () => {
+		const f = fakeFetch({ version: "1.0.0", license: "MIT" });
+		await fetchRegistryMetadata("npm", "not-scoped/weird", { fetchImpl: f });
+		expect(urlOf(f)).toBe("https://registry.npmjs.org/not-scoped/weird/latest");
 	});
 
 	it("pypi: prefers PEP 639 license_expression over legacy license prose", async () => {
@@ -159,6 +175,16 @@ describe("fetchRegistryMetadata — per ecosystem", () => {
 		const meta = await fetchRegistryMetadata("rubygems", "blank-license-gem", { fetchImpl: f });
 		expect(meta).toEqual({ latestVersion: "2.0.0", license: undefined });
 	});
+
+	// Distinct from the all-blank case above: a non-string entry MIXED with real
+	// license strings must be filtered out by the typeof guard, not just the
+	// blank-string guard — a malformed API response could plausibly contain a
+	// stray non-string element in an otherwise-valid array.
+	it("rubygems: drops a non-string entry mixed into an otherwise-valid licenses array", async () => {
+		const f = fakeFetch({ version: "1.0.0", licenses: ["MIT", 42, "Ruby"] });
+		const meta = await fetchRegistryMetadata("rubygems", "mixed-license-gem", { fetchImpl: f });
+		expect(meta).toEqual({ latestVersion: "1.0.0", license: "MIT OR Ruby" });
+	});
 });
 
 describe("fetchRegistryMetadata — default fetch implementation", () => {
@@ -178,9 +204,15 @@ describe("fetchRegistryMetadata — default fetch implementation", () => {
 });
 
 describe("fetchRegistryMetadata — failure shapes (all fail open to null)", () => {
+	// Body carries a real version+license payload — an empty `{}` body would
+	// collapse into the exact same "empty json → null" path the missing-shape
+	// test below already covers, regardless of whether the `!res.ok` check
+	// fires, so it couldn't tell a broken ok-check from a working one. A
+	// populated body means only the ok-check stands between this and a
+	// non-null result.
 	it("HTTP error status", async () => {
 		const meta = await fetchRegistryMetadata("npm", "ghost-pkg", {
-			fetchImpl: fakeFetch({}, { ok: false }),
+			fetchImpl: fakeFetch({ version: "1.0.0", license: "MIT" }, { ok: false }),
 		});
 		expect(meta).toBeNull();
 	});
@@ -192,6 +224,17 @@ describe("fetchRegistryMetadata — failure shapes (all fail open to null)", () 
 
 	it("response missing the expected shape", async () => {
 		const meta = await fetchRegistryMetadata("pypi", "x", { fetchImpl: fakeFetch("not json obj") });
+		expect(meta).toBeNull();
+	});
+
+	// Direct single-indirection ecosystem (npm reads json.version straight off
+	// the rec() result, unlike pypi's nested json.info) — proves rec()'s own
+	// typeof-object guard, not just a downstream nested-field emptiness check,
+	// is what turns a bare truthy non-object body into null.
+	it("npm: a bare non-object truthy body (e.g. a JSON string, not an object) fails open to null", async () => {
+		const meta = await fetchRegistryMetadata("npm", "weird", {
+			fetchImpl: fakeFetch("just-a-string-not-an-object"),
+		});
 		expect(meta).toBeNull();
 	});
 
@@ -233,6 +276,7 @@ describe("queryOsvAdvisories", () => {
 			vulns: [
 				{ id: "RUSTSEC-2023-0071", summary: "timing side-channel" },
 				{ id: "GHSA-xxxx", summary: "" },
+				{ id: "", summary: "blank id must be dropped too, not just missing id" },
 				{ notAnId: true },
 			],
 		});
@@ -241,6 +285,7 @@ describe("queryOsvAdvisories", () => {
 			{ id: "RUSTSEC-2023-0071", summary: "timing side-channel" },
 			{ id: "GHSA-xxxx", summary: undefined },
 		]);
+		expect(advisories).toHaveLength(2);
 		const call = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(nonNull(call)[0]).toBe("https://api.osv.dev/v1/query");
 		const body = JSON.parse((nonNull(call)[1] as { body: string }).body);
@@ -250,12 +295,32 @@ describe("queryOsvAdvisories", () => {
 		});
 	});
 
+	// Exercises fetchJson's shared header/method plumbing through the one call
+	// site that actually supplies both a method and its own headers — proves
+	// the POST verb, OSV's Content-Type, AND the module-wide User-Agent all
+	// survive the merge (`{ "User-Agent": USER_AGENT, ...(init?.headers ?? {}) }`)
+	// rather than any one of them silently dropping out.
+	it("POSTs with the OSV Content-Type header merged alongside the module's own User-Agent", async () => {
+		const f = fakeFetch({ vulns: [] });
+		await queryOsvAdvisories("npm", "lodash", "4.17.21", { fetchImpl: f });
+		const init = initOf(f);
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			"Content-Type": "application/json",
+			"User-Agent": "interlinked-cli (allowlist admission screen)",
+		});
+	});
+
 	it("maps the remaining ecosystems to OSV spellings", async () => {
 		for (const [eco, spelled] of [
 			["npm", "npm"],
 			["pypi", "PyPI"],
 			["rubygems", "RubyGems"],
 			["go", "Go"],
+			["composer", "Packagist"],
+			["maven", "Maven"],
+			["gradle", "Maven"],
+			["nuget", "NuGet"],
 		] as const) {
 			const f = fakeFetch({ vulns: [] });
 			await queryOsvAdvisories(eco, "pkg", "1.0.0", { fetchImpl: f });
@@ -307,6 +372,12 @@ describe("fetchVersionMetadata — pins the version-specific endpoint per ecosys
 		expect(meta).toBeNull();
 	});
 
+	it("npm: a non-scoped name's slash is left unescaped (the @ guard actually gates the replace)", async () => {
+		const f = fakeFetch({ version: "1.0.0", license: "MIT" });
+		await fetchVersionMetadata("npm", "not-scoped/weird", "1.0.0", { fetchImpl: f });
+		expect(urlOf(f)).toBe("https://registry.npmjs.org/not-scoped/weird/1.0.0");
+	});
+
 	it("pypi: hits the /{name}/{version}/json endpoint and prefers license_expression", async () => {
 		const f = fakeFetch({
 			info: { version: "2.31.0", license: "legacy prose", license_expression: "Apache-2.0" },
@@ -356,6 +427,18 @@ describe("fetchVersionMetadata — pins the version-specific endpoint per ecosys
 		expect(meta).toBeNull();
 	});
 
+	// Proves the `?.` in `str(match.license)?.replace(...)` is load-bearing: a
+	// matched version entry with no `license` field at all must yield an
+	// undefined license, not throw on calling .replace on undefined.
+	it("cargo: a matched version with no license field yields undefined instead of throwing", async () => {
+		const f = fakeFetch({
+			crate: { max_stable_version: "1.0.0" },
+			versions: [{ num: "1.0.0" }], // no license key
+		});
+		const meta = await fetchVersionMetadata("cargo", "serde", "1.0.0", { fetchImpl: f });
+		expect(meta).toEqual({ latestVersion: "1.0.0", license: undefined });
+	});
+
 	it("rubygems: hits the v2 versioned endpoint and ORs the licenses array", async () => {
 		const f = fakeFetch({ licenses: ["MIT", "Ruby"] });
 		const meta = await fetchVersionMetadata("rubygems", "rails", "7.0.0", { fetchImpl: f });
@@ -378,6 +461,22 @@ describe("fetchVersionMetadata — pins the version-specific endpoint per ecosys
 			fetchImpl: f,
 		});
 		expect(meta).toEqual({ latestVersion: "3.1.0", license: undefined });
+	});
+
+	it("rubygems: drops a non-string entry mixed into an otherwise-valid licenses array", async () => {
+		const f = fakeFetch({ version: "ignored", licenses: ["MIT", 42, "Ruby"] });
+		const meta = await fetchVersionMetadata("rubygems", "mixed-license-gem", "1.0.0", {
+			fetchImpl: f,
+		});
+		expect(meta).toEqual({ latestVersion: "1.0.0", license: "MIT OR Ruby" });
+	});
+
+	it("rubygems: drops a blank-after-trim string mixed into an otherwise-valid licenses array", async () => {
+		const f = fakeFetch({ version: "ignored", licenses: ["MIT", "   ", "Ruby"] });
+		const meta = await fetchVersionMetadata("rubygems", "blank-mixed-license-gem", "1.0.0", {
+			fetchImpl: f,
+		});
+		expect(meta).toEqual({ latestVersion: "1.0.0", license: "MIT OR Ruby" });
 	});
 
 	it("rubygems: a non-array licenses field takes the [] fallback branch", async () => {
@@ -404,5 +503,103 @@ describe("fetchVersionMetadata — pins the version-specific endpoint per ecosys
 			}),
 		).toBeNull();
 		expect(unknownFetch).not.toHaveBeenCalled();
+	});
+});
+
+describe("fetchNpmPublishDates", () => {
+	it("returns the full version→date time map verbatim, including the created/modified bookkeeping keys", async () => {
+		// The doc comment says the CALLER must ignore created/modified — the
+		// function itself does not filter them. Pin that the whole map comes back.
+		const f = fakeFetch({
+			time: {
+				created: "2010-01-01T00:00:00.000Z",
+				modified: "2024-01-01T00:00:00.000Z",
+				"1.0.0": "2010-01-02T00:00:00.000Z",
+				"2.0.0": "2020-06-15T00:00:00.000Z",
+			},
+		});
+		const dates = await fetchNpmPublishDates("lodash", { fetchImpl: f });
+		expect(dates).toEqual({
+			created: "2010-01-01T00:00:00.000Z",
+			modified: "2024-01-01T00:00:00.000Z",
+			"1.0.0": "2010-01-02T00:00:00.000Z",
+			"2.0.0": "2020-06-15T00:00:00.000Z",
+		});
+		expect(Object.keys(dates ?? {})).toHaveLength(4);
+		expect(urlOf(f)).toBe("https://registry.npmjs.org/lodash");
+	});
+
+	it("escapes a scoped package name's inner slash (no /latest or version suffix, unlike the sibling fetchers)", async () => {
+		const f = fakeFetch({ time: { "1.0.0": "2020-01-01T00:00:00.000Z" } });
+		await fetchNpmPublishDates("@types/node", { fetchImpl: f });
+		expect(urlOf(f)).toBe("https://registry.npmjs.org/@types%2Fnode");
+	});
+
+	it("a non-scoped name's slash is left unescaped (the @ guard actually gates the replace)", async () => {
+		const f = fakeFetch({ time: { "1.0.0": "2020-01-01T00:00:00.000Z" } });
+		await fetchNpmPublishDates("not-scoped/weird", { fetchImpl: f });
+		expect(urlOf(f)).toBe("https://registry.npmjs.org/not-scoped/weird");
+	});
+
+	it("drops non-string / blank entries from a malformed time map but keeps the valid ones", async () => {
+		const f = fakeFetch({
+			time: {
+				"1.0.0": "2020-01-01T00:00:00.000Z",
+				"2.0.0": 12345, // malformed — not a string
+				"3.0.0": null,
+				"4.0.0": "   ", // blank after trim — str() rejects it too
+				"5.0.0": "2021-03-04T00:00:00.000Z",
+			},
+		});
+		const dates = await fetchNpmPublishDates("weird-pkg", { fetchImpl: f });
+		expect(dates).toEqual({
+			"1.0.0": "2020-01-01T00:00:00.000Z",
+			"5.0.0": "2021-03-04T00:00:00.000Z",
+		});
+		expect(Object.keys(dates ?? {})).toHaveLength(2);
+	});
+
+	it("a packument with no `time` field fails open to null", async () => {
+		const dates = await fetchNpmPublishDates("no-time-pkg", {
+			fetchImpl: fakeFetch({ name: "no-time-pkg", versions: {} }),
+		});
+		expect(dates).toBeNull();
+	});
+
+	it("an empty `time` object also fails open to null (not an empty {} success)", async () => {
+		const dates = await fetchNpmPublishDates("empty-time-pkg", {
+			fetchImpl: fakeFetch({ time: {} }),
+		});
+		expect(dates).toBeNull();
+	});
+
+	// Body carries a REAL time map — an empty `{}` failure body would
+	// collapse into the exact same "no `time` field" path exercised above,
+	// regardless of whether the `!res.ok` check fires, so it couldn't tell a
+	// broken ok-check from a working one (this is the test the audit found
+	// could not fail). A populated body means only the ok-check stands
+	// between this and a non-null result.
+	it("HTTP error status fails open to null", async () => {
+		const dates = await fetchNpmPublishDates("ghost-pkg", {
+			fetchImpl: fakeFetch({ time: { "1.0.0": "2020-01-01T00:00:00.000Z" } }, { ok: false }),
+		});
+		expect(dates).toBeNull();
+	});
+
+	it("a network throw fails open to null", async () => {
+		const dates = await fetchNpmPublishDates("lodash", { fetchImpl: throwingFetch() });
+		expect(dates).toBeNull();
+	});
+
+	it("uses globalThis.fetch and the default {} opts when none is passed at all", async () => {
+		const stub = fakeFetch({ time: { "1.0.0": "2020-01-01T00:00:00.000Z" } });
+		vi.stubGlobal("fetch", stub);
+		try {
+			const dates = await fetchNpmPublishDates("lodash");
+			expect(dates).toEqual({ "1.0.0": "2020-01-01T00:00:00.000Z" });
+			expect(urlOf(stub)).toBe("https://registry.npmjs.org/lodash");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

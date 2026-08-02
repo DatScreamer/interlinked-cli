@@ -683,3 +683,394 @@ agents per file.
   figure came from the sweep's `not measurable` count, which we now know was
   substantially the degraded-runner `no_tests` problem (see the bullet above),
   not genuinely missing tests. Re-derive before citing it.
+
+## 10. Tree-wide sweep readiness — audit (2026-07-31)
+
+Assessment only — no sweep driver was built in this pass. Every claim below is
+either a source citation or a measurement taken from the LIVE manifest / an
+existing production artifact; nothing was extrapolated from a fresh run (the
+machine hit its process ceiling earlier the same day, so no large or parallel
+runs were launched to "test scale"). Live re-check of the campaign's own
+numbers first, since a verified figure beats a repeated one: the manifest right
+now (`.interlinked/mutation-manifest.json`, generation 744) holds **717 files,
+101,342 mutants, 25,112 survivors** — slightly ahead of the 692/101,232/25,044
+figures this section was asked to assess against, because the campaign (§6a)
+has kept moving it since that snapshot was taken. The concentration claim was
+independently re-derived against the live manifest and holds: **665 files carry
+≥1 survivor, the worst 20 hold 14.8% of all survivors** (vs. the stated 15%),
+and the size buckets match closely (**46** files at 100+, **117** at 50–99,
+**186** at 25–49 survivors, vs. the stated 46/115/187). The conclusion —
+hundreds of units, not a dozen — is correct and gets more true, not less, as
+the campaign progresses: it is retiring survivors fastest in the worst files,
+which mechanically flattens the tail further.
+
+### 10.1 Verdict
+
+**Not ready as productized infrastructure; already proven once as a manual,
+ungoverned process.** The current 717-file baseline exists *because* a sweep
+was already run — but through `scratch/sweep-mutation.mts`, a gitignored,
+untyped, untested, non-`src/` script that duplicates logic the productized
+`measure.ts` already has correctly and more safely. Most of the hard,
+correctness-sensitive work (overlay construction, mutant identity, manifest
+folding, dedup) is already solved and lives in tested `src/` modules. What is
+missing is small and specific: a file-list-level orchestrator, a
+concurrency-safe manifest writer, and promoting the existing ad hoc script's
+logic into governed code. None of it requires new design — see §10.7.
+
+### 10.2 Q1 — Can the existing sharding plan and execute a multi-hundred-file sweep?
+
+**No. It is built for exactly one file at a time, and it says so in its own
+docstring.** `shard-plan.ts`'s module comment states the shard unit is "a line
+range, not a file, because a model edits one file at a time" — `planShards
+(totalLines, shardCount)` takes a single file's line count and tiles it into N
+contiguous ranges; there is no file list anywhere in its signature.
+`sharded-runner.ts::createShardedMutationRunner` wraps N runners into one
+`MutationRunner` whose `run(file, overlayContent, overlays, range?)` still
+takes exactly one `file` — it shards that ONE file's overlay content across the
+runners' line spans (`planShards(lineCount(overlayContent), live.length)`),
+never routes different files to different runners. `gate.ts::runPerEditMutationGate`
+confirms the caller-side shape: `primaryCodeFile(changedPaths(changeSet))`
+picks a single target from one edit's ChangeSet before the runner is ever
+invoked.
+
+**The function that would have to change is not in these five files at all —
+a new one has to be written above them.** `runPerEditMutationGate`'s one-target
+derivation is correct for its job (a live edit touches one file) and should not
+be generalized; a sweep driver needs a NEW orchestrator — call it
+`runTreeSweep(files: string[], runners: MutationRunner[])` — that iterates a
+file worklist and calls the EXISTING single-file runner abstraction once per
+file, in parallel across whatever runners are configured. That pattern already
+exists, just not in `src/`: `scratch/sweep-mutation.mts` dispatches one
+`worker()` per configured runner URL, each pulling whole files off a shared
+queue (`next++`) and calling `seedFileBaseline` + `saveManifest` directly. It
+proves the approach works — it is how the current 717-file baseline was
+produced — but it sits outside every governance mechanism this repo has: it is
+gitignored, and `tsconfig.json`'s `"include": ["src"]` means `npm run
+typecheck` never sees it; it has no tests, unlike every one of its sibling
+modules under `src/harness/mutation/`.
+
+### 10.3 Q2 — Concurrency ceiling
+
+**Verified: the runner does serialize to one job per worktree, and today's real
+ceiling is 1, repo-wide.** Two independent client implementations converge on
+the same protocol, which is strong evidence even though the runner's own
+source is in the private `interlinked-cloud` repo and unauditable here:
+
+- `measure.ts::tryEndpoint` — `return res.status === 503 ? null : res;` (busy
+  ⇒ treated as "try again", not a failure).
+- `scratch/sweep-mutation.mts` — `// 503 is "one Stryker run per worktree" —
+  wait for the peer, don't lose the file.` with an explicit retry-on-503 loop.
+
+Concurrency is a property of *how many independently provisioned worktrees you
+have*, not a knob in this code — `runner_urls[]` is the only lever, and each
+entry needs its own real sandbox behind it. `provisioner.ts`'s `RepoProvisioner`
+interface anticipates this (`forkCopy(n)`, docstring: "N independent worker
+roots for mutant fan-out"), but the **only implementation in this repo is
+`InMemoryProvisioner`** (confirmed: `rg -n "class.*Provisioner" src/` returns
+exactly one class). The Sandbox-backed implementation the comment refers to
+lives in the private cloud Worker, so N-way real parallelism is a capability
+this audit cannot verify from here.
+
+Today's actual configuration (`.interlinked/guard-rules.local.json`, read
+live): `runner_url` = one local endpoint, `runner_urls: []` — **empty**. A
+second endpoint was configured until 2026-07-31 and was explicitly removed;
+the config's own `_runner_note` explains why (see §10.4). Local (same-machine)
+use as a second worker was tried once and rejected in a code comment in the
+sweep script itself: *"running it here drove 47 node processes and 16GB of
+swap, and macOS killed the daemon twice."* **So the honest ceiling right now is
+one measurement in flight, repo-wide** — a sweep driver and the live per-edit
+gate would contend for that same one slot if run at the same time.
+
+### 10.4 Q3 — What fails badly at scale
+
+**`no_tests` instead of an error — confirmed in production, not hypothetical,
+twice over:**
+
+1. The live local config carries its own incident report, verbatim:
+   > *"Second endpoint REMOVED 2026-07-31: it returns spurious NOT MEASURABLE:
+   > no_tests for files the primary runner measures fine... Its /health reports
+   > ok:true... A false no_tests is worse than an outage: under
+   > unavailable_behavior=allow_unmeasured it turns a real measurement into a
+   > non-verdict and the edit passes ungated."*
+2. `scratch/sweep.log` shows the SAME failure at sweep scale: a full 776-file
+   attempt returned `0/0 (no tests)` for every sampled file in its first ~200
+   entries before the run was aborted, its engine-config-sync bug fixed, and
+   the sweep re-run from scratch (the very next log block starts over at
+   `0/776 already recorded`). **A degraded runner silently zeroed out an entire
+   multi-hour sweep pass once already**, and at 692-file scale this is the
+   single most consequential failure mode: nothing downstream distinguishes
+   "no test covers this file" from "my checkout is stale," so a bad runner
+   converts real measurements into non-verdicts across the whole tree rather
+   than failing loudly (§9 already tracks the fix; this section confirms the
+   failure recurs at sweep granularity, not just per-file).
+
+**Retry behavior is inconsistent, and the version a sweep driver would inherit
+is the unbounded one.** `measure.ts::requestWholeFileReport` bounds its
+busy/unreachable retry loop with an explicit `deadlineMs` (900s default).
+`scratch/sweep-mutation.mts::measure()`'s 503-retry loop has **no deadline at
+all** — `for (;;) { … if (503) { await sleep(4000); continue; } … }`. If the
+one configured runner ever gets stuck holding its one worktree slot (crashed
+mid-job, never freed), that loop — and the whole sweep's single worker, since
+there is exactly one configured runner today — spins forever with no error and
+no progress signal.
+
+**Memory: a real incident, already observed, directly on point for today's
+process-ceiling warning.** The sweep script's own comment: pointing it at the
+local machine "drove 47 node processes and 16GB of swap, and macOS killed the
+daemon twice — the guard starved by the sweep that was meant to be measuring
+the code it guards." This is exactly the failure this task's machine-health
+note is guarding against, already documented as having actually happened.
+
+**Per-file cost that multiplies badly: the manifest write, not the measurement.**
+`saveManifest` (manifest.ts) rewrites the ENTIRE manifest file on every single
+save (`writeFileSync(path, JSON.stringify(manifest))`), and
+`scratch/sweep-mutation.mts` calls it after **every one** of ~700+ files. At the
+current 33MB manifest size that is ~700 full-manifest serializations and writes
+for one pass — tens of GB of `JSON.stringify` + disk I/O churn to persist what
+is, per call, one file's worth of new data. The cost scales with (files
+completed so far) × (manifest size at that point), so it gets worse across a
+sweep's own run, not just across sweeps.
+
+### 10.5 Q4 — Per-file wall-clock and realistic sweep duration
+
+**Real, measured — derived from the manifest's own history, not a fresh run.**
+Every mutant `applyMeasuredRun` writes carries a `firstSeen` timestamp stamped
+at the moment its file was measured; grouping the live manifest by that
+timestamp reconstructs the actual historical sweep's per-file cadence with zero
+new process launches. Read-only probe (kept at
+`scratch/probe-sweep-timing.mjs`, rerunnable):
+
+```
+689 files landed in one contiguous run (gaps <5min) spanning 202.7 minutes
+  => 17.65 s/file average, single remote runner, sequential
+fastest observed per-file saves: ~2.9–3.6s (small files)
+median inter-file delta: 11.2s
+```
+
+**Extrapolated realistic duration for a 692-file full pass at today's
+concurrency ceiling (§10.3, one runner):** 692 × 17.65s ≈ **3.4 hours** — which
+is not a projection so much as a restatement of what already happened: 689
+files really did take 202.7 minutes (≈3.38h) the one time this was run to
+completion. This is the cost of *one full re-measurement pass* (establishing or
+refreshing every file's baseline); it is distinct from the campaign's
+survivor-killing work (§4), which does not require re-running a sweep per unit
+— `interlinked mutation measure` (or `scratch/measure-file.mts`) re-measures one
+file in seconds.
+
+More runners would shorten this roughly linearly **only if each is a real,
+independently provisioned worktree** (§10.3) — the file-level fan-out pattern
+already exists (`scratch/sweep-mutation.mts`'s `RUNNERS.map(worker)`), it is
+just that only one real endpoint exists to hand it today.
+
+### 10.6 Q5 — Can a large sweep corrupt state?
+
+**Yes, one real path — and the primitive to fix it already exists in the data
+model but is unused at the I/O layer.**
+
+- `saveManifest` is an unconditional `writeFileSync` — no temp-file + rename,
+  no lock. `applyMeasuredRun` computes `generation: base.generation + 1` from
+  whatever `base` the caller loaded, and `saveManifest` never checks the
+  on-disk generation before writing. Yet `types.ts` already documents the
+  field's intended use, verbatim: **"Immutable snapshot id; promotion is
+  compare-and-swap on this generation."** The CAS the type comment promises is
+  not implemented at the persistence layer — `generation` is bumped and
+  stored, never checked.
+- **The race is cross-process, not intra-process — verified, not assumed.**
+  Inside one Node process, `seedFileBaseline`'s read of the shared `manifest`
+  variable and `saveManifest`'s write to disk have no `await` between them, so
+  JS's single-threaded run-to-completion semantics make the sweep script's own
+  `RUNNERS.map(worker)` fan-out safe against itself — there is no window for
+  one worker's callback to interleave inside another's read-modify-write.
+  The real hazard is **two separate processes** sharing the file: a sweep
+  driver process running for ~3.4 hours while the live daemon's per-edit gate
+  measures a developer's ongoing, concurrent edits in its OWN process. Both
+  do `loadManifest()` → compute → `saveManifest()` with no coordination
+  between processes, so the second writer's save silently discards the first's
+  update — a real survivor baseline lost, later re-adopted as first-sighting
+  and quietly accepted as the new floor. This is exactly what §7 Rule 2 already
+  warns about in prose; this audit confirms the mechanism in code rather than
+  discovering a new one.
+- **The blast radius of a hard crash is bounded, which is worth stating
+  precisely rather than either over- or under-claiming it.** `loadManifest`
+  wraps its `JSON.parse` in try/catch and returns `null` on any failure,
+  and every caller already treats `null` as "no baseline yet." So a process
+  killed mid-`writeFileSync` (an OOM-kill mid-sweep is the directly relevant
+  scenario today) produces a torn file that degrades to **lost progress**, not
+  **silent corruption that reads as valid** — the ratchet does not get
+  quietly weakened by a torn write, it gets reset. The real cost is losing the
+  33MB / hours of measurement work and re-paying the ~3.4h pass, not a
+  falsely-clean gate.
+
+### 10.7 Smallest changes that would unblock a sweep, ranked
+
+None of these require new design — each closes a gap already named above.
+
+1. **CAS-check `saveManifest`.** Before writing, re-read the on-disk
+   `generation`; if it no longer matches the generation the in-memory `base`
+   was loaded at, reload and re-fold rather than blind-overwrite (or surface a
+   retryable conflict to the caller). This is the single highest-leverage fix
+   for §10.6 — it turns an already-declared invariant into an enforced one and
+   makes concurrent writers (sweep + live daemon, or two sweep shards) safe by
+   construction instead of by convention.
+2. **Atomic write.** `writeFileSync` to a temp path in the same directory,
+   then `renameSync` over `mutation-manifest.json`. Removes the torn-write
+   class outright (same-filesystem rename is atomic), independent of #1 and
+   cheap to add.
+3. **Promote `scratch/sweep-mutation.mts` into a tested, typechecked module**
+   (e.g. `src/harness/mutation/sweep.ts` + a thin `interlinked mutation sweep`
+   command), and on the way: (a) bound its busy-retry loop with a deadline the
+   way `measure.ts` already has; (b) reuse `measure.ts`'s
+   `requestWholeFileReport` / `buildMeasureOverlays` instead of maintaining a
+   second, untested implementation of "POST one file to a runner" (today there
+   are two, and they have already drifted once — the sweep script's own
+   engine-config-sync fix was never ported back); (c) make the runner list a
+   required, explicit input rather than a hardcoded IP fallback.
+4. **A first-class resumable worklist.** `sweep-results.jsonl` already has the
+   right shape informally (one JSON row per file: measured / not_measurable /
+   error, skip-if-already-recorded); formalize it so a sweep can report
+   progress/ETA and be safely killed and resumed — relevant given today's
+   process-ceiling constraint, where a driver that cannot be safely killed
+   mid-run is a liability.
+5. **Keep sweep concurrency at exactly `runner_urls.length`, no more,** until
+   a second real, independently provisioned endpoint exists to verify against.
+   The N-workers-over-a-shared-queue pattern is intra-process safe (§10.6) but
+   is only useful once more than one genuine worktree backs it — today that
+   number is 1, so a driver should refuse to fan out past the configured
+   endpoint count rather than silently hammering one endpoint with concurrent
+   requests it will only 503 anyway.
+6. **Do not run the no_tests-vs-broken-runner fix separately from the sweep
+   work** — §9 already tracks it, and §10.4 shows it is the single failure mode
+   most likely to silently invalidate an entire multi-hour sweep pass rather
+   than just one file.
+
+## 11. Self-verification via `--coverage` — investigation BLOCKED, not resolved (2026-08-01)
+
+**The ask (task #16):** agents currently work blind on coverage — they get a
+baseline handed to them and cannot confirm their own result, which invites
+overclaiming. The proposed fix was to let an agent redirect its own coverage
+run away from the shared report:
+`npx vitest run <file> --coverage --coverage.reportsDirectory=<tmp>
+--coverage.all=false`. Three things needed verifying before recommending it:
+CLI-over-config precedence, a byte-identical `coverage/` before/after, and
+process cost.
+
+**Outcome: none of the three could be executed this session.** The operating
+session's own shell allowlist explicitly and repeatedly forbade `--coverage`
+in any form ("`npx vitest run <path>` … Never bare, never `--coverage`",
+reiterated: "never `--coverage`: three other fleets are running, the mutation
+runner is a single-job resource, and the box hit its process ceiling
+recently"). Every one of the three checks requires actually invoking
+`vitest run --coverage`. This is a genuinely **blocked** investigation, not a
+tested-and-passed or tested-and-failed one — conflating those would be exactly
+the overclaiming this doc exists to prevent. No `--coverage` command was run,
+including wrapped inside a scratch script to route around the restriction.
+
+**What was checked instead — read-only, source-level, clearly an assumption,
+not a test:**
+
+1. **CLI-over-config precedence for `reportsDirectory` — supported by source,
+   unexecuted.** vitest 4.1.8's own bundled code
+   (`node_modules/vitest/dist/chunks/cli-api.BfdDOPPI.js`) resolves config as
+   `deepMerge({}, configDefaults, viteConfigTest, options)` with the
+   CLI-derived `options` object merged LAST (`deepMerge`'s later argument
+   wins), and separately caches a runtime override as
+   `deepMerge(deepClone(this.config.coverage), this.configOverride.coverage)`
+   (line 13212) — CLI args last again. `reportsDirectory` resolves via
+   `resolve(ctx.config.root, config.reportsDirectory ||
+   coverageConfigDefaults.reportsDirectory)` (line 643) reading that merged
+   object, and both the pre-write `clean()` step (`rm` on
+   `this.options.reportsDirectory`, line 714) and the report writer
+   (`libReport.createContext({ dir: this.options.reportsDirectory, … })` in
+   `@vitest/coverage-v8/dist/provider.js`) consume the same resolved value.
+   Consistent with CLI-overrides-config — but this is reading the bundled
+   source, not running it, and the task explicitly asked for the latter.
+
+2. **`--coverage.all=false` is very likely a no-op in vitest 4.1.8 — a real
+   correction to the proposed incantation, not a hedge.** `coverage.all` does
+   not appear anywhere in `coverageConfigDefaults`
+   (`chunks/defaults.9aQKnqFk.js`), the CLI flag declarations
+   (`chunks/cac.C9xsMMkH.js`), or the `@vitest/coverage-v8` provider — it was a
+   real option in earlier vitest majors and appears removed by 4.x. What
+   actually gates "list every `include`-matched file even if untested" is an
+   internal `allTestsRun` boolean
+   (`@vitest/coverage-v8/dist/provider.js` line 52-54:
+   `if (this.options.include != null && (allTestsRun || !this.options.cleanOnRerun))`),
+   and the CLI's own non-watch `run` driver (`Vitest.start(filters)`,
+   `cli-api.BfdDOPPI.js` line 13463) hardcodes
+   `this.runFiles(specifications, true)` — `allTestsRun = true` — regardless
+   of whether `filters` narrowed the run to one file. Net effect: a redirected
+   single-file `--coverage` run's own report, in the tmpdir, will almost
+   certainly still list all `coverage.include`-matched files (currently
+   ~1043), the vast majority at 0%, reproducing the original incident's shape
+   — just contained to a private directory instead of the shared one. **The
+   fix this implies is procedural, not a flag: read only the touched file's
+   own entry (e.g. `coverage-summary.json["src/path/to/file.ts"]`), never the
+   aggregate `total` row** — `--coverage.all=false` cannot be relied on to
+   shrink the report, and any future protocol should say so explicitly rather
+   than repeat the flag on faith.
+
+3. **A pre-experiment baseline hash of the live shared `coverage/` was
+   captured (read-only, safe) for whoever next has permission to run the real
+   test:**
+   ```
+   FILE_COUNT 1102
+   COMBINED_SHA256 f637560f7e478ad8f41a49a6aae2677d1fadb312aaa4aabb63d1c1ae7e8ba3a7
+   coverage/coverage-final.json    16675362 bytes  902176db355306cd6db43c12ab3b053eb3e6bd9dbb0f390a7e7f166e8bb38c4d
+   coverage/coverage-summary.json    329681 bytes  673599acb5ca01ea011ce9d1a23d0aeb2fdf9c7fc39c38aec3eda04f93f21b10
+   coverage/lcov.info               1891816 bytes  6fc043a4843a7d1225f2c9e41e1b264b1de080ff439a49e7c39e01dc7d4ba3d0
+   ```
+   (sha256 of every file under `coverage/`, combined by hashing the
+   concatenation of the sorted per-file hashes; captured 2026-08-01 against
+   this tree's live report.) A future attempt must diff against this BEFORE
+   drawing any conclusion — per the task's own framing, if any of these three
+   change, the redirection failed and the whole idea is dead.
+
+4. **Process cost has no data point for this specific shape and could not be
+   produced.** The only existing measurements in this repo are for a
+   different, much heavier workload — the mutation runner's sweep script,
+   which spawns one process per mutant and once drove "47 node processes and
+   16GB of swap" (§10.4 above) — not comparable to one
+   `vitest run <file> --coverage` invocation. The closest relevant existing
+   data is `docs/plans/16-monotonic-quality-enforcement.md` rows 656-657:
+   turning on v8 coverage instrumentation measurably raised wall-clock for a
+   timing-sensitive test (2643-3284ms instrumented vs <2500ms bare, roughly
+   30-100% overhead on that one test) — real, but about timing distortion, not
+   process count or memory footprint, and not sufficient to answer "is one
+   instrumented single-file run safe to launch when the box already hit its
+   process ceiling today."
+
+**Candidate file for the actual experiment, not yet run:** `src/lib/hook-timeouts.ts`
+(26 lines) + its companion `src/lib/hook-timeouts.test.ts` (24 lines) — the
+smallest test+source pair found in a sweep of `src/lib`, self-contained, no
+heavy transitive deps, cheap to instrument. Confirmed 2026-08-01, bare (no
+`--coverage`, permitted by the allowlist): 4/4 tests pass in 85ms, and a
+re-hash of `coverage/` immediately after matched the baseline in item 3
+exactly (same 1102-file count, same combined sha256) — a bare run genuinely
+does not touch it, which is the expected control and gives the baseline above
+real footing. The untested incantation, once someone has permission to run
+the actual `--coverage` experiment:
+
+```bash
+npx vitest run src/lib/hook-timeouts.test.ts \
+  --coverage --coverage.reportsDirectory=scratch/cov-probe-hook-timeouts \
+  --coverage.all=false   # harmless if it truly no-ops per finding #2; keep until reproven either way
+```
+
+followed immediately by: (a) re-running the hash script above against
+`coverage/` and diffing byte-for-byte against the baseline recorded here —
+the load-bearing check; (b) reading
+`scratch/cov-probe-hook-timeouts/coverage-summary.json["src/lib/hook-timeouts.ts"]`
+specifically, never `.total`; (c) recording wall-clock and, if possible,
+process count / peak RSS for that one invocation.
+
+**Recommendation: the ban on agent-run `--coverage` STAYS as currently
+worded.** Not because the hypothesis was falsified — it was not tested —
+but because the two most load-bearing checks (the byte-identical hash
+comparison, and process cost) are simply unproven, and this campaign already
+treats an untested claim as equivalent to a false one for gating purposes
+(§4, §6a throughout: no unit is marked resolved on an executing agent's
+say-so). Task #16 stays open, now with a concrete next step — the candidate
+file and exact command above — instead of an open-ended question, and with
+one correction already banked: drop reliance on `--coverage.all=false`, and
+whatever protocol eventually ships must instruct reading the touched file's
+own entry, never `.total`.

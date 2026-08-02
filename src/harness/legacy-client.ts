@@ -10,7 +10,7 @@ import { createConnection, type Socket } from "node:net";
 import { basename } from "node:path";
 import type { JsonObject } from "../lib/json-types.js";
 import type { AgentSource, HarnessDecision, HarnessEvent } from "./types.js";
-import type { UnifiedHookEvent } from "./unified-event.js";
+import type { UnifiedAction, UnifiedHookEvent } from "./unified-event.js";
 
 export const LEGACY_HARNESS_SOCKET_BASENAME = "harness.sock";
 export const DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS = 5000;
@@ -125,7 +125,23 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	const filesModified = readStringArray(raw.files_modified);
 	if (filesModified) out.files_modified = filesModified;
 
-	const action = event.action;
+	applyActionFields(event, raw, event.action, out);
+	applyLegacyFieldFallbacks(raw, out);
+
+	return out;
+}
+
+/** Derive `tool_name` / `tool_input` / `tool_response` / `prompt` from the
+ *  action's own kind — the one place that knows what each `UnifiedAction`
+ *  variant contributes to the legacy wire shape. Split out of
+ *  `toLegacyHarnessEvent` so the six-case switch doesn't count against the
+ *  orchestrator's cyclomatic budget. */
+function applyActionFields(
+	event: UnifiedHookEvent,
+	raw: JsonObject,
+	action: UnifiedAction,
+	out: HarnessEvent,
+): void {
 	switch (action.kind) {
 		case "tool_call":
 			out.tool_name = legacyToolName(event, raw, action.tool_name);
@@ -154,7 +170,14 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 			break;
 		}
 	}
+}
 
+/** Backfill wire-format field-name variants (`tool_input`/`toolInput`,
+ *  `tool_response`/`toolResponse`, `prompt`/`message`/`userPrompt`) that
+ *  `applyActionFields` left unset — some adapters carry these top-level on
+ *  the raw payload instead of inside the normalized action. Split out of
+ *  `toLegacyHarnessEvent` for the same cyclomatic-budget reason. */
+function applyLegacyFieldFallbacks(raw: JsonObject, out: HarnessEvent): void {
 	if (out.tool_input === undefined) {
 		const rawToolInput = asJsonObject(raw.tool_input) ?? asJsonObject(raw.toolInput);
 		if (rawToolInput) out.tool_input = rawToolInput;
@@ -169,8 +192,6 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 		const prompt = readString(raw.prompt) ?? readString(raw.message) ?? readString(raw.userPrompt);
 		if (prompt) out.prompt = prompt;
 	}
-
-	return out;
 }
 
 function legacyHookEventName(event: UnifiedHookEvent): HarnessEvent["hook_event"] {

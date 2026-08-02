@@ -209,89 +209,132 @@ function handleTplInterpolation(ch: string, i: number, s: TplStripState): number
 }
 
 /**
+ * Loop-carried state for {@link stripComments}. Mirrors {@link TplStripState}'s
+ * shape (minus `interpDepth`, which only the template-interpolation walk needs):
+ * each per-state handler below mutates this in place and returns the index to
+ * resume scanning from, matching the original single-loop `continue`s exactly.
+ */
+interface CommentStripState {
+	out: string[];
+	inLineComment: boolean;
+	inBlockComment: boolean;
+	inString: '"' | "'" | null;
+	inTpl: boolean;
+}
+
+/** Inside a `//` line comment: blank non-newline chars, exit on newline. */
+function handleCommentLineComment(ch: string, i: number, s: CommentStripState): number {
+	if (ch === "\n") {
+		s.inLineComment = false;
+		s.out.push(ch);
+	} else {
+		s.out.push(" ");
+	}
+	return i + 1;
+}
+
+/** Inside a `/*` block comment: blank content, exit on the closing delimiter. */
+function handleCommentBlockComment(
+	ch: string,
+	next: string,
+	i: number,
+	s: CommentStripState,
+): number {
+	if (ch === "*" && next === "/") {
+		s.out.push(" ", " ");
+		s.inBlockComment = false;
+		return i + 2;
+	}
+	s.out.push(ch === "\n" ? "\n" : " ");
+	return i + 1;
+}
+
+/** Inside a string literal: pass content through, exit on the matching quote. */
+function handleCommentString(ch: string, i: number, s: CommentStripState): number {
+	s.out.push(ch);
+	if (ch === s.inString) s.inString = null;
+	return i + 1;
+}
+
+/** Inside a template literal: pass content through, exit on the closing backtick. */
+function handleCommentTemplate(ch: string, i: number, s: CommentStripState): number {
+	s.out.push(ch);
+	if (ch === "`") s.inTpl = false;
+	return i + 1;
+}
+
+/**
+ * Outside any comment/string/template: detect comment openers / string openers /
+ * a template opener. Everything else is copied verbatim.
+ */
+function handleCommentOutside(
+	ch: string,
+	next: string,
+	i: number,
+	s: CommentStripState,
+): number {
+	if (ch === "/" && next === "/") {
+		s.inLineComment = true;
+		s.out.push(" ", " ");
+		return i + 2;
+	}
+	if (ch === "/" && next === "*") {
+		s.inBlockComment = true;
+		s.out.push(" ", " ");
+		return i + 2;
+	}
+	if (ch === '"' || ch === "'") {
+		s.inString = ch;
+		s.out.push(ch);
+		return i + 1;
+	}
+	if (ch === "`") {
+		s.inTpl = true;
+		s.out.push(ch);
+		return i + 1;
+	}
+	s.out.push(ch);
+	return i + 1;
+}
+
+/**
  * Strip line and block comments. Replaces comment characters with spaces of
  * the same length; preserves newlines.
  */
 export function stripComments(content: string): string {
-	const out: string[] = [];
+	const s: CommentStripState = {
+		out: [],
+		inLineComment: false,
+		inBlockComment: false,
+		inString: null,
+		inTpl: false,
+	};
 	let i = 0;
-	let inLineComment = false;
-	let inBlockComment = false;
-	let inString: '"' | "'" | null = null;
-	let inTpl = false;
 
 	while (i < content.length) {
 		const ch = nonNull(content[i]);
 		const next = content[i + 1] ?? "";
 
-		if ((inString || inTpl) && ch === "\\" && i + 1 < content.length) {
-			out.push(ch, next);
+		if ((s.inString || s.inTpl) && ch === "\\" && i + 1 < content.length) {
+			s.out.push(ch, next);
 			i += 2;
 			continue;
 		}
 
-		if (inLineComment) {
-			if (ch === "\n") {
-				inLineComment = false;
-				out.push(ch);
-			} else {
-				out.push(" ");
-			}
-			i++;
-			continue;
+		if (s.inLineComment) {
+			i = handleCommentLineComment(ch, i, s);
+		} else if (s.inBlockComment) {
+			i = handleCommentBlockComment(ch, next, i, s);
+		} else if (s.inString) {
+			i = handleCommentString(ch, i, s);
+		} else if (s.inTpl) {
+			i = handleCommentTemplate(ch, i, s);
+		} else {
+			i = handleCommentOutside(ch, next, i, s);
 		}
-		if (inBlockComment) {
-			if (ch === "*" && next === "/") {
-				out.push(" ", " ");
-				inBlockComment = false;
-				i += 2;
-				continue;
-			}
-			out.push(ch === "\n" ? "\n" : " ");
-			i++;
-			continue;
-		}
-		if (inString) {
-			out.push(ch);
-			if (ch === inString) inString = null;
-			i++;
-			continue;
-		}
-		if (inTpl) {
-			out.push(ch);
-			if (ch === "`") inTpl = false;
-			i++;
-			continue;
-		}
-		if (ch === "/" && next === "/") {
-			inLineComment = true;
-			out.push(" ", " ");
-			i += 2;
-			continue;
-		}
-		if (ch === "/" && next === "*") {
-			inBlockComment = true;
-			out.push(" ", " ");
-			i += 2;
-			continue;
-		}
-		if (ch === '"' || ch === "'") {
-			inString = ch;
-			out.push(ch);
-			i++;
-			continue;
-		}
-		if (ch === "`") {
-			inTpl = true;
-			out.push(ch);
-			i++;
-			continue;
-		}
-		out.push(ch);
-		i++;
 	}
 
-	return out.join("");
+	return s.out.join("");
 }
 
 /** Strip single-line string literal interiors, preserving delimiters and length. */

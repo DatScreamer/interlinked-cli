@@ -94,7 +94,15 @@ function scanNpmFlags(args: string[]): NpmFlagScan {
 			continue;
 		}
 		if (a.startsWith("-")) {
-			if (NPM_FLAG_TAKES_VALUE.has(a) && /^[^-]/.test(args[i + 1] || "")) i++;
+			if (NPM_FLAG_TAKES_VALUE.has(a)) {
+				// A present-but-empty value (`--prefix ""`) IS the value, not a
+				// package — test for absence, not for a leading non-dash char. The
+				// old `/^[^-]/`-based check failed to match an empty string (it
+				// requires >=1 char), so it fell through and the empty string was
+				// collected as a phantom package with an empty name.
+				const next = args[i + 1];
+				if (next !== undefined && !next.startsWith("-")) i++;
+			}
 			continue;
 		}
 		positionals.push(a);

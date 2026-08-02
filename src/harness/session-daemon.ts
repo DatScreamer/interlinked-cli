@@ -44,6 +44,60 @@ export interface SessionDaemonHandle {
 	rpcInflight(): number;
 }
 
+/** Thrown when another LIVE process already owns this session's pid file.
+ *  Distinguishable from any other startup failure so the caller (server.ts)
+ *  can route it through the anti-stomp loser contract (ledger row + exit)
+ *  instead of `installCrashResilience()`'s survive-on-error path — right for
+ *  a genuinely unexpected throw, wrong for an ALREADY-DECIDED ownership
+ *  conflict: that process must actually terminate, not log and keep its
+ *  already-registered timers running (the orphan-accumulation bug this
+ *  type exists to close). */
+export class DaemonOwnershipConflictError extends Error {
+	constructor(
+		public readonly sessionId: string,
+		public readonly ownerPid: number,
+	) {
+		super(`session daemon already running for ${sessionId} (PID ${ownerPid})`);
+		this.name = "DaemonOwnershipConflictError";
+	}
+}
+
+export type SessionPidClaim = { claimed: true } | { claimed: false; ownerPid: number };
+
+/**
+ * Atomically claim `pidPath` for `pid`. Exclusive-create (`wx`) makes the
+ * claim indivisible at the OS level: of any number of processes racing to
+ * create the same path, at most one `open(O_CREAT|O_EXCL)` can succeed — the
+ * rest see EEXIST no matter how close together they run. This replaces a
+ * read-then-remove-then-bind-then-write-pid sequence that left a real window
+ * open: two starts close enough together could BOTH pass a plain "does a
+ * live pid already own this" read (neither had written yet), both proceed to
+ * unlink+rebind the socket path (one silently stealing the other's live
+ * bind), and both resolve successfully — confirmed empirically (100% of 20
+ * trials, see the anti-stomp regression probe) before this fix.
+ */
+export function claimSessionPid(pidPath: string, pid: number): SessionPidClaim {
+	const existingPid = readPidFile(pidPath);
+	if (existingPid !== null && existingPid !== pid && isProcessAlive(existingPid)) {
+		return { claimed: false, ownerPid: existingPid };
+	}
+	try {
+		writeFileSync(pidPath, String(pid), { flag: "wx" });
+		return { claimed: true };
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+		// A concurrent claim landed between our read above and this write.
+		// Re-read whoever is there NOW: still foreign+alive → we genuinely
+		// lost; anything else (self, or a dead process's stale claim) → ours.
+		const racedPid = readPidFile(pidPath);
+		if (racedPid !== null && racedPid !== pid && isProcessAlive(racedPid)) {
+			return { claimed: false, ownerPid: racedPid };
+		}
+		writeFileSync(pidPath, String(pid));
+		return { claimed: true };
+	}
+}
+
 export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<SessionDaemonHandle> {
 	const { paths, session_id } = opts;
 	const idleMs = opts.idle_shutdown_ms ?? 15 * 60 * 1000;
@@ -58,14 +112,14 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 	const logsDir = dirname(paths.log);
 	if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
 
-	// Clean stale artifacts only when no live process owns the PID. This keeps
-	// dual-protocol startup from stealing a framed socket from another daemon.
-	const existingPid = readPidFile(paths.pid);
-	if (existingPid !== null && existingPid !== process.pid && isProcessAlive(existingPid)) {
-		throw new Error(`session daemon already running for ${session_id} (PID ${existingPid})`);
+	// Claim ownership BEFORE touching the socket — see claimSessionPid for why
+	// this order (not the socket bind, and not a later pid write) is what
+	// makes two racing starts resolve to exactly one winner.
+	const claim = claimSessionPid(paths.pid, process.pid);
+	if (!claim.claimed) {
+		throw new DaemonOwnershipConflictError(session_id, claim.ownerPid);
 	}
 	if (existsSync(paths.socket)) rmSync(paths.socket, { force: true });
-	if (existsSync(paths.pid)) rmSync(paths.pid, { force: true });
 
 	const clients = new Set<Socket>();
 	let server: Server | null = null;
@@ -127,13 +181,18 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 		socket.write(encodeFrame(response));
 	}
 
-	server = createServer(onConnection);
-	await new Promise<void>((resolve, reject) => {
-		(server as Server).once("error", reject);
-		(server as Server).listen(paths.socket, () => resolve());
-	});
-
-	writeFileSync(paths.pid, String(process.pid));
+	try {
+		server = createServer(onConnection);
+		await new Promise<void>((resolve, reject) => {
+			(server as Server).once("error", reject);
+			(server as Server).listen(paths.socket, () => resolve());
+		});
+	} catch (err) {
+		// The pid claim succeeded but the bind didn't — release it so a retry
+		// (or a genuinely concurrent starter) isn't blocked by a ghost claim.
+		rmSync(paths.pid, { force: true });
+		throw err;
+	}
 
 	// Idle-shutdown poller — lightweight; fires only after true inactivity.
 	const idleTimer =

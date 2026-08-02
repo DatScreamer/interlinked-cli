@@ -32,11 +32,12 @@
 import { basename } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { isFileWrite } from "./evaluator/tool-classifiers.js";
-import {appendObservationRow, 
+import {appendObservationRow,
 	appendReconciliationRow,
 	findPredictionRow
 } from "./graph-prediction-cache.js";
 import {
+	type CaseResult,
 	classifyCase,
 	type GraphPredictionCase,
 	workspaceSupermodelActive,
@@ -93,6 +94,50 @@ export interface DriveResult {
 	severity?: SeverityResult | undefined;
 }
 
+/** Sentinel-path branches: the agent submits structured artifacts by writing
+ *  to fixed paths under `.interlinked/predictions/`. Two shapes:
+ *    - `incoming/<session>/<slug>.yaml`  → graph_prediction submission
+ *    - `ack/<session>/<slug>.yaml`       → graph_prediction_ack submission
+ *  Ack path is checked first so an ack submission doesn't get rejected by the
+ *  prediction parser for missing a `graph_prediction:` key. Returns null when
+ *  the write doesn't target either sentinel shape. */
+function handleSentinelWrites(event: HarnessEvent, cwd: string): DriveResult | null {
+	const ackFilePath = typeof event.tool_input?.file_path === "string"
+		? event.tool_input.file_path
+		: "";
+	const ackSentinel = parseSentinelAckPath(ackFilePath, cwd);
+	if (ackSentinel) return handleAckSubmission(event, cwd, ackSentinel);
+
+	const submission = handleSentinelSubmission(event, cwd);
+	if (submission) return submission;
+
+	return null;
+}
+
+/** Telemetry for every classified edited file (non-E-fresh + E-fresh alike),
+ *  independent of mode or gating decisions. */
+function emitObservationRows(cwd: string, event: HarnessEvent, classifications: CaseResult[]): void {
+	for (const c of classifications) {
+		appendObservationRow(cwd, {
+			session_id: event.session_id,
+			file_path: c.sourcePath,
+			case: c.case,
+			tool_input_hash: "",
+			emitted_at: event.timestamp,
+		});
+	}
+}
+
+/** The observation summary carried on an "allow, no protocol engaged" result
+ *  (shadow mode, or soft_gate/enforced with no E-fresh targets) — the first
+ *  classified file, or undefined when nothing was classified. */
+function firstObservation(
+	classifications: CaseResult[],
+): { file_path: string; case: GraphPredictionCase } | undefined {
+	if (classifications.length === 0) return undefined;
+	return { file_path: nonNull(classifications[0]).sourcePath, case: nonNull(classifications[0]).case };
+}
+
 export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 	const { event, cwd, mode, graph } = args;
 
@@ -109,20 +154,8 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 
 	if (!isFileWrite(event.tool_name)) return null;
 
-	// Sentinel-path branches: the agent submits structured artifacts by
-	// writing to fixed paths under `.interlinked/predictions/`. Two shapes:
-	//   - `incoming/<session>/<slug>.yaml`  → graph_prediction submission
-	//   - `ack/<session>/<slug>.yaml`       → graph_prediction_ack submission
-	// Ack path is checked first so an ack submission doesn't get rejected
-	// by the prediction parser for missing a `graph_prediction:` key.
-	const ackFilePath = typeof event.tool_input?.file_path === "string"
-		? event.tool_input.file_path
-		: "";
-	const ackSentinel = parseSentinelAckPath(ackFilePath, cwd);
-	if (ackSentinel) return handleAckSubmission(event, cwd, ackSentinel);
-
-	const submission = handleSentinelSubmission(event, cwd);
-	if (submission) return submission;
+	const sentinelResult = handleSentinelWrites(event, cwd);
+	if (sentinelResult) return sentinelResult;
 
 	if (!workspaceSupermodelActive(cwd)) return null;
 
@@ -137,38 +170,18 @@ export function driveGraphPrediction(args: DriveArgs): DriveResult | null {
 	);
 
 	// Always emit observation rows — telemetry for non-E-fresh + E-fresh.
-	for (const c of classifications) {
-		appendObservationRow(cwd, {
-			session_id: event.session_id,
-			file_path: c.sourcePath,
-			case: c.case,
-			tool_input_hash: "",
-			emitted_at: event.timestamp,
-		});
-	}
+	emitObservationRows(cwd, event, classifications);
 
 	const eFreshTargets = classifications.filter((c) => c.case === E_FRESH);
 
 	// Shadow mode: log observation, allow.
 	if (mode === MODE_SHADOW) {
-		return {
-			decision: "allow",
-			observation:
-				classifications.length > 0
-					? { file_path: nonNull(classifications[0]).sourcePath, case: nonNull(classifications[0]).case }
-					: undefined,
-		};
+		return { decision: "allow", observation: firstObservation(classifications) };
 	}
 
 	// soft_gate / enforced: only E-fresh activates the protocol.
 	if (eFreshTargets.length === 0) {
-		return {
-			decision: "allow",
-			observation:
-				classifications.length > 0
-					? { file_path: nonNull(classifications[0]).sourcePath, case: nonNull(classifications[0]).case }
-					: undefined,
-		};
+		return { decision: "allow", observation: firstObservation(classifications) };
 	}
 
 	const predictionsByPath = collectCachedPredictions(cwd, event.session_id, eFreshTargets);

@@ -15,11 +15,14 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { nonNull } from "../lib/non-null.js";
 import { getChangedFilesSince, getHeadCommit } from "./trigram-git.js";
 import {
 	DEFAULT_MAX_FILE_SIZE,
 	extractTrigrams,
+	extractTrigramsWithMasks,
 	isBinaryContent,
+	type PostingList,
 	shouldSkipFile,
 } from "./trigram-primitives.js";
 
@@ -139,4 +142,164 @@ export function incrementalUpdateState(
 	}
 
 	return { updated, newBaseCommit: currentCommit };
+}
+
+// ===========================================
+// Merge Dirty Layer (called from TrigramIndex.mergeDirty / save)
+// ===========================================
+// Folds the in-memory dirty layer (overrides + new files) into the base
+// postings so save() writes one complete on-disk snapshot. Each step below
+// is a free function over explicit state — a mutable clone of the base
+// postings, the files/fileToId tables, and cwd for on-disk mask re-reads —
+// so the orchestrating TrigramIndex.mergeDirty() method reads as a
+// five-step summary of the algorithm rather than one long procedure.
+
+/** Posting-list entry while it's still being edited as mutable arrays. */
+export interface MutablePostingData {
+	fileIds: number[];
+	locMasks: number[];
+	nextMasks: number[];
+}
+
+/** Snapshot a `Map<number, PostingList>` as mutable per-trigram arrays. */
+export function cloneMutablePostings(
+	postings: Map<number, PostingList>,
+): Map<number, MutablePostingData> {
+	const clone = new Map<number, MutablePostingData>();
+	for (const [tri, posting] of postings) {
+		clone.set(tri, {
+			fileIds: [...posting.fileIds],
+			locMasks: [...posting.locMasks],
+			nextMasks: [...posting.nextMasks],
+		});
+	}
+	return clone;
+}
+
+/**
+ * Re-read a file from disk and extract fresh trigram masks for it, so a
+ * merged posting entry gets real adjacency data instead of zeros. Returns
+ * null (never throws) for any failure — no path given, file missing, or a
+ * read error (e.g. the path now points at a directory) — so callers fall
+ * back to zero masks uniformly regardless of which way it failed.
+ */
+export function readMasksFromDisk(
+	cwd: string,
+	relPath: string | undefined,
+): Map<number, { locMask: number; nextMask: number }> | null {
+	if (!relPath) return null;
+	try {
+		const absPath = join(cwd, relPath);
+		if (!existsSync(absPath)) return null;
+		return extractTrigramsWithMasks(readFileSync(absPath, "utf-8"));
+	} catch (err) {
+		void err; /* intentional: fall back to zero masks if file can't be read */
+		return null;
+	}
+}
+
+/** Remove every posting-list entry for `fileId` (a file being overridden or deleted). */
+function removeFileFromPostings(postings: Map<number, MutablePostingData>, fileId: number): void {
+	for (const [, data] of postings) {
+		const idx = data.fileIds.indexOf(fileId);
+		if (idx >= 0) {
+			data.fileIds.splice(idx, 1);
+			data.locMasks.splice(idx, 1);
+			data.nextMasks.splice(idx, 1);
+		}
+	}
+}
+
+/** Append `fileId` to the posting list of every trigram in `trigrams`, using `masks` where available. */
+function addFileToPostings(
+	postings: Map<number, MutablePostingData>,
+	fileId: number,
+	trigrams: Iterable<number>,
+	masks: Map<number, { locMask: number; nextMask: number }> | null,
+): void {
+	for (const tri of trigrams) {
+		let data = postings.get(tri);
+		if (!data) {
+			data = { fileIds: [], locMasks: [], nextMasks: [] };
+			postings.set(tri, data);
+		}
+		const m = masks?.get(tri);
+		data.fileIds.push(fileId);
+		data.locMasks.push(m?.locMask ?? 0);
+		data.nextMasks.push(m?.nextMask ?? 0);
+	}
+}
+
+/**
+ * Apply dirty-layer overrides (modified or deleted base files) to a mutable
+ * postings clone: remove the file's old posting entries everywhere, then —
+ * unless it was a deletion (`trigrams === null`) — re-add it under its new
+ * trigram set with masks re-read from disk where possible.
+ */
+export function applyDirtyOverrides(
+	postings: Map<number, MutablePostingData>,
+	dirtyOverrides: Map<number, Set<number> | null>,
+	files: readonly string[],
+	cwd: string,
+): void {
+	for (const [fileId, trigrams] of dirtyOverrides) {
+		removeFileFromPostings(postings, fileId);
+		if (!trigrams) continue;
+		addFileToPostings(postings, fileId, trigrams, readMasksFromDisk(cwd, files[fileId]));
+	}
+}
+
+/**
+ * Apply dirty-layer new files to a mutable postings clone: assign each one a
+ * permanent file id (appended to `files`/`fileToId`), then add it to the
+ * posting list of every trigram it contains.
+ */
+export function appendDirtyNewFiles(
+	postings: Map<number, MutablePostingData>,
+	dirtyNewFiles: Map<string, { id: number; trigrams: Set<number> }>,
+	files: string[],
+	fileToId: Map<string, number>,
+	cwd: string,
+): void {
+	for (const [path, entry] of dirtyNewFiles) {
+		const newId = files.length;
+		files.push(path);
+		fileToId.set(path, newId);
+		addFileToPostings(postings, newId, entry.trigrams, readMasksFromDisk(cwd, path));
+	}
+}
+
+/**
+ * Convert a mutable postings clone back into the on-disk `PostingList` shape
+ * (sorted typed arrays), dropping any trigram whose posting list emptied out
+ * during the merge (e.g. its only file was deleted).
+ */
+export function finalizePostings(
+	postings: Map<number, MutablePostingData>,
+): Map<number, PostingList> {
+	const result = new Map<number, PostingList>();
+	for (const [tri, data] of postings) {
+		if (data.fileIds.length === 0) continue;
+		const indices = data.fileIds.map((_, i) => i);
+		indices.sort((a, b) => nonNull(data.fileIds[a]) - nonNull(data.fileIds[b]));
+		result.set(tri, {
+			fileIds: new Uint32Array(indices.map((i) => nonNull(data.fileIds[i]))),
+			locMasks: new Uint8Array(indices.map((i) => nonNull(data.locMasks[i]))),
+			nextMasks: new Uint8Array(indices.map((i) => nonNull(data.nextMasks[i]))),
+		});
+	}
+	return result;
+}
+
+/** Recompute the >40%-of-files stop-trigram set against the merged postings. */
+export function computeStopTrigrams(
+	postings: Map<number, PostingList>,
+	fileCount: number,
+): Set<number> {
+	const threshold = Math.floor(fileCount * 0.4);
+	const stopTrigrams = new Set<number>();
+	for (const [tri, posting] of postings) {
+		if (posting.fileIds.length > threshold) stopTrigrams.add(tri);
+	}
+	return stopTrigrams;
 }
