@@ -73,13 +73,13 @@
   },
   "lockfile_snapshots": {
     "package.json": {
-      "sha256": "712a907c43312bd1e770f93f494bf5e178a1d1ef56ce3f83119314e5d81345b6",
-      "approved_at": "2026-07-18T14:22:02.592Z",
+      "sha256": "92a18d342cccd69cacedbc380d87af0e4a8e0e7eb9520fb85c57bcb678b7b0cd",
+      "approved_at": "2026-08-02T08:48:51.081Z",
       "approved_by": "qcody"
     },
     "package-lock.json": {
-      "sha256": "a2961f35c9795a36fec51f83aa4701b6e4d6da151c1f17c69651b1d5bf309369",
-      "approved_at": "2026-07-18T14:22:02.594Z",
+      "sha256": "0c85e11f96908375b84f4742d120a300b05fdf57c26affe829f97716b75b2a8b",
+      "approved_at": "2026-08-02T08:48:51.082Z",
       "approved_by": "qcody"
     }
   }

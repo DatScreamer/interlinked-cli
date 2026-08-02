@@ -92,6 +92,9 @@
         "@typescript/native-preview": "7.0.0-dev.20260421.2",
         "typescript": "5.9.3"
     },
+    "overrides": {
+        "qs": "^6.15.3"
+    },
     "devDependencies": {
         "@biomejs/biome": "2.4.13",
         "@stryker-mutator/core": "^9.6.1",
