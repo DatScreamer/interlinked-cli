@@ -13,8 +13,16 @@
 			"!coverage/**",
 			"!**/reports/mutation/**",
 			"!.interlinked/quarantine-*/**",
-			"!.claude/workflows/**"
+			"!.claude/workflows/**",
+			"!.interlinked/hooks/**"
 		]
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "off"
+			}
+		}
 	},
 	"linter": {
 		"enabled": true,
