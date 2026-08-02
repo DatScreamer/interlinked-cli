@@ -305,7 +305,8 @@ export function perFileCoverageFromCanonical(
 	const fnEntryHits = new Map<number, number>();
 	for (const fn of canonicalFile.perFunction) fnEntryHits.set(fn.line, fn.hits);
 
-	const functions: FunctionCoverage[] = fnRanges.map((fn) => {
+	const functions: FunctionCoverage[] = [];
+	for (const fn of fnRanges) {
 		let total = 0;
 		let covered = 0;
 		for (let ln = fn.line; ln <= fn.endLine; ln++) {
@@ -314,13 +315,19 @@ export function perFileCoverageFromCanonical(
 			total++;
 			if (hits > 0) covered++;
 		}
-		return {
+		// The function's line range (derived from the CURRENT source AST) covers
+		// no line the report knows about — the source moved since the coverage
+		// run. That is an absent measurement, not 0% coverage; reporting 0 here
+		// fabricated maximal CRAP scores for well-tested functions. Omit the
+		// entry so consumers distinguish "unknown" from "uncovered".
+		if (total === 0) continue;
+		functions.push({
 			name: fn.name,
 			line: fn.line,
 			endLine: fn.endLine,
 			hits: fnEntryHits.get(fn.line) ?? (covered > 0 ? 1 : 0),
-			statement_pct: total > 0 ? (covered / total) * 100 : 0,
-		};
-	});
+			statement_pct: (covered / total) * 100,
+		});
+	}
 	return { filePath: rel, mtime, functions };
 }

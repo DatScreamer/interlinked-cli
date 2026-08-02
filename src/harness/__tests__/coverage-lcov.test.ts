@@ -216,7 +216,11 @@ describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () =
 		expect(nonNull(perFile.functions[0]).hits).toBe(5); // from FNDA
 	});
 
-	it("yields 0% (and 0 hits) for a function whose range LCOV never recorded", () => {
+	it("N: omits a function whose range LCOV never recorded (unknown ≠ 0%)", () => {
+		// The range comes from the CURRENT source AST; LCOV knowing nothing about
+		// it means the source moved since the run, not that the function is
+		// uncovered. The old 0% was indistinguishable from real zero coverage and
+		// fabricated maximal CRAP scores for well-tested functions.
 		const lcov = "SF:src/foo.ts\nDA:1,5\nend_of_record\n";
 		const canonical = parseLcov(lcov, { cwd: "/repo" });
 		const cf = canonical.files.get("src/foo.ts");
@@ -224,6 +228,18 @@ describe("perFileCoverageFromCanonical (LCOV → per-function CRAP input)", () =
 		const perFile = perFileCoverageFromCanonical(cf, "src/foo.ts", 1, [
 			{ name: "ghost", line: 50, endLine: 60 },
 		]);
+		expect(perFile.functions).toEqual([]);
+	});
+
+	it("P: still reports a genuine 0% when LCOV recorded the range as unexecuted", () => {
+		const lcov = "SF:src/foo.ts\nDA:1,0\nDA:2,0\nend_of_record\n";
+		const canonical = parseLcov(lcov, { cwd: "/repo" });
+		const cf = canonical.files.get("src/foo.ts");
+		if (!cf) throw new Error("expected an LCOV record for src/foo.ts");
+		const perFile = perFileCoverageFromCanonical(cf, "src/foo.ts", 1, [
+			{ name: "cold", line: 1, endLine: 2 },
+		]);
+		expect(perFile.functions).toHaveLength(1);
 		expect(nonNull(perFile.functions[0]).statement_pct).toBe(0);
 		expect(nonNull(perFile.functions[0]).hits).toBe(0);
 	});

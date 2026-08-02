@@ -56,6 +56,16 @@ Full coverage reduces the score to cyclomatic, but low coverage can exceed the d
 even at modest complexity (complexity 5 at 0% coverage scores 30). Treat complexity and coverage
 as independent levers; neither cap alone guarantees a safe CRAP score.
 
+**A function with no coverage reading gets no CRAP score at all.** When the report contains no
+measurement for a function — the source moved since the last coverage run, or the instrumenter
+never emitted an entry for it — that is *unknown* coverage, not 0%. Such functions are omitted
+from CRAP findings entirely: absent from `interlinked metrics` hotspots, from the CRAP
+distribution, and from the over-cap gate count (they still carry cyclomatic complexity, so they
+stay in the function inventory). Scoring them as 0% used to drive CRAP to its ceiling, which put
+fully-covered functions at the top of the hotspot list and false-blocked edits to well-tested
+code. If a function you expect to see is missing from the hotspots, regenerate coverage
+(`npm run test:coverage` or the project equivalent) rather than reading its absence as a pass.
+
 ## Mutation testing: choose cadence, scope, and enforcement
 
 Interlinked has **two independent mutation systems**. Do not treat their baselines or config as

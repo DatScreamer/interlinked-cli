@@ -216,13 +216,39 @@ describe("loadCoverageFinal", () => {
 					"0": { name: "", decl: { start: { line: 42 }, end: { line: 50 } } },
 				},
 				f: { "0": 1 },
-				statementMap: {},
-				s: {},
+				// At least one statement must fall inside 42–50: a function the
+				// report carries no statement for is treated as unmeasured and
+				// omitted entirely, which would leave nothing to name here.
+				statementMap: { "0": { start: { line: 43 } } },
+				s: { "0": 1 },
 			},
 		});
 		const result = loadCoverageFinal(coveragePath, tmp);
 		const entry = coverageForFile(result as never, "src/foo.ts");
 		expect(nonNull(entry?.functions[0]).name).toBe("anon@42");
+	});
+
+	it("N: omits a function the report carries no statement for (unknown ≠ 0%)", () => {
+		// Istanbul routinely emits an fnMap entry whose line range no longer holds
+		// any statement — the source moved since the run. Reporting 0% there is
+		// indistinguishable from real zero coverage and drove CRAP to its ceiling
+		// for well-tested functions, so the entry is dropped instead.
+		const absPath = join(tmp, "src/foo.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {
+					"0": { name: "ghost", decl: { start: { line: 42 }, end: { line: 50 } } },
+					"1": { name: "real", decl: { start: { line: 1 }, end: { line: 5 } } },
+				},
+				f: { "0": 0, "1": 3 },
+				statementMap: { "0": { start: { line: 2 } } },
+				s: { "0": 1 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/foo.ts");
+		expect(entry?.functions.map((f) => f.name)).toEqual(["real"]);
 	});
 });
 

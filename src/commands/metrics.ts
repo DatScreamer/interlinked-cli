@@ -304,6 +304,47 @@ export function cyclomaticForMetrics(content: string, filePath: string): Functio
 	return computeCyclomaticComplexity(content, filePath);
 }
 
+/**
+ * Per-function metrics for one file. Functions the coverage tool actually
+ * reported get a coverage percentage and a CRAP score; functions it never
+ * reported — an instrumentation gap or line drift past `computeCrap`'s slack
+ * window — get `null` for both. `null` keeps them in the inventory (they still
+ * carry cyclomatic complexity) while holding them out of the CRAP ranking,
+ * the CRAP distribution, and the over-cap gate count, all of which already
+ * filter on a non-null score. The alternative — scoring unknown coverage as
+ * 0% — put fully-covered functions at the top of the hotspot list.
+ */
+function fileFunctionMetrics(args: {
+	comps: FunctionComplexityEntry[];
+	perFile: PerFileCoverage | undefined;
+	rel: string;
+	fileMtime: number;
+}): FnMetric[] {
+	const { comps, perFile, rel, fileMtime } = args;
+	const scored = perFile
+		? computeCrapForFile({
+				complexities: comps,
+				perFile,
+				filePath: rel,
+				fileMtime,
+				threshold: 0,
+				staleTolerance: "include",
+			})
+		: [];
+	const byKey = new Map(scored.map((f) => [`${f.function}:${f.line}`, f]));
+	return comps.map((e) => {
+		const hit = byKey.get(`${e.name}:${e.line}`);
+		return {
+			file: rel,
+			name: e.name,
+			line: e.line,
+			cyclomatic: e.cyclomatic,
+			coveragePct: hit ? hit.coverage_pct : null,
+			crap: hit ? hit.crap_score : null,
+		};
+	});
+}
+
 function buildReport(cwd: string, topN: number): MetricsReport {
 	// Resolve the gate caps ONCE per scan from `.interlinked/metric-caps.json`
 	// (else the shipped defaults) — these are the SAME numbers the write/commit
@@ -335,34 +376,12 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		// exemption — that exemption (in computeCyclomaticComplexity) is for
 		// content-quality scans, not measurement, and would hide the harness's
 		// own checks/ tree. Fall back to the guarded walker only sans typescript.
+		const fileMtime = statSync(abs).mtimeMs;
 		const comps = cyclomaticForMetrics(content, abs);
-		const perFile = cov.perFile(rel, comps, statSync(abs).mtimeMs);
+		const perFile = cov.perFile(rel, comps, fileMtime);
 		if (cov.available && !perFile) filesNoCoverage++;
 
-		const fileFns: FnMetric[] = perFile
-			? computeCrapForFile({
-					complexities: comps,
-					perFile,
-					filePath: rel,
-					fileMtime: statSync(abs).mtimeMs,
-					threshold: 0,
-					staleTolerance: "include",
-				}).map((f) => ({
-					file: rel,
-					name: f.function,
-					line: f.line,
-					cyclomatic: f.complexity,
-					coveragePct: f.coverage_pct,
-					crap: f.crap_score,
-				}))
-			: comps.map((e) => ({
-					file: rel,
-					name: e.name,
-					line: e.line,
-					cyclomatic: e.cyclomatic,
-					coveragePct: null,
-					crap: null,
-				}));
+		const fileFns = fileFunctionMetrics({ comps, perFile, rel, fileMtime });
 		fns.push(...fileFns);
 
 		const companionExpected = !isTddExemptPath(rel);

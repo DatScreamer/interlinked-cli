@@ -320,9 +320,15 @@ describe("metricsCommand — coverage present (CRAP path)", () => {
 		withCoverage();
 		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
 		m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+		// Scores are joined back onto the complexity entries by name:line, so the
+		// AST mock must declare the same two functions the CRAP mock scores.
+		m.computeCyclomaticAst.mockReturnValue([
+			comp({ name: "lo", line: 1, cyclomatic: 5 }),
+			comp({ name: "hi", line: 20, cyclomatic: 12 }),
+		]);
 		m.computeCrapForFile.mockReturnValue([
-			crap({ function: "lo", crap_score: 12, coverage_pct: 90 }),
-			crap({ function: "hi", crap_score: 45, coverage_pct: 10, complexity: 12 }),
+			crap({ function: "lo", line: 1, crap_score: 12, coverage_pct: 90 }),
+			crap({ function: "hi", line: 20, crap_score: 45, coverage_pct: 10, complexity: 12 }),
 		]);
 		await metricsCommand({ cwd: CWD, json: true });
 		const r = lastJson();
@@ -477,8 +483,9 @@ describe("metricsCommand — output modes", () => {
 		m.coverageForFile.mockImplementation((_c, rel) =>
 			rel === "src/a.ts" ? perFile("src/a.ts") : undefined,
 		);
+		m.computeCyclomaticAst.mockReturnValue([comp({ name: "hot", line: 1 })]);
 		m.computeCrapForFile.mockReturnValue([
-			crap({ function: "hot", crap_score: 50, coverage_pct: 5 }),
+			crap({ function: "hot", line: 1, crap_score: 50, coverage_pct: 5 }),
 		]);
 		m.loadCoverageSummary.mockReturnValue({
 			"src/a.ts": { lines: { pct: 40 }, branches: { pct: 0 } },
@@ -543,9 +550,15 @@ describe("metricsCommand — topN clamping", () => {
 		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
 		m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
 		m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
-		m.computeCyclomaticAst.mockReturnValue([comp()]);
+		// Each scored function needs a matching complexity entry — the report
+		// joins the two by name:line and drops scores it cannot attribute.
+		m.computeCyclomaticAst.mockReturnValue(
+			Array.from({ length: count }, (_, i) => comp({ name: `f${i}`, line: i + 1 })),
+		);
 		m.computeCrapForFile.mockReturnValue(
-			Array.from({ length: count }, (_, i) => crap({ function: `f${i}`, crap_score: i + 1 })),
+			Array.from({ length: count }, (_, i) =>
+				crap({ function: `f${i}`, line: i + 1, crap_score: i + 1 }),
+			),
 		);
 	}
 

@@ -314,17 +314,25 @@ function extractFunctionCoverage(entry: IstanbulFileEntry): FunctionCoverage[] {
 		const locEnd =
 			fnEntry.loc?.end?.line ?? fnEntry.decl?.end?.line ?? startLine;
 
+		const pct = computeStatementPct({
+			fnStartLine: startLine,
+			fnEndLine: locEnd,
+			statementMap,
+			statementHits,
+		});
+		// No statement fell inside the function's line range, so the report
+		// carries no measurement for it — typically the source moved since the
+		// coverage run. Emitting 0% here would be indistinguishable from a
+		// genuinely uncovered function and drives CRAP to its maximum; omit
+		// the entry so downstream consumers see "unknown", not "uncovered".
+		if (pct === null) continue;
+
 		functions.push({
 			name: fnEntry.name || `anon@${startLine}`,
 			line: startLine,
 			endLine: locEnd,
 			hits: hits[id] ?? 0,
-			statement_pct: computeStatementPct({
-				fnStartLine: startLine,
-				fnEndLine: locEnd,
-				statementMap,
-				statementHits,
-			}),
+			statement_pct: pct,
 		});
 	}
 
@@ -375,7 +383,13 @@ interface StatementPctInput {
  * [fnStartLine, fnEndLine] and which executed at least once.
  * Returns 0 when the function has no statements in its range.
  */
-function computeStatementPct(input: StatementPctInput): number {
+/**
+ * Percent of statements inside the function's line range that executed, or
+ * `null` when the report contains no statement in that range at all. `null` is
+ * "not measured", which is NOT the same as 0% — see the caller for why the
+ * distinction has to survive this far.
+ */
+function computeStatementPct(input: StatementPctInput): number | null {
 	const { fnStartLine, fnEndLine, statementMap, statementHits } = input;
 	let total = 0;
 	let covered = 0;
@@ -386,7 +400,7 @@ function computeStatementPct(input: StatementPctInput): number {
 		total++;
 		if ((statementHits[id] ?? 0) > 0) covered++;
 	}
-	if (total === 0) return 0;
+	if (total === 0) return null;
 	return (covered / total) * 100;
 }
 

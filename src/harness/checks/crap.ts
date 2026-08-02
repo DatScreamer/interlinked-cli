@@ -18,6 +18,12 @@
 // since the last coverage run. If the file has changed significantly
 // (post-edit mtime > coverage mtime), the `stale` flag is set so callers
 // can choose whether to surface, tag, or skip the finding.
+//
+// A function with NO coverage match yields NO finding. Unknown coverage is
+// not 0% coverage, and the two are indistinguishable once a score exists —
+// so the score is withheld rather than guessed. Callers that need a complete
+// function inventory (e.g. `interlinked metrics`) re-join the unmatched
+// entries themselves with a null score.
 
 import type { FunctionCoverage, PerFileCoverage } from "../coverage-final-reader.js";
 import type { FunctionComplexityEntry } from "./cyclomatic.js";
@@ -101,7 +107,17 @@ export function computeCrap(input: ComputeCrapInput): CrapFinding[] {
 	const findings: CrapFinding[] = [];
 	for (const fn of complexities) {
 		const match = findCoverageMatch(fn, coverage);
-		const covPct = match?.statement_pct ?? 0;
+		// No coverage entry for this function means the coverage tool never
+		// REPORTED it — an instrumentation gap (istanbul's fnMap routinely
+		// omits nested/arrow declarations) or name/line drift beyond the slack
+		// window. That is UNKNOWN coverage, not 0%. Scoring it as 0% drives
+		// CRAP to its maximum for the function's complexity, which is how a
+		// fully-covered function surfaces as a top hotspot and how the CRAP
+		// write gate false-blocks an edit to well-tested code. A CRAP score
+		// requires a real coverage reading; without one there is no finding.
+		// File-level absence is handled upstream (`coverage === undefined`).
+		if (!match) continue;
+		const covPct = match.statement_pct;
 		const score = crapScore(fn.cyclomatic, covPct);
 		if (score < threshold) continue;
 

@@ -171,7 +171,11 @@ describe("computeCrap", () => {
 		expect(nonNull(findings[0]).coverage_pct).toBe(100);
 	});
 
-	it("treats unmatched functions as cov=0 (worst-case CRAP)", () => {
+	it("N: yields no finding for a function with no coverage match", () => {
+		// Unknown coverage is not 0% coverage. Scoring an unmatched function as
+		// 0% drove CRAP to its maximum (110 for a 10-branch function), which put
+		// fully-covered functions at the top of the hotspot list and false-blocked
+		// the CRAP write gate. Withhold the score instead.
 		const findings = computeCrap({
 			complexities: [mkFn("newFn", 42, 10)],
 			coverage: [mkCov("oldFn", 1, 100)], // no name match, no line match
@@ -181,8 +185,21 @@ describe("computeCrap", () => {
 			threshold: 1,
 			staleTolerance: "tag",
 		});
-		expect(nonNull(findings[0]).coverage_pct).toBe(0);
-		expect(nonNull(findings[0]).crap_score).toBe(110); // comp=10, cov=0
+		expect(findings).toEqual([]);
+	});
+
+	it("N: withholds only the unmatched function, keeping matched siblings", () => {
+		const findings = computeCrap({
+			complexities: [mkFn("matched", 10, 10), mkFn("unmatched", 500, 10)],
+			coverage: [mkCov("matched", 10, 0)],
+			filePath: "src/foo.ts",
+			fileMtime: 1000,
+			coverageMtime: 1000,
+			threshold: 1,
+			staleTolerance: "tag",
+		});
+		expect(findings.map((f) => f.function)).toEqual(["matched"]);
+		expect(nonNull(findings[0]).crap_score).toBe(110); // comp=10, genuinely cov=0
 	});
 
 	it("falls back to line-slack match (name-agnostic) after a rename", () => {
