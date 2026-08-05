@@ -94,12 +94,58 @@ describe("evaluateScratchpadWriteGuard — authored-code placement", () => {
 
 	// --- negative cases: legitimate patterns that must NOT fire ---
 
-	it("allows non-code scratchpad writes (downloads / outputs) untouched", () => {
+	it("never BLOCKS a non-code scratchpad write (downloads / outputs)", () => {
 		for (const name of ["results.json", "report.md", "bundle.tgz", "LICENSE"]) {
+			expect(run(scratchpadPath(SESSION_ID, name)).decision).toBeNull();
+		}
+	});
+
+	// Record-and-warn policy (operator decision 2026-08-04): the placement gate
+	// only ever inspected CODE extensions, so the single largest ephemeral class
+	// in the corpus — `.json` gate-workaround manifests — passed with no warning
+	// and no trace. Bulk downloads stay silent; they are the sanctioned use.
+	it("steers manifest-ish and unclassified ephemeral writes without blocking", () => {
+		for (const name of ["results.json", "LICENSE"]) {
+			const { decision, warnings } = run(scratchpadPath(SESSION_ID, name));
+			expect(decision).toBeNull();
+			expect(warnings.join("\n")).toContain("[interlinked:ephemeral]");
+		}
+	});
+
+	it("steers captured external-agent output toward .interlinked/", () => {
+		const { decision, warnings } = run(scratchpadPath(SESSION_ID, "codex-review-2-result.md"));
+		expect(decision).toBeNull();
+		expect(warnings.join("\n")).toContain(".interlinked/agent-output/");
+	});
+
+	it("stays silent on bulk downloads — the scratchpad's sanctioned use", () => {
+		for (const name of ["bundle.tgz", "shot.png"]) {
 			const { decision, warnings } = run(scratchpadPath(SESSION_ID, name));
 			expect(decision).toBeNull();
 			expect(warnings).toHaveLength(0);
 		}
+	});
+
+	// The applier guard spans BOTH staging grounds: the ephemeral scratchpad and
+	// the durable in-repo probe dir. Recovered artifact it generalises:
+	// `plm/apply.mjs` + rN.anchor.txt/rN.new.txt (2026-07 scratchpad archive).
+	it("blocks a hand-rolled patch applier in the scratchpad", () => {
+		const applier = 'writeFileSync("src/harness/obligations.ts", patched);';
+		const { decision } = run(scratchpadPath(SESSION_ID, "apply.mjs"), { content: applier });
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("builtin-patch-applier");
+	});
+
+	it("blocks the same applier staged in the in-repo scratch/ probe dir", () => {
+		const applier = 'appendFileSync("src/lib/config.ts", chunk);';
+		const { decision } = run(join(ROOT, "scratch", "apply.mjs"), { content: applier });
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("builtin-patch-applier");
+	});
+
+	it("leaves an ordinary scratch/ probe alone", () => {
+		const probe = 'const s = readFileSync("src/harness/server.ts", "utf-8");\nconsole.log(s);';
+		expect(run(join(ROOT, "scratch", "probe.mjs"), { content: probe }).decision).toBeNull();
 	});
 
 	it("ignores code writes inside the repo (not an ephemeral temp path)", () => {

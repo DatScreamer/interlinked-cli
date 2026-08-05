@@ -51,10 +51,13 @@ export function registerQualityCommands(program: Command): void {
 		.description(
 			"Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.",
 		)
-		.option("--stdin", "Read a single-file manifest ({version,edits}) from stdin (requires <path>)")
+		.option(
+			"--stdin",
+			"Read a manifest from stdin: {version,batches} for multi-file (no <path> needed), or {version,edits} with <path> for one file. PREFERRED — no temp file.",
+		)
 		.option(
 			"--manifest <file>",
-			"Read a single- or multi-file manifest ({version,edits} or {version,batches}) from <file>",
+			"Read the same manifest shapes from <file>. Only for a manifest you already have on disk; prefer --stdin.",
 		)
 		.option("--json", "Machine-readable output (emits the design-doc error-code shape)")
 		.action(async (path: string | undefined, opts: OptionValues) => {

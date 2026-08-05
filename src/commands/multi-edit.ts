@@ -187,11 +187,17 @@ async function readStdin(): Promise<string> {
 /**
  * Commander action handler for `interlinked multi-edit`.
  *
- * Supports two invocation shapes:
+ * Supports three invocation shapes. Stdin is the preferred one for BOTH
+ * single- and multi-file work — it needs no temp file, which matters because
+ * the whole point of this command is to unblock coordinated edits, and making
+ * the agent stage a manifest on disk first just relocates the friction:
+ *   interlinked multi-edit --stdin
+ *       Multi-file manifest ({ version: 1, batches: [{ path, edits }] }) on
+ *       stdin. No positional path. THE default for coordinated cross-file edits.
  *   interlinked multi-edit <path> --stdin
- *       Reads a single-file manifest ({ version: 1, edits: [...] }) from stdin.
+ *       Single-file manifest ({ version: 1, edits: [...] }) on stdin.
  *   interlinked multi-edit --manifest <path>
- *       Reads a single-file OR multi-file manifest from `path`.
+ *       Either shape, read from a manifest already on disk.
  */
 export async function multiEditCommand(
 	path: string | undefined,
@@ -223,7 +229,7 @@ export async function multiEditCommand(
 			error_detail: {
 				path: path || "",
 				message:
-					"Must supply either `<path> --stdin` (single file, manifest on stdin) or `--manifest <file>` (single or multi-file manifest).",
+					"Must supply --stdin or --manifest. Preferred (no temp file): pipe {version:1,batches:[{path,edits}]} to `interlinked multi-edit --stdin` for any number of files, or {version:1,edits:[...]} with a <path> for one file. `--manifest <file>` reads the same shapes from disk.",
 			},
 		});
 		process.exitCode = 1;

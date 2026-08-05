@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { matchesAnyGlob } from "../lib/path-glob.js";
 import { sanitizeSessionId } from "./session-paths.js";
 import type { GuardRulesConfig, ScratchpadArchiveConfig } from "./types.js";
 
@@ -42,7 +43,9 @@ export interface ScratchpadArchiveSkip {
 		| "symlink"
 		| "budget-exhausted"
 		| "file-cap"
-		| "unreadable";
+		| "unreadable"
+		| "vendored-tree"
+		| "excluded-glob";
 }
 
 export interface ScratchpadArchiveSummary {
@@ -76,6 +79,22 @@ const EXCLUDED_DIR_NAMES = new Set([
 ]);
 const EXCLUDED_EXT_RE = /\.(tgz|tar|gz|zip|br|7z|dmg|iso)$/i;
 const BINARY_SNIFF_BYTES = 8192;
+/** Marker files that make a scratchpad subdirectory a FOREIGN PROJECT ROOT — a
+ *  cloned repo, an extracted package, a vendored checkout. Excluding the whole
+ *  subtree (rather than just its `.git`/`node_modules`) is the difference
+ *  between an archive of the session's own work and an archive of someone
+ *  else's repo: a single 50k-file clone spends the entire file cap and evicts
+ *  every agent-authored artifact, which is exactly what happened to the
+ *  2026-08 sessions (both surviving manifests: file_count 2000, truncated). */
+const FOREIGN_ROOT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml"];
+
+/** True when `absDir` carries a foreign-project marker. Applied only to
+ *  subdirectories — the scratchpad ROOT is never treated as foreign, so a
+ *  session that drops a lone `package.json` at the top level to reproduce a
+ *  manifest bug still gets archived. */
+function isForeignProjectRoot(absDir: string): boolean {
+	return FOREIGN_ROOT_MARKERS.some((m) => existsSync(join(absDir, m)));
+}
 
 /** Candidate scratchpad locations for this (cwd, session) pair, following the
  *  coding host's layout: `<temp-root>/claude-<uid>/<cwd-slug>/<session-id>/scratchpad`.
@@ -103,20 +122,31 @@ export function deriveScratchpadCandidates(opts: {
 
 type WalkResult = { files: string[]; skipped: ScratchpadArchiveSkip[] };
 
+/** Walk-wide inputs the per-entry classifier needs (kept as one object so the
+ *  classifier's parameter list stays short). */
+type WalkContext = { sourceDir: string; excludeGlobs: string[] };
+
 /** Route one directory entry into the walk's files / skips / pending-dirs. */
 function classifyWalkEntry(
 	entry: Dirent,
 	relPath: string,
 	out: WalkResult,
 	pending: string[],
+	ctx: WalkContext,
 ): void {
 	if (entry.isSymbolicLink()) {
 		out.skipped.push({ path: relPath, reason: "symlink" });
 		return;
 	}
+	if (ctx.excludeGlobs.length > 0 && matchesAnyGlob(relPath, ctx.excludeGlobs)) {
+		out.skipped.push({ path: relPath, reason: "excluded-glob" });
+		return;
+	}
 	if (entry.isDirectory()) {
 		if (EXCLUDED_DIR_NAMES.has(entry.name)) {
 			out.skipped.push({ path: relPath, reason: "excluded-dir" });
+		} else if (isForeignProjectRoot(join(ctx.sourceDir, relPath))) {
+			out.skipped.push({ path: relPath, reason: "vendored-tree" });
 		} else {
 			pending.push(relPath);
 		}
@@ -128,15 +158,20 @@ function classifyWalkEntry(
 /** Enumerate archivable files (relative paths) under `sourceDir`, recording
  *  symlink / excluded-dir skips. Enumeration is bounded: it stops once the
  *  candidate list is comfortably past the file cap. */
-function collectCandidateFiles(sourceDir: string, maxFiles: number): WalkResult {
+function collectCandidateFiles(
+	sourceDir: string,
+	maxFiles: number,
+	excludeGlobs: string[] = [],
+): WalkResult {
 	const out: WalkResult = { files: [], skipped: [] };
 	const pending: string[] = [""];
+	const ctx: WalkContext = { sourceDir, excludeGlobs };
 	const scanCeiling = maxFiles + SKIP_LIST_CAP;
 	while (pending.length > 0 && out.files.length <= scanCeiling) {
 		const relDir = pending.pop() ?? "";
 		for (const entry of readdirSync(join(sourceDir, relDir), { withFileTypes: true })) {
 			const relPath = relDir ? join(relDir, entry.name) : entry.name;
-			classifyWalkEntry(entry, relPath, out, pending);
+			classifyWalkEntry(entry, relPath, out, pending, ctx);
 		}
 	}
 	out.files.sort();
@@ -218,7 +253,7 @@ export function archiveScratchpadDir(opts: {
 	const blobsDir = join(destRoot, "blobs");
 	mkdirSync(blobsDir, { recursive: true });
 
-	const walk = collectCandidateFiles(sourceDir, budget.maxFiles);
+	const walk = collectCandidateFiles(sourceDir, budget.maxFiles, config?.archive_excludes ?? []);
 	const skipped: ScratchpadArchiveSkip[] = [...walk.skipped];
 	const entries: ManifestEntry[] = [];
 	let totalBytes = 0;

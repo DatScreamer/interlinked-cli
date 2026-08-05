@@ -80,6 +80,11 @@ export function buildHarnessTestEvent(input: HarnessTestInput): HarnessTestPlan 
 
 	const event: JsonObject = {
 		hook_event: "PreToolUse",
+		// This command SIMULATES a tool call; nothing is written to disk. The
+		// marker tells the daemon's evaluators to compute the verdict but persist
+		// nothing — otherwise a probe opens real obligations against files it
+		// never touched and those block later, genuine edits.
+		dry_run: true,
 		session_id: "cli-test",
 		agent_source: "claude",
 		agent_name: "test",

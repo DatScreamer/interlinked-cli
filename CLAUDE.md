@@ -157,13 +157,28 @@ is allowed by repo-confinement (the June triad carve-out) but governed by intent
 |---|---|---|
 | Agent-authored CODE (probes, drafts) | **Block-with-redirect to `<repo>/scratch/`** (default; `scratchpad_guard.code_write_mode: "warn"\|"off"` softens; `INTERLINKED_DISABLE_SCRATCH_GUARD=1` one-command bypass). Covers Write/Edit AND bash redirect/tee — bash targets are resolved through same-command `VAR=` assignments and `cd` hops (`resolveBashWriteTarget`). | `evaluator/scratchpad-write-guard.ts`, steer in `evaluator/pre-tool-rules.ts` |
 | Secrets to ANY ephemeral temp path | **Block unconditionally** (`builtin-tmp-secrets`; temp paths sit outside protected-file globs but are the classic exfil-staging surface). Escape hatch does NOT apply. | same guard |
+| Hand-rolled PATCH APPLIER (script that writes into repo source) | **Block** (`builtin-patch-applier`) in the scratchpad AND in `<repo>/scratch/`. Two required signals: a filesystem-write call plus a target outside its own sandbox (`src/**`-shaped literal, `process.cwd()`, `..`). Bypass: `INTERLINKED_DISABLE_PATCH_APPLIER_GUARD=1`. | `evaluator/patch-applier-guard.ts` |
 | Downloads / extractions / non-code bulk | Allowed — belongs out-of-repo (in-tree it would poison rg + the trigram index) | — |
+| Captured EXTERNAL-AGENT output (review/audit/report `.md`) | Allowed, but warned toward `<repo>/.interlinked/agent-output/` — hours-long Codex/Sol runs are the artifacts least able to afford archival roulette | `evaluator/scratchpad-write-guard.ts` |
+| Every ephemeral write, ANY extension | **Recorded** to `.interlinked/ephemeral-writes.jsonl` (`ts/session/tool/path/ext/bytes/kind/blocked`); manifest-ish and unclassified kinds also warn. Closes the pre-2026-08 blind spot where the guard only inspected CODE extensions, so `.json` gate-workaround manifests left no trace at all. | `ephemeral-write-log.ts` |
 | Everything left at session end | **Archived** into `.interlinked/scratchpad-archive/` (content-addressed blobs + per-session manifest; caps + excludes recorded, no silent truncation; `scratchpad_archive` config, default ON) | `scratchpad-archive.ts`, wired in `server/lifecycle-events.ts` SessionEnd |
 
 `interlinked scratch init|status` provisions `scratch/` in any repo (README +
 `.gitignore` carve-out + `.ignore` search negation — `src/commands/scratch.ts`).
 Both config sections are locally overridable (classified in `rules/merge.ts` +
 pinned by `merge-parity.test.ts`).
+
+**The archive skips FOREIGN PROJECT ROOTS** (2026-08-04). A scratchpad
+subdirectory carrying `.git` / `package.json` / `Cargo.toml` / `go.mod` /
+`pyproject.toml` is a clone or extraction, not the session's work, and its whole
+subtree is skipped with reason `vendored-tree`; `scratchpad_archive.archive_excludes`
+takes extra globs for bulk that carries no marker. This is not hygiene — it is
+the difference between an archive and nothing: before the rule, a single cloned
+repo spent the entire 2000-file cap, so both surviving manifests read
+`truncated: true` and every agent-authored artifact was evicted, including the
+`plm/apply.mjs` patch applier that motivated the row above. The scratchpad ROOT
+is never treated as foreign, so a lone `package.json` repro still archives.
+
 
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 

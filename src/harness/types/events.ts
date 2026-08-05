@@ -120,6 +120,14 @@ export interface HarnessEvent {
 	cwd?: string;
 	model?: string;
 	timestamp: string;
+	/** SIMULATION marker. Set only by `interlinked harness test` (the synthetic
+	 *  event it fires at the daemon). The verdict is computed and displayed
+	 *  normally; what changes is that no evaluator may PERSIST anything from it —
+	 *  no obligation-ledger txn, no ephemeral-write record. A read-only probe
+	 *  that moves the gate is worse than no probe: on 2026-08-04 three
+	 *  `harness test --write` calls opened a real transient debt on a file they
+	 *  never wrote, which then blocked an unrelated edit. */
+	dry_run?: boolean;
 
 	// Subagent context
 	parent_agent?: string;

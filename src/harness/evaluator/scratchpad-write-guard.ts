@@ -22,7 +22,12 @@
 // INTERLINKED_DISABLE_SCRATCH_GUARD=1.
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import {
+	appendEphemeralWrite,
+	buildEphemeralWriteRecord,
+	classifyEphemeralWrite,
+} from "../ephemeral-write-log.js";
 import { CODE_FILE_EXT_RE } from "../pre-checks-bash-write-detect.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "../types.js";
 import {
@@ -30,6 +35,11 @@ import {
 	resolveWriteTargetPath,
 	sessionScratchpadAllows,
 } from "./filesystem-guards.js";
+import {
+	buildPatchApplierReason,
+	detectPatchApplier,
+	isPatchApplierGuardDisabled,
+} from "./patch-applier-guard.js";
 import { containsSecrets } from "./pre-tool-helpers.js";
 import { isFileWrite } from "./tool-classifiers.js";
 
@@ -107,11 +117,58 @@ export function evaluateScratchpadWriteGuard(
 	const rawPath = (toolInput.file_path as string) || (toolInput.path as string) || "";
 	if (!rawPath) return null;
 	const resolved = resolveWriteTargetPath(rawPath, event.cwd);
-	if (!isEphemeralTempPath(resolved)) return null;
+	const ephemeral = isEphemeralTempPath(resolved);
+	// The probe dir is durable, but it is the OTHER place an agent stages a
+	// throwaway script, so the applier check spans both. Nothing else here does.
+	if (!ephemeral && !isRepoScratchPath(resolved, event.cwd)) return null;
 
 	// SAFETY: content/new_string are strings when present (hook payload shape).
 	const content = (toolInput.content as string) || (toolInput.new_string as string) || "";
-	if (content && containsSecrets(content)) {
+	const decision = decideEphemeralWrite({
+		event,
+		rawPath,
+		resolved,
+		content,
+		ephemeral,
+		rules,
+		warnings,
+	});
+	// A simulation must not leave a ledger trace either — see HarnessEvent.dry_run.
+	if (ephemeral && !event.dry_run) {
+		appendEphemeralWrite(
+			event.cwd,
+			buildEphemeralWriteRecord({
+				sessionId: event.session_id,
+				tool: toolName,
+				absPath: resolved,
+				content,
+				blocked: decision?.decision === "block",
+			}),
+		);
+	}
+	return decision;
+}
+
+/** True when `resolved` sits under the repo's `scratch/` probe dir. */
+function isRepoScratchPath(resolved: string, projectRoot: string): boolean {
+	return resolved.startsWith(`${join(projectRoot, "scratch")}${sep}`);
+}
+
+/** The ordered policy chain for one ephemeral/probe write. Split out so the
+ *  entry point stays a thin decide-then-record shell. */
+function decideEphemeralWrite(opts: {
+	event: HarnessEvent;
+	rawPath: string;
+	resolved: string;
+	content: string;
+	ephemeral: boolean;
+	rules: GuardRulesConfig;
+	warnings: string[];
+}): HarnessDecision | null {
+	const { event, rawPath, resolved, content, ephemeral, rules, warnings } = opts;
+	const projectRoot = event.cwd as string;
+
+	if (ephemeral && content && containsSecrets(content)) {
 		return {
 			decision: "block",
 			reason:
@@ -125,14 +182,53 @@ export function evaluateScratchpadWriteGuard(
 		};
 	}
 
+	const applier = content ? detectPatchApplier(content, resolved) : null;
+	if (applier && !isPatchApplierGuardDisabled()) {
+		return {
+			decision: "block",
+			reason: buildPatchApplierReason({ target: rawPath, evidence: applier }),
+			warnings,
+			rule_id: "builtin-patch-applier",
+			severity: "high",
+			category: "harness-integrity",
+		};
+	}
+
+	if (!ephemeral) return null;
+	pushEphemeralSteer(resolved, rawPath, warnings);
 	return evaluateCodePlacement({
 		sessionId: event.session_id,
-		projectRoot: event.cwd,
+		projectRoot,
 		rawPath,
 		resolved,
 		rules,
 		warnings,
 	});
+}
+
+/** Advisory steer for the non-code ephemeral classes the placement gate never
+ *  saw. Captured external-agent output is called out specifically: those runs
+ *  cost hours, and the SessionEnd archive is a capped best-effort copy, not a
+ *  guarantee — durable output belongs in `.interlinked/` from the start. */
+function pushEphemeralSteer(resolved: string, rawPath: string, warnings: string[]): void {
+	const kind = classifyEphemeralWrite(resolved);
+	if (kind === "agent-output") {
+		warnings.push(
+			`[interlinked:ephemeral] ${rawPath} looks like captured output from an external ` +
+				`agent/review run, written to the ephemeral scratchpad. That tree is purged by the ` +
+				`OS and only best-effort archived (the SessionEnd sweep is capped and CAN truncate). ` +
+				`Write durable run output under <repo>/.interlinked/agent-output/ instead.`,
+		);
+		return;
+	}
+	if (kind === "manifest" || kind === "other") {
+		warnings.push(
+			`[interlinked:ephemeral] ${rawPath} written to the ephemeral scratchpad (recorded in ` +
+				`.interlinked/ephemeral-writes.jsonl). If this is a manifest staged to route an ` +
+				`edit around a gate, pipe it on stdin instead of persisting it — and if a gate is ` +
+				`forcing the detour, that gate is the bug worth reporting.`,
+		);
+	}
 }
 
 /** Placement decision for the session scratchpad specifically. Non-scratchpad

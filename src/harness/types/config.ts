@@ -302,6 +302,11 @@ export interface ScratchpadArchiveConfig {
 	max_total_bytes?: number;
 	/** Maximum files archived per session (default 2000). */
 	max_files?: number;
+	/** Extra path globs (relative to the scratchpad root) excluded from the
+	 *  sweep, on top of the built-in dir/extension excludes and the
+	 *  foreign-project-root rule. Use when a bulk tree carries no
+	 *  `package.json`/`.git` marker of its own. */
+	archive_excludes?: string[];
 }
 
 /** Plan-capture configuration. Master toggle + structured-userprompt parser

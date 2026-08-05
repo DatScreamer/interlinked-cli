@@ -135,3 +135,76 @@ describe("deriveScratchpadCandidates", () => {
 		).toEqual([]);
 	});
 });
+
+// Motivating incident: a cloned repo in one session's scratchpad spent the whole
+// 2000-file cap, so both surviving manifests read `truncated: true` and every
+// agent-authored artifact — including a hand-rolled patch applier — was evicted
+// before it could be archived.
+describe("archiveScratchpadDir — foreign-project-root exclusion", () => {
+	it("skips a cloned tree whole and keeps the session's own files", () => {
+		const { source, destRoot } = makeFixture();
+		mkdirSync(join(source, "oh-my-pi", "src"), { recursive: true });
+		writeFileSync(join(source, "oh-my-pi", "package.json"), "{}\n");
+		writeFileSync(join(source, "oh-my-pi", "src", "a.ts"), "export const a = 1;\n");
+		writeFileSync(join(source, "oh-my-pi", "src", "b.ts"), "export const b = 2;\n");
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "f1" });
+		expect(summary?.fileCount).toBe(2); // only the fixture's own two files
+		expect(summary?.skipped.find((s) => s.path === "oh-my-pi")?.reason).toBe("vendored-tree");
+	});
+
+	it("recognises a bare git checkout carrying no package.json", () => {
+		const { source, destRoot } = makeFixture();
+		mkdirSync(join(source, "vendored", ".git"), { recursive: true });
+		writeFileSync(join(source, "vendored", ".git", "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(source, "vendored", "README.md"), "theirs\n");
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "f2" });
+		expect(summary?.fileCount).toBe(2);
+		expect(summary?.skipped.find((s) => s.path === "vendored")?.reason).toBe("vendored-tree");
+	});
+
+	it("recognises Cargo / Go / Python roots too", () => {
+		const { source, destRoot } = makeFixture();
+		for (const [dir, marker] of [
+			["rs", "Cargo.toml"],
+			["go", "go.mod"],
+			["py", "pyproject.toml"],
+		] as const) {
+			mkdirSync(join(source, dir), { recursive: true });
+			writeFileSync(join(source, dir, marker), "x\n");
+			writeFileSync(join(source, dir, "code.txt"), "y\n");
+		}
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "f3" });
+		expect(summary?.fileCount).toBe(2);
+	});
+
+	it("does NOT treat the scratchpad ROOT as foreign", () => {
+		const { source, destRoot } = makeFixture();
+		writeFileSync(join(source, "package.json"), '{"name":"repro"}\n');
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "f4" });
+		expect(summary?.fileCount).toBe(3);
+	});
+});
+
+describe("archiveScratchpadDir — archive_excludes globs", () => {
+	it("skips paths matching a configured glob", () => {
+		const { source, destRoot } = makeFixture();
+		mkdirSync(join(source, "bulk"), { recursive: true });
+		writeFileSync(join(source, "bulk", "one.txt"), "a\n");
+		const summary = archiveScratchpadDir({
+			sourceDir: source,
+			destRoot,
+			sessionId: "g1",
+			config: { archive_excludes: ["bulk"] },
+		});
+		expect(summary?.fileCount).toBe(2);
+		expect(summary?.skipped.find((s) => s.path === "bulk")?.reason).toBe("excluded-glob");
+	});
+
+	it("archives everything when no globs are configured", () => {
+		const { source, destRoot } = makeFixture();
+		mkdirSync(join(source, "bulk"), { recursive: true });
+		writeFileSync(join(source, "bulk", "one.txt"), "a\n");
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "g2" });
+		expect(summary?.fileCount).toBe(3);
+	});
+});
