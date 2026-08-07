@@ -1,7 +1,7 @@
 // Tests for project-setup.ts — focuses on the universal
 // tsconfig.types ↔ deps cross-check helper.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -205,6 +205,194 @@ describe("checkProjectSetup", () => {
 
 		const issues = checkProjectSetup(tmp);
 		expect(issues.some((i) => /tsconfig\.json/.test(i.message))).toBe(false);
+	});
+
+	it("reports missing tsconfig.json when TypeScript files exist but no tsconfig is found up the tree", () => {
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message: "TypeScript files found but no tsconfig.json exists",
+				fix: "Run `npx tsc --init` to create a tsconfig.json",
+			},
+		]);
+	});
+
+	it("reports a parse error and stops when tsconfig.json exists but is invalid JSON", () => {
+		writeFileSync(join(tmp, "tsconfig.json"), "{ not valid json");
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message: "tsconfig.json exists but cannot be parsed (invalid JSON)",
+				fix: "Fix the JSON syntax in tsconfig.json",
+			},
+		]);
+	});
+
+	it("defaults compilerOptions to {} when tsconfig.json omits it", () => {
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({}));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(tmp);
+		// No node: imports, so only the strict-mode issue should fire — proves
+		// `compilerOptions` didn't throw when accessed despite being absent.
+		expect(issues).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message:
+					"TypeScript strict mode is not enabled — agents produce safer code with strict checks",
+				fix: 'Add "strict": true to compilerOptions',
+			},
+		]);
+	});
+
+	it("skips unreadable first-party files during the node:-import scan instead of throwing", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		const unreadable = join(tmp, "src", "secret.ts");
+		writeFileSync(unreadable, 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		chmodSync(unreadable, 0o000);
+		try {
+			expect(() => checkProjectSetup(tmp)).not.toThrow();
+			const issues = checkProjectSetup(tmp);
+			expect(issues.some((i) => i.message.includes("@types/node"))).toBe(false);
+		} finally {
+			chmodSync(unreadable, 0o644);
+		}
+	});
+
+	it("flags a types[] field that omits \"node\" when node: imports are present", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true, types: ["vitest"] } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { vitest: "^1.0.0", "@types/node": "^20.0.0" } }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(
+			issues.some((i) =>
+				i.message.includes('tsconfig.json has a "types" field but "node" is not included'),
+			),
+		).toBe(true);
+	});
+
+	it("does not flag types[] when it already includes \"node\"", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true, types: ["node"] } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes('"node" is not included'))).toBe(false);
+	});
+
+	it("flags an incompatible moduleResolution when node: imports are present", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true, moduleResolution: "classic" } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(
+			issues.some((i) =>
+				i.message === 'moduleResolution "classic" may not resolve node: protocol imports',
+			),
+		).toBe(true);
+	});
+
+	it("does not flag moduleResolution values that are compatible (case-insensitively)", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true, moduleResolution: "NodeNext" } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("may not resolve"))).toBe(false);
+	});
+
+	it("flags strict mode disabled", () => {
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: false } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message:
+					"TypeScript strict mode is not enabled — agents produce safer code with strict checks",
+				fix: 'Add "strict": true to compilerOptions',
+			},
+		]);
+	});
+
+	it("does not flag strict mode when explicitly enabled", () => {
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	it("aborts a directory walk that exceeds the scan entry cap without crashing", () => {
+		const huge = join(tmp, "huge");
+		mkdirSync(huge, { recursive: true });
+		for (let i = 0; i < 20_001; i++) {
+			closeSync(openSync(join(huge, `f${i}.txt`), "w"));
+		}
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	}, 30_000);
+
+	it("skips an unreadable directory during the project walk instead of throwing", () => {
+		const locked = join(tmp, "locked");
+		mkdirSync(locked, { recursive: true });
+		writeFileSync(join(locked, "hidden.ts"), "export const x = 1;\n");
+		chmodSync(locked, 0o000);
+		try {
+			expect(() => checkProjectSetup(tmp)).not.toThrow();
+			expect(checkProjectSetup(tmp)).toEqual([]);
+		} finally {
+			chmodSync(locked, 0o700);
+		}
 	});
 });
 

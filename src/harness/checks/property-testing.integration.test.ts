@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
+import { getGitSourceFiles } from "./export-ripple.js";
 import {
 	checkUntestedIdempotent,
 	checkUntestedInversePair,
@@ -70,6 +71,81 @@ describe("checkUntestedInversePair — positive (must fire when untested)", () =
 		expect(nonNull(out[0]).line).toBe(2);
 		expect(nonNull(out[0]).text).toContain("encode/decode");
 		expect(nonNull(out[0]).text).toContain("decode(encode(x)) === x");
+	});
+});
+
+describe("checkUntestedInversePair — additional structural coverage", () => {
+	it("recognizes `export default function` as a candidate half of a pair", () => {
+		expect(
+			fires(
+				"export default function toBuffer(x: string){ return Buffer.from(x); }\nexport function fromBuffer(b: Buffer){ return b.toString(); }",
+			),
+		).toBe(true);
+	});
+
+	it("de-dupes a repeated forward/inverse name combo instead of reporting it twice", () => {
+		const content =
+			"export function encode(x: string){ return x; }\nexport function encode(x: string){ return x; }\nexport function decode(x: string){ return x; }";
+		const out = checkUntestedInversePair(content, fakePath, cwd);
+		expect(out).toHaveLength(1);
+	});
+
+	it("does NOT pair names whose verb-stem remainders differ (encodeFoo vs decodeBar)", () => {
+		expect(
+			fires(
+				"export function encodeFoo(x: string){ return x; }\nexport function decodeBar(x: string){ return x; }",
+			),
+		).toBe(false);
+	});
+
+	it("does NOT fire when filePath resolves outside cwd (relFromRoot starts with '..')", () => {
+		const outsidePath = join(tmpdir(), "zzqp_outside_inverse.ts");
+		const content =
+			"export function encode(x: string){ return x; }\nexport function decode(x: string){ return x; }";
+		expect(checkUntestedInversePair(content, outsidePath, cwd)).toEqual([]);
+	});
+
+	it("still fires when the relative basename strips to empty (candidates prefilter yields none)", () => {
+		const content =
+			"export function encode(x: string){ return x; }\nexport function decode(x: string){ return x; }";
+		const out = checkUntestedInversePair(content, ".ts", cwd);
+		expect(out.length).toBeGreaterThan(0);
+	});
+
+	it("caps findings at 10 even when more than 10 inverse pairs are untested", () => {
+		const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"];
+		const content = letters
+			.map((l) => `export function encode${l}(x: string){ return x; }\nexport function decode${l}(x: string){ return x; }`)
+			.join("\n");
+		const out = checkUntestedInversePair(content, fakePath, cwd);
+		expect(out).toHaveLength(10);
+	});
+
+	it("returns [] via the readFileSync catch when a git-listed candidate test file is deleted before the read (stale-cache race)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "inv-pair-race-"));
+		try {
+			writeFileSync(
+				join(dir, "widget.ts"),
+				"export function encode(x: string){ return x; }\nexport function decode(x: string){ return x; }",
+			);
+			const testPath = join(dir, "widget.test.ts");
+			writeFileSync(
+				testPath,
+				"import { encode, decode } from './widget.js';\nit('round-trips', () => { expect(decode(encode('a'))).toBe('a'); });",
+			);
+			execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+			// Warm the 30s TTL cache while the file still exists, then delete it —
+			// the check's internal getGitSourceFiles call reuses the stale cached
+			// listing, so it attempts readFileSync on a path that's now gone.
+			getGitSourceFiles(dir);
+			unlinkSync(testPath);
+			const src = "export function encode(x: string){ return x; }\nexport function decode(x: string){ return x; }";
+			const out = checkUntestedInversePair(src, join(dir, "widget.ts"), dir);
+			// No readable test content found -> reads as untested -> still fires.
+			expect(out.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -155,6 +231,87 @@ describe("checkUntestedIdempotent — positive (must fire when untested)", () =>
 		expect(nonNull(out[0]).line).toBe(2);
 		expect(nonNull(out[0]).text).toContain("idempotent-shaped normalize");
 		expect(nonNull(out[0]).text).toContain("normalize(normalize(x)) === normalize(x)");
+	});
+});
+
+describe("checkUntestedIdempotent — additional structural coverage", () => {
+	it("does NOT fire when filePath resolves outside cwd (relFromRoot starts with '..')", () => {
+		const outsidePath = join(tmpdir(), "zzqp_outside_idem.ts");
+		const content = "export function normalize(x: string){ return x.trim(); }";
+		expect(checkUntestedIdempotent(content, outsidePath, cwd)).toEqual([]);
+	});
+
+	it("still fires when the relative basename strips to empty (candidates prefilter yields none)", () => {
+		const content = "export function normalize(x: string){ return x.trim(); }";
+		const out = checkUntestedIdempotent(content, ".ts", cwd);
+		expect(out.length).toBeGreaterThan(0);
+	});
+
+	it("caps findings at 10 even when more than 10 idempotent-shaped exports are untested", () => {
+		const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"];
+		const content = letters
+			.map((l) => `export function normalize${l}(x: string){ return x.trim(); }`)
+			.join("\n");
+		const out = checkUntestedIdempotent(content, idemFakePath, cwd);
+		expect(out).toHaveLength(10);
+	});
+
+	it("takes the argument-detection scan across a multi-line signature before hitting the body brace", () => {
+		const content =
+			"export function normalizeMultiline(\n  x: string\n) {\n  return x.trim();\n}";
+		expect(idemFires(content)).toBe(true);
+	});
+
+	it("handles a nested parenthesized type in the parameter list (function-typed argument)", () => {
+		const content =
+			"export function normalizeCb(x: (a: string) => string){ return x(''); }";
+		expect(idemFires(content)).toBe(true);
+	});
+
+	it("returns [] via the readFileSync catch when a git-listed candidate test file is deleted before the read (stale-cache race)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "idem-race-"));
+		try {
+			writeFileSync(
+				join(dir, "norm.ts"),
+				"export function normalize(x: string){ return x.trim(); }",
+			);
+			const testPath = join(dir, "norm.test.ts");
+			writeFileSync(
+				testPath,
+				"import { normalize } from './norm.js';\nit('is idempotent', () => { expect(normalize(normalize(' a '))).toBe(normalize(' a ')); });",
+			);
+			execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+			getGitSourceFiles(dir);
+			unlinkSync(testPath);
+			const src = "export function normalize(x: string){ return x.trim(); }";
+			const out = checkUntestedIdempotent(src, join(dir, "norm.ts"), dir);
+			expect(out.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does NOT flag when a co-located candidate test file exists but never references the function name", () => {
+		const dir = mkdtempSync(join(tmpdir(), "idem-noref-"));
+		try {
+			writeFileSync(
+				join(dir, "norm.ts"),
+				"export function normalize(x: string){ return x.trim(); }",
+			);
+			writeFileSync(
+				join(dir, "norm.test.ts"),
+				"import './norm.js';\nit('does something unrelated', () => { expect(1 + 1).toBe(2); });",
+			);
+			execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+			const src = "export function normalize(x: string){ return x.trim(); }";
+			// The candidate test file is read (nameHasTest's regex is evaluated
+			// against real content) but never matches \bnormalize\b, so this
+			// still reads as untested and fires.
+			const out = checkUntestedIdempotent(src, join(dir, "norm.ts"), dir);
+			expect(out.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

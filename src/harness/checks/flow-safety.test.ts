@@ -91,6 +91,28 @@ describe("checkAwaitStateToctou — negative cases (must NOT fire)", () => {
 		].join("\n");
 		expect(checkAwaitStateToctou(code, TS)).toEqual([]);
 	});
+
+	it("continues past an if-block whose brace never closes within budget", () => {
+		const code = `if (state.entry) {${"x".repeat(6000)}`;
+		expect(checkAwaitStateToctou(code, TS)).toEqual([]);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) when 10+ distinct blocks match", () => {
+		const blocks: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			blocks.push(`if (s${i}.entry) { await sync(); s${i}.entry.touch(); }`);
+		}
+		const out = checkAwaitStateToctou(blocks.join("\n"), TS);
+		expect(out.length).toBe(10);
+	});
+
+	it("dedupes two matches landing on the same reported line", () => {
+		const code =
+			"if (a.b) { await c(); a.b.d(); } if (a.b) { await c(); a.b.e(); }";
+		const out = checkAwaitStateToctou(code, TS);
+		expect(out.length).toBe(1);
+		expect(out[0]?.line).toBe(1);
+	});
 });
 
 // ===========================================
@@ -175,6 +197,37 @@ describe("checkCleanupReentrancy — negative cases (must NOT fire)", () => {
 		].join("\n");
 		expect(checkCleanupReentrancy(code, TS)).toEqual([]);
 	});
+
+	it("continues past a method header whose brace never closes within budget", () => {
+		const code = `dispose() {${"x".repeat(9000)}`;
+		expect(checkCleanupReentrancy(code, TS)).toEqual([]);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) for 10+ recursing methods", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			lines.push("dispose() { this.dispose(); }");
+		}
+		const out = checkCleanupReentrancy(lines.join("\n"), TS);
+		expect(out.length).toBe(10);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) for 10+ useEffect state-mutating cleanups", () => {
+		const blocks: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			blocks.push(
+				[
+					"useEffect(() => {",
+					"  return () => {",
+					`    setState(${i});`,
+					"  };",
+					"}, []);",
+				].join("\n"),
+			);
+		}
+		const out = checkCleanupReentrancy(blocks.join("\n"), TS);
+		expect(out.length).toBe(10);
+	});
 });
 
 // ===========================================
@@ -242,5 +295,38 @@ describe("checkBoundaryCopyNoRevalidation — negative cases (must NOT fire)", (
 			"}",
 		].join("\n");
 		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+
+	it("ignores Object.assign whose closing paren never appears within budget", () => {
+		const code = `Object.assign(${"a,".repeat(3000)}`;
+		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+
+	it("ignores Object.assign with a single argument (no comma, no source)", () => {
+		const code = "Object.assign(slot);";
+		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+
+	it("ignores spread when the enclosing call is a validator", () => {
+		const code = "function ok(req: any) { return schema.validate({ ...req.body }); }";
+		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) for 10+ Object.assign hits", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			lines.push(`Object.assign(slot${i}, req.body);`);
+		}
+		const out = checkBoundaryCopyNoRevalidation(lines.join("\n"), TS);
+		expect(out.length).toBe(10);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) for 10+ spread hits", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			lines.push(`const m${i} = { ...req.body };`);
+		}
+		const out = checkBoundaryCopyNoRevalidation(lines.join("\n"), TS);
+		expect(out.length).toBe(10);
 	});
 });

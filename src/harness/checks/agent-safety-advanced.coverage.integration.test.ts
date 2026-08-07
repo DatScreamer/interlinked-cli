@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -127,6 +127,12 @@ describe("checkDefaultExport — extra branches", () => {
 		].join("\n");
 		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
 	});
+
+	it("does NOT flag `export default` followed by a value matching neither the anonymous nor named forms", () => {
+		// `42` doesn't match any ANON_FORMS shape and doesn't start with
+		// `[A-Za-z_$]`, so NAMED_FORM.exec returns null (the `named` false branch).
+		expect(checkDefaultExport("export default 42;\n", "/tmp/foo.ts")).toEqual([]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +232,44 @@ describe("checkLifecycleCleanup — extra branches", () => {
 		expect(checkLifecycleCleanup(code, "src/c.test.ts")).toEqual([]);
 		expect(checkLifecycleCleanup(code, "src/c.py")).toEqual([]);
 	});
+
+	it("reports line 1 for a violation on a single-line class (no preceding newline)", () => {
+		// `stripped.slice(0, absOffset).match(/\n/g)` returns null (no newlines
+		// before the match) — exercises the `|| []` fallback at the lineIdx calc.
+		const code = "class C { start() { setInterval(f,1); } stop() { this.x = 1; } }";
+		const out = checkLifecycleCleanup(code, "src/oneline.ts");
+		expect(out.length).toBe(1);
+		expect(nonNull(out[0]).line).toBe(1);
+	});
+
+	it("stops mid-class once the 10-match cap is hit across multiple violation pairs in ONE class", () => {
+		// Seed 9 matches from 9 single-violation classes, then a 10th class with
+		// THREE simultaneous unclosed subscriptions (setInterval / setTimeout /
+		// addEventListener). The first pair fills the cap to 10; the PAIRS loop's
+		// own `if (matches.length >= 10) break` then short-circuits before the
+		// second and third pairs are even tested.
+		const filler = Array.from({ length: 9 }, (_, i) =>
+			[
+				`class Filler${i} {`,
+				"  start() { setInterval(f, 1); }",
+				"  stop() { this.x = 1; }",
+				"}",
+			].join("\n"),
+		).join("\n\n");
+		const overloaded = [
+			"class Overloaded {",
+			"  start() {",
+			"    setInterval(f, 1);",
+			"    setTimeout(g, 1);",
+			"    window.addEventListener('x', h);",
+			"  }",
+			"  stop() { this.x = 1; }",
+			"}",
+		].join("\n");
+		const code = `${filler}\n\n${overloaded}`;
+		const out = checkLifecycleCleanup(code, "src/many-pairs.ts");
+		expect(out.length).toBe(10);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -304,6 +348,104 @@ describe("checkCircularImports", () => {
 		// exercises the isAbsolute=false branch.
 		writeFileSync(join(dir, "rel.ts"), "export const rel = 1;\n");
 		expect(checkCircularImports("export const rel = 1;", "rel.ts", dir)).toEqual([]);
+	});
+
+	it("reuses a cached file read on a diamond dependency (b and c both import d)", () => {
+		const aPath = join(dir, "diamond-a.ts");
+		const aContent =
+			'import { b } from "./diamond-b.js";\nimport { c } from "./diamond-c.js";\nexport const a = () => b() + c();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "diamond-b.ts"),
+			'import { d } from "./diamond-d.js";\nexport const b = () => d();\n',
+		);
+		writeFileSync(
+			join(dir, "diamond-c.ts"),
+			'import { d } from "./diamond-d.js";\nexport const c = () => d();\n',
+		);
+		writeFileSync(join(dir, "diamond-d.ts"), "export const d = () => 1;\n");
+		// d is read once via readCached (miss), then again via the c branch
+		// (cache hit) — no crash, no cycle.
+		expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+	});
+
+	it("skips a file it cannot read (readCached catch branch) without crashing", () => {
+		const aPath = join(dir, "locked-a.ts");
+		const aContent = 'import { z } from "./locked-b.js";\nexport const a = () => z;\n';
+		writeFileSync(aPath, aContent);
+		const bPath = join(dir, "locked-b.ts");
+		writeFileSync(bPath, "export const z = 1;\n");
+		chmodSync(bPath, 0o000);
+		try {
+			expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+		} finally {
+			chmodSync(bPath, 0o644);
+		}
+	});
+
+	it("caps reported cycles at MAX_PATHS (5) when more than 5 distinct 2-node cycles exist", () => {
+		const aPath = join(dir, "fan-a.ts");
+		const imports = Array.from(
+			{ length: 6 },
+			(_, i) => `import { v${i} } from "./fan-b${i}.js";`,
+		).join("\n");
+		const aContent = `${imports}\nexport const a = 1;\n`;
+		writeFileSync(aPath, aContent);
+		for (let i = 0; i < 6; i++) {
+			writeFileSync(
+				join(dir, `fan-b${i}.ts`),
+				`import { a } from "./fan-a.js";\nexport const v${i} = () => a;\n`,
+			);
+		}
+		const out = checkCircularImports(aContent, aPath, dir);
+		expect(out.length).toBe(5);
+	});
+
+	it("avoids infinite recursion on an inner cycle that doesn't touch the start file", () => {
+		// a -> b -> c -> b (cycle among b/c, not involving a). Must terminate
+		// and report no cycle back to `a`.
+		const aPath = join(dir, "inner-a.ts");
+		const aContent = 'import { b } from "./inner-b.js";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "inner-b.ts"),
+			'import { c } from "./inner-c.js";\nexport const b = () => c();\n',
+		);
+		writeFileSync(
+			join(dir, "inner-c.ts"),
+			'import { b } from "./inner-b.js";\nexport const c = () => b();\n',
+		);
+		expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+	});
+
+	it("de-duplicates an identical cycle string reached via two separate import statements", () => {
+		const aPath = join(dir, "dup-a.ts");
+		const aContent =
+			'import { x } from "./dup-b.js";\nimport { y } from "./dup-b.js";\nexport const a = () => x + y;\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "dup-b.ts"),
+			'import { a } from "./dup-a.js";\nexport const x = 1;\nexport const y = 2;\n',
+		);
+		const out = checkCircularImports(aContent, aPath, dir);
+		// Both import statements to dup-b produce the identical [a,b,a] cycle
+		// trail — the `seen` de-dupe collapses them to one reported finding.
+		expect(out.length).toBe(1);
+	});
+
+	it("caps recursion at MAX_DEPTH (10) on a long acyclic import chain without crashing", () => {
+		const N = 13;
+		const rootPath = join(dir, "chain-0.ts");
+		let rootContent = "";
+		for (let i = 0; i < N; i++) {
+			const content =
+				i < N - 1
+					? `import { v } from "./chain-${i + 1}.js";\nexport const v${i} = () => v;\n`
+					: "export const v = 1;\n";
+			writeFileSync(join(dir, `chain-${i}.ts`), content);
+			if (i === 0) rootContent = content;
+		}
+		expect(checkCircularImports(rootContent, rootPath, dir)).toEqual([]);
 	});
 });
 

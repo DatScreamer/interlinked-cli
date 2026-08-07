@@ -204,6 +204,35 @@ describe("checkPackageJsonPublishInvariants", () => {
 		expect(findings).toEqual([]);
 	});
 
+	it("treats a top-level JSON array as invalid (not an object) post-edit", () => {
+		writeFileSync(pkgPath, JSON.stringify(FULL_PKG));
+		const findings = checkPackageJsonPublishInvariants("[1,2,3]", pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).text).toContain("not valid JSON");
+	});
+
+	it("treats a top-level JSON primitive as invalid (not an object) post-edit", () => {
+		writeFileSync(pkgPath, JSON.stringify(FULL_PKG));
+		const findings = checkPackageJsonPublishInvariants("42", pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).text).toContain("not valid JSON");
+	});
+
+	it("does NOT fire when the pre-edit path is a directory (unreadable as a file)", () => {
+		mkdirSync(pkgPath, { recursive: true });
+		const findings = checkPackageJsonPublishInvariants(JSON.stringify({ name: "x" }), pkgPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("does NOT flag a field that pre-edit held only an empty string (not 'present')", () => {
+		const pkgWithBlank = { ...FULL_PKG, homepage: "" };
+		writeFileSync(pkgPath, JSON.stringify(pkgWithBlank));
+		const { homepage: _homepage, ...postEdit } = pkgWithBlank;
+		void _homepage;
+		const findings = checkPackageJsonPublishInvariants(JSON.stringify(postEdit), pkgPath);
+		expect(findings.some((f) => f.text.includes("`homepage`"))).toBe(false);
+	});
+
 	// Integration — the bug that triggered this check
 	it("integration: silently stripping half of a real package.json produces N findings", () => {
 		writeFileSync(pkgPath, JSON.stringify(FULL_PKG, null, 2));
@@ -287,6 +316,16 @@ describe("checkPackageJsonPublishInvariantsWithPublint", () => {
 			pkgPath,
 		);
 		expect(findings.some((f) => f.text.includes("`files`"))).toBe(true);
+	});
+
+	it("short-circuits before calling publint when the base result is a parse error", async () => {
+		writeFileSync(pkgPath, JSON.stringify(FULL_PKG));
+		const findings = await checkPackageJsonPublishInvariantsWithPublint(
+			'{ "name": "my-pkg", ',
+			pkgPath,
+		);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).text).toContain("not valid JSON");
 	});
 
 	it("skips publint on private packages even if installed", async () => {
@@ -398,6 +437,38 @@ describe("checkPackageJsonScriptPaths", () => {
 		mkdirSync(dirname(innerPkg), { recursive: true });
 		const content = JSON.stringify({ scripts: { run: "node ./missing.mjs" } });
 		expect(checkPackageJsonScriptPaths(content, innerPkg)).toEqual([]);
+	});
+
+	it("returns nothing when the post-edit content is not valid JSON", () => {
+		expect(checkPackageJsonScriptPaths("{ not valid", pkgPath)).toEqual([]);
+	});
+
+	it("skips a script whose value is not a string (e.g. a number)", () => {
+		const content = JSON.stringify({
+			scripts: { weird: 123, run: "node ./scripts/missing.mjs" },
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).text).toContain("scripts.run");
+	});
+
+	it("flags a missing file referenced by an absolute path", () => {
+		const content = JSON.stringify({
+			scripts: { run: "node /definitely/not-real/missing.mjs" },
+		});
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).text).toContain("/definitely/not-real/missing.mjs");
+	});
+
+	it("falls back to line 1 when the script key's raw text can't be located (unicode escape)", () => {
+		// The parsed key is "café", but the literal source text contains the
+		// é escape sequence rather than the character itself, so the
+		// per-line substring search for `"café"` never matches.
+		const content = '{"scripts":{"caf\\u00e9":"node ./scripts/missing.mjs"}}';
+		const findings = checkPackageJsonScriptPaths(content, pkgPath);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).line).toBe(1);
 	});
 
 	it("emits one finding per missing file across multiple scripts", () => {

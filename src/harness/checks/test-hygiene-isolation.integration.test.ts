@@ -319,3 +319,101 @@ describe("checkTestSubprocessDefaultTimeout", () => {
 		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
 	});
 });
+
+// ==========================================================================
+// Coverage-gap fill: extension gating, MAX_MATCHES caps, findCallSpan
+// failure, capturedIdent's null arm, and the zero-top-level-comma path
+// through hasExplicitTimeout.
+// ==========================================================================
+
+const PY_TEST = "src/lib/test_foo.py";
+
+describe("checkRealIoInTests — extension gate", () => {
+	it("does not fire on a non-JS/TS strict test file (python)", () => {
+		const code = `writeFileSync("/etc/passwd", data)`;
+		expect(checkRealIoInTests(code, PY_TEST)).toEqual([]);
+	});
+
+	it("caps findings at 5 even when 6 real-network calls qualify", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 6; i++) {
+			lines.push(`fetch("https://api${i}.example.com/x");`);
+		}
+		const matches = checkRealIoInTests(lines.join("\n"), TEST);
+		expect(matches.length).toBe(5);
+	});
+});
+
+describe("checkTestNondeterminism — extension gate, capture arm, MAX_MATCHES", () => {
+	it("does not fire on a non-JS/TS strict test file (python)", () => {
+		expect(checkTestNondeterminism(`Date.now()`, PY_TEST)).toEqual([]);
+	});
+
+	it("exempts a unique-name build line that is NOT a const/let/var capture (capturedIdent returns null)", () => {
+		const code = [
+			'it("writes a scoped file", () => {',
+			'  paths.push("file-" + Date.now());',
+			"});",
+		].join("\n");
+		expect(checkTestNondeterminism(code, TEST)).toEqual([]);
+	});
+
+	it("caps findings at 5 even when 6 lone Date.now() calls qualify", () => {
+		const lines = ['it("a", () => {'];
+		for (let i = 0; i < 6; i++) lines.push(`  use(Date.now());`);
+		lines.push("});");
+		const matches = checkTestNondeterminism(lines.join("\n"), TEST);
+		expect(matches.length).toBe(5);
+	});
+});
+
+describe("checkHardcodedTimeoutInTests — extension gate, MAX_MATCHES", () => {
+	it("does not fire on a non-JS/TS strict test file (python)", () => {
+		expect(checkHardcodedTimeoutInTests(`setTimeout(fn, 5000)`, PY_TEST)).toEqual([]);
+	});
+
+	it("caps findings at 5 even when 6 hardcoded timeouts qualify", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 6; i++) lines.push(`setTimeout(fn${i}, 1000);`);
+		const matches = checkHardcodedTimeoutInTests(lines.join("\n"), TEST);
+		expect(matches.length).toBe(5);
+	});
+});
+
+describe("checkTestSubprocessDefaultTimeout — extension gate, unbalanced call, no-comma arg, MAX_MATCHES", () => {
+	it("does not fire on a non-JS/TS strict test file (python)", () => {
+		const code = 'require("child_process"); execSync("tsc");';
+		expect(checkTestSubprocessDefaultTimeout(code, PY_TEST)).toEqual([]);
+	});
+
+	it("skips an it() call whose argument list never closes (findCallSpan returns null)", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			'it("never closes", () => {',
+			'  execSync("tsc --noEmit");',
+			// Deliberately no closing `});` for the it( call — the paren/brace
+			// span never balances within the scan window.
+		].join("\n");
+		expect(checkTestSubprocessDefaultTimeout(code, TEST)).toEqual([]);
+	});
+
+	it("flags a single-argument it() (no top-level comma) with no explicit timeout", () => {
+		const code = [
+			'import { execSync } from "node:child_process";',
+			"it(function () {",
+			'  execSync("tsc --noEmit");',
+			"});",
+		].join("\n");
+		const matches = checkTestSubprocessDefaultTimeout(code, TEST);
+		expect(matches.length).toBe(1);
+	});
+
+	it("caps findings at 5 even when 6 slow-subprocess it() calls qualify", () => {
+		const lines = ['import { execSync } from "node:child_process";'];
+		for (let i = 0; i < 6; i++) {
+			lines.push(`it("case ${i}", () => { execSync("tsc --noEmit"); });`);
+		}
+		const matches = checkTestSubprocessDefaultTimeout(lines.join("\n"), TEST);
+		expect(matches.length).toBe(5);
+	});
+});

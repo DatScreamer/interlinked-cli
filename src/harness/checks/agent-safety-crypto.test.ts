@@ -21,6 +21,21 @@ describe("checkAesEcbMode", () => {
 	it("does NOT fire on AES-GCM strings", () => {
 		expect(checkAesEcbMode('createCipheriv("aes-256-gcm", k, iv)', "a.ts")).toEqual([]);
 	});
+
+	it("does NOT run on test files", () => {
+		expect(checkAesEcbMode("c = AES.new(k, AES.MODE_ECB)", "a.test.ts")).toEqual([]);
+	});
+
+	it("flags the Node algorithm-string form on its own (stringRe, not codeRe)", () => {
+		const out = checkAesEcbMode('createCipheriv("aes-128-ecb", k, iv)', "a.ts");
+		expect(out).toHaveLength(1);
+	});
+
+	it("caps at 10 matches even when more than 10 lines fire (matches.length >= 10 break)", () => {
+		const lines = Array.from({ length: 12 }, (_, i) => `c${i} = AES.new(k, AES.MODE_ECB)`);
+		const out = checkAesEcbMode(lines.join("\n"), "a.py");
+		expect(out).toHaveLength(10);
+	});
 });
 
 describe("checkTlsVerifyDisabled", () => {
@@ -35,9 +50,20 @@ describe("checkTlsVerifyDisabled", () => {
 		expect(out.length).toBeGreaterThan(0);
 	});
 
+	it("flags the NODE_TLS_REJECT_UNAUTHORIZED=0 env-var form on its own (envRe, not codeRe)", () => {
+		const out = checkTlsVerifyDisabled('process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";', "a.ts");
+		expect(out).toHaveLength(1);
+	});
+
 	it("does NOT fire on the shape inside a string literal", () => {
 		const out = checkTlsVerifyDisabled('const msg = "verify=False is unsafe";', "a.ts");
 		expect(out).toEqual([]);
+	});
+
+	it("caps at 10 matches even when more than 10 lines fire (matches.length >= 10 break)", () => {
+		const lines = Array.from({ length: 12 }, (_, i) => `req${i}(url, verify=False)`);
+		const out = checkTlsVerifyDisabled(lines.join("\n"), "a.py");
+		expect(out).toHaveLength(10);
 	});
 });
 
@@ -52,6 +78,16 @@ describe("checkWeakHash", () => {
 
 	it("does NOT run on test files", () => {
 		expect(checkWeakHash("h = hashlib.md5(data)", "a.test.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on code with no md5/sha1 anywhere", () => {
+		expect(checkWeakHash("h = hashlib.sha256(data)", "a.py")).toEqual([]);
+	});
+
+	it("caps at 10 matches even when more than 10 lines fire (matches.length >= 10 break)", () => {
+		const lines = Array.from({ length: 12 }, (_, i) => `h${i} = hashlib.md5(data)`);
+		const out = checkWeakHash(lines.join("\n"), "a.py");
+		expect(out).toHaveLength(10);
 	});
 });
 
@@ -125,6 +161,75 @@ describe("checkRecursiveWalkerLstat", () => {
 		const out = checkRecursiveWalkerLstat(recursiveWalkerStatSync, "src/walker.py");
 		expect(out).toEqual([]);
 	});
+
+	it("does NOT flag a file that calls statSync but never readdirSync (early-return content guard)", () => {
+		const src = ["function walk(dir) {", "  walk(dir);", "  statSync(dir);", "}"].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a brace-less arrow declaration (declRe2 match, no `{` anywhere -> unterminated body)", () => {
+		// Matches the `const name = (...)` declRe2 shape but has an expression
+		// body with no block `{`, so findWalkerBodyOpen scans to EOF and
+		// returns -1.
+		const src = "const walk = (dir) => readdirSync(dir) && statSync(dir);";
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a declaration whose body brace is never closed (unbalanced braces)", () => {
+		const src = ["function walk(dir) {", "  readdirSync(dir);", "  statSync(dir);"].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a self-recursive, statSync-using function whose body never calls readdirSync", () => {
+		// readdirSync appears elsewhere in the file (satisfies the file-level
+		// guard) but not inside this function's own body.
+		const src = [
+			'readdirSync(".");',
+			"function walk(dir) {",
+			"  walk(dir);",
+			"  statSync(dir);",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a walker whose body calls both statSync and lstatSync (already symlink-aware)", () => {
+		const src = [
+			"function walk(dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (lstatSync(e).isSymbolicLink()) continue;",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT flag a self-recursive readdirSync walker whose body never calls statSync", () => {
+		const src = [
+			"function walk(dir) {",
+			"  readdirSync(dir).forEach((e) => walk(e));",
+			"}",
+			"statSync(dir);",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("caps at 10 matches even when more than 10 walkers fire (matches.length >= 10 break)", () => {
+		const fns = Array.from(
+			{ length: 12 },
+			(_, i) =>
+				`function walk${i}(dir) {\n  for (const e of readdirSync(dir)) {\n    if (statSync(dir + e).isDirectory()) walk${i}(dir + e);\n  }\n}`,
+		);
+		const out = checkRecursiveWalkerLstat(fns.join("\n"), "src/walker.ts");
+		expect(out).toHaveLength(10);
+	});
 });
 
 describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
@@ -153,5 +258,18 @@ describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
 		expect(checkWeakRandom("token = random.random()", "tests/test_a.py")).toEqual([]);
 		expect(checkWeakRandom("# legacy: token = random.random() was unsafe", "src/a.py")).toEqual([]);
 		expect(checkWeakRandom('doc = "use random.random for the token"', "src/a.py")).toEqual([]);
+	});
+
+	it("does NOT fire when the line has no random.* call at all", () => {
+		expect(checkWeakRandom("token = secrets.token_hex(16)", "src/a.py")).toEqual([]);
+	});
+
+	it("caps at 10 matches even when more than 10 lines fire (matches.length >= 10 break)", () => {
+		const lines = Array.from(
+			{ length: 12 },
+			(_, i) => `secretToken${i} = random.random()`,
+		);
+		const out = checkWeakRandom(lines.join("\n"), "src/a.py");
+		expect(out).toHaveLength(10);
 	});
 });

@@ -104,6 +104,57 @@ describe("parseRadonJson", () => {
 	it("returns null for non-JSON stdout", () => {
 		expect(parseRadonJson("not json at all")).toBeNull();
 	});
+
+	it("returns null when the parsed JSON is not an object (bare number)", () => {
+		expect(parseRadonJson("5")).toBeNull();
+	});
+
+	it("returns null when the parsed JSON is literal null", () => {
+		expect(parseRadonJson("null")).toBeNull();
+	});
+
+	it("returns [] for a valid but empty top-level object (no file entries)", () => {
+		expect(parseRadonJson(JSON.stringify({}))).toEqual([]);
+	});
+
+	it("drops a non-object block entry (typeof guard) without throwing", () => {
+		const payload = { "/tmp/x.py": [42, "not a block", fnBlock("real", 3, 1, 2)] };
+		const entries = parseRadonJson(JSON.stringify(payload)) ?? [];
+		expect(entries.map((e) => e.name)).toEqual(["real"]);
+	});
+
+	it("drops a block with an unrecognized type", () => {
+		const payload = {
+			"/tmp/x.py": [
+				{ type: "weird", name: "y", complexity: 1, lineno: 1, endline: 2 },
+				fnBlock("real", 2, 3, 4),
+			],
+		};
+		const entries = parseRadonJson(JSON.stringify(payload)) ?? [];
+		expect(entries.map((e) => e.name)).toEqual(["real"]);
+	});
+
+	it("drops a block missing its name field", () => {
+		const payload = {
+			"/tmp/x.py": [
+				{ type: "function", complexity: 1, lineno: 1, endline: 2 },
+				fnBlock("real", 2, 3, 4),
+			],
+		};
+		const entries = parseRadonJson(JSON.stringify(payload)) ?? [];
+		expect(entries.map((e) => e.name)).toEqual(["real"]);
+	});
+
+	it("drops a block with a non-numeric complexity field", () => {
+		const payload = {
+			"/tmp/x.py": [
+				{ type: "function", name: "bad", complexity: "not-a-number", lineno: 1, endline: 2 },
+				fnBlock("real", 2, 3, 4),
+			],
+		};
+		const entries = parseRadonJson(JSON.stringify(payload)) ?? [];
+		expect(entries.map((e) => e.name)).toEqual(["real"]);
+	});
 });
 
 describe("radonAvailable", () => {
@@ -159,5 +210,38 @@ describe("computeCyclomaticPython", () => {
 			throw new Error("boom");
 		});
 		expect(out).toBeNull();
+	});
+
+	it("returns null when radon's stdout is empty (status 0, nothing printed)", () => {
+		const out = computeCyclomaticPython("def f():\n  pass\n", "src/x.py", () =>
+			spawnResult({ status: 0, stdout: "" }),
+		);
+		expect(out).toBeNull();
+	});
+
+	it("returns null when radon's stdout is whitespace-only", () => {
+		const out = computeCyclomaticPython("def f():\n  pass\n", "src/x.py", () =>
+			spawnResult({ status: 0, stdout: "   \n  " }),
+		);
+		expect(out).toBeNull();
+	});
+
+	it("falls back to edit.py when the sanitized basename is empty", () => {
+		const { spawn, calls } = fakeRadon({
+			cc: (tmpFile) => ({ [tmpFile]: [fnBlock("f", 1, 1, 2)] }),
+		});
+		const entries = computeCyclomaticPython("def f():\n  pass\n", "", spawn);
+		expect(entries?.map((e) => e.name)).toEqual(["f"]);
+		const ccCall = calls.find((c) => c.args[0] === "cc");
+		expect(ccCall?.args[3]).toMatch(/edit\.py$/);
+	});
+
+	it("appends .py when the sanitized basename doesn't already end in it", () => {
+		const { spawn, calls } = fakeRadon({
+			cc: (tmpFile) => ({ [tmpFile]: [fnBlock("f", 1, 1, 2)] }),
+		});
+		computeCyclomaticPython("def f():\n  pass\n", "script", spawn);
+		const ccCall = calls.find((c) => c.args[0] === "cc");
+		expect(ccCall?.args[3]).toMatch(/script\.py$/);
 	});
 });

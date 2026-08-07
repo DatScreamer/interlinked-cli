@@ -14,6 +14,64 @@ export const IT_TEST_OPEN_RE =
 	/\b(it|test)(?:\.(?:each|only|skip|concurrent|skipIf|runIf|sequential|failing))*\s*\(/g;
 
 /**
+ * Comment/string-blanking that keeps every character position stable —
+ * unlike `stripCommentsAndStrings` (shared.ts), which collapses a quoted
+ * literal's contents down to a bare `""`/`''`/` `` ` and so SHRINKS the
+ * text. A caller that finds a match/span position in the stripped text (via
+ * `IT_TEST_OPEN_RE` / `findCallSpan`) and then slices the ORIGINAL,
+ * un-stripped content at that same position needs offsets that agree
+ * between the two strings — any string literal earlier in the file would
+ * otherwise silently shift every later offset out from under it.
+ */
+export function stripPreservingOffsets(content: string): string {
+	let out = "";
+	let i = 0;
+	const n = content.length;
+	while (i < n) {
+		const ch = content[i];
+		const two = content.slice(i, i + 2);
+		if (two === "//") {
+			const end = content.indexOf("\n", i);
+			const stop = end === -1 ? n : end;
+			out += " ".repeat(stop - i);
+			i = stop;
+			continue;
+		}
+		if (two === "/*") {
+			const end = content.indexOf("*/", i + 2);
+			const stop = end === -1 ? n : end + 2;
+			out += content.slice(i, stop).replace(/[^\n]/g, " ");
+			i = stop;
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") {
+			const quote = ch;
+			let j = i + 1;
+			while (j < n) {
+				if (content[j] === "\\") {
+					j += 2;
+					continue;
+				}
+				if (content[j] === quote) {
+					j++;
+					break;
+				}
+				// Unterminated single/double-quoted string — bail at line end so
+				// we never blank past a real newline for those two forms.
+				if (content[j] === "\n" && quote !== "`") break;
+				j++;
+			}
+			out += content.slice(i, j).replace(/[^\n]/g, " ");
+			i = j;
+			continue;
+		}
+		out += ch;
+		i++;
+	}
+	return out;
+}
+
+/**
  * Brace/paren-balanced span of an `it(...)` / `test(...)` call argument list.
  * `from` is the index just inside the opening `(`. Returns the index of the
  * matching close `)` plus the comma offsets at depth 0 (argument separators),

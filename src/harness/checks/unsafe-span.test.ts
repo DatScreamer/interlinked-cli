@@ -463,6 +463,146 @@ describe("checkRustUnsafeSpan — negative (must not fire)", () => {
 	});
 });
 
+// ─── rust_unsafe_span — additional branch coverage ────────────────────────────
+
+describe("checkRustUnsafeSpan — additional branch coverage", () => {
+	it("RP11: a closed escaped char literal ('\\n') inside a wide block is stripped and still fires", () => {
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let sep = '\\n';", // 3 — escaped char literal, closes normally
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RN15: an unterminated escaped char literal breaks at the next newline and does not corrupt the scan", () => {
+		const src = [
+			"fn f() {", // 1
+			"    let bad = '\\q", // 2 — escape start, no closing quote before EOL
+			"    a1();", // 3
+			"    a2();", // 4
+			"    a3();", // 5
+			"    a4();", // 6
+			"    a5();", // 7
+			"    a6();", // 8
+			"}", // 9
+		];
+		expect(rust(src)).toHaveLength(0);
+	});
+
+	it("RN16: a trailing line comment with no terminating newline (EOF) is stripped correctly", () => {
+		const src = ["// trailing comment, file ends right after this, no newline"];
+		expect(rust(src, "crates/core/src/tail.rs")).toHaveLength(0);
+	});
+
+	it("RN17: a stray unmatched closing brace before a real block doesn't break brace matching", () => {
+		const src = [
+			"}", // 1 — stray close, no matching open (pop() returns undefined)
+			"fn f(p: *mut u8) {", // 2
+			"    unsafe {", // 3
+			...stmts(6, "        "), // 4-9
+			"    }", // 10
+			"}", // 11
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
+	});
+
+	it("RN18: an unterminated raw string blanks the rest of the file, hiding a wide block", () => {
+		const src = [
+			"fn f() {", // 1
+			'    let s = r#"begin', // 2 — raw string opens, never closes
+			"unsafe {", // 3 — inside the (unterminated) raw string, not real code
+			"    a();", // 4
+			"    b();", // 5
+			"    c();", // 6
+			"    d();", // 7
+			"    e();", // 8
+			"    f();", // 9
+			"}", // 10
+		];
+		expect(rust(src, "crates/core/src/gen.rs")).toHaveLength(0);
+	});
+
+	it("RN19: total interior lines exceed the cap but nonblank content stays within it", () => {
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			"        a();", // 3
+			"", // 4 (blank)
+			"", // 5 (blank)
+			"        // c1", // 6 (comment — blanked)
+			"        // c2", // 7
+			"        // c3", // 8
+			"        // c4", // 9
+			"        // c5", // 10
+			"        // c6", // 11
+			"        b();", // 12
+			"    }", // 13
+			"}", // 14
+		];
+		expect(rust(src)).toHaveLength(0);
+	});
+
+	it("RP13: a plain string with a backslash-escaped quote does not close the string early", () => {
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			'    unsafe {', // 2
+			'        let s = "a\\"b";', // 3 — escaped quote must not end the string
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RP14: a multi-char escaped char literal ('\\u{7FFF}') scans past interior chars before closing", () => {
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let c = '\\u{7FFF}';", // 3 — multi-char escape body, several loop iterations
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RP12: matches are capped at 10 per file even when 11 wide blocks are present", () => {
+		const blocks: string[] = [];
+		for (let i = 0; i < 11; i++) {
+			blocks.push(`unsafe {`, ...stmts(6, "    "), `}`);
+		}
+		const found = rust(blocks);
+		expect(found).toHaveLength(10);
+	});
+});
+
 // ─── rust_unsafe_span — adversarial perf ──────────────────────────────────────
 
 describe("checkRustUnsafeSpan — adversarial inputs stay near-linear", () => {
@@ -699,6 +839,44 @@ describe("checkSuppressionSpan — negative (must not fire)", () => {
 			"console.log(1);", // 41
 			ENABLE_NO_CONSOLE, // 42 — closes only line 40's region (span 3)
 			"more();", // 43
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+});
+
+// ─── suppression_block_span — additional branch coverage ──────────────────────
+
+describe("checkSuppressionSpan — additional branch coverage", () => {
+	it("SP7: matches are capped at 10 per file even when 11 wide regions are present", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 11; i++) {
+			lines.push(DISABLE, ...stmts(12, ""), ENABLE);
+		}
+		const found = suppression(lines);
+		expect(found).toHaveLength(10);
+	});
+
+	it("SN14: an unterminated block-comment directive (no closing */, runs to EOF) does not fire", () => {
+		const src = ["/* eslint-disable"];
+		expect(suppression(src)).toHaveLength(0);
+	});
+
+	it("SN16: a backslash-escaped quote inside a string does not end the string early", () => {
+		const src = [
+			'const s = "a\\"/* eslint-disable */b";', // 1 — the directive text is inside the string
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14 — no matching disable outside the string
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+
+	it("SN15: an unterminated template literal (no closing backtick, runs to EOF) hides its content", () => {
+		const bt = String.fromCharCode(96);
+		const src = [
+			"const doc = " + bt, // 1 — template opens, never closes
+			DISABLE, // 2 (inside the unterminated template)
+			...stmts(12, ""), // 3-14
+			ENABLE, // 15 (inside the unterminated template)
 		];
 		expect(suppression(src)).toHaveLength(0);
 	});

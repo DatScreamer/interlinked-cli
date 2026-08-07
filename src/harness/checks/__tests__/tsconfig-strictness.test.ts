@@ -313,4 +313,149 @@ describe("checkTsconfigStrictness — robustness", () => {
 		const findings = checkTsconfigStrictness(JSON.stringify(cfg), configPath);
 		expect(findings).toEqual([]);
 	});
+
+	it("returns [] for empty content (safeJsoncParse's falsy-text guard)", () => {
+		const findings = checkTsconfigStrictness("", configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("returns [] when the parsed JSON is an array, not an object", () => {
+		const findings = checkTsconfigStrictness("[1,2,3]", configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("treats a non-object compilerOptions (array) as absent, reporting all 4 gated flags missing", () => {
+		const cfg = { compilerOptions: [] };
+		writeFileSync(configPath, JSON.stringify(cfg));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(cfg), configPath);
+		expect(findings).toHaveLength(4);
+	});
+
+	it("skips a base config that is unreadable (a directory named like a file)", () => {
+		// `safeReadJsonc` catches the readFileSync EISDIR error and returns null,
+		// so the chain collapses to the derived file's own compilerOptions.
+		mkdirSync(join(tmp, "badbase.json"));
+		const cfg = {
+			extends: "./badbase.json",
+			compilerOptions: {
+				strict: true,
+				noUncheckedIndexedAccess: true,
+				exactOptionalPropertyTypes: true,
+				noImplicitOverride: true,
+				noImplicitReturns: true,
+				noFallthroughCasesInSwitch: true,
+			},
+		};
+		writeFileSync(configPath, JSON.stringify(cfg));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(cfg), configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("resolves an extends reference with the `.json` suffix omitted", () => {
+		const basePath = join(tmp, "tsconfig.base.json");
+		writeFileSync(
+			basePath,
+			JSON.stringify({
+				compilerOptions: {
+					strict: true,
+					noUncheckedIndexedAccess: true,
+					exactOptionalPropertyTypes: true,
+					noImplicitOverride: true,
+					noImplicitReturns: true,
+					noFallthroughCasesInSwitch: true,
+				},
+			}),
+		);
+		const derived = { extends: "./tsconfig.base", compilerOptions: {} };
+		writeFileSync(configPath, JSON.stringify(derived));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(derived), configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("resolves an absolute-path extends reference", () => {
+		const basePath = join(tmp, "base-abs.json");
+		writeFileSync(
+			basePath,
+			JSON.stringify({
+				compilerOptions: {
+					strict: true,
+					noUncheckedIndexedAccess: true,
+					exactOptionalPropertyTypes: true,
+					noImplicitOverride: true,
+					noImplicitReturns: true,
+					noFallthroughCasesInSwitch: true,
+				},
+			}),
+		);
+		const derived = { extends: basePath, compilerOptions: {} };
+		writeFileSync(configPath, JSON.stringify(derived));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(derived), configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("treats a package-name extends reference (not relative/absolute) as unresolvable and falls open", () => {
+		const cfg = {
+			extends: "@internal/tsconfig-base",
+			compilerOptions: { strict: true },
+		};
+		writeFileSync(configPath, JSON.stringify(cfg));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(cfg), configPath);
+		// resolveExtendsPath returns null for a bare package specifier, so the
+		// chain collapses to this file's own compilerOptions — all 4 gated
+		// flags (beyond `strict`) are still missing.
+		expect(findings).toHaveLength(4);
+	});
+
+	it("breaks an extends cycle (A -> B -> A) and still merges B's flags into A", () => {
+		const bPath = join(tmp, "tsconfig.b.json");
+		writeFileSync(
+			bPath,
+			JSON.stringify({
+				extends: "./tsconfig.json",
+				compilerOptions: {
+					strict: true,
+					noUncheckedIndexedAccess: true,
+					exactOptionalPropertyTypes: true,
+					noImplicitOverride: true,
+					noImplicitReturns: true,
+					noFallthroughCasesInSwitch: true,
+				},
+			}),
+		);
+		const aCfg = { extends: "./tsconfig.b.json" };
+		writeFileSync(configPath, JSON.stringify(aCfg));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(aCfg), configPath);
+		expect(findings).toEqual([]);
+	});
+
+	it("caps extends-chain recursion at 8 hops, dropping flags only reachable past the cap", () => {
+		// Build a 9-file linear chain (root + b1..b8). At the b8 call the
+		// recursion depth reaches 8 (MAX_DEPTH), so the walk stops there
+		// without ever reading b8's own compilerOptions contribution further
+		// down. None of the intermediate files declare any flags, so the
+		// merged result is empty and every gated flag is reported missing.
+		for (let i = 1; i <= 8; i++) {
+			const next = i < 8 ? { extends: `./b${i + 1}.json` } : {};
+			writeFileSync(join(tmp, `b${i}.json`), JSON.stringify(next));
+		}
+		const root = { extends: "./b1.json" };
+		writeFileSync(configPath, JSON.stringify(root));
+
+		const findings = checkTsconfigStrictness(JSON.stringify(root), configPath);
+		expect(findings).toHaveLength(4);
+	});
+
+	it("resolves an extends chain with a relative (non-absolute) checked-file path", () => {
+		// No extends field, so the mergeExtendsChain absPath ternary's
+		// non-absolute branch is exercised without needing further disk reads.
+		const cfg = { compilerOptions: { strict: true } };
+		const findings = checkTsconfigStrictness(JSON.stringify(cfg), "tsconfig.json");
+		expect(findings).toHaveLength(4);
+	});
 });

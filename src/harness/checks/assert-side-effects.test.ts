@@ -97,6 +97,11 @@ describe("detectAssertSideEffect — shared core", () => {
 		expect(detectAssertSideEffect("free_space(ring) > 0", "snake")).toBe(false);
 		expect(detectAssertSideEffect("set_value(k, v)", "snake")).toBe(true);
 	});
+
+	it("snake mode: a call name with an empty segment (double underscore) is malformed, not a mutation", () => {
+		expect(detectAssertSideEffect("insert__stale(m, k)", "snake")).toBe(false);
+		expect(detectAssertSideEffect("foo__bar(x)", "python")).toBe(false);
+	});
 });
 
 // ─── C — ubs_c_assert_side_effect ─────────────────────────────────────────────
@@ -162,7 +167,15 @@ describe("checkCAssertSideEffects — positive (must fire)", () => {
 		expect(checkCAssertSideEffects(src, "src/core/queue.c")).toHaveLength(3);
 	});
 
-	it("P7: a comment merely MENTIONING #define assert does not suppress the file", () => {
+	it("P7: caps at 10 matches per file", () => {
+		const src = Array.from(
+			{ length: 12 },
+			(_, i) => `void f${i}(void) { assert(insert_stale(m, k)); }`,
+		).join("\n");
+		expect(checkCAssertSideEffects(src, C_PATH)).toHaveLength(10);
+	});
+
+	it("P8: a comment merely MENTIONING #define assert does not suppress the file", () => {
 		const src = [
 			"/* Never #define assert yourself; use the standard macro. */",
 			"#include <assert.h>",
@@ -235,6 +248,18 @@ describe("checkCAssertSideEffects — negative (must NOT fire)", () => {
 	it("N8: unbalanced paren at EOF does not crash or fire", () => {
 		const src = "void f(void) { assert(write(fd, buf";
 		expect(checkCAssertSideEffects(src, C_PATH)).toHaveLength(0);
+	});
+
+	it("N12: an extra unmatched closing paren elsewhere in the file doesn't break real matches", () => {
+		const src = [
+			")",
+			"void f(void) {",
+			"  assert(insert_stale(m, k));",
+			"}",
+		].join("\n");
+		const found = checkCAssertSideEffects(src, C_PATH);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
 	});
 
 	it("N9: noun-prefixed accessors on verb homographs (set_contains / set_size / free_space)", () => {
@@ -451,6 +476,14 @@ describe("checkJavaAssertSideEffects — positive (must fire)", () => {
 		expect(found[0]?.line).toBe(3);
 	});
 
+	it("P6b: caps at 10 matches per file", () => {
+		const src = Array.from(
+			{ length: 12 },
+			(_, i) => `class C${i} { void f(List<String> list) { assert list.add(x); } }`,
+		).join("\n");
+		expect(checkJavaAssertSideEffects(src, JAVA_PATH)).toHaveLength(10);
+	});
+
 	it("P6: long (484-char) conditions are scanned — the statement window is unbounded per spec", () => {
 		const long = `flag${" && flag".repeat(60)}`;
 		const short = `flag${" && flag".repeat(20)}`;
@@ -560,5 +593,11 @@ describe("checkPythonAssertTautology (ubs_python_assert_tautology)", () => {
 	it("does NOT fire in comments/strings or wrong extension", () => {
 		expect(checkPythonAssertTautology('# assert (x, "msg") was a bug', PY)).toEqual([]);
 		expect(checkPythonAssertTautology('assert (x == 1, "msg")', "src/thing.ts")).toEqual([]);
+	});
+
+	it("does NOT fire on a vendored path even though test files are otherwise in scope", () => {
+		expect(
+			checkPythonAssertTautology('assert (x == 1, "should be 1")', "node_modules/pkg/thing.py"),
+		).toEqual([]);
 	});
 });

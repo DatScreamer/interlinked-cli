@@ -45,6 +45,45 @@ function regexBodies(line: string, isPy: boolean): string[] {
 	return bodies;
 }
 
+/** Running block-comment state while walking a file's lines. */
+interface CommentScan {
+	inBlock: boolean;
+}
+
+/**
+ * True when this line carries no scannable code — it is wholly a comment.
+ *
+ * A JSDoc block has the exact shape of a regex literal (`/`, body, `/`), so
+ * without this the scanner reads prose as a pattern: the 2026-08-04 corpus run
+ * found 5 such hits, every one a comment documenting a regex rather than a
+ * regex. Deliberately WHOLE-LINE only — every observed false positive was a
+ * full-line comment, and stripping mid-line comment spans would require
+ * distinguishing `//` inside a string literal from a real comment, which would
+ * break the `RegExp("…")` extraction this detector depends on.
+ *
+ * Mutates `state` to carry block-comment nesting across lines.
+ */
+function isCommentOnlyLine(line: string, state: CommentScan): boolean {
+	const trimmed = line.trim();
+	if (state.inBlock) {
+		// A block that closes mid-line leaves trailing code, which must be scanned.
+		const close = trimmed.indexOf("*/");
+		if (close === -1) return true;
+		state.inBlock = false;
+		return trimmed.slice(close + 2).trim().length === 0;
+	}
+	if (trimmed.startsWith("//")) return true;
+	if (trimmed.startsWith("#")) return true; // Python comment
+	if (!trimmed.startsWith("/*") && !trimmed.startsWith("*")) return false;
+	if (trimmed.startsWith("*")) return true; // JSDoc continuation line
+	const close = trimmed.indexOf("*/");
+	if (close === -1) {
+		state.inBlock = true;
+		return true;
+	}
+	return trimmed.slice(close + 2).trim().length === 0;
+}
+
 export function checkRedosCatastrophic(content: string, filePath: string): InlineMatch[] {
 	const ext = getExtension(filePath);
 	const isPy = PY_EXTS.has(ext);
@@ -54,9 +93,14 @@ export function checkRedosCatastrophic(content: string, filePath: string): Inlin
 
 	const lines = content.split("\n");
 	const matches: InlineMatch[] = [];
+	const commentState: CommentScan = { inBlock: false };
 	for (let i = 0; i < lines.length; i++) {
 		if (matches.length >= MATCH_LIMIT) break;
 		const line = lines[i] ?? "";
+		// Runs on EVERY line (before the `(` fast-path) so block-comment state
+		// cannot desync on a comment line that happens to contain no paren.
+		const isComment = isCommentOnlyLine(line, commentState);
+		if (isComment) continue;
 		if (!line.includes("(")) continue; // every ReDoS signature needs a group
 		let hit = false;
 		for (const body of regexBodies(line, isPy)) {

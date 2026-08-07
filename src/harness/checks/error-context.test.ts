@@ -109,6 +109,89 @@ try {
 `.trim();
 		expect(detectJsonStringifyError(content, "src/lib/service.test.ts")).toEqual([]);
 	});
+
+	it("finds no catch blocks (and no findings) when the catch is never closed", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  logger.error(JSON.stringify(err));
+`.trim();
+		expect(detectJsonStringifyError(content, FILE)).toEqual([]);
+	});
+
+	it("dedupes two findings on the same line to one", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  logger.error(JSON.stringify(err)); other(JSON.stringify(err));
+}
+`.trim();
+		const findings = detectJsonStringifyError(content, FILE);
+		expect(findings.length).toBe(1);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) across many catch blocks", () => {
+		const blocks = Array.from(
+			{ length: 12 },
+			(_, i) => `try {\n  run${i}();\n} catch (err) {\n  logger.error(JSON.stringify(err));\n}`,
+		).join("\n");
+		const findings = detectJsonStringifyError(blocks, FILE);
+		expect(findings.length).toBe(10);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) within a SINGLE catch block (11 distinct lines)", () => {
+		// Forces recordMatch's own cap check (not the outer per-block break) to
+		// fire, since all hits land inside one catch body's inner while loop.
+		const stmts = Array.from(
+			{ length: 11 },
+			(_, i) => `  logger.error(JSON.stringify(err)); // line ${i}`,
+		).join("\n");
+		const content = `try {\n  run();\n} catch (err) {\n${stmts}\n}`;
+		const findings = detectJsonStringifyError(content, FILE);
+		expect(findings.length).toBe(10);
+	});
+
+	it("does not fire on a non-JS/TS file extension", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  logger.error(JSON.stringify(err));
+}
+`.trim();
+		expect(detectJsonStringifyError(content, "docs/notes.md")).toEqual([]);
+	});
+
+	it("handles a backslash escape followed by a non-newline char inside a quoted string", () => {
+		const content = 'const s = "line1\\tline2";\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n';
+		expect(detectJsonStringifyError(content, FILE)).toEqual([]);
+	});
+
+	it("bails at line-end for a quote left open before a literal newline (no trailing backslash)", () => {
+		const content =
+			'const bad = "unterminated;\ntry {\n  run();\n} catch (err) {\n  logger.error(JSON.stringify(err));\n}\n';
+		const findings = detectJsonStringifyError(content, FILE);
+		expect(findings.length).toBe(1);
+	});
+
+	it("handles a backslash escape followed by a non-newline char inside a template literal", () => {
+		const content = "const t = `line1\\tline2`;\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n";
+		expect(detectJsonStringifyError(content, FILE)).toEqual([]);
+	});
+
+	it("handles a template literal that is unterminated and ends the file mid-backtick", () => {
+		const content = "const t = `unterminated";
+		expect(detectJsonStringifyError(content, FILE)).toEqual([]);
+	});
+
+	it("preserves an unescaped newline inside a multi-line template literal", () => {
+		const content =
+			"const t = `line one\nline two`;\ntry {\n  run();\n} catch (err) {\n  logger.error(JSON.stringify(err));\n}\n";
+		const findings = detectJsonStringifyError(content, FILE);
+		expect(findings.length).toBe(1);
+	});
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -284,6 +367,76 @@ try {
 `.trim();
 		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
 	});
+
+	it("does not fire when the catch is never closed (unbalanced braces, no catch block found)", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error("failed: " + err);
+`.trim();
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("moves past a constructor call whose args are never closed (unmatched paren)", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error("bad: " + err;
+}
+`.trim();
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) across many catch blocks", () => {
+		const blocks = Array.from(
+			{ length: 12 },
+			(_, i) => `try {\n  run${i}();\n} catch (err) {\n  throw new Error("failed: " + err);\n}`,
+		).join("\n");
+		const findings = detectCatchRewrapLosesCause(blocks, FILE);
+		expect(findings.length).toBe(10);
+	});
+
+	// Internal string/template blanking helpers (shared by every detector in
+	// this file, via prepareJsTsSource) — exercised through the public API
+	// with content that doesn't itself produce a finding.
+	it("handles a backslash line-continuation inside a quoted string literal", () => {
+		const content = 'const a = "abc\\\ndef";\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n';
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("handles a backslash line-continuation inside a template literal", () => {
+		const content = "const t = `abc\\\ndef`;\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n";
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("handles a nested template literal inside a ${} interpolation", () => {
+		const content = "const b = `outer ${`inner`} tail`;\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n";
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("handles brace-depth tracking for an object literal inside a ${} interpolation", () => {
+		const content =
+			"const c = `outer ${ {a:1}.a } tail`;\ntry {\n  run();\n} catch (err) {\n  cleanup();\n}\n";
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("handles a quoted literal that is unterminated and ends the file on a trailing backslash", () => {
+		const content = 'const bad = "unterminated\\';
+		expect(detectCatchRewrapLosesCause(content, FILE)).toEqual([]);
+	});
+
+	it("does not fire in test files", () => {
+		const content = `
+try {
+  run();
+} catch (err) {
+  throw new Error("failed: " + err);
+}
+`.trim();
+		expect(detectCatchRewrapLosesCause(content, "src/lib/service.test.ts")).toEqual([]);
+	});
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -407,6 +560,27 @@ function acquire(name: string): number {
 }
 `.trim();
 		expect(detectResourceHandleLeak(content, FILE)).toEqual([]);
+	});
+
+	it("caps at MAX_MATCHES_PER_FILE (10) across many unreleased handles", () => {
+		const body = Array.from(
+			{ length: 12 },
+			(_, i) => `function f${i}(path) {\n  const fd${i} = fs.openSync(path, "r");\n  use(fd${i});\n}`,
+		).join("\n");
+		const content = `import fs from "node:fs";\n${body}`;
+		const findings = detectResourceHandleLeak(content, FILE);
+		expect(findings.length).toBe(10);
+	});
+
+	it("does not fire on a non-JS/TS file extension", () => {
+		const content = `
+import fs from "node:fs";
+function log(path) {
+  const ws = fs.createWriteStream(path);
+  ws.write("x");
+}
+`.trim();
+		expect(detectResourceHandleLeak(content, "docs/notes.md")).toEqual([]);
 	});
 
 	it("does not fire when the handle is stored on the instance", () => {

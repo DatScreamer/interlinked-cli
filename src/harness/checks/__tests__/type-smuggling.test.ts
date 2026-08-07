@@ -43,6 +43,44 @@ describe("checkTypeSmuggling — positive cases", () => {
 		expect(nonNull(matches[0]).text).toContain("type-smuggling cast");
 	});
 
+	it("truncates a long source type name in the report text (safeTypeToString > 40 chars)", () => {
+		const code = [
+			"interface ReallyLongInterfaceNameForTruncationTestPurposesHere {",
+			"  fieldOne: number; fieldTwo: string; fieldThree: boolean;",
+			"}",
+			"interface Unrelated { totallyDifferentShape: symbol; }",
+			"declare const src: ReallyLongInterfaceNameForTruncationTestPurposesHere;",
+			"const out = src as Unrelated;",
+			"export { out };",
+		].join("\n");
+		const matches = checkTypeSmuggling(code, TS);
+		expect(matches.length).toBeGreaterThanOrEqual(1);
+		expect(nonNull(matches[0]).text).toContain("...`");
+	});
+
+	it("flags a cast on the last line with no trailing newline (lines[line] fallback)", () => {
+		// No trailing "\n" after the final statement — exercises the
+		// `lines[line] || ""` defensive fallback in the report builders.
+		const code = [
+			"interface UserObj { id: number; name: string; }",
+			"interface ProductObj { sku: string; price: number; }",
+			"declare const userObj: UserObj;",
+			"const product = userObj as ProductObj;",
+		].join("\n");
+		const matches = checkTypeSmuggling(code, TS);
+		expect(matches.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags a double-cast on the last line with no trailing newline (lines[line] fallback)", () => {
+		const code = [
+			"interface Specific { id: number; }",
+			"declare const someValue: number;",
+			"const v = someValue as unknown as Specific;",
+		].join("\n");
+		const matches = checkTypeSmuggling(code, TS);
+		expect(matches.some((m: InlineMatch) => m.text.includes("double-cast detected"))).toBe(true);
+	});
+
 	it("flags a cast between two distinct object shapes", () => {
 		const code = [
 			"interface UserObj { id: number; name: string; }",
@@ -52,6 +90,16 @@ describe("checkTypeSmuggling — positive cases", () => {
 			"export { product };",
 		].join("\n");
 		const matches = checkTypeSmuggling(code, TS);
+		expect(matches.length).toBeGreaterThanOrEqual(1);
+		expect(nonNull(matches[0]).text).toContain("type-smuggling cast");
+	});
+
+	it("flags a smuggling cast in a .tsx file (ternary: TSX vs TS script kind)", () => {
+		const code = [
+			'const x = "hello" as { id: number };',
+			"export { x };",
+		].join("\n");
+		const matches = checkTypeSmuggling(code, "src/lib/foo.tsx");
 		expect(matches.length).toBeGreaterThanOrEqual(1);
 		expect(nonNull(matches[0]).text).toContain("type-smuggling cast");
 	});
@@ -128,6 +176,43 @@ describe("checkTypeSmuggling — negative cases (must NOT fire)", () => {
 		expect(checkTypeSmuggling(code, TS)).toEqual([]);
 	});
 
+	it("does not fire when source is `any` via type inference (escape hatch 1, Any flag)", () => {
+		// Source is inferred `any` (not literal `unknown`), so it exercises the
+		// `sourceType.flags & ts.TypeFlags.Any` branch distinctly from the
+		// `unknown` case above.
+		const code = [
+			"interface Specific { id: number; }",
+			"declare const x: any;",
+			"const y = x as Specific;",
+			"export { y };",
+		].join("\n");
+		expect(checkTypeSmuggling(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when target resolves to `any` through a type ALIAS (not literal `any` syntax)", () => {
+		// `targetIsAnyOrUnknownSyntax` only catches literal `as any`/`as
+		// unknown` syntax — an alias whose underlying type is `any` bypasses
+		// that fast path and must be caught by the checker's resolved
+		// TypeFlags.Any branch instead.
+		const code = [
+			"type MyAny = any;",
+			"declare const x: { id: number };",
+			"const y = x as MyAny;",
+			"export { y };",
+		].join("\n");
+		expect(checkTypeSmuggling(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when target resolves to `unknown` through a type ALIAS", () => {
+		const code = [
+			"type MyUnknown = unknown;",
+			"declare const x: { id: number };",
+			"const y = x as MyUnknown;",
+			"export { y };",
+		].join("\n");
+		expect(checkTypeSmuggling(code, TS)).toEqual([]);
+	});
+
 	it("skips test files entirely", () => {
 		const code = [
 			'const x = "hello" as { id: number };',
@@ -157,6 +242,15 @@ describe("checkTypeSmuggling — negative cases (must NOT fire)", () => {
 			"declare const u: User;",
 			"const v = u as User;",
 			"export { v };",
+		].join("\n");
+		expect(checkTypeSmuggling(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when source type is `never` (escape hatch 3)", () => {
+		const code = [
+			"declare const n: never;",
+			"const y = n as string;",
+			"export { y };",
 		].join("\n");
 		expect(checkTypeSmuggling(code, TS)).toEqual([]);
 	});

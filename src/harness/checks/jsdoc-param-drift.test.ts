@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectJsdocParamDrift } from "./jsdoc-param-drift.js";
+import { __resetJsdocParamTsCacheForTesting, detectJsdocParamDrift } from "./jsdoc-param-drift.js";
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
@@ -283,5 +283,135 @@ function wrapper(outer: number): () => number {
 }
 `;
 		expect(detectJsdocParamDrift(code, TS_FILE)).toEqual([]);
+	});
+
+	it("resolves the .tsx script kind and still flags a stale tag", () => {
+		const code = `
+/**
+ * @param stale mismatched
+ */
+export function Widget(fresh: number) {
+	return null;
+}
+`;
+		const results = detectJsdocParamDrift(code, "src/ui/Widget.tsx");
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
+	});
+
+	it("resolves the .jsx script kind and still flags a stale tag", () => {
+		const code = `
+/**
+ * @param stale mismatched
+ */
+export function Widget(fresh) {
+	return null;
+}
+`;
+		const results = detectJsdocParamDrift(code, "src/ui/Widget.jsx");
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
+	});
+
+	it("resolves the .js/.mjs/.cjs script kind and still flags a stale tag", () => {
+		for (const path of ["src/lib/util.js", "src/lib/util.mjs", "src/lib/util.cjs"]) {
+			const code = `
+/**
+ * @param stale mismatched
+ */
+function fn(fresh) {
+	return fresh;
+}
+`;
+			const results = detectJsdocParamDrift(code, path);
+			expect(results.length).toBe(1);
+			expect(results[0]?.text).toContain('@param "stale"');
+		}
+	});
+
+	it("reports 'none' as the params label when the function takes no parameters", () => {
+		const code = `
+/**
+ * @param stale this function takes nothing
+ */
+function reset() {
+	state.clear();
+}
+`;
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain("(params: none)");
+	});
+
+	it("caps findings at 10 for a SINGLE function carrying more than 10 stale tags", () => {
+		const tags = Array.from(
+			{ length: 15 },
+			(_, i) => ` * @param stale${i} gone`,
+		).join("\n");
+		const code = `
+/**
+${tags}
+ */
+function fn(real: number): number {
+	return real;
+}
+`;
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(10);
+	});
+
+	it("treats a single-line JSDoc comment's tag as line-starting (prefix '/**')", () => {
+		const code = "/** @param stale mismatched */\nfunction fn(fresh) { return fresh; }\n";
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
+	});
+
+	it("treats a tag on its own line with no leading '*' as line-starting (prefix '')", () => {
+		const code = ["/**", "@param stale mismatched", "*/", "function fn(fresh) { return fresh; }"].join(
+			"\n",
+		);
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
+	});
+
+	it("skips a bare '@param' tag with no name at all (empty tag-name text)", () => {
+		// TS still parses this as a JSDocParameterTag with an Identifier name of
+		// text "" — tagSimpleName must reject the empty name rather than
+		// comparing "" against the parameter set.
+		const code = ["/**", " * @param", " */", "function fn(real: number): number { return real; }"].join(
+			"\n",
+		);
+		expect(detectJsdocParamDrift(code, TS_FILE)).toEqual([]);
+	});
+
+	it("degrades to an empty rawLines lookup when lone-CR line endings desync TS's line index from content.split('\\n')", () => {
+		// TS's scanner treats a lone `\r` as a line break, but `content.split("\n")`
+		// does not — so a file using classic Mac (`\r`-only) line endings makes
+		// TS report a line index beyond `rawLines.length`. Both `rawLines[line]`
+		// in tagStartsJsdocLine and `rawLines[lineNo - 1]` in checkFunctionNode's
+		// rawText extraction must degrade to `""` rather than reading `undefined`.
+		const code = "/**\r * @param stale x\r */\rfunction fn(fresh) {}\r";
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
+		// The raw-text suffix is empty because the desynced lookup found no line.
+		expect(results[0]?.text.endsWith("— ")).toBe(true);
+	});
+
+	it("resets the cached TypeScript module without breaking subsequent calls", () => {
+		__resetJsdocParamTsCacheForTesting();
+		const code = `
+/**
+ * @param stale mismatched
+ */
+function fn(fresh: number): number {
+	return fresh;
+}
+`;
+		const results = detectJsdocParamDrift(code, TS_FILE);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toContain('@param "stale"');
 	});
 });

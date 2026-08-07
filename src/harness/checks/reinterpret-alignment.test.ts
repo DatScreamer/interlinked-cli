@@ -562,3 +562,165 @@ describe("checkRustUncheckedCastSlice — stripping regressions", () => {
 		expect(found[0]?.line).toBe(2);
 	});
 });
+
+// ─── Stripper edge cases: char literals, raw strings, unclosed constructs ────
+
+describe("checkRustUncheckedCastSlice — char-literal & raw-string stripper coverage", () => {
+	it("consumes a plain Rust char literal ('x') and still flags cast_slice later on the line", () => {
+		const found = runRust("let c = 'x'; let w: &[u16] = bytemuck::cast_slice(buf);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("consumes an escaped Rust char literal ('\\n') and still flags cast_slice later on the line", () => {
+		const found = runRust("let nl = '\\n'; let w: &[u16] = bytemuck::cast_slice(buf);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("does not treat an identifier-preceded r as a raw-string head (e.g. `xr`)", () => {
+		const found = runRust('let xr = "weird"; bytemuck::cast_slice(buf);');
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("consumes an unterminated Rust raw string through EOF without crashing", () => {
+		expect(runRust('r#"never closes')).toEqual([]);
+	});
+
+	it("consumes an unterminated Rust block comment through EOF without crashing", () => {
+		expect(
+			runRust("/* unterminated comment mentioning bytemuck::cast_slice(buf) that never closes"),
+		).toEqual([]);
+	});
+
+	it("consumes an unterminated multiline Rust string (double quote) through EOF without crashing", () => {
+		expect(runRust('let s = "never closes')).toEqual([]);
+	});
+
+	it("continues a Rust string literal across an embedded newline (multiline strings are legal)", () => {
+		const content = ['let s = "line one', 'line two"; bytemuck::cast_slice(buf);'].join("\n");
+		const found = runRust(content);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("treats a raw string at the very start of the file as a genuine raw-string head (start === 0)", () => {
+		expect(runRust('r#"hdr"#;')).toEqual([]);
+	});
+
+	it("keeps an embedded newline inside a Rust raw string live, still closing correctly on the next line", () => {
+		const content = ['let s = r#"line one', 'line two"#; bytemuck::cast_slice(buf);'].join("\n");
+		const found = runRust(content);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("treats a space-preceded bare r-string head as a genuine raw string (start > 0, non-identifier preceder)", () => {
+		// start > 0 (not file-start) AND the preceding char is non-identifier
+		// (a space) — distinct from the identifier-preceded `xr` negative case
+		// above, which takes the OTHER side of that `&&`.
+		const found = runRust(' r"hi"; bytemuck::cast_slice(buf);');
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+});
+
+describe("checkUnalignedReinterpret — identifier/keyword slash disambiguation", () => {
+	it("reads a slash after a non-keyword identifier as division, not a regex literal", () => {
+		const found = runJs("const ratio = total/count; const view = new Uint16Array(buf.buffer);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("reads a slash after a non-identifier, non-punctuation char (closing paren) as division", () => {
+		const found = runJs("const ratio = f()/2; const view = new Uint16Array(buf.buffer);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("treats a keyword-preceded slash as a regex literal that consumes to EOF when unterminated", () => {
+		expect(runJs("return /abc")).toEqual([]);
+	});
+
+	it("keeps an escaped slash alive inside a regex literal without ending it early", () => {
+		const found = runJs(
+			String.raw`const re = /a\/b/; const view = new Uint16Array(buf.buffer);`,
+		);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("keeps a slash inside a regex character class from ending the literal ([...] handling)", () => {
+		const found = runJs(
+			String.raw`const re = /[a/b]/; const view = new Uint16Array(buf.buffer);`,
+		);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("does not let a regex literal span a newline; the view on a later line still fires", () => {
+		const content = [
+			"const r = /abc",
+			"def/;",
+			"const view = new Uint16Array(buf.buffer);",
+		].join("\n");
+		const found = runJs(content);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
+	});
+});
+
+describe("checkUnalignedReinterpret — quoted-string stripper edge cases", () => {
+	it("does not let an unterminated JS double-quoted string swallow the next line", () => {
+		const content = [
+			'const s = "unterminated;',
+			"const view = new Uint16Array(buf.buffer);",
+		].join("\n");
+		const found = runJs(content);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("consumes an unterminated JS template literal through EOF without crashing", () => {
+		expect(runJs("const s = `never closes")).toEqual([]);
+	});
+
+	it("keeps an escaped quote alive inside a JS string (does not end it early)", () => {
+		const found = runJs(
+			'const s = "a\\"b"; const view = new Uint16Array(buf.buffer);',
+		);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("treats a trailing backslash-newline in a JS string as a line continuation", () => {
+		const content = [
+			'const s = "line \\',
+			'continues"; const view = new Uint16Array(buf.buffer);',
+		].join("\n");
+		const found = runJs(content);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("does not fire when the constructor argument is whitespace-only (empty after trim)", () => {
+		expect(runJs("const v = new Uint16Array(   );")).toEqual([]);
+	});
+
+	it("consumes a JS single-quoted string and still flags a view later on the line", () => {
+		const found = runJs("const s = 'hello'; const view = new Uint16Array(buf.buffer);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("treats a slash at the very start of the scanned source as a regex-literal start (no preceding char)", () => {
+		// isRegexLiteralStart walks left from the slash; when nothing precedes
+		// it (not even whitespace) the walk goes negative and the slash reads
+		// as a regex opener, not division — /abc/ is consumed as a literal and
+		// the view on the same line still fires.
+		const found = runJs("/abc/.test(x); const view = new Uint16Array(buf.buffer);");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+});

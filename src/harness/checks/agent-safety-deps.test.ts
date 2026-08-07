@@ -21,6 +21,50 @@ describe("agent-safety deps check surface — smoke", () => {
 	});
 });
 
+// DEFECT FIXED 2026-08-07. The specifier-extraction regex used to run against
+// STRIPPED content, where quoted string CONTENTS are blanked to `""`/`''`.
+// `['"]([^'"]+)['"]` requires at least one non-quote character between the
+// quotes, which a blanked specifier never has — so `fromMatch` was always null
+// and this detector could never flag anything, for any input. The assertions
+// below were deliberately pinned to that broken behavior by an earlier session,
+// precisely so an accidental "fix" would surface as a flipped assertion rather
+// than landing unnoticed. That pin worked: this change is the intentional fix,
+// and the assertions are flipped to the CORRECT behavior.
+//
+// The specifier now comes from the original line; the STRIPPED line still
+// decides whether the line looks like an import at all, so a `from "..."` inside
+// a comment or string literal is still ignored (see the N-cases below).
+describe("checkSelfImport — positive (must fire)", () => {
+	it("P1: flags a literal self-import (relative specifier matching the file's own base name)", () => {
+		const out = checkSelfImport('import { x } from "./same-file";\n', "same-file.ts");
+		expect(out).toEqual([{ line: 1, text: 'import { x } from "./same-file";' }]);
+	});
+
+	it("P2: flags a self-import written with an explicit .js extension from a .ts file", () => {
+		const out = checkSelfImport('import { x } from "./widget.js";\n', "widget.ts");
+		expect(out).toEqual([{ line: 1, text: 'import { x } from "./widget.js";' }]);
+	});
+
+	it("N0: does NOT flag an import of a DIFFERENT relative module", () => {
+		expect(checkSelfImport('import { x } from "./other";\n', "widget.ts")).toEqual([]);
+	});
+
+	it("returns [] for a non-JS/TS extension", () => {
+		const out = checkSelfImport('import x from "./thing";\n', "thing.py");
+		expect(out).toEqual([]);
+	});
+
+	it("returns [] when the import specifier is not relative (bare specifier)", () => {
+		const out = checkSelfImport('import x from "thing";\n', "thing.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("returns [] for a line that isn't an import statement at all", () => {
+		const out = checkSelfImport("const x = 1;\n", "same-file.ts");
+		expect(out).toEqual([]);
+	});
+});
+
 describe("findWorkspaceRootFor", () => {
 	let tmp: string;
 
@@ -56,6 +100,156 @@ describe("findWorkspaceRootFor", () => {
 		mkdirSync(pkgDir, { recursive: true });
 		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "bar" }));
 		expect(findWorkspaceRootFor(join(pkgDir, "package.json"))).toBe(tmp);
+	});
+});
+
+describe("_resolvePackageDeps / _loadPackageDeps — malformed package.json", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "malformed-pkg-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns [] (pkgDeps undefined) when the nearest package.json is not valid JSON", () => {
+		writeFileSync(join(tmp, "package.json"), "{ not valid json");
+		const out = checkExtraneousDependencies(
+			'import foo from "not-a-real-dep";\n',
+			join(tmp, "index.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("does not throw when package.json has NO dependencies/devDependencies fields at all", () => {
+		// Exercises the `|| {}` fallback for every one of the four dep-kind keys.
+		writeFileSync(join(tmp, "package.json"), "{}");
+		expect(() =>
+			checkExtraneousDependencies('import foo from "not-a-real-dep";\n', join(tmp, "index.ts")),
+		).not.toThrow();
+	});
+
+	it("reaches the filesystem root without finding a package.json (5-level walk exhausted or root hit)", () => {
+		// A deep tmp subtree with no package.json anywhere in its ancestry up to
+		// the filesystem root — walks past 5 levels or hits `parent === pkgDir`.
+		const deep = join(tmp, "a", "b", "c", "d", "e", "f");
+		mkdirSync(deep, { recursive: true });
+		const out = checkExtraneousDependencies(
+			'import foo from "not-a-real-dep";\n',
+			join(deep, "index.ts"),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("stops at `parent === pkgDir` when the walk reaches the filesystem root within 5 hops", () => {
+		// A path one level below the filesystem root: after the first miss, the
+		// second hop's `dirname("/")` is `"/"` again — `parent === pkgDir` fires.
+		const out = checkExtraneousDependencies(
+			'import foo from "not-a-real-dep";\n',
+			"/__interlinked_agent_safety_deps_root_probe__/index.ts",
+		);
+		expect(out).toEqual([]);
+	});
+});
+
+describe("findWorkspaceRootFor — parent package.json without a `workspaces` field", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "wsroot-noworkspaces-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("keeps walking past a parent package.json that has no `workspaces` field", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "root-no-ws" }));
+		const pkgDir = join(tmp, "packages", "foo");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "foo" }));
+		expect(findWorkspaceRootFor(join(pkgDir, "package.json"))).toBe(pkgDir);
+	});
+});
+
+describe("checkPhantomDependencies — early-return edge cases", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "phantom-edge-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns [] when the package.json path does not exist", () => {
+		expect(checkPhantomDependencies(join(tmp, "nope", "package.json"))).toEqual([]);
+	});
+
+	it("returns [] when package.json is not valid JSON", () => {
+		writeFileSync(join(tmp, "package.json"), "{ not valid json");
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("returns [] when `dependencies` is present but not an object (malformed field)", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ dependencies: "not-an-object" }));
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("returns [] when `dependencies` is an empty object", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ dependencies: {} }));
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("skips @types/* packages (type-only, never imported at runtime)", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ dependencies: { "@types/node": "1.0.0" } }),
+		);
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("falls back to line 1 when the phantom dep name has no literal quoted match in raw content", () => {
+		// The dep name contains a unicode-escaped character in the JSON literal
+		// (`é`), so the raw file text never contains the literal quoted
+		// decoded name — `lines.findIndex` returns -1 and the ternary falls back
+		// to line 1.
+		const rawJson = '{\n  "dependencies": {\n    "caf\\u00e9-pkg": "1.0.0"\n  }\n}\n';
+		writeFileSync(join(tmp, "package.json"), rawJson);
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+		const out = checkPhantomDependencies(join(tmp, "package.json"));
+		expect(out).toEqual([
+			{
+				line: 1,
+				text:
+					'Phantom dependency: "café-pkg" is in dependencies but never referenced in project source. Supply chain risk — dependencies should be imported somewhere.',
+			},
+		]);
+	});
+});
+
+describe("checkPhantomDependencies — the 10-match cap", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "phantom-cap-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("stops reporting after 10 phantom dependencies even when 12 are declared and unreferenced", () => {
+		const deps: Record<string, string> = {};
+		for (let i = 0; i < 12; i++) deps[`phantom-pkg-${i}`] = "1.0.0";
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ dependencies: deps }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+		const out = checkPhantomDependencies(join(tmp, "package.json"));
+		expect(out).toHaveLength(10);
 	});
 });
 
@@ -161,33 +355,35 @@ describe("checkExtraneousDependencies", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	it("does NOT flag a bare import for a package missing from package.json (dead-detection defect)", () => {
+	// Assertions flipped 2026-08-07 with the specifier-extraction fix — see the
+	// note above `checkSelfImport`. These previously pinned the dead behavior.
+	it("P1: flags a bare import for a package missing from package.json", () => {
 		const out = checkExtraneousDependencies(
 			'import foo from "not-a-real-dep";\n',
 			join(tmp, "index.ts"),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([{ line: 1, text: 'import foo from "not-a-real-dep";' }]);
 	});
 
-	it("does NOT flag an import for a declared dependency", () => {
+	it("N1: does NOT flag an import for a declared dependency", () => {
 		const out = checkExtraneousDependencies('import _ from "lodash";\n', join(tmp, "index.ts"));
 		expect(out).toEqual([]);
 	});
 
-	it("does NOT flag a missing scoped package either (same dead-detection defect)", () => {
+	it("P2: flags a missing SCOPED package", () => {
 		const out = checkExtraneousDependencies(
 			'import { z } from "@scope/missing-pkg";\n',
 			join(tmp, "index.ts"),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([{ line: 1, text: 'import { z } from "@scope/missing-pkg";' }]);
 	});
 
-	it("does NOT flag a bare require() (same dead-detection defect)", () => {
+	it("P3: flags a bare require() for a missing package", () => {
 		const out = checkExtraneousDependencies(
 			'const x = require("not-a-real-dep");\n',
 			join(tmp, "index.ts"),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([{ line: 1, text: 'const x = require("not-a-real-dep");' }]);
 	});
 
 	it("returns [] for a non-JS/TS file", () => {

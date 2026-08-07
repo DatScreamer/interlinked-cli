@@ -34,8 +34,15 @@ export function checkSelfImport(content: string, filePath: string): InlineMatch[
 		if (matches.length >= 5) break;
 		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!/^import\s/.test(trimmed)) continue;
-		// Match: from "./same-file" or from "./same-file.js"
-		const fromMatch = trimmed.match(/from\s+['"]([^'"]+)['"]/);
+		// Match the specifier against the ORIGINAL line, not the stripped one.
+		// `stripCommentsAndStrings` blanks string CONTENTS (`"./foo.js"` -> `""`),
+		// and this regex requires >=1 char between the quotes — so reading it from
+		// `trimmed` made `fromMatch` always null and every line hit `continue`.
+		// This detector could never fire (measured 2026-08-06; the same defect
+		// killed `checkExtraneousDependencies` below). The stripped line is still
+		// what decides whether this LOOKS like an import statement, so a `from
+		// "..."` inside a comment or string literal is still ignored.
+		const fromMatch = nonNull(originalLines[i]).match(/from\s+['"]([^'"]+)['"]/);
 		if (!fromMatch) continue;
 		const specifier = fromMatch[1];
 		if (!nonNull(specifier).startsWith(".")) continue;
@@ -181,7 +188,12 @@ export function checkExtraneousDependencies(content: string, filePath: string): 
 		const trimmed = nonNull(strippedLines[i]).trim();
 		if (!/^import\s/.test(trimmed) && !/\brequire\s*\(/.test(trimmed)) continue;
 
-		const fromMatch = trimmed.match(/(?:from\s+|require\s*\(\s*)['"]([^'"]+)['"]/);
+		// Specifier comes from the ORIGINAL line — see the note in
+		// `checkSelfImport`. Reading it from the stripped line made `fromMatch`
+		// permanently null, so this detector never fired either.
+		const fromMatch = nonNull(originalLines[i]).match(
+			/(?:from\s+|require\s*\(\s*)['"]([^'"]+)['"]/,
+		);
 		if (!fromMatch) continue;
 		const specifier = nonNull(fromMatch[1]);
 

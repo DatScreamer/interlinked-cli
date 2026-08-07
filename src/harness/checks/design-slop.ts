@@ -210,9 +210,15 @@ const LINE_MATCHERS: LineMatcher[] = [
 		rule: "bounce-easing",
 		regex: /cubic-bezier\(\s*[\d.-]+\s*,\s*([\d.-]+)\s*,\s*[\d.-]+\s*,\s*([\d.-]+)\s*\)/g,
 		test: (m) => {
-			const y1 = parseFloat(m[1] ?? "0");
-			const y2 = parseFloat(m[2] ?? "0");
-			return y1 < -0.1 || y1 > 1.1 || y2 < -0.1 || y2 > 1.1;
+			// The capture class is `[\d.-]+`, NOT digit-only, so it also admits "-",
+			// ".", "-." — and `parseFloat("-.")` is NaN. Guard PER COORDINATE, not
+			// over both: rejecting the whole match when EITHER side is NaN throws
+			// away a real overshoot on the other side. `cubic-bezier(0, -., 0, 5)`
+			// is the case that proves it — y2 = 5 genuinely overshoots, and an
+			// all-or-nothing guard silently stops reporting it (measured 2026-08-04,
+			// caught only because the "fix" was diffed against the original).
+			const overshoots = (v: number): boolean => Number.isFinite(v) && (v < -0.1 || v > 1.1);
+			return overshoots(parseFloat(m[1] ?? "0")) || overshoots(parseFloat(m[2] ?? "0"));
 		},
 		message: "overshoot cubic-bezier (bounce) — real objects decelerate smoothly",
 	},

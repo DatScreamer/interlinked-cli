@@ -148,6 +148,27 @@ describe("bounce-easing (positive/negative)", () => {
 	it("does not flag a transition that merely contains the word ease", () => {
 		expect(rules(".x { transition: opacity .2s ease-out; }", "a.css")).not.toContain("bounce-easing");
 	});
+
+	// The bezier capture class is `[\d.-]+`, not digit-only, so it matches values
+	// like "-." that parseFloat turns into NaN. NaN compares false in every
+	// relational direction, which makes the coordinate check fail open.
+	it("still flags an overshoot when the OTHER coordinate is unparseable", () => {
+		// y1 = "-." → NaN, y2 = 5 → a genuine overshoot. Guarding both coordinates
+		// together (reject the match if EITHER is NaN) silently drops this real
+		// finding; the guard has to be per-coordinate. This case is the one that
+		// caught exactly that regression.
+		expect(rules(".x { transition: all .3s cubic-bezier(0, -., 0, 5); }", "a.css")).toContain(
+			"bounce-easing",
+		);
+	});
+
+	it("does not flag a bezier whose coordinates are all unparseable", () => {
+		// Nothing here overshoots, so silence is correct — but it must be silence
+		// by decision, not silence because NaN lost every comparison by accident.
+		expect(rules(".x { transition: all .3s cubic-bezier(0, -., 0, 1); }", "a.css")).not.toContain(
+			"bounce-easing",
+		);
+	});
 });
 
 describe("gray-on-color (positive/negative)", () => {

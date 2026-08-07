@@ -63,6 +63,44 @@ const revenue = [{ email: "alice@example.com" }];
 			),
 		).toEqual([]);
 	});
+
+	it("flags an RFC test-domain URL not caught by the email/faker patterns", () => {
+		const code = `const url = "https://foo.test/api";`;
+		const matches = checkDemoDataUnmarked(code, TS);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.text).toMatch(/RFC test domain/);
+	});
+
+	it("does not flag an RFC test-domain URL marked with @demo-data", () => {
+		const code = `
+// @demo-data: pointing at the sandbox host on purpose
+const url = "https://foo.test/api";
+`;
+		expect(checkDemoDataUnmarked(code, TS)).toEqual([]);
+	});
+
+	it("stops at MAX_MATCHES (8) even when far more smells are present on one line", () => {
+		// 20 Stripe test-card hits on a single line — well past the 8-match cap,
+		// exercising the inner-loop break (matches.length >= MAX_MATCHES).
+		const cards = Array(20).fill('"4242424242424242"').join(", ");
+		const code = `const many = [${cards}];`;
+		const matches = checkDemoDataUnmarked(code, TS);
+		expect(matches.length).toBe(8);
+	});
+
+	it("does not fire on a non-JS/TS file extension", () => {
+		const code = `email: alice@example.com`;
+		expect(checkDemoDataUnmarked(code, "docs/notes.md")).toEqual([]);
+	});
+
+	it("stops before evaluating the RFC-domain bank once MAX_MATCHES is already hit", () => {
+		// Line 1 alone exhausts the 8-match cap via SMELL_PATTERNS; line 2's RFC
+		// test-domain URL must not add a 9th match.
+		const cards = Array(20).fill('"4242424242424242"').join(", ");
+		const code = `const many = [${cards}];\nconst url = "https://foo.test/api";`;
+		const matches = checkDemoDataUnmarked(code, TS);
+		expect(matches.length).toBe(8);
+	});
 });
 
 describe("checkSilentDemoFallback", () => {
@@ -168,6 +206,63 @@ async function loadStats() {
 }
 `;
 		expect(checkSilentDemoFallback(code, TS).length).toBe(1);
+	});
+
+	it("does not fire when the try block is never closed (unbalanced braces)", () => {
+		const code = `try { return await fetch("/api");`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when a try block is followed by finally instead of catch", () => {
+		const code = `try { return await fetch("/api"); } finally { cleanup(); }`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when the catch block is never closed (unbalanced braces)", () => {
+		const code = `try { return await fetch("/api"); } catch (e) { return [1,`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("fires when the try starts at offset 0 (no preceding newline to count)", () => {
+		const code = `try { return await fetch("/api").then(r => r.json()); } catch { return [1, 2]; }`;
+		const matches = checkSilentDemoFallback(code, TS);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.line).toBe(1);
+	});
+
+	it("does not fire on a non-JS/TS file extension", () => {
+		const code = `try { return await fetch("/api"); } catch { return [1, 2]; }`;
+		expect(checkSilentDemoFallback(code, "docs/notes.md")).toEqual([]);
+	});
+
+	it("does not fire when the catch both rethrows conditionally AND returns a literal", () => {
+		// catchHidesFailure only runs once tryHasRealCall && catchReturnsLiteral
+		// are both true; this reaches the /\bthrow\b/ check inside it.
+		const code = `
+async function load() {
+  try {
+    return await fetch("/api/data").then(r => r.json());
+  } catch (e) {
+    if (fatal) throw e;
+    return [1, 2, 3];
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
+	});
+
+	it("does not fire when the catch references the error binding directly (no throw/log/field)", () => {
+		const code = `
+async function load() {
+  try {
+    return await fetch("/api/data").then(r => r.json());
+  } catch (err) {
+    report(err);
+    return [1, 2, 3];
+  }
+}
+`;
+		expect(checkSilentDemoFallback(code, TS)).toEqual([]);
 	});
 });
 

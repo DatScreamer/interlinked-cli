@@ -255,4 +255,47 @@ writeFileSync(join(".interlinked", "sub", "caps.json"), data);
 		);
 		expect(results.length).toBeGreaterThanOrEqual(1);
 	});
+
+	it("does not flag a join() whose first literal segment is an absolute path root", () => {
+		// join("/etc", "passwd") — the joined path starts with "/" even though
+		// every segment is a literal; the belt-and-suspenders absolute-path
+		// check inside the join branch must catch this (case 1's own
+		// startsWith("/") guard only covers bare-literal paths, not joined ones).
+		const code = `
+writeFileSync(join("/etc", "caps.json"), data);
+`;
+		const results = detectGitignoredWrites(code, TS, everythingIgnored);
+		expect(results).toEqual([]);
+	});
+
+	it("skips an unterminated write call (unbalanced parens) without throwing", () => {
+		// The string literal opened by writeFileSync( never closes and the
+		// content ends mid-escape — extractFirstArg must fail closed (return
+		// null) rather than throw or produce a bogus finding.
+		const code = 'writeFileSync("abc\\';
+		const results = detectGitignoredWrites(code, TS, everythingIgnored);
+		expect(results).toEqual([]);
+	});
+
+	it("flags a bare literal path containing a mid-string escaped backslash", () => {
+		// The path literal itself contains an escaped backslash (Windows-style
+		// separator) that is NOT the last character — extractFirstArg's
+		// escape-skip branch must fire and keep parsing past it.
+		const code = 'writeFileSync(".interlinked\\\\caps.json", data);';
+		const results = detectGitignoredWrites(code, TS, everythingIgnored);
+		expect(results.length).toBe(1);
+		expect(results[0]?.text).toBe(code);
+	});
+
+	it("flags an all-literal join() where a segment contains a mid-string escaped backslash", () => {
+		// Same escape-skip branch, but inside splitTopLevelArgs' scan of the
+		// join(...) argument list rather than the outer extractFirstArg scan.
+		const code = 'writeFileSync(join(".interlinked", "sub\\\\dir", "caps.json"), data);';
+		const results = detectGitignoredWrites(
+			code,
+			TS,
+			(p) => p.startsWith(".interlinked/"),
+		);
+		expect(results.length).toBe(1);
+	});
 });

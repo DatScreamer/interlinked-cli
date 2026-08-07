@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import {
 	detectContradictoryNullnessChain,
@@ -120,6 +120,10 @@ const doc = "call [1, 2].sort() carefully";
 
 	it("does not fire on non-JS/TS files", () => {
 		expect(detectNumericSortWithoutComparator("[10, 9, 1].sort()", "notes.md")).toEqual([]);
+	});
+
+	it("returns [] for a JS/TS file that contains no .sort( call at all", () => {
+		expect(detectNumericSortWithoutComparator("const xs: number[] = [1, 2];", TS_FILE)).toEqual([]);
 	});
 });
 
@@ -336,6 +340,10 @@ switch (kind) {
 		const content = `switch (x) { case 1: a(); case 2: b(); }`;
 		expect(detectImplicitSwitchFallthrough(content, "README.md")).toEqual([]);
 	});
+
+	it("returns [] for a JS/TS file that contains no 'switch' keyword at all", () => {
+		expect(detectImplicitSwitchFallthrough("const x = 1;", TS_FILE)).toEqual([]);
+	});
 });
 
 describe("detectImplicitSwitchFallthrough — never-returning call ends a non-last case", () => {
@@ -474,5 +482,136 @@ const out = resolve(user?.id)!;
 const doc = "never write user?.profile!.name";
 `.trim();
 		expect(detectContradictoryNullnessChain(content, TS_FILE)).toEqual([]);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Additional branch coverage: caps, dedupe, other extensions, statement kinds
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("detectNumericSortWithoutComparator — caps and dedupe", () => {
+	it("caps at 10 matches per file even when more than 10 occurrences exist", () => {
+		const content = Array.from({ length: 12 }, () => "[1, 2].sort();").join("\n");
+		expect(detectNumericSortWithoutComparator(content, TS_FILE)).toHaveLength(10);
+	});
+
+	it("dedupes when a literal-array hit and an annotated-identifier hit land on the same line", () => {
+		const content = "const xs: number[] = []; xs.sort(); [1, 2, 3].sort();";
+		expect(detectNumericSortWithoutComparator(content, TS_FILE)).toHaveLength(1);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — other JS/TS extensions", () => {
+	const content = [
+		"function f(x) {",
+		"  switch (x) {",
+		'    case "a":',
+		"      doA();",
+		'    case "b":',
+		"      doB();",
+		"      break;",
+		"  }",
+		"}",
+	].join("\n");
+
+	it("parses and fires on a .tsx file", () => {
+		expect(detectImplicitSwitchFallthrough(content, "src/ui/widget.tsx")).toHaveLength(1);
+	});
+
+	it("parses and fires on a .jsx file", () => {
+		expect(detectImplicitSwitchFallthrough(content, "src/ui/widget.jsx")).toHaveLength(1);
+	});
+
+	it("parses and fires on a plain .js file", () => {
+		expect(detectImplicitSwitchFallthrough(content, "src/lib/widget.js")).toHaveLength(1);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — statementTerminates fallback and never-returning-call shape", () => {
+	it("does not treat a call through a non-identifier, non-property callee as never-returning (element-access call)", () => {
+		// `handlers[x]()` — callee is neither ts.isIdentifier nor
+		// ts.isPropertyAccessExpression, so isNeverReturningCall's final
+		// `return false` fires and the case is correctly flagged.
+		const content = [
+			"const handlers = [() => {}, () => {}];",
+			"switch (x) {",
+			'  case "a":',
+			"    handlers[x]();",
+			'  case "b":',
+			"    doB();",
+			"    break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+
+	it("does not treat a for-loop as terminating (statementTerminates falls to its final return false)", () => {
+		const content = [
+			"switch (x) {",
+			'  case "a":',
+			"    for (let i = 0; i < x; i++) { log(i); }",
+			'  case "b":',
+			"    doB();",
+			"    break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+
+	it("caps at 10 matches per file even with more fallthrough clauses than that", () => {
+		const cases = Array.from({ length: 12 }, (_, i) => `  case ${i}:\n    doThing();`).join("\n");
+		const content = ["switch (x) {", cases, "  case 99:\n    return 0;", "}"].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(10);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — optional 'typescript' dep unavailable", () => {
+	afterEach(() => {
+		vi.doUnmock("node:module");
+		vi.resetModules();
+	});
+
+	it("returns [] when 'typescript' cannot be required (loadTs's catch caches null)", async () => {
+		vi.resetModules();
+		vi.doMock("node:module", () => ({
+			createRequire: () => () => {
+				throw new Error("cannot find module 'typescript'");
+			},
+		}));
+		const mod = await import("./correctness-misc.js");
+		const content = [
+			"switch (x) {",
+			'  case "a":',
+			"    doA();",
+			'  case "b":',
+			"    doB();",
+			"    break;",
+			"}",
+		].join("\n");
+		expect(mod.detectImplicitSwitchFallthrough(content, TS_FILE)).toEqual([]);
+	});
+
+	it("returns [] when ts.createSourceFile throws (parse failure is swallowed)", async () => {
+		vi.resetModules();
+		const real = (await vi.importActual("typescript")) as Record<string, unknown>;
+		vi.doMock("node:module", () => ({
+			createRequire: () => () => ({
+				...real,
+				createSourceFile: () => {
+					throw new Error("synthetic parse failure");
+				},
+			}),
+		}));
+		const mod = await import("./correctness-misc.js");
+		const content = [
+			"switch (x) {",
+			'  case "a":',
+			"    doA();",
+			'  case "b":',
+			"    doB();",
+			"    break;",
+			"}",
+		].join("\n");
+		expect(mod.detectImplicitSwitchFallthrough(content, TS_FILE)).toEqual([]);
 	});
 });

@@ -117,6 +117,25 @@ describe("checkSpecDanglingAnchor", () => {
 		expect(checkSpecDanglingAnchor([...headings, "See Appendix C of the plan."].join("\n"), MD)).toEqual([]);
 	});
 
+	it("reuses the memoized facts on a second call with identical content+filePath (cache hit)", () => {
+		const doc = "## 1. Intro\n## 2. Model\n## 3. Storage\nSee §7.3 someday.";
+		// Two checks share the same (content, filePath) memo slot — the second
+		// call must reuse `lastFacts` rather than re-parsing.
+		const first = checkSpecDanglingAnchor(doc, MD);
+		const second = checkSpecDanglingAnchor(doc, MD);
+		expect(second).toEqual(first);
+		expect(second).toEqual([
+			expect.objectContaining({ text: expect.stringContaining("§7.3") }),
+		]);
+	});
+
+	it("does not flag an unqualified §-ref when the doc has fewer than 3 numbered headings", () => {
+		// Only one numbered heading — below MIN_NUMBERED_HEADINGS — so the ref is
+		// treated as pointing outside this file's registry, not as dangling.
+		const doc = "## 1. Only heading\nSee §5 here.";
+		expect(checkSpecDanglingAnchor(doc, MD)).toEqual([]);
+	});
+
 	it("stays silent on valid anchors, parent-section refs, and prose docs", () => {
 		const numbered = [
 			"## 1. Intro",
@@ -135,6 +154,44 @@ describe("checkSpecDanglingAnchor", () => {
 		).toEqual([]);
 		// Non-markdown files are out of scope.
 		expect(checkSpecDanglingAnchor("see §9", "src/a.ts")).toEqual([]);
+	});
+});
+
+describe("checkSpecDanglingAnchor — MAX_MATCHES cap and link/appendix shapes", () => {
+	it("caps dangling-anchor findings at MAX_MATCHES (20) even when more exist", () => {
+		const lines: string[] = ["# Setup"];
+		for (let i = 0; i < 25; i++) lines.push(`See [x${i}](#missing-${i}).`);
+		const out = checkSpecDanglingAnchor(lines.join("\n"), MD);
+		expect(out).toHaveLength(20);
+	});
+
+	it("caps dangling §-ref findings at MAX_MATCHES (20) even when more exist", () => {
+		const headings = ["## 1. Intro", "## 2. Model", "## 3. Storage"];
+		const refs: string[] = [];
+		for (let i = 0; i < 25; i++) refs.push(`See §${90 + i} here.`);
+		const out = checkSpecDanglingAnchor([...headings, ...refs].join("\n"), MD);
+		expect(out).toHaveLength(20);
+	});
+
+	it("skips a cross-file link (targetFile set, no anchor) without flagging it", () => {
+		// [plan](docs/plan.md) has targetFile set and no anchor — must not be
+		// read as a dangling same-file anchor.
+		expect(
+			checkSpecDanglingAnchor("# Setup\nSee [plan](docs/plan.md) for details.", MD),
+		).toEqual([]);
+	});
+
+	it("stays silent on an unqualified Appendix ref when the doc has zero appendix headings", () => {
+		// No "of the plan"/"in RFC" qualifier and no Appendix heading at all —
+		// hits the appendixLetters.size === 0 branch (a doc without appendices
+		// may cite another doc's, so it's treated as out of scope, not dangling).
+		const out = checkSpecDanglingAnchor("# Notes\nSee Appendix Z for detail.", MD);
+		expect(out).toEqual([]);
+	});
+
+	it("stays silent when a referenced Appendix letter DOES exist", () => {
+		const doc = ["## Appendix A — formats", "See Appendix A for the format."].join("\n");
+		expect(checkSpecDanglingAnchor(doc, MD)).toEqual([]);
 	});
 });
 
@@ -249,6 +306,21 @@ describe("checkSpecNumbering", () => {
 		].join("\n");
 		expect(checkSpecNumbering(doc, MD)).toEqual([]);
 	});
+
+	it("caps duplicate-id findings at MAX_MATCHES (20)", () => {
+		const rows: string[] = [];
+		for (let i = 1; i <= 25; i++) rows.push(`| FG-INV-${i} | row ${i} |`);
+		for (let i = 1; i <= 25; i++) rows.push(`| FG-INV-${i} | duplicate row ${i} |`);
+		const out = checkSpecNumbering(rows.join("\n"), MD);
+		expect(out.length).toBe(20);
+	});
+
+	it("caps duplicate-heading findings at MAX_MATCHES (20)", () => {
+		const headings: string[] = [];
+		for (let i = 0; i < 25; i++) headings.push(`## Setup\ntext`);
+		const out = checkSpecNumbering(headings.join("\n"), MD);
+		expect(out.length).toBe(20);
+	});
 });
 
 describe("checkSpecCountClaim", () => {
@@ -315,6 +387,33 @@ describe("checkSpecCountClaim", () => {
 		]);
 	});
 
+	it("caps range-claim findings at MAX_MATCHES (20) across many namespaces", () => {
+		const seconds = "ABCDEFGHIJKLMNOPQRSTUVWXY".split("");
+		const parts: string[] = [];
+		for (const s of seconds) {
+			const P = `A${s}`;
+			parts.push(`| ${P}-01 | a |`);
+			parts.push(`| ${P}-20 | b |`);
+			parts.push(`| ${P}-28 | c |`);
+			parts.push(`Every item (${P}-01 through ${P}-20) is covered.`);
+		}
+		const out = checkSpecCountClaim(parts.join("\n"), MD);
+		expect(out.length).toBe(20);
+	});
+
+	it("formats a mismatched claim using DASHED notation for a dashed namespace", () => {
+		const doc = [
+			"## The five items",
+			"| **FG-INV-01** | a |",
+			"| **FG-INV-02** | b |",
+			"| **FG-INV-03** | c |",
+		].join("\n");
+		const out = checkSpecCountClaim(doc, MD);
+		expect(out).toEqual([
+			expect.objectContaining({ text: expect.stringContaining("FG-INV-1..FG-INV-3") }),
+		]);
+	});
+
 	it("scopes a range claim to its OWN notation style (sol-max #11)", () => {
 		// A dashed A namespace (reaches A-99) and a compact A namespace (reaches
 		// A5) share the prefix. A COMPACT claim must be measured against the
@@ -352,6 +451,26 @@ describe("checkSpecCountClaim", () => {
 		const doc = "Six bets (B1, B2, B3, B4, B5, B6, B7) compose the leapfrog.";
 		const out = checkSpecCountClaim(doc, MD);
 		expect(out).toHaveLength(1);
+	});
+
+	it("caps count-claim findings at MAX_MATCHES (20) across many namespaces", () => {
+		const nouns = [
+			"gates", "cases", "docks", "edges", "forms", "hooks", "items", "jars",
+			"keys", "lines", "marks", "nodes", "orbs", "parts", "quilts", "rules",
+			"spans", "tiles", "units", "vines", "xrays", "yards", "zones", "bows", "caps",
+		];
+		const letters = "ACDEFHIJKLMNOPQRSTUVXYZBG".split("");
+		const parts: string[] = [];
+		for (let i = 0; i < nouns.length; i++) {
+			const L = letters[i];
+			parts.push(`## The five ${nouns[i]}`);
+			parts.push(`| **${L}1** | a |`);
+			parts.push(`| **${L}2** | b |`);
+			parts.push(`| **${L}3** | c |`);
+			parts.push(`| **${L}4** | d |`);
+		}
+		const out = checkSpecCountClaim(parts.join("\n"), MD);
+		expect(out.length).toBe(20);
 	});
 
 	it("stays silent when counts agree, claims are unbound, or census is tiny", () => {
@@ -419,6 +538,28 @@ describe("checkSpecStageOrder", () => {
 		).toEqual([]);
 		expect(checkSpecStageOrder(`${stages}W8 rewrites W2`, "src/a.ts")).toEqual([]);
 	});
+
+	it("does not treat a dashed W/G namespace as a stage registry (style must be compact)", () => {
+		// W-1/W-2/W-3 are DASHED, not compact — hasStages requires compact style.
+		const dashed = "| W-1 | a |\n| W-2 | b |\n| W-3 | c |\n";
+		expect(checkSpecStageOrder(`${dashed}W4 depends on W8 for hooks.`, MD)).toEqual([]);
+	});
+
+	it("does not treat a non-W/G compact namespace as a stage registry", () => {
+		// B1/B2/B3 are compact but neither prefix W nor G.
+		const bees = "- B1 a\n- B2 b\n- B3 c\n";
+		expect(checkSpecStageOrder(`${bees}W4 depends on W8 for hooks.`, MD)).toEqual([]);
+	});
+
+	it("does not treat fewer than 3 DEFINED W/G stages as a registry", () => {
+		const twoStages = "- W1 a\n- W2 b\n";
+		expect(checkSpecStageOrder(`${twoStages}W4 depends on W8 for hooks.`, MD)).toEqual([]);
+	});
+
+	it("skips a forward-dependency pattern inside a fenced code block (sol-max #18)", () => {
+		const doc = `${stages}\`\`\`\nW4 depends on W8 for replication hooks.\n\`\`\`\n`;
+		expect(checkSpecStageOrder(doc, MD)).toEqual([]);
+	});
 });
 
 describe("checkSpecPathRef", () => {
@@ -445,5 +586,18 @@ describe("checkSpecPathRef", () => {
 		expect(checkSpecPathRef("Consider `maybe/file.ts` here.", MD, exists)).toEqual(
 			[],
 		);
+	});
+
+	it("no-ops outside markdown files", () => {
+		expect(
+			checkSpecPathRef("The full `invariants.toml` exists in-repo.", "src/a.ts", exists),
+		).toEqual([]);
+	});
+
+	it("caps path-ref findings at MAX_MATCHES (20) even when more exist", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 25; i++) lines.push(`The full \`missing-${i}.toml\` exists in-repo.`);
+		const out = checkSpecPathRef(lines.join("\n"), MD, exists);
+		expect(out).toHaveLength(20);
 	});
 });

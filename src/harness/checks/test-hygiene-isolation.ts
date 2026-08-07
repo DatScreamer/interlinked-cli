@@ -17,7 +17,11 @@ import {
 	JS_TS_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
-import { findCallSpan, IT_TEST_OPEN_RE } from "./test-hygiene-shared.js";
+import {
+	findCallSpan,
+	IT_TEST_OPEN_RE,
+	stripPreservingOffsets,
+} from "./test-hygiene-shared.js";
 
 // ==========================================================================
 // 2. Real network / filesystem in tests
@@ -299,7 +303,12 @@ export function checkTestSubprocessDefaultTimeout(
 	// pre-filter that skips the brace-matching scan for the common case.
 	if (!/child_process/.test(content)) return [];
 
-	const stripped = stripCommentsAndStrings(content);
+	// Offset-preserving strip — this function slices the ORIGINAL `content` at
+	// positions found in the stripped text (to read real command-string
+	// contents), so the two must stay index-aligned. `stripCommentsAndStrings`
+	// collapses string literals and would drift the two out of sync as soon
+	// as any earlier string in the file shrank.
+	const stripped = stripPreservingOffsets(content);
 	const matches: InlineMatch[] = [];
 	const MAX_MATCHES = 5;
 
