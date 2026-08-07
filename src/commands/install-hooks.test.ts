@@ -26,15 +26,19 @@ import { nonNull } from "../lib/non-null.js";
 import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
 
 let tmp = "";
-let originalCwd = "";
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. installHooksCommand reads
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-ih-"));
-	originalCwd = process.cwd();
-	process.chdir(tmp);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 });
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy?.mockRestore();
 	rmSync(tmp, { recursive: true, force: true });
 	mockReadSync.mockReset();
 	vi.restoreAllMocks();

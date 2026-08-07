@@ -15,7 +15,7 @@ vi.mock("../checks/cognitive-ast.js", () => ({
 	computeCognitiveAst: vi.fn(() => null),
 }));
 
-import { checkCognitiveComplexityWrite } from "./cognitive-write-guard.js";
+import { checkCognitiveComplexityWrite, cognitiveWriteWarning } from "./cognitive-write-guard.js";
 
 let tmp: string;
 beforeEach(() => {
@@ -43,5 +43,13 @@ describe("checkCognitiveComplexityWrite — typescript unavailable", () => {
 			"+export function f() { return 1; }\n" +
 			"*** End Patch";
 		expect(checkCognitiveComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});
+
+describe("cognitiveWriteWarning — typescript unavailable", () => {
+	it("returns null (never warns) when the AST pass is unavailable", () => {
+		const abs = join(tmp, "whatever.ts");
+		writeFileSync(abs, "export function f() { return 1; }\n");
+		expect(cognitiveWriteWarning(abs, "export function f() { return 2; }\n", tmp)).toBeNull();
 	});
 });

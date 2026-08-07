@@ -223,6 +223,204 @@ describe("stale_read_then_write", () => {
 		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
 	});
 
+	it("does not fire when tool_input is missing (getFilePath's !toolInput branch)", () => {
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "src/foo.ts" }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		const candidate = makeCandidate({ tool_name: "Edit", cwd: dir, agent_name: "me" });
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when tool_input is present but file_path is not a string (getFilePath's typeof branch)", () => {
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "src/foo.ts" }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: 123 as unknown as string },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("skips an activity row missing file_path (fileMatches' empty-eventFile guard), then still matches", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			// Write tool but no file_path at all — eventFilePath resolves to "",
+			// hitting fileMatches' `!eventFile` guard.
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				timestamp: "2026-05-27T00:02:00.000Z",
+			},
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate).length).toBe(1);
+	});
+
+	it("does not fire when the candidate has no cwd", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		const candidate = makeCandidate({ tool_name: "Edit", tool_input: { file_path: filePath }, agent_name: "me" });
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when isAfter's operands are empty (started_at unset)", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the other-agent write's timestamp EQUALS started_at (isAfter's strict >)", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:10:00.000Z", agent_name: "me" },
+		);
+		// Equal to started_at: loadRecentWorkspaceEvents' `<` filter keeps it
+		// (not strictly earlier), but isAfter requires strictly `>` — this
+		// exercises that gap, not the loader's own boundary.
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:10:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate)).toEqual([]);
+	});
+
+	it("skips a non-write-tool row and an unrelated-file row, then still matches a later row (fileMatches false + tool filter)", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			// Not a write tool at all — hits the WRITE_TOOLS.has() false branch.
+			{
+				agent_name: "rival",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				timestamp: "2026-05-27T00:01:00.000Z",
+			},
+			// A write, but to a totally unrelated path — fileMatches returns
+			// false via its final `return false` (no equal, no tail match).
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: "docs/unrelated.md" },
+				timestamp: "2026-05-27T00:02:00.000Z",
+			},
+			// The actual match.
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		const matches = staleReadThenWrite.fn(session, candidate);
+		expect(matches.length).toBe(1);
+	});
+
+	it("matches via a tail-match: an absolute event path ending with the relative candidate path", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: "/repo/project/src/foo.ts" },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate).length).toBe(1);
+	});
+
+	it("matches via a tail-match: a relative event path that the absolute candidate path ends with", () => {
+		const filePath = "/repo/project/src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: "src/foo.ts" },
+				timestamp: "2026-05-27T00:05:00.000Z",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(staleReadThenWrite.fn(session, candidate).length).toBe(1);
+	});
+
 	it("does not fire when the other-agent write predates started_at", () => {
 		const filePath = "src/foo.ts";
 		const { session } = buildTrajectoryFixture(
@@ -375,6 +573,101 @@ describe("subagent_diverged_edit", () => {
 				tool_name: "Edit",
 				tool_input: { file_path: filePath },
 				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the candidate has no cwd", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		const candidate = makeCandidate({ hook_event: "Stop", agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("handles an empty written file_path safely (canonicalKey's !path branch)", () => {
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: "" }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Edit",
+				tool_input: { file_path: "src/real.ts" },
+				timestamp: isoMinutesFromNow(-5),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("skips a non-write-tool row before finding the real match", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				timestamp: isoMinutesFromNow(-5),
+			},
+			{
+				agent_name: "sub",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-4),
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate).length).toBe(1);
+	});
+
+	it("does not fire when the other-agent write's timestamp fails to parse (Number.isNaN branch)", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				// Lexically sorts after the loader's ISO since-boundary (leading
+				// letter > any digit) so it survives loadRecentWorkspaceEvents'
+				// string filter, but Date.parse cannot parse it.
+				timestamp: "zzz-not-a-real-timestamp",
+			},
+		]);
+		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
+		expect(subagentDivergedEdit.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the parsed instant is before the window despite a lexically-later timestamp string", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Write", tool_input: { file_path: filePath }, cwd: dir }],
+			{ agent_name: "parent" },
+		);
+		// FROZEN_NOW is 2026-05-27T12:00:00.000Z; the 30-minute window starts at
+		// 11:30:00.000Z. "+01:00" makes the string lexically GREATER (hour "12" >
+		// "11") than the UTC since-boundary, so loadRecentWorkspaceEvents' plain
+		// string compare keeps it — but it numerically resolves to 11:29:00Z,
+		// one minute BEFORE the window start.
+		writeActivityLog(dir, [
+			{
+				agent_name: "sub",
+				tool_name: "Edit",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T12:29:00+01:00",
 			},
 		]);
 		const candidate = makeCandidate({ hook_event: "Stop", cwd: dir, agent_name: "parent" });
@@ -552,6 +845,110 @@ describe("file_overwrite_after_other_agent", () => {
 			cwd: dir,
 			agent_name: "me",
 		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("skips a non-write-tool row and an unrelated-file row, then still matches", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: isoMinutesFromNow(-30),
+			},
+			{
+				agent_name: "rival",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				timestamp: isoMinutesFromNow(-20),
+			},
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: "docs/other.md" },
+				timestamp: isoMinutesFromNow(-10),
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate).length).toBe(1);
+	});
+
+	it("does not fire when the other-agent write's timestamp fails to parse (Number.isNaN branch)", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "zzz-not-a-real-timestamp",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the parsed instant is before the window despite a lexically-later timestamp string", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		// FROZEN_NOW is 2026-05-27T12:00:00.000Z; the 1-hour window starts at
+		// 11:00:00.000Z. "+01:00" makes the string lexically greater than the
+		// UTC since-boundary (so the loader keeps it) while numerically
+		// resolving to 10:59:00Z — one minute before the window start.
+		writeActivityLog(dir, [
+			{
+				agent_name: "rival",
+				tool_name: "Write",
+				tool_input: { file_path: filePath },
+				timestamp: "2026-05-27T11:59:00+01:00",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Write",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the candidate has no file_path", () => {
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		const candidate = makeCandidate({ tool_name: "Write", cwd: dir, agent_name: "me" });
+		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the candidate has no cwd", () => {
+		const filePath = "src/foo.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: "unrelated.ts" }, cwd: dir }],
+			{ agent_name: "me" },
+		);
+		const candidate = makeCandidate({ tool_name: "Write", tool_input: { file_path: filePath }, agent_name: "me" });
 		expect(fileOverwriteAfterOtherAgent.fn(session, candidate)).toEqual([]);
 	});
 

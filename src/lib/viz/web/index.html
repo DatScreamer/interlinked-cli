@@ -1,11 +1,17 @@
 <!DOCTYPE html>
 <!--
-  INTERLINKED // baseline visualizer — the visualization surface.
+  INTERLINKED // live dashboard — the visualization surface.
   Self-contained (zero deps, like landing/public/index.html): the viz server
-  serves this file and feeds it /api/graph + /api/stream + /api/checks. Aesthetic:
-  dark neon (Blade Runner 2049) — the codebase as a system of cells, interlinked.
-  The harness is the interrogator; the code graph is the cells; a guard block is
-  a deviation off baseline.
+  serves this file and feeds it /api/graph plus one SSE route per lens
+  (/api/stream, /api/checks, /api/tests, /api/agents, /api/mutants).
+
+  Vocabulary, kept concrete on screen: a dot is one SOURCE FILE, a line between
+  two dots is an IMPORT, a lane in AGENTS is one agent session (indented = a
+  subagent it spawned), a frame in GATES is one tool call the harness judged.
+  Colour carries meaning in two registers: file dots are tinted by SUBSYSTEM
+  (top-level directory), and anything attributable to an actor — a pulse, a
+  ticker row, a lane — is tinted by that AGENT's stable hue.
+  Aesthetic: dark neon (Blade Runner 2049).
 
   @codegen-data — this is a deliberately SINGLE-FILE, zero-dependency artifact
   (the whole dashboard is one HTML file by design, like src/lib/hooks-template.ts).
@@ -17,7 +23,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>interlinked // baseline</title>
+<title>interlinked // live dashboard</title>
 <style>
 	:root {
 		--bg: #04050a;
@@ -74,6 +80,8 @@
 	}
 	.subtitle { font-size: 10.5px; letter-spacing: 2.5px; color: var(--dim); margin-top: 6px; }
 	.subtitle b { color: var(--cyan); font-weight: 400; }
+	.defn { margin-top: 9px; font-size: 9px; line-height: 1.65; letter-spacing: 0.8px;
+		color: var(--dim); opacity: 0.72; }
 
 	#baseline { top: 84px; left: 22px; width: 248px; }
 	.bl-status { display: flex; align-items: center; gap: 9px; font-size: 13px; letter-spacing: 2px; }
@@ -157,6 +165,101 @@
 	.frame .fran { margin-top: 7px; font-size: 9px; letter-spacing: 1.5px; color: var(--dim); opacity: 0.8; }
 	.frame .fclean { margin-top: 6px; font-size: 9.5px; letter-spacing: 2px; color: var(--teal); }
 
+	/* ---- Shared lens chrome (TESTS / MUTANTS) --------------------------------
+	   Both new lenses are full-screen DOM panes over the dimmed cell field. They
+	   share the head/metric-strip idiom so switching lenses reads as one system. */
+	.lens { position: fixed; inset: 0; z-index: 4; display: none; flex-direction: column;
+		padding: 92px 26px 84px; pointer-events: none; }
+	.lens.show { display: flex; }
+	.lens-head { color: var(--dim); letter-spacing: 4px; font-size: 12px; text-align: center;
+		text-shadow: 0 0 18px rgba(87,216,234,0.2); }
+	.lens-sub { color: var(--teal); letter-spacing: 2.5px; font-size: 9.5px; text-align: center;
+		margin-top: 4px; opacity: 0.7; }
+	.metrics { display: flex; justify-content: center; gap: 26px; margin: 16px 0 12px;
+		font-size: 10px; letter-spacing: 2px; color: var(--dim); }
+	.metrics b { display: block; font-size: 21px; letter-spacing: 2px; font-weight: 400;
+		color: var(--ink); margin-bottom: 3px; text-shadow: 0 0 18px currentColor; }
+	.metrics .m { text-align: center; min-width: 68px; }
+	.metrics .pass b { color: var(--cyan); } .metrics .fail b { color: var(--red); }
+	.metrics .skip b { color: var(--slate); } .metrics .kill b { color: var(--teal); }
+	.metrics .surv b { color: var(--red); } .metrics .unc b { color: var(--amber); }
+	/* One-bar progress meter: the run's pass/fail/skip proportions at a glance. */
+	.meter { height: 3px; width: 100%; max-width: 980px; margin: 0 auto 14px; display: flex;
+		background: rgba(255,255,255,0.05); overflow: hidden; }
+	.meter i { height: 100%; transition: width 0.4s ease; box-shadow: 0 0 12px currentColor; }
+	.meter .p { background: var(--cyan); color: var(--cyan); }
+	.meter .f { background: var(--red); color: var(--red); }
+	.meter .s { background: var(--slate); color: var(--slate); }
+	.lens-body { pointer-events: auto; overflow-y: auto; max-width: 980px; width: 100%;
+		margin: 0 auto; }
+	.lens-body::-webkit-scrollbar { width: 6px; }
+	.lens-body::-webkit-scrollbar-thumb { background: rgba(87,216,234,0.2); }
+	.lens-note { font-size: 9.5px; letter-spacing: 2px; color: var(--dim); text-align: center;
+		margin-top: 10px; opacity: 0.55; }
+
+	/* ---- TESTS lens: one lit cell per test, in completion order --------------- */
+	.tfile { font-size: 9.5px; letter-spacing: 1.5px; color: var(--dim); margin: 12px 0 5px;
+		border-bottom: 1px solid rgba(87,216,234,0.12); padding-bottom: 4px; }
+	.tfile:first-child { margin-top: 0; }
+	.tfile b { color: var(--ink); font-weight: 400; }
+	.tgrid { display: flex; flex-wrap: wrap; gap: 3px; }
+	.tcell { width: 11px; height: 11px; border-radius: 2px; animation: pop 0.35s ease;
+		box-shadow: 0 0 7px currentColor; }
+	.tcell.pass { background: var(--teal); color: var(--teal); }
+	.tcell.fail { background: var(--red); color: var(--red); animation: pop 0.35s ease, throb 1.4s infinite; }
+	.tcell.skip { background: rgba(70,81,95,0.5); color: transparent; box-shadow: none; }
+	.tcell.todo { background: rgba(255,215,144,0.35); color: var(--gold); }
+	.tcell.slow { outline: 1px solid rgba(255,178,74,0.7); outline-offset: 1px; }
+	@keyframes pop { from { transform: scale(0.2); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+	@keyframes throb { 0%,100% { box-shadow: 0 0 7px currentColor; } 50% { box-shadow: 0 0 18px currentColor; } }
+	.fail-row { font-size: 10px; letter-spacing: 0.5px; color: var(--red); padding: 4px 0;
+		border-left: 2px solid var(--red); padding-left: 9px; margin-top: 6px; animation: fadein 0.4s; }
+	.fail-row .msg { color: var(--dim); display: block; margin-top: 2px; font-size: 9.5px; }
+
+	/* ---- MUTANTS lens: the surviving-mutant wall ----------------------------- */
+	.mwall { display: flex; flex-wrap: wrap; gap: 6px; }
+	.mut { font-size: 9.5px; letter-spacing: 0.4px; padding: 4px 8px; border: 1px solid currentColor;
+		border-radius: 2px; animation: fadein 0.4s; white-space: nowrap; max-width: 100%;
+		overflow: hidden; text-overflow: ellipsis; }
+	.mut .sym { color: var(--ink); opacity: 0.75; margin-right: 6px; }
+	.mut .arrow { opacity: 0.5; margin: 0 4px; }
+	.mut.killed { color: var(--teal); opacity: 0.55; }
+	.mut.survived { color: var(--red); box-shadow: 0 0 16px rgba(255,59,70,0.22); animation: fadein 0.4s, throb 2s infinite; }
+	.mut.uncovered { color: var(--amber); }
+	.mut.timeout { color: #9d7bff; }
+	.mut.equivalent, .mut.indeterminate { color: var(--dim); }
+	.mut.flip { animation: flipflash 0.9s ease; }
+	@keyframes flipflash { from { background: rgba(255,255,255,0.22); transform: scale(1.12); } to { background: none; } }
+
+	/* ---- AGENTS lens: one lane per actor working in this repo -----------------
+	   Colour is identity: every lane, every ticker row, and every pulse in the
+	   file graph uses the SAME hue for the same actor, so "who did that" is
+	   answered by colour alone without reading a single label. */
+	.lane { display: flex; align-items: flex-start; gap: 12px; padding: 11px 14px;
+		background: var(--panel); border: 1px solid rgba(87,216,234,0.14);
+		border-left: 3px solid currentColor; margin-bottom: 8px; animation: fadein 0.4s; }
+	.lane.idle { opacity: 0.42; }
+	.lane.sub { margin-left: 26px; border-left-style: dashed; }
+	.lane .who { min-width: 190px; }
+	.lane .name { font-size: 11.5px; letter-spacing: 1.2px; color: currentColor; }
+	.lane .meta { font-size: 9px; letter-spacing: 1px; color: var(--dim); margin-top: 3px; }
+	.lane .live { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+		background: currentColor; box-shadow: 0 0 10px currentColor; margin-right: 7px;
+		vertical-align: middle; }
+	.lane.live-now .live { animation: throb 1.6s infinite; }
+	.lane .nums { display: flex; gap: 16px; font-size: 9px; letter-spacing: 1.5px; color: var(--dim); }
+	.lane .nums b { display: block; font-size: 15px; letter-spacing: 1px; color: var(--ink);
+		font-weight: 400; margin-bottom: 2px; }
+	.lane .nums .bad b { color: var(--red); }
+	.lane .doing { flex: 1; min-width: 0; font-size: 9.5px; letter-spacing: 0.6px; color: var(--dim); }
+	.lane .doing .now { color: var(--ink); }
+	.lane .doing .fl { display: block; margin-top: 4px; white-space: nowrap; overflow: hidden;
+		text-overflow: ellipsis; opacity: 0.75; }
+	/* Actor swatch reused in the ticker so the stream is colour-attributed too. */
+	.who-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+		margin-right: 6px; box-shadow: 0 0 6px currentColor; background: currentColor;
+		vertical-align: middle; }
+
 	/* Boot: brand resolves out of the dark (no recital) */
 	#boot { position: fixed; inset: 0; z-index: 20; background: var(--bg);
 		display: flex; align-items: center; justify-content: center;
@@ -178,12 +281,60 @@
 	<div class="atmos vig"></div>
 
 	<div id="filmstrip">
-		<div class="film-head">BASELINE</div>
-		<div class="film-sub">// PER-STEP INTERROGATION · each tool call interrogated against the harness</div>
+		<div class="film-head">GATES</div>
+		<div class="film-sub">// ONE FRAME PER TOOL CALL · which checks ran, which fired, allowed or blocked</div>
 		<div id="film-reel" class="film-reel">
 			<div class="muted">// awaiting check results — recorded once the harness sink lands</div>
 		</div>
 	</div>
+	<div id="pane-tests" class="lens">
+		<div class="lens-head">TESTS</div>
+		<div class="lens-sub">// LIVE SUITE — one cell per case, in the order the runner finished it</div>
+		<div class="metrics">
+			<div class="m pass"><b id="t-pass">0</b>PASSED</div>
+			<div class="m fail"><b id="t-fail">0</b>FAILED</div>
+			<div class="m skip"><b id="t-skip">0</b>SKIPPED</div>
+			<div class="m"><b id="t-rate">—</b>PASS RATE</div>
+			<div class="m"><b id="t-elapsed">—</b>ELAPSED</div>
+		</div>
+		<div class="meter"><i class="p" id="t-bar-p" style="width:0"></i><i class="f" id="t-bar-f" style="width:0"></i><i class="s" id="t-bar-s" style="width:0"></i></div>
+		<div id="tests-body" class="lens-body">
+			<div class="muted">// no test run observed — add the reporter, then run your suite:
+				<br />reporters: ["default", "interlinked-cli/viz-reporter"]</div>
+		</div>
+		<div class="lens-note">amber outline = slow case · hover a cell for its name and duration</div>
+	</div>
+
+	<div id="pane-agents" class="lens">
+		<div class="lens-head">AGENTS</div>
+		<div class="lens-sub">// WHO IS WORKING HERE — one lane per agent session, indented lanes are subagents it spawned</div>
+		<div class="metrics">
+			<div class="m"><b id="a-live">0</b>ACTIVE NOW</div>
+			<div class="m"><b id="a-total">0</b>SEEN TODAY</div>
+			<div class="m"><b id="a-edits">0</b>EDITS</div>
+			<div class="m fail"><b id="a-blocks">0</b>BLOCKED</div>
+		</div>
+		<div id="agents-body" class="lens-body">
+			<div class="muted">// no agent activity recorded yet</div>
+		</div>
+		<div class="lens-note">each agent keeps one colour across every lens: the same hue tints its ticker rows and the files it touches</div>
+	</div>
+
+	<div id="pane-mutants" class="lens">
+		<div class="lens-head">MUTANTS</div>
+		<div class="lens-sub">// FAULT INJECTION — every mutant the gate generated, and whether a test caught it</div>
+		<div class="metrics">
+			<div class="m kill"><b id="m-killed">0</b>KILLED</div>
+			<div class="m surv"><b id="m-survived">0</b>SURVIVED</div>
+			<div class="m unc"><b id="m-uncovered">0</b>UNCOVERED</div>
+			<div class="m"><b id="m-score">—</b>KILL RATE</div>
+		</div>
+		<div id="mutants-body" class="lens-body">
+			<div class="muted">// no mutation manifest yet — run the mutation gate to populate this wall</div>
+		</div>
+		<div class="lens-note">red = survived (a defect your tests would not have caught) · teal = killed</div>
+	</div>
+
 	<div id="standby-drift" class="standby">
 		<div class="big">DRIFT</div>
 		<div class="sub">// DEVIATION OVER TIME — CALIBRATING</div>
@@ -192,17 +343,19 @@
 	<div id="topbar" class="hud">
 		<div>
 			<div class="title">INTERLINKED</div>
-			<div class="subtitle">baseline visualizer · <b id="root-label">…</b> · <span id="count-label">…</span></div>
+			<div class="subtitle">live dashboard · <b id="root-label">…</b> · <span id="count-label">…</span></div>
 		</div>
 	</div>
 
 	<div id="baseline" class="hud">
 		<div class="panel">
 			<div class="bl-status"><span id="bl-dot" class="dot bl-on"></span><span id="bl-text" class="bl-on">ON BASELINE</span></div>
-			<div id="statusline" class="statusline">// dependency baseline · monitoring</div>
-			<div class="leg-head">// SUBSYSTEMS</div>
+			<div id="statusline" class="statusline">// import graph · monitoring every tool call</div>
+			<div class="leg-head">// SUBSYSTEMS · top-level directories, by file count</div>
 			<div id="legend" class="legend"><div class="muted">mapping cells…</div></div>
-			<div class="stat-row">CELLS <b id="s-nodes">0</b> · INTERLINKS <b id="s-edges">0</b> · STEM <b id="s-hub">—</b></div>
+			<div class="stat-row">FILES <b id="s-nodes">0</b> · IMPORTS <b id="s-edges">0</b></div>
+			<div class="stat-row">MOST DEPENDED-ON <b id="s-hub">—</b></div>
+			<div class="defn">each dot is one source file · each line is an import · dot size = how many files depend on it</div>
 		</div>
 	</div>
 
@@ -214,8 +367,11 @@
 	</div>
 
 	<div id="tabs" class="hud">
-		<div class="tab active" data-pane="cells">CELLS<small>the graph</small></div>
-		<div class="tab" data-pane="baseline">BASELINE<small>per-step</small></div>
+		<div class="tab active" data-pane="cells">FILES<small>import graph</small></div>
+		<div class="tab" data-pane="baseline">GATES<small>per tool call</small></div>
+		<div class="tab" data-pane="agents">AGENTS<small>who is working</small></div>
+		<div class="tab" data-pane="tests">TESTS<small>live suite</small></div>
+		<div class="tab" data-pane="mutants">MUTANTS<small>fault injection</small></div>
 		<div class="tab" data-pane="drift">DRIFT<small>over time</small></div>
 	</div>
 
@@ -262,11 +418,15 @@
 	const ctx = canvas.getContext("2d");
 	let W = 0, H = 0;
 	const DPR = Math.min(window.devicePixelRatio || 1, 2);
+	// Static-layer invalidation state. Declared here because resize() runs during
+	// load, before the static layer below is constructed.
+	let staticDirty = true, lastK = -1, lastX = -1, lastY = -1, layoutFrame = 0;
 	function resize() {
 		W = window.innerWidth; H = window.innerHeight;
 		canvas.width = W * DPR; canvas.height = H * DPR;
 		canvas.style.width = W + "px"; canvas.style.height = H + "px";
 		ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+		staticDirty = true;
 	}
 	window.addEventListener("resize", resize); resize();
 
@@ -386,7 +546,10 @@
 			n.vx = Math.max(-40, Math.min(40, n.vx)); n.vy = Math.max(-40, Math.min(40, n.vy));
 			n.x += n.vx; n.y += n.vy;
 		}
-		alpha *= 0.992;
+		// 0.992 needed ~550 frames (~9s) of full-cost simulation before settling;
+		// 0.985 reaches the same visual layout in ~290. The extra frames were
+		// refining positions by sub-pixel amounts nobody can see.
+		alpha *= 0.985;
 		if (alpha < 0.012) settled = true;
 	}
 
@@ -396,7 +559,7 @@
 		flows.push({ e, t: 0, sp: 0.012 + Math.random() * 0.02, col: e.a.color });
 	}
 	setInterval(spawnFlow, 360);
-	function spawnPulse(node) { pulses.push({ node, t: 0, col: C.pink }); }
+	function spawnPulse(node, color) { pulses.push({ node, t: 0, col: color || C.pink }); }
 
 	const neighborCache = new Map();
 	function isNeighbor(f, n) {
@@ -416,6 +579,57 @@
 		view.ty = H / 2 - ((minY + maxY) / 2) * view.tk;
 	}
 
+	// ---- static layer -------------------------------------------------------
+	// Edges and ordinary file dots do not change between frames once the layout
+	// has settled and the view is still — but redrawing them cost ~10k draw
+	// operations EVERY frame, which is what made the graph feel heavy. They are
+	// rendered once into an offscreen canvas and blitted; the per-frame work then
+	// shrinks to the handful of things that actually move (signal flows, pulses,
+	// active files, labels). Invalidated by layout, pan/zoom, focus and resize.
+	const staticCv = document.createElement("canvas");
+	const sctx = staticCv.getContext("2d");
+	const markStatic = () => { staticDirty = true; };
+
+	function drawStatic(SX, SY) {
+		staticCv.width = W * DPR; staticCv.height = H * DPR;
+		sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+		sctx.clearRect(0, 0, W, H);
+
+		// imports — batched into ONE path per style. A per-edge beginPath/stroke
+		// pair costs a full canvas state change; at 6.7k edges that was the single
+		// most expensive thing in the frame. Same pixels, 3 draw calls.
+		sctx.lineWidth = 0.6;
+		const litPath = focus ? new Path2D() : null;
+		const typePath = new Path2D(), importPath = new Path2D();
+		for (const e of edges) {
+			const target = (litPath && (e.a === focus || e.b === focus)) ? litPath : (e.t ? typePath : importPath);
+			target.moveTo(SX(e.a), SY(e.a)); target.lineTo(SX(e.b), SY(e.b));
+		}
+		sctx.strokeStyle = "rgba(90,150,170,0.05)"; sctx.stroke(typePath);
+		sctx.strokeStyle = "rgba(110,195,220,0.085)"; sctx.stroke(importPath);
+		if (litPath) { sctx.strokeStyle = "rgba(255,92,168,0.5)"; sctx.stroke(litPath); }
+
+		// ordinary files: one filled path per subsystem colour, no glow.
+		const k = view.k;
+		const byColor = new Map();
+		for (const n of nodes) {
+			if (n.role === "hub" || n.activeUntil) continue;   // drawn live, with glow
+			const r = Math.max(1.3, n.rad * (0.55 + k * 0.6));
+			const dim = focus && focus !== n && !isNeighbor(focus, n);
+			const key = (dim ? "dim:" : "") + n.color;
+			let path = byColor.get(key);
+			if (!path) { path = new Path2D(); byColor.set(key, path); }
+			path.moveTo(SX(n) + r, SY(n)); path.arc(SX(n), SY(n), r, 0, 7);
+		}
+		for (const [key, path] of byColor) {
+			const dim = key.startsWith("dim:");
+			sctx.globalAlpha = dim ? 0.13 : 1;
+			sctx.fillStyle = dim ? key.slice(4) : key;
+			sctx.fill(path);
+		}
+		sctx.globalAlpha = 1;
+	}
+
 	function frame(now) {
 		tick(); if (!settled) fit();
 		view.k += (view.tk - view.k) * 0.08;
@@ -426,13 +640,14 @@
 		const k = view.k, ox = view.x, oy = view.y;
 		const SX = (n) => n.x * k + ox, SY = (n) => n.y * k + oy;
 
-		// interlinks
-		ctx.lineWidth = 0.6;
-		for (const e of edges) {
-			const lit = focus && (e.a === focus || e.b === focus);
-			ctx.strokeStyle = lit ? "rgba(255,92,168,0.5)" : (e.t ? "rgba(90,150,170,0.05)" : "rgba(110,195,220,0.085)");
-			ctx.beginPath(); ctx.moveTo(SX(e.a), SY(e.a)); ctx.lineTo(SX(e.b), SY(e.b)); ctx.stroke();
+		const viewMoved = Math.abs(k - lastK) > 1e-4 || Math.abs(ox - lastX) > 0.05 || Math.abs(oy - lastY) > 0.05;
+		layoutFrame++;
+		const layoutTick = !settled && layoutFrame % 2 === 0;   // half-rate refresh while settling
+		if (staticDirty || viewMoved || layoutTick) {
+			drawStatic(SX, SY);
+			staticDirty = false; lastK = k; lastX = ox; lastY = oy;
 		}
+		ctx.drawImage(staticCv, 0, 0, W, H);
 		// signals traveling the interlinks
 		for (let i = flows.length - 1; i >= 0; i--) {
 			const f = flows[i]; f.t += f.sp; if (f.t >= 1) { flows.splice(i, 1); continue; }
@@ -443,14 +658,23 @@
 		}
 		ctx.globalAlpha = 1;
 		// cells — screen-space radius, floored so they never vanish at zoom
+		// The only files drawn live are the ones that move or glow: hubs, and any
+		// file an agent just touched (which breathes and carries that agent's
+		// colour). Everything else came from the static layer above. Canvas
+		// shadowBlur is the most expensive per-draw property there is, so it is
+		// now paid for a handful of nodes instead of ~3k.
 		for (const n of nodes) {
 			const active = n.activeUntil && now < n.activeUntil;
+			if (!active && n.role !== "hub") continue;
+			if (!active && n.activeUntil) { n.activeUntil = 0; n.activeColor = null; markStatic(); }
 			const dim = focus && focus !== n && !isNeighbor(focus, n);
 			let r = Math.max(1.3, n.rad * (0.55 + k * 0.6)) * (1 + 0.07 * Math.sin(now / 720 + n.seed));
 			if (active) r *= 1.7;
+			const activeCol = n.activeColor || C.pink;
 			ctx.globalAlpha = dim ? 0.13 : 1;
-			ctx.fillStyle = active ? C.pink : n.color;
-			ctx.shadowBlur = active ? 22 : (n.role === "hub" ? 16 : 6); ctx.shadowColor = active ? C.pink : n.color;
+			ctx.fillStyle = active ? activeCol : n.color;
+			ctx.shadowBlur = active ? 22 : 16;
+			ctx.shadowColor = active ? activeCol : n.color;
 			ctx.beginPath(); ctx.arc(SX(n), SY(n), r, 0, 7); ctx.fill();
 		}
 		ctx.shadowBlur = 0; ctx.globalAlpha = 1;
@@ -480,8 +704,8 @@
 			if (!show) continue;
 			if (focus && focus !== n && !isNeighbor(focus, n) && !active) ctx.globalAlpha = 0.32; else ctx.globalAlpha = 1;
 			ctx.font = active ? activeFont : baseFont;
-			ctx.fillStyle = active ? C.pink : "rgba(215,224,230,0.5)";
-			ctx.shadowBlur = active ? 12 : 0; ctx.shadowColor = C.pink;
+			ctx.fillStyle = active ? (n.activeColor || C.pink) : "rgba(215,224,230,0.5)";
+			ctx.shadowBlur = active ? 12 : 0; ctx.shadowColor = n.activeColor || C.pink;
 			const yy = SY(n) - (Math.max(1.3, n.rad) + (active ? lblSize + 2 : 7));
 			ctx.fillText(active && n.lastTool ? `${n.lastTool} · ${base(n.id)}` : base(n.id), SX(n), yy);
 		}
@@ -507,7 +731,7 @@
 		for (const n of nodes) { const d = Math.hypot(n.x - w.x, n.y - w.y); if (d < bd + n.rad) { bd = d; best = n; } }
 		hover = best; canvas.style.cursor = best ? "pointer" : "crosshair";
 	});
-	canvas.addEventListener("click", () => { focus = (focus === hover) ? null : hover; autoFit = false; });
+	canvas.addEventListener("click", () => { focus = (focus === hover) ? null : hover; autoFit = false; markStatic(); });
 	canvas.addEventListener("wheel", (ev) => {
 		ev.preventDefault(); autoFit = false;
 		const w = worldOf(ev.clientX, ev.clientY), f = ev.deltaY < 0 ? 1.12 : 0.89;
@@ -533,12 +757,17 @@
 		txt.className = "bl-off"; txt.textContent = deviations + " DEVIATION" + (deviations > 1 ? "S" : "");
 	}
 	function onEvent(e) {
-		if (e.file) { for (const n of nodes) { if (e.file.endsWith(n.id)) { spawnPulse(n); n.activeUntil = performance.now() + 4500; n.lastTool = e.tool || short(e.type); break; } } }
+		// Colour is identity: a file touched by agent X pulses in X's hue, and the
+		// ticker row carries the same swatch. With two sessions running you can
+		// see WHOSE work is landing where without reading a label.
+		const who = colorForEvent(e);
+		if (e.file) { for (const n of nodes) { if (e.file.endsWith(n.id)) { spawnPulse(n, who); n.activeUntil = performance.now() + 4500; n.activeColor = who; n.lastTool = e.tool || short(e.type); markStatic(); break; } } }
 		if (e.decision === "block") setBaseline();
 		const row = document.createElement("div");
 		row.className = "tick" + (e.decision === "block" ? " block" : (e.decision === "warn" || e.type === "guard_warn") ? " warn" : "");
 		const label = e.rule_id || e.tool || e.type || "event";
-		row.innerHTML = '<span class="k">' + esc(short(e.type)) + "</span> " + esc(label) + (e.file ? " · " + esc(base(e.file)) : "");
+		const swatch = who ? '<i class="who-dot" style="color:' + esc(who) + '"></i>' : "";
+		row.innerHTML = swatch + '<span class="k">' + esc(short(e.type)) + "</span> " + esc(label) + (e.file ? " · " + esc(base(e.file)) : "");
 		if (tickBody.firstChild && tickBody.firstChild.classList && tickBody.firstChild.classList.contains("muted")) tickBody.innerHTML = "";
 		tickBody.prepend(row);
 		while (tickBody.children.length > 22) tickBody.lastChild.remove();
@@ -609,13 +838,247 @@
 		} catch (_) { /* SSE unavailable */ }
 	}
 
+	// ---- TESTS lens: one lit cell per case, in completion order ---------------
+	// Feed contract (`/api/tests`, honored verbatim):
+	//   { ts, kind:"run_start"|"file_start"|"test"|"run_end", run_id,
+	//     file?, name?, status?:"pass"|"fail"|"skip"|"todo", ms?, error?,
+	//     passed?, failed?, skipped? }
+	// The lens is about ORDER: cells append in the order the runner finished
+	// them, grouped under the file that was executing.
+	const testsBody = document.getElementById("tests-body");
+	const SLOW_MS = 500;          // a case this slow gets an amber outline
+	const FAIL_CAP = 12;          // failure detail rows kept on screen
+	const CELL_CAP = 4000;        // hard cap on rendered cells (a huge suite stays fluid)
+	const T = { run: null, pass: 0, fail: 0, skip: 0, started: 0, group: null, cells: 0, hasData: false };
+
+	const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+	const pct = (n, d) => (d > 0 ? Math.round((n / d) * 100) : 0);
+
+	function renderTestMetrics() {
+		const total = T.pass + T.fail + T.skip;
+		setText("t-pass", T.pass); setText("t-fail", T.fail); setText("t-skip", T.skip);
+		setText("t-rate", total ? pct(T.pass, total) + "%" : "—");
+		setText("t-elapsed", T.started ? ((Date.now() - T.started) / 1000).toFixed(1) + "s" : "—");
+		document.getElementById("t-bar-p").style.width = pct(T.pass, total) + "%";
+		document.getElementById("t-bar-f").style.width = pct(T.fail, total) + "%";
+		document.getElementById("t-bar-s").style.width = pct(T.skip, total) + "%";
+	}
+
+	function resetTests(ev) {
+		T.run = ev.run_id; T.pass = T.fail = T.skip = 0; T.cells = 0;
+		T.started = Date.parse(ev.ts) || Date.now();
+		T.group = null; T.hasData = true;
+		testsBody.innerHTML = "";
+		renderTestMetrics();
+	}
+
+	/** Open a new file group; returns the grid the cells append into. */
+	function testGroup(file) {
+		const label = file || "…";
+		if (T.group && T.group.file === label) return T.group.grid;
+		const head = document.createElement("div");
+		head.className = "tfile";
+		head.innerHTML = "▸ <b>" + esc(label) + "</b>";
+		const grid = document.createElement("div");
+		grid.className = "tgrid";
+		testsBody.append(head, grid);
+		T.group = { file: label, grid };
+		return grid;
+	}
+
+	function addTestCell(ev) {
+		if (!T.hasData) { testsBody.innerHTML = ""; T.hasData = true; }
+		const status = ev.status || "skip";
+		if (status === "pass") T.pass++; else if (status === "fail") T.fail++; else T.skip++;
+		if (T.cells < CELL_CAP) {
+			const cell = document.createElement("div");
+			cell.className = "tcell " + status + (ev.ms >= SLOW_MS ? " slow" : "");
+			cell.title = (ev.name || "test") + (typeof ev.ms === "number" ? "  ·  " + ev.ms + "ms" : "");
+			testGroup(ev.file).appendChild(cell);
+			T.cells++;
+		}
+		if (status === "fail") addFailureRow(ev);
+		renderTestMetrics();
+	}
+
+	function addFailureRow(ev) {
+		const row = document.createElement("div");
+		row.className = "fail-row";
+		row.innerHTML = esc(ev.name || "failing test") +
+			(ev.error ? '<span class="msg">' + esc(ev.error) + "</span>" : "");
+		testsBody.appendChild(row);
+		const rows = testsBody.querySelectorAll(".fail-row");
+		if (rows.length > FAIL_CAP) rows[0].remove();
+	}
+
+	function onTestEvent(ev) {
+		if (!ev || typeof ev !== "object") return;
+		if (ev.kind === "run_start") { resetTests(ev); return; }
+		if (ev.kind === "file_start") { T.group = null; return; }
+		if (ev.kind === "test") { addTestCell(ev); return; }
+		if (ev.kind === "run_end") {
+			if (typeof ev.passed === "number") { T.pass = ev.passed; T.fail = ev.failed || 0; T.skip = ev.skipped || 0; }
+			renderTestMetrics();
+			if (typeof ev.ms === "number") setText("t-elapsed", (ev.ms / 1000).toFixed(1) + "s");
+		}
+	}
+
+	// ---- MUTANTS lens: the fault-injection wall -------------------------------
+	// Feed contract (`/api/mutants`): { kind:"born"|"flip", from?, mutant:
+	//   { id, file, symbol, mutator, original, replacement, status } }
+	// A joining client is seeded with the manifest's current state as `born`
+	// events, so the wall is populated before the first live flip.
+	const mutantsBody = document.getElementById("mutants-body");
+	const MUT_CAP = 600;
+	const mutTiles = new Map();       // id -> element
+	const mutStatus = new Map();      // id -> status (drives the counters)
+
+	function renderMutantMetrics() {
+		const counts = {};
+		for (const s of mutStatus.values()) counts[s] = (counts[s] || 0) + 1;
+		const killed = counts.killed || 0, survived = counts.survived || 0;
+		const uncovered = counts.uncovered || 0, timeout = counts.timeout || 0;
+		const resolved = killed + survived + timeout;
+		setText("m-killed", killed); setText("m-survived", survived); setText("m-uncovered", uncovered);
+		setText("m-score", resolved ? pct(killed + timeout, resolved) + "%" : "—");
+	}
+
+	function mutantTile(m) {
+		const el = document.createElement("div");
+		el.innerHTML = '<span class="sym">' + esc(m.symbol || "?") + "</span>" +
+			esc(m.mutator || "") + '<span class="arrow">·</span>' +
+			esc(m.original || "") + '<span class="arrow">→</span>' + esc(m.replacement || "");
+		el.title = (m.file || "") + "  ·  " + (m.status || "");
+		return el;
+	}
+
+	function onMutantEvent(ev) {
+		if (!ev || typeof ev !== "object" || !ev.mutant || !ev.mutant.id) return;
+		const m = ev.mutant;
+		if (mutStatus.size === 0) mutantsBody.innerHTML = '<div class="mwall" id="mwall"></div>';
+		const wall = document.getElementById("mwall");
+		if (!wall) return;
+		let tile = mutTiles.get(m.id);
+		if (!tile) {
+			if (mutTiles.size >= MUT_CAP) return;
+			tile = mutantTile(m);
+			mutTiles.set(m.id, tile);
+			// survivors lead — the wall's job is to make an uncaught defect obvious
+			if (m.status === "survived") wall.prepend(tile); else wall.appendChild(tile);
+		}
+		tile.className = "mut " + esc(m.status || "indeterminate") + (ev.kind === "flip" ? " flip" : "");
+		mutStatus.set(m.id, m.status);
+		renderMutantMetrics();
+	}
+
+	// ---- AGENTS lens: one lane per actor working in this repo -----------------
+	// Feed contract (`/api/agents`): the server folds the activity stream into
+	// AgentPresence lanes and pushes the UPDATED lane on every event:
+	//   { id, label, runner, hue, session?, model?, isSubagent, parent?,
+	//     firstSeen, lastSeen, events, edits, blocks, warns, files[],
+	//     lastTool?, lastFile?, subagents[] }
+	// The hue is computed server-side (agent-roster.ts) so the colour is
+	// identical everywhere the actor appears — no second hashing rule here.
+	const agentsBody = document.getElementById("agents-body");
+	const AGENT_IDLE_MS = 120000;     // silent this long ⇒ the lane dims to idle
+	const agents = new Map();         // id -> presence (latest wins)
+	const laneEls = new Map();        // id -> element
+	const agentColor = (p) => "hsl(" + (p && typeof p.hue === "number" ? p.hue : 0) + ", 72%, 62%)";
+
+	/** Colour for the actor of a raw event, or null when unattributed. */
+	function colorForEvent(ev) {
+		const id = ev.subagent_id && ev.agent ? ev.agent + "/" + ev.subagent_id : ev.agent;
+		const presence = id ? agents.get(id) : null;
+		return presence ? agentColor(presence) : null;
+	}
+
+	function renderAgentMetrics() {
+		const now = Date.now();
+		let live = 0, edits = 0, blocks = 0;
+		for (const p of agents.values()) {
+			if (now - (Date.parse(p.lastSeen) || 0) <= AGENT_IDLE_MS) live++;
+			edits += p.edits || 0; blocks += p.blocks || 0;
+		}
+		setText("a-live", live); setText("a-total", agents.size);
+		setText("a-edits", edits); setText("a-blocks", blocks);
+	}
+
+	function laneHtml(p) {
+		const files = (p.files || []).slice(0, 3).map(base).join(" · ");
+		const meta = [p.runner, p.model, p.session ? "session " + String(p.session).slice(0, 8) : ""]
+			.filter(Boolean).map(esc).join(" · ");
+		return '<div class="who">' +
+				'<div class="name"><i class="live"></i>' + esc(p.label || p.id) + "</div>" +
+				'<div class="meta">' + meta + "</div>" +
+			"</div>" +
+			'<div class="nums">' +
+				"<div><b>" + (p.events || 0) + "</b>CALLS</div>" +
+				"<div><b>" + (p.edits || 0) + "</b>EDITS</div>" +
+				'<div class="bad"><b>' + (p.blocks || 0) + "</b>BLOCKED</div>" +
+				"<div><b>" + (p.warns || 0) + "</b>WARNED</div>" +
+				((p.subagents || []).length ? "<div><b>" + p.subagents.length + "</b>SUBAGENTS</div>" : "") +
+			"</div>" +
+			'<div class="doing">' +
+				'<span class="now">' + esc(p.lastTool || "—") + "</span>" +
+				(p.lastFile ? " · " + esc(base(p.lastFile)) : "") +
+				(files ? '<span class="fl">recent: ' + esc(files) + "</span>" : "") +
+			"</div>";
+	}
+
+	/** Insert a lane so subagents sit directly beneath the parent that spawned them. */
+	function placeLane(el, p) {
+		const parentLane = p.isSubagent && p.parent ? laneEls.get(p.parent) : null;
+		if (parentLane && parentLane.parentNode === agentsBody) parentLane.after(el);
+		else agentsBody.prepend(el);
+	}
+
+	function onAgentEvent(p) {
+		if (!p || typeof p !== "object" || !p.id) return;
+		if (!agents.size) agentsBody.innerHTML = "";
+		agents.set(p.id, p);
+		let el = laneEls.get(p.id);
+		if (!el) {
+			el = document.createElement("div");
+			laneEls.set(p.id, el);
+			placeLane(el, p);
+		}
+		const idle = Date.now() - (Date.parse(p.lastSeen) || 0) > AGENT_IDLE_MS;
+		el.className = "lane" + (p.isSubagent ? " sub" : "") + (idle ? " idle" : " live-now");
+		el.style.color = agentColor(p);
+		el.innerHTML = laneHtml(p);
+		renderAgentMetrics();
+	}
+
+	// Lanes age into "idle" on their own — presence is time-sensitive, and an
+	// agent that stopped working emits nothing to trigger a re-render.
+	setInterval(() => {
+		const now = Date.now();
+		for (const [id, p] of agents) {
+			const el = laneEls.get(id);
+			if (el) el.classList.toggle("idle", now - (Date.parse(p.lastSeen) || 0) > AGENT_IDLE_MS);
+		}
+		renderAgentMetrics();
+	}, 5000);
+
+	// ---- generic SSE connector shared by every lens ---------------------------
+	function connectFeed(route, onEvent) {
+		try {
+			const src = new EventSource(route);
+			src.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (_) { /* skip malformed */ } };
+			src.onerror = () => { /* best-effort: a feed with no producer stays quiet */ };
+		} catch (_) { /* SSE unavailable */ }
+	}
+
 	// ---- switchboard ----
+	const PANES = { baseline: "filmstrip", agents: "pane-agents", tests: "pane-tests",
+		mutants: "pane-mutants", drift: "standby-drift" };
 	document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
 		document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
 		tab.classList.add("active");
 		const pane = tab.dataset.pane;
-		document.getElementById("filmstrip").classList.toggle("show", pane === "baseline");
-		document.getElementById("standby-drift").classList.toggle("show", pane === "drift");
+		for (const [name, id] of Object.entries(PANES)) {
+			document.getElementById(id).classList.toggle("show", pane === name);
+		}
 		document.getElementById("stage").style.opacity = pane === "cells" ? "1" : "0.12";
 	}));
 
@@ -624,7 +1087,14 @@
 	function endBoot() { bootEl.classList.add("hidden"); setTimeout(() => bootEl.remove(), 1200); }
 	document.getElementById("skip").addEventListener("click", endBoot);
 
-	load().then(() => { requestAnimationFrame(frame); connectStream(); connectChecks(); setTimeout(endBoot, 1100); })
+	load().then(() => {
+			requestAnimationFrame(frame);
+			connectStream(); connectChecks();
+			connectFeed("/api/agents", onAgentEvent);
+			connectFeed("/api/tests", onTestEvent);
+			connectFeed("/api/mutants", onMutantEvent);
+			setTimeout(endBoot, 1100);
+		})
 		.catch((err) => { document.querySelector("#boot .brand").textContent = "NO SIGNAL"; console.error(err); });
 })();
 </script>

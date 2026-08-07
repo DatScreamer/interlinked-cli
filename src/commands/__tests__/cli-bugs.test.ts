@@ -259,29 +259,36 @@ describe("Bug 24: initConfig preserves shared defaults", () => {
 // ===========================================
 
 describe("Bug 14: doctor exit code behavior", () => {
-	const originalCwd = process.cwd();
-
 	afterEach(() => {
-		process.chdir(originalCwd);
 		vi.restoreAllMocks();
 	});
 
 	it("sets process.exitCode when failures are present", async () => {
 		const tempDir = join(tmpdir(), uniqueDirSuffix("cli-doctor-fail"));
 		mkdirSync(tempDir, { recursive: true });
-		process.chdir(tempDir);
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins its own pool, so a chdir here failed the mutation dry run
+		// for every file whose graph-selected test scope included this one —
+		// reported only as a generic "There were failed tests in the initial
+		// test run" (measured 2026-08-04). doctorCommand reads `process.cwd()`
+		// explicitly and threads it through, so the spy exercises the same path.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempDir);
 
 		const previousExitCode = process.exitCode;
 		process.exitCode = 0;
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(console, "error").mockImplementation(() => {});
 
-		const { doctorCommand } = await import("../doctor.js");
-		await doctorCommand({ json: true });
-		expect(process.exitCode).toBe(1);
-
-		process.exitCode = previousExitCode;
-		rmSync(tempDir, { recursive: true, force: true });
+		try {
+			const { doctorCommand } = await import("../doctor.js");
+			await doctorCommand({ json: true });
+			expect(process.exitCode).toBe(1);
+		} finally {
+			cwdSpy.mockRestore();
+			process.exitCode = previousExitCode;
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 });
 

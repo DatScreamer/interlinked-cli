@@ -88,4 +88,14 @@ describe("cognitiveWriteWarning", () => {
 		const abs = join(tmp, "x.py");
 		expect(cognitiveWriteWarning(abs, "def f():\n    return 1\n", tmp)).toBeNull();
 	});
+
+	it("ignores anonymous callbacks entirely (maxByName skips ANON_FN, no identity to compare)", () => {
+		withCap(5);
+		const abs = join(tmp, "anon.ts");
+		// A single anonymous callback, well over the cap — maxByName drops it
+		// from both the before-map and the after-map, so there is no named
+		// entry to warn about.
+		const anon = "export const wired = register((a: number): number => {\n\tif (a) { if (a) { if (a) { return 1; } } }\n\treturn 0;\n});\n";
+		expect(cognitiveWriteWarning(abs, anon, tmp)).toBeNull();
+	});
 });

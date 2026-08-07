@@ -78,7 +78,7 @@ vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
 // formatter is real (color-stripped under CI/NO_COLOR — tests assert plain text).
 
 import { nonNull } from "../lib/non-null.js";
-import { metricsCommand } from "./metrics.js";
+import { cyclomaticForMetrics, loadMetricsCoverage, metricsCommand } from "./metrics.js";
 
 // --- helpers ------------------------------------------------------------
 let logged = "";
@@ -685,3 +685,251 @@ describe("metricsCommand — LCOV coverage source (F4)", () => {
 		expect(lastJson().scope.astComplexityAvailable).toBe(false);
 	});
 });
+
+	describe("metricsCommand — mutation-targeted regression cases", () => {
+		it("does not treat a declaration-lookalike extension as a .d.ts file (anchor on $)", async () => {
+			// "component.d.tsx" contains the substring ".d.ts" but is NOT a .d.ts
+			// declaration file — it's a real .tsx source. An unanchored /\\.d\\.ts/
+			// regex would wrongly exclude it.
+			m.discoverFiles.mockReturnValue([abs("src/component.d.tsx")]);
+			m.computeCyclomaticAst.mockReturnValue([comp()]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual(["src/component.d.tsx"]);
+		});
+
+		it("excludes a tests/ dir at the START of a repo-relative path (no leading slash to match)", async () => {
+			// A covered non-src Python file living directly under "tests/" (no
+			// leading "/" — it's the START of the relative path string) must still
+			// be excluded. A regex requiring a literal preceding "/" before the
+			// tests-dir segment would miss this exact case.
+			m.loadLcovFile.mockReturnValue({
+				files: new Map([["tests/x.py", {} as never]]),
+				source: "lcov",
+			} as unknown as CanonicalCoverage);
+			m.discoverFiles.mockReturnValue([abs("tests/x.py")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual([]);
+		});
+
+		it("returns null (not a throw) when a matched summary entry has no lines field", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+			m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+			m.computeCyclomaticAst.mockReturnValue([comp()]);
+			m.computeCrapForFile.mockReturnValue([crap()]);
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			// `lines` entirely absent — the optional-chain `entry.lines?.pct` must
+			// short-circuit to undefined (→ null) rather than throwing on `.pct`.
+			m.loadCoverageSummary.mockReturnValue({
+				"src/a.ts": { branches: { pct: 0 } } as unknown as CoverageSummary[string],
+			});
+			await expect(metricsCommand({ cwd: CWD, json: true })).resolves.not.toThrow();
+			expect(nonNull(lastJson().files[0]).linePct).toBeNull();
+		});
+
+		it("drops a summary entry keyed by the empty string (rel === '')", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map());
+			m.loadCoverageSummary.mockReturnValue({
+				"": { lines: { pct: 42 }, branches: { pct: 0 } },
+			});
+			const cov = loadMetricsCoverage(CWD);
+			expect(cov.linePct("")).toBeNull();
+		});
+
+		it("drops an out-of-repo summary key even when its relative path doesn't END with '..'", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map());
+			m.loadCoverageSummary.mockReturnValue({
+				"/elsewhere/src/a.ts": { lines: { pct: 11 }, branches: { pct: 0 } },
+			});
+			const cov = loadMetricsCoverage(CWD);
+			// The raw relative-path key ("../elsewhere/src/a.ts") must never surface —
+			// this pins the *whole* out-of-repo guard, not just the queried alias.
+			expect(cov.linePct("../elsewhere/src/a.ts")).toBeNull();
+			expect(cov.linePct("elsewhere/src/a.ts")).toBeNull();
+		});
+
+		it("normalizes a literal backslash in a summary key to a forward slash", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map());
+			m.loadCoverageSummary.mockReturnValue({
+				"src\\weird.ts": { lines: { pct: 55 }, branches: { pct: 0 } },
+			});
+			const cov = loadMetricsCoverage(CWD);
+			expect(cov.linePct("src/weird.ts")).toBe(55);
+		});
+
+		it("calls loadLcovFile with the cwd option so relative fixture paths resolve", async () => {
+			m.loadCoverageFinal.mockReturnValue(null);
+			m.loadLcovFile.mockReturnValue(null);
+			m.discoverFiles.mockReturnValue([]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(m.loadLcovFile).toHaveBeenCalledWith(`${CWD}/coverage/lcov.info`, { cwd: CWD });
+		});
+
+		it("normalizes a backslash in a discovered file path before matching the src/ prefix", async () => {
+			// discoverFiles returning a Windows-style separator must still land as
+			// "src/weird.ts" (in scope) — a broken normalizer would turn it into
+			// "srcweird.ts" and silently drop the file (fails the src/ prefix check).
+			m.discoverFiles.mockReturnValue([`${CWD}/src\\weird.ts`]);
+			m.computeCyclomaticAst.mockReturnValue([comp()]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual(["src/weird.ts"]);
+		});
+
+		it("passes computeCrapForFile the exact scoring arguments (filePath/threshold/staleTolerance)", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+			m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+			const comps = [comp({ name: "fn", line: 1 })];
+			m.computeCyclomaticAst.mockReturnValue(comps);
+			m.computeCrapForFile.mockReturnValue([crap()]);
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(m.computeCrapForFile).toHaveBeenCalledWith({
+				complexities: comps,
+				perFile: perFile("src/a.ts"),
+				filePath: "src/a.ts",
+				fileMtime: 1000,
+				threshold: 0,
+				staleTolerance: "include",
+			});
+		});
+
+		it("marks companion present when only SOME of multiple candidates exist (uses .some, not .every)", async () => {
+			m.discoverFiles.mockReturnValue([abs("src/multi.ts")]);
+			m.computeCyclomaticAst.mockReturnValue([comp()]);
+			m.isTddExemptPath.mockReturnValue(false);
+			m.companionTestCandidates.mockReturnValue(["/repo/multi.test.ts", "/repo/multi.spec.ts"]);
+			// Only ONE of the two candidates exists.
+			m.existsSync.mockImplementation((p: unknown) => String(p).endsWith("multi.test.ts"));
+			await metricsCommand({ cwd: CWD, json: true });
+			const file = lastJson().files.find((f) => f.file === "src/multi.ts");
+			expect(file?.companion).toBe(true);
+		});
+
+		it("counts a function whose crap score sits exactly ON the gate as over-gate (>= not >)", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+			m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+			m.computeCyclomaticAst.mockReturnValue([comp({ name: "fn", line: 1 })]);
+			// Default crap_threshold is 30 (no .interlinked/metric-caps.json in the mock fs).
+			m.computeCrapForFile.mockReturnValue([crap({ function: "fn", line: 1, crap_score: 30 })]);
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			const r = lastJson();
+			expect(r.gates.functionsOverCrap).toBe(1);
+			expect(nonNull(r.files[0]).overGate).toBe(1);
+		});
+
+		it("classifies the cyclomatic review/bad bands at their exact boundaries", async () => {
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			// review band = (15, 25]; bad = (25, ∞). 15 is the exclusive lower bound
+			// (must NOT count as review); 25 is the inclusive upper bound of review
+			// (must count as review, must NOT count as bad).
+			m.computeCyclomaticAst.mockReturnValue([
+				comp({ name: "atLower", line: 1, cyclomatic: 15 }),
+				comp({ name: "atUpper", line: 2, cyclomatic: 25 }),
+			]);
+			await metricsCommand({ cwd: CWD, json: true });
+			const r = lastJson();
+			expect(r.gates.functionsCyclomaticReview).toBe(1); // only atUpper (25)
+			expect(r.gates.functionsCyclomaticBad).toBe(0); // 25 is not > 25
+		});
+
+		it("pins the exact cyclomatic distribution buckets at every boundary value", async () => {
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			// bounds [5, 10, 15, 25]; values chosen exactly on each boundary plus one
+			// below the first and one above the last, so every filter predicate
+			// (both the `> lo` and `<= b` sides, and the tail `> lo`) is exercised at
+			// its exact edge in both directions.
+			m.computeCyclomaticAst.mockReturnValue(
+				[4, 5, 10, 15, 25, 26].map((cyclomatic, i) =>
+					comp({ name: `f${i}`, line: i + 1, cyclomatic }),
+				),
+			);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().distributions.cyclomatic).toEqual({
+				"≤5": 2,
+				"5–10": 1,
+				"10–15": 1,
+				"15–25": 1,
+				">25": 1,
+			});
+		});
+
+		it("excludes null-crap functions from the CRAP distribution and over-gate count", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+			m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+			m.computeCyclomaticAst.mockReturnValue([
+				comp({ name: "scored", line: 1 }),
+				comp({ name: "unscored", line: 2 }),
+			]);
+			// computeCrapForFile only reports "scored" — "unscored" has no CRAP entry
+			// and must end up with crap: null, excluded from the numeric distribution.
+			m.computeCrapForFile.mockReturnValue([crap({ function: "scored", line: 1, crap_score: 12 })]);
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			const r = lastJson();
+			expect(r.distributions.crap).toEqual({
+				"≤10": 0,
+				"10–30": 1,
+				"30–60": 0,
+				"60–100": 0,
+				">100": 0,
+			});
+			expect(r.gates.functionsOverCrap).toBe(0);
+		});
+
+		it("sorts hotspots strictly descending by crap score (distinct nonzero scores stay ordered)", async () => {
+			m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+			m.coverageForFile.mockReturnValue(perFile("src/a.ts"));
+			// Insertion order is deliberately NOT already crap-ascending (mid, low,
+			// high) — a broken comparator (e.g. one that drops the `b` operand via
+			// `b.crap && 0` instead of `b.crap ?? 0`) sorts correctly by coincidence
+			// on an already-ascending input but diverges on this permutation.
+			m.computeCyclomaticAst.mockReturnValue([
+				comp({ name: "mid", line: 2 }),
+				comp({ name: "low", line: 1 }),
+				comp({ name: "high", line: 3 }),
+			]);
+			m.computeCrapForFile.mockReturnValue([
+				crap({ function: "mid", line: 2, crap_score: 40 }),
+				crap({ function: "low", line: 1, crap_score: 5 }),
+				crap({ function: "high", line: 3, crap_score: 90 }),
+			]);
+			m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().hotspots.map((h) => h.name)).toEqual(["high", "mid", "low"]);
+		});
+
+		it("dispatches every JS/TS-family extension to the AST pass, not the regex walker", async () => {
+			const exts = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
+			for (const ext of exts) {
+				m.computeCyclomaticAst.mockClear();
+				m.computeCyclomaticComplexity.mockClear();
+				m.computeCyclomaticAst.mockReturnValue([comp()]);
+				cyclomaticForMetrics("// content", `/repo/src/file${ext}`);
+				expect(m.computeCyclomaticAst).toHaveBeenCalledOnce();
+				expect(m.computeCyclomaticComplexity).not.toHaveBeenCalled();
+			}
+		});
+
+		it("does not misclassify a .jsonnet file as an analyzable JS source (extension regex is anchored)", async () => {
+			m.discoverFiles.mockReturnValue([abs("src/foo.jsonnet")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual([]);
+		});
+
+		it("does not misclassify a *.test.js file as non-test (jsx? must still match bare 'js')", async () => {
+			m.discoverFiles.mockReturnValue([abs("src/foo.test.js")]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual([]);
+		});
+
+		it("does not misclassify a non-test file whose name merely CONTAINS a test-extension substring", async () => {
+			// "foo.test.js.ts" is a real .ts source (analyzable). An unanchored
+			// TEST_EXT_RE would match the mid-string ".test.js" run and wrongly
+			// treat it as a test file even though the string doesn't actually END
+			// in ".test.<ext>".
+			m.discoverFiles.mockReturnValue([abs("src/foo.test.js.ts")]);
+			m.computeCyclomaticAst.mockReturnValue([comp()]);
+			await metricsCommand({ cwd: CWD, json: true });
+			expect(lastJson().files.map((f) => f.file)).toEqual(["src/foo.test.js.ts"]);
+		});
+	});

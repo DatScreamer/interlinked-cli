@@ -55,6 +55,10 @@
             "types": "./dist/lib/demo-runtime/index.d.ts",
             "default": "./dist/lib/demo-runtime/index.js"
         },
+        "./viz-reporter": {
+            "types": "./dist/lib/viz/reporter-vitest.d.ts",
+            "default": "./dist/lib/viz/reporter-vitest.js"
+        },
         "./package.json": "./package.json"
     },
     "bin": {
@@ -62,8 +66,8 @@
         "interlinked-hook": "./dist/hook-entry.js"
     },
     "scripts": {
-        "build": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/lib/demo-runtime/index.ts --format esm --dts --clean && node scripts/fix-dist-dts.mjs && node scripts/copy-runtime-assets.mjs",
-        "build:watch": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/lib/demo-runtime/index.ts --format esm --watch",
+        "build": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/lib/demo-runtime/index.ts src/lib/viz/reporter-vitest.ts --format esm --dts --clean && node scripts/fix-dist-dts.mjs && node scripts/copy-runtime-assets.mjs",
+        "build:watch": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/lib/demo-runtime/index.ts src/lib/viz/reporter-vitest.ts --format esm --watch",
         "dev": "tsx src/index.ts",
         "typecheck": "tsgo --noEmit",
         "typecheck:stable": "tsc --noEmit",

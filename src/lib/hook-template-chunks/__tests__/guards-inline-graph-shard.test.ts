@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GUARDS_INLINE_CHUNK } from "../guards-inline.js";
 
 interface GuardDecision {
@@ -48,7 +48,13 @@ function buildRuntimeInlineGuard(): InlineFn {
 const FIXED_NOW = Date.parse("2026-05-10T12:00:00Z");
 
 let dir: string;
-let originalCwd: string;
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. All paths passed into the
+// inline guard in this file are already absolute (`join(dir, ...)`), so the
+// spy just keeps `process.cwd()` from drifting.
+let cwdSpy: ReturnType<typeof vi.spyOn>;
 let originalEnvOverride: string | undefined;
 
 function setMtime(p: string, ms: number): void {
@@ -57,14 +63,13 @@ function setMtime(p: string, ms: number): void {
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "inline-graph-shard-"));
-	originalCwd = process.cwd();
-	process.chdir(dir);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
 	originalEnvOverride = process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE;
 	delete process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE;
 });
 
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy.mockRestore();
 	rmSync(dir, { recursive: true, force: true });
 	if (originalEnvOverride === undefined) {
 		delete process.env.INTERLINKED_DISABLE_GRAPH_SHARD_INLINE;

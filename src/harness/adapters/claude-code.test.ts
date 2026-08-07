@@ -275,4 +275,222 @@ describe("Claude Code encodeDecision", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, baseEvent);
 		expect(out.stdout).toBeUndefined();
 	});
+
+	it("block with no reason falls back to the generic harness-bug message", () => {
+		const out = adapter.encodeDecision({ decision: "block" }, baseEvent);
+		const parsed = JSON.parse(out.stdout as string) as {
+			hookSpecificOutput: { permissionDecisionReason: string };
+		};
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toBe(
+			"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
+				"bug; re-run, or run `interlinked harness restart`, then report it.",
+		);
+	});
+
+	it("ask reason includes resolved_targets via formatAskReasonWithTargets", () => {
+		const out = adapter.encodeDecision(
+			{
+				decision: "ask",
+				reason: "Confirm push?",
+				resolved_targets: [{ kind: "branch", value: "origin/main" }],
+			},
+			baseEvent,
+		);
+		const parsed = JSON.parse(out.stdout as string) as {
+			hookSpecificOutput: { permissionDecisionReason: string };
+		};
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain("Confirm push?");
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain("origin/main");
+	});
+
+	it("falls back to hookEventName by phase when no event is supplied (PostToolUse default)", () => {
+		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, undefined as never);
+		expect(JSON.parse(out.stdout as string)).toEqual({ decision: "block", reason: "no" });
+	});
+
+	it("falls back to hookEventName 'PreToolUse' when event.phase is pre-tool but native event name is absent", () => {
+		const fakeEvent = { ...baseEvent, runner_native_event: undefined };
+		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, fakeEvent as never);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "no",
+			},
+		});
+	});
+});
+
+describe("Claude Code detectFromEnv — remaining env var branches", () => {
+	it("detects CLAUDE_WORKING_DIR", () => {
+		expect(adapter.detectFromEnv({ CLAUDE_WORKING_DIR: "/repo" })).toBe(true);
+	});
+	it("detects CLAUDECODE", () => {
+		expect(adapter.detectFromEnv({ CLAUDECODE: "1" })).toBe(true);
+	});
+	it("detects CLAUDE_CODE_VERSION", () => {
+		expect(adapter.detectFromEnv({ CLAUDE_CODE_VERSION: "1.0.0" })).toBe(true);
+	});
+});
+
+describe("Claude Code parseHookInput — agent_name context", () => {
+	it("sets context.agent when agent_name is present", () => {
+		const event = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", agent_name: "reviewer" },
+			"SessionStart",
+		);
+		expect(event.context.agent).toEqual({ id: "reviewer" });
+	});
+	it("leaves context.agent undefined when agent_name is absent", () => {
+		const event = adapter.parseHookInput({ session_id: "s", cwd: "/repo" }, "SessionStart");
+		expect(event.context.agent).toBeUndefined();
+	});
+});
+
+describe("Claude Code classifyToolClass with overrides", () => {
+	it("uses a supplied tool_name_classes override", () => {
+		const overriddenAdapter = createClaudeCodeAdapter({
+			overrides: {
+				tool_name_classes: { CustomTool: "side-effect" },
+				command_substrings: [],
+			},
+		});
+		expect(overriddenAdapter.classifyToolClass("CustomTool", {})).toBe("side-effect");
+	});
+});
+
+describe("Claude Code parseHookInput — UserPromptSubmit action", () => {
+	it("uses raw.prompt as the text when present", () => {
+		const event = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", prompt: "hello there" },
+			"UserPromptSubmit",
+		);
+		expect(event.action).toEqual({ kind: "user_prompt", text: "hello there" });
+	});
+	it("falls back to raw.message when prompt is absent", () => {
+		const event = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", message: "fallback text" },
+			"UserPromptSubmit",
+		);
+		expect(event.action).toEqual({ kind: "user_prompt", text: "fallback text" });
+	});
+	it("falls back to an empty string when neither prompt nor message is present", () => {
+		const event = adapter.parseHookInput({ session_id: "s", cwd: "/repo" }, "UserPromptSubmit");
+		expect(event.action).toEqual({ kind: "user_prompt", text: "" });
+	});
+});
+
+describe("Claude Code parseHookInput — SessionEnd and PostToolUseFailure", () => {
+	it("produces a session_lifecycle 'end' action for SessionEnd", () => {
+		const event = adapter.parseHookInput({ session_id: "s", cwd: "/repo" }, "SessionEnd");
+		expect(event.action).toEqual({ kind: "session_lifecycle", event: "end" });
+	});
+	it("routes PostToolUseFailure through buildToolCallAction as a post action", () => {
+		const event = adapter.parseHookInput(
+			{
+				session_id: "s",
+				cwd: "/repo",
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				tool_error: "boom",
+			},
+			"PostToolUseFailure",
+		);
+		expect(event.action.kind).toBe("tool_call");
+		if (event.action.kind === "tool_call") {
+			expect(event.action.tool_error).toBe("boom");
+		}
+	});
+});
+
+describe("Claude Code parseHookInput — non-object native payload falls back to {}", () => {
+	it("treats a null payload as an empty object", () => {
+		const event = adapter.parseHookInput(null, "SessionStart");
+		expect(event.session_id).toBe("unknown");
+		expect(event.context.cwd).toBe(process.cwd());
+	});
+	it("treats an array payload as an empty object (not a plain object)", () => {
+		const event = adapter.parseHookInput(["not", "an", "object"], "SessionStart");
+		expect(event.session_id).toBe("unknown");
+	});
+});
+
+describe("Claude Code parseHookInput — unmapped native event uses phase 'other'", () => {
+	it("falls back to phase 'other' for an event not in PHASE_MAP", () => {
+		const event = adapter.parseHookInput({ session_id: "s" }, "TeammateIdle");
+		expect(event.phase).toBe("other");
+	});
+});
+
+describe("Claude Code parseHookInput — session_id and cwd fallbacks", () => {
+	it("defaults session_id to 'unknown' when absent", () => {
+		const event = adapter.parseHookInput({ cwd: "/repo" }, "SessionStart");
+		expect(event.session_id).toBe("unknown");
+	});
+	it("defaults cwd to process.cwd() when absent", () => {
+		const event = adapter.parseHookInput({ session_id: "s" }, "SessionStart");
+		expect(event.context.cwd).toBe(process.cwd());
+	});
+});
+
+describe("Claude Code renderSettingsFragment — user scope", () => {
+	it("writes to the user settings path", () => {
+		const frag = adapter.renderSettingsFragment("/usr/local/bin/interlinked-hook", "user");
+		expect(frag.path).toBe("~/.claude/settings.json");
+	});
+});
+
+describe("Claude Code encodeDecision — ask with no reason falls back to 'Confirmation required'", () => {
+	it("uses the default confirmation reason when decision.reason is absent", () => {
+		const preEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Read", tool_input: {} },
+			"PreToolUse",
+		);
+		const out = adapter.encodeDecision({ decision: "ask" }, preEvent);
+		const parsed = JSON.parse(out.stdout as string) as {
+			hookSpecificOutput: { permissionDecisionReason: string };
+		};
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toBe("Confirmation required");
+	});
+});
+
+describe("Claude Code parseHookInput — buildToolCallAction fallbacks", () => {
+	it("defaults tool_name to 'unknown' when absent", () => {
+		const event = adapter.parseHookInput({ session_id: "s", cwd: "/repo" }, "PreToolUse");
+		expect(event.action).toMatchObject({ kind: "tool_call", tool_name: "unknown" });
+	});
+	it("defaults tool_input to {} when absent", () => {
+		const event = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Read" },
+			"PreToolUse",
+		);
+		expect(event.action).toMatchObject({ kind: "tool_call", tool_input: {} });
+	});
+	it("applies classifier overrides through parseHookInput (PreToolUse)", () => {
+		const overriddenAdapter = createClaudeCodeAdapter({
+			overrides: {
+				tool_name_classes: { CustomTool: "side-effect" },
+				command_substrings: [],
+			},
+		});
+		const event = overriddenAdapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "CustomTool", tool_input: {} },
+			"PreToolUse",
+		);
+		expect(event.action).toMatchObject({ kind: "tool_call", tool_class: "side-effect" });
+	});
+});
+
+describe("Claude Code parseHookInput — unrecognized native event falls through to 'other'", () => {
+	it("produces an 'other' action carrying the raw payload", () => {
+		const event = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", foo: "bar" },
+			"Notification",
+		);
+		expect(event.action).toEqual({
+			kind: "other",
+			subkind: "Notification",
+			data: { session_id: "s", cwd: "/repo", foo: "bar" },
+		});
+	});
 });

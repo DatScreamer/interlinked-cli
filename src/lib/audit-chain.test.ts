@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	canonicalJson,
@@ -67,6 +68,10 @@ describe("canonicalJson", () => {
 
 	it("preserves array order", () => {
 		expect(canonicalJson([3, 1, 2])).toBe("[3,1,2]");
+	});
+
+	it("renders null as the literal 'null' (not the object branch)", () => {
+		expect(canonicalJson(null)).toBe("null");
 	});
 });
 
@@ -256,5 +261,112 @@ describe("verifyAuditChain", () => {
 		const res = verifyAuditChain(tmp);
 		expect(res.valid).toBe(true);
 		expect(res.chained_events).toBe(2);
+	});
+
+	it("ignores a record whose type field is not a string (falls through to '')", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH });
+		const nonStringType = { ...e1, type: 42 };
+		writeJsonl(activityPath, [nonStringType]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.total_events).toBe(1);
+		expect(res.guard_events).toBe(0);
+	});
+
+	it("treats a chained record with a missing previousHash as a mismatch and reports '(missing)'", () => {
+		const record = { type: "guard_allow", hash: "a".repeat(64) };
+		writeJsonl(activityPath, [record]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toMatch(/previousHash mismatch/);
+		expect(res.first_bad_reason).toMatch(/\(missing\)/);
+	});
+
+	it("treats a same-length-but-unequal-byte-length previousHash as a mismatch (safeEqualHex catch path)", () => {
+		// A 32-codepoint astral-plane string has JS .length === 64 (surrogate
+		// pairs) but encodes to 128 UTF-8 bytes — Buffer.from(...).length
+		// differs even though the .length guard passed, so
+		// node:crypto.timingSafeEqual throws and safeEqualHex's catch
+		// returns false rather than propagating.
+		const astral64 = "\u{1D7D9}".repeat(32);
+		expect(astral64.length).toBe(64);
+		const record = { type: "guard_allow", hash: "b".repeat(64), previousHash: astral64 };
+		writeJsonl(activityPath, [record]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toMatch(/previousHash mismatch/);
+	});
+
+	it("fails closed with a reason when activity.jsonl exists but cannot be read as a file", () => {
+		mkdirSync(activityPath, { recursive: true }); // a directory in place of the file
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toMatch(/^activity\.jsonl unreadable:/);
+	});
+});
+
+describe("verifyAuditChain — archived segments (readArchivedAuditLines)", () => {
+	let tmp: string;
+	let dataDir: string;
+	let archiveDir: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "audit-chain-archive-"));
+		dataDir = join(tmp, ".interlinked");
+		archiveDir = join(dataDir, "archive");
+		mkdirSync(archiveDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("treats a non-array segments field as no archived segments", () => {
+		writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ segments: "oops" }));
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.total_events).toBe(0);
+	});
+
+	it("returns no archived lines when manifest.json is not valid JSON", () => {
+		writeFileSync(join(archiveDir, "manifest.json"), "{not valid json");
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.total_events).toBe(0);
+	});
+
+	it("sorts segments missing 'seq' first (nullish default 0) and skips a segment with no 'file'", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH, ts: "2026-05-26T10:00:00.000Z" });
+		const e2 = makeEntry({
+			previousHash: e1.hash as string,
+			type: "guard_block",
+			ts: "2026-05-26T10:00:01.000Z",
+		});
+
+		writeFileSync(join(archiveDir, "seg-a.jsonl.gz"), gzipSync(`${JSON.stringify(e1)}\n`));
+		writeFileSync(join(archiveDir, "seg-b.jsonl.gz"), gzipSync(`${JSON.stringify(e2)}\n`));
+
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({
+				segments: [
+					// No `seq` — defaults to 0 via `?? 0`, sorts before seq: 1.
+					{ file: "seg-a.jsonl.gz" },
+					{ file: "seg-b.jsonl.gz", seq: 1 },
+					// No `file` field — must be skipped (continue), not crash.
+					{ seq: 5 },
+				],
+			}),
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.chained_events).toBe(2);
+		expect(res.last_hash).toBe(e2.hash as string);
 	});
 });

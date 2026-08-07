@@ -232,8 +232,176 @@ describe("isExemptPath", () => {
 		expect(isExemptPath("src/__snapshots__/x.snap")).toBe(true);
 	});
 
+	it("exempts bare 'fixtures'/'testdata' dirs on a non-txt/md file (line-84 true branch)", () => {
+		// Use a .json/.ts extension so the line-82 md/txt check doesn't short-circuit first.
+		expect(isExemptPath("src/fixtures/conflict.json")).toBe(true);
+		expect(isExemptPath("src/testdata/conflict.ts")).toBe(true);
+		expect(isExemptPath("src/test-fixtures/conflict.ts")).toBe(true);
+	});
+
 	it("does NOT exempt real source or real test files", () => {
 		expect(isExemptPath("src/index.ts")).toBe(false);
 		expect(isExemptPath("src/parser.test.ts")).toBe(false);
+	});
+});
+
+// ===========================================================================
+// Additional branch coverage — internal edit/ledger plumbing
+// ===========================================================================
+
+describe("formatOpenObligations — ledger internals", () => {
+	it("increments the count for two identical TODO lines added in one edit", () => {
+		const events = [
+			edit(
+				"src/dup.ts",
+				"foo();",
+				"// TODO: same line\n// TODO: same line\nfoo();",
+			),
+		];
+		const msg = formatOpenObligations(events);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("TODO/FIXME/XXX/HACK (2)");
+	});
+
+	it("skips a malformed event with no input without throwing", () => {
+		const malformed = {
+			ts: "t",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: "m1",
+			hook: "PostToolUse",
+		} as unknown as ToolEvent;
+		const real = edit("src/ok.ts", "x", "// TODO: still here\nx");
+		const msg = formatOpenObligations([malformed, real]);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("ok.ts");
+	});
+
+	it("does not dedupe an edit whose toolUseId is empty", () => {
+		const ev: ToolEvent = {
+			ts: "t",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: "",
+			hook: "PostToolUse",
+			input: { file_path: "src/noid.ts", old_string: "x", new_string: "// TODO: no id\nx" },
+		};
+		const msg = formatOpenObligations([ev]);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("noid.ts");
+	});
+
+	it("dedupes two events sharing the same non-empty toolUseId (Pre+PostToolUse pair)", () => {
+		const shared = "shared-id-1";
+		const pre: ToolEvent = {
+			ts: "t1",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: shared,
+			hook: "PreToolUse",
+			input: { file_path: "src/pair.ts", old_string: "x", new_string: "// TODO: paired\nx" },
+		};
+		const post: ToolEvent = { ...pre, hook: "PostToolUse" };
+		const msg = formatOpenObligations([pre, post]);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("TODO/FIXME/XXX/HACK (1)");
+	});
+
+	it("nets a delta of zero to a no-op when an unrelated line changes around an unchanged TODO", () => {
+		const events = [
+			edit("src/steady.ts", "// TODO: keep\nfoo();", "// TODO: keep\nbar();"),
+		];
+		expect(formatOpenObligations(events)).toBeNull();
+	});
+
+	it("closes an obligation across a delete-only edit event (no new_string/content)", () => {
+		const opened = edit("src/close.ts", "x", "// TODO: close me\nx");
+		const deleteOnly: ToolEvent = {
+			ts: "t2",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: "del1",
+			hook: "PostToolUse",
+			input: { file_path: "src/close.ts", old_string: "// TODO: close me\nx" },
+		};
+		expect(formatOpenObligations([opened, deleteOnly])).toBeNull();
+	});
+
+	it("carries forward removed text across repeated Writes to the same file", () => {
+		const events = [
+			write("src/rewrite.ts", "// TODO: first\n"),
+			write("src/rewrite.ts", "// TODO: second\n"),
+		];
+		const msg = formatOpenObligations(events);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("TODO/FIXME/XXX/HACK (1)");
+		expect(msg!).toContain("rewrite.ts");
+	});
+
+	it("skips an edit entirely when the removed side is codegen data, leaving the obligation open", () => {
+		const opened = edit("src/gen.ts", "x", "// TODO: keep this open\nx");
+		const skippedRemoval: ToolEvent = {
+			ts: "t2",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: "gen1",
+			hook: "PostToolUse",
+			input: {
+				file_path: "src/gen.ts",
+				old_string: "// @codegen-data\n// TODO: keep this open\nx",
+				new_string: "y",
+			},
+		};
+		const msg = formatOpenObligations([opened, skippedRemoval]);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("TODO/FIXME/XXX/HACK (1): gen.ts");
+	});
+
+	it("truncates the file list past MAX_FILES_PER_KIND and shows an '…and N more' suffix", () => {
+		const events = Array.from({ length: 7 }, (_, i) =>
+			edit(`src/file${i}.ts`, "x", `// TODO: item ${i}\nx`),
+		);
+		const msg = formatOpenObligations(events);
+		expect(msg).not.toBeNull();
+		expect(msg!).toContain("…and 1 more");
+	});
+});
+
+describe("obligationConflictMarkerRule — additional branch coverage", () => {
+	it("returns null for a delete-only latest event (no new_string/content fallback)", () => {
+		const latest: ToolEvent = {
+			ts: "t",
+			session: "s1",
+			tool: "Edit",
+			toolUseId: "d1",
+			hook: "PostToolUse",
+			input: { file_path: "src/del.ts", old_string: "<<<<<<< HEAD\nfoo" },
+		};
+		expect(obligationConflictMarkerRule([], latest)).toBeNull();
+	});
+
+	it("returns null when the marker-bearing text is also codegen data", () => {
+		const latest = edit(
+			"src/gen2.ts",
+			"x",
+			"// @codegen-data\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch",
+		);
+		expect(obligationConflictMarkerRule([], latest)).toBeNull();
+	});
+
+	it("tolerates a non-array events argument", () => {
+		const latest = edit("src/solo.ts", "x", "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b");
+		const v = obligationConflictMarkerRule(null as unknown as ToolEvent[], latest);
+		expect(v).not.toBeNull();
+		expect(v!.message).toContain("This edit leaves Git merge-conflict markers");
+	});
+
+	it("does not treat itself, a different file, or a marker-free prior edit as persistence", () => {
+		const latest = edit("src/fresh.ts", "x", "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b");
+		const otherFile = edit("src/other.ts", "a", "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> c");
+		const sameFileNoMarker = edit("src/fresh.ts", "p", "q");
+		const v = obligationConflictMarkerRule([latest, otherFile, sameFileNoMarker], latest);
+		expect(v).not.toBeNull();
+		expect(v!.message).toContain("This edit leaves Git merge-conflict markers");
 	});
 });

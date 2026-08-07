@@ -20,7 +20,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { harnessCleanCommand } from "../harness-clean.js";
 
 let workDir: string;
-let previousCwd: string;
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. harnessCleanCommand reads
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 const STALE_DAEMON_PID = 999_999;
 
 beforeEach(() => {
@@ -29,12 +34,11 @@ beforeEach(() => {
 		`harness-clean-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
 	);
 	mkdirSync(join(workDir, ".interlinked"), { recursive: true });
-	previousCwd = process.cwd();
-	process.chdir(workDir);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(workDir);
 });
 
 afterEach(() => {
-	process.chdir(previousCwd);
+	cwdSpy?.mockRestore();
 	rmSync(workDir, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });

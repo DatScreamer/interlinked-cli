@@ -94,14 +94,49 @@ interlinked recurrence scan --record               # append codebase_existing ro
 interlinked recurrence propose <signature>         # suggested action for one signature
 ```
 
-## `interlinked viz` — the living code-graph dashboard
+## `interlinked viz` — the live dashboard
 ```bash
 interlinked viz serve [--port 6403] [--root <dir>]   # loopback-only HTTP dashboard, live SSE tail of activity
-interlinked viz snapshot [--json] [--full]           # print the graph snapshot (no server): "N cells · M interlinks · stem <id>"
+interlinked viz snapshot [--json] [--full]           # print the graph summary (no server): "N files · M imports · most depended-on: <id>"
 ```
-`viz serve` renders the repo as a cell/edge graph and tails `activity.jsonl` live over SSE
+`viz serve` renders the repo as a file/import graph and tails the local logs live over SSE
 (daemon not required). It surfaces unscrubbed tool I/O, so it **binds loopback only** and
-**blocks until Ctrl-C** — don't call it in a one-shot step.
+**blocks until Ctrl-C** — don't call it in a one-shot step. While it is listening it writes
+`.interlinked/viz.status` (`url=` + `pid=`), which the statusline reads to render a clickable
+`◈ viz` row; the row disappears when that pid dies, so the link is never stale.
+
+Six lenses, each fed by its own SSE route:
+
+| Lens | Route | Source | Shows |
+|---|---|---|---|
+| FILES | `/api/graph` + `/api/stream` | project graph + `activity.jsonl` | one dot per source file, one line per import, dot size = how many files depend on it; a touched file pulses in the colour of the agent that touched it |
+| GATES | `/api/checks` | `check-results.jsonl` | one frame per tool call: which checks ran, which fired, allowed or blocked, `[proven]`/`[heuristic]` |
+| AGENTS | `/api/agents` | `activity.jsonl` (folded) | one lane per agent session working in this repo, indented lanes for subagents it spawned: runner, model, calls/edits/blocks/warns, current tool + file, live-vs-idle |
+| TESTS | `/api/tests` | `test-events.jsonl` | every test case in the order the runner finished it; pass/fail/skip, slow cases outlined, failure messages |
+| MUTANTS | `/api/mutants` | `mutation-manifest.json` | every mutant, survivors first; live kill-rate; a tile flashes when its status flips |
+| DRIFT | — | — | not built yet (standby pane) |
+
+The AGENTS lens needs no producer: every activity row already carries `agent`, `session`,
+`subagent_id`, and `model`, so presence is a fold over the stream the dashboard already tails
+(`src/lib/viz/agent-roster.ts`, hosted at `/api/agents`). Each actor gets a stable hue from its
+id, and that hue is reused for its ticker rows and its file pulses — with two sessions running,
+colour alone answers "who did that". A subagent gets its OWN lane keyed under its parent, so a
+session's own edits are never conflated with its subagents'. Lanes dim to idle after 2 minutes
+of silence rather than disappearing.
+
+The TESTS lens needs a producer. Any repo using vitest adds one line:
+
+```ts
+// vitest.config.ts
+reporters: ["default", "interlinked-cli/viz-reporter"]
+```
+
+In this repo it is opt-in behind `INTERLINKED_VIZ=1` so a normal `vitest run` stays
+byte-identical: `INTERLINKED_VIZ=1 npx vitest run`. The feed schema
+(`.interlinked/test-events.jsonl`) is runner-agnostic — `{kind: run_start|file_start|test|run_end,
+run_id, file?, name?, status?, ms?, error?}` — so a pytest/cargo adapter writes the same lines
+and the lens renders unchanged. Every feed degrades to an honest empty state when its file is
+absent; nothing about the dashboard is repo-specific.
 
 ## Common workflows
 ```bash

@@ -186,6 +186,12 @@ scratch/*
 # Committed policy: shrink-only, and an added exemption means a check shipped
 # without MUST-FIRE / MUST-NOT-FIRE cases — that MUST surface in PR diffs.
 !.interlinked/check-evidence-baseline.json
+# Corpus dogfood runs — the `corpus` evidence dimension reads this, so an
+# untracked store means every check's corpus obligation silently reverts to
+# "never run" on a fresh clone. It was untracked until 2026-08-04, which is why
+# only 2 of 252 checks had a recorded run; the adjudication verdicts inside it
+# are reviewed judgments and belong in PR diffs like any other policy record.
+!.interlinked/check-corpus.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json

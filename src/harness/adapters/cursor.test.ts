@@ -279,3 +279,108 @@ describe("Cursor renderSettingsFragment", () => {
 		expect(f.hooks.sessionStart?.[0]?.failClosed).toBeUndefined();
 	});
 });
+
+describe("Cursor parseHookInput — non-object / missing-field fallbacks", () => {
+	it("treats a non-object native payload as empty (isObject false branch)", () => {
+		const e = adapter.parseHookInput(null, "sessionStart");
+		expect(e.session_id).toBe("unknown");
+		expect(e.context.cwd).toBe(process.cwd());
+	});
+	it("falls back to session_id 'unknown' when neither session_id nor sessionId is present", () => {
+		const e = adapter.parseHookInput({}, "sessionStart");
+		expect(e.session_id).toBe("unknown");
+	});
+	it("falls back to camelCase sessionId when snake_case session_id is absent", () => {
+		const e = adapter.parseHookInput({ sessionId: "cc-1" }, "sessionStart");
+		expect(e.session_id).toBe("cc-1");
+	});
+	it("falls back to workspace_root when cwd is absent", () => {
+		const e = adapter.parseHookInput({ workspace_root: "/ws" }, "sessionStart");
+		expect(e.context.cwd).toBe("/ws");
+	});
+	it("falls back to process.cwd() when neither cwd nor workspace_root is present", () => {
+		const e = adapter.parseHookInput({}, "sessionStart");
+		expect(e.context.cwd).toBe(process.cwd());
+	});
+});
+
+describe("Cursor classifyToolClass", () => {
+	it("classifies a tool name without overrides configured", () => {
+		const noOverrideAdapter = createCursorAdapter();
+		expect(noOverrideAdapter.classifyToolClass("Read", { file_path: "/a" })).toBe("read");
+	});
+	it("classifies a tool name with overrides configured", () => {
+		const overrideAdapter = createCursorAdapter({
+			overrides: { tool_name_classes: { CustomWrite: "modify" }, command_substrings: [] },
+		});
+		expect(overrideAdapter.classifyToolClass("CustomWrite", {})).toBe("modify");
+	});
+});
+
+describe("Cursor encodeDecision — additional branch coverage", () => {
+	const gatedShellEvent = adapter.parseHookInput({ session_id: "g", command: "ls" }, "beforeShellExecution");
+	const nonGatedEvent = adapter.parseHookInput({ session_id: "ng", file_path: "/a", edits: [] }, "afterFileEdit");
+	const preToolEvent = adapter.parseHookInput(
+		{ session_id: "p", tool_name: "Edit", tool_input: { file_path: "/a" } },
+		"preToolUse",
+	);
+
+	it("block on a gated event with no reason falls back to the default block reason", () => {
+		const out = adapter.encodeDecision({ decision: "block" }, gatedShellEvent);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			permission: "deny",
+			agent_message:
+				"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
+				"re-run, or run `interlinked harness restart`, then report it.",
+			user_message:
+				"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
+				"re-run, or run `interlinked harness restart`, then report it.",
+		});
+	});
+
+	it("block on a non-gated, non-postContext event with no reason and no warnings emits empty stderr", () => {
+		const out = adapter.encodeDecision({ decision: "block" }, nonGatedEvent);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toBeUndefined();
+	});
+
+	it("block on a non-gated event with no reason but warnings falls back to the joined warnings", () => {
+		const out = adapter.encodeDecision(
+			{ decision: "block", warnings: ["heads up"] },
+			nonGatedEvent,
+		);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toBe("heads up");
+	});
+
+	it("ask user_message falls back to reason when system_message is absent", () => {
+		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm this" }, gatedShellEvent);
+		const parsed = JSON.parse(out.stdout as string) as { user_message: string; agent_message: string };
+		expect(parsed.agent_message).toBe("confirm this");
+		expect(parsed.user_message).toBe("confirm this");
+	});
+
+	it("ask falls back to the default ask reason when neither reason nor system_message is present", () => {
+		const out = adapter.encodeDecision({ decision: "ask" }, gatedShellEvent);
+		const parsed = JSON.parse(out.stdout as string) as { user_message: string; agent_message: string };
+		expect(parsed.agent_message).toBe("Confirmation required");
+		expect(parsed.user_message).toBe("Confirmation required");
+	});
+
+	it("ask on a non-gated event routes through stderr instead of stdout JSON", () => {
+		const out = adapter.encodeDecision({ decision: "ask", reason: "just checking" }, nonGatedEvent);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toBe("just checking");
+	});
+
+	it("allow on a gated, non-postContext event with additional_context sets agent_message", () => {
+		const out = adapter.encodeDecision(
+			{ decision: "allow", additional_context: "fyi note" },
+			preToolEvent,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			permission: "allow",
+			agent_message: "fyi note",
+		});
+	});
+});

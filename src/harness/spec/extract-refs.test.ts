@@ -308,6 +308,15 @@ describe("link grammar (round-5 #2/#14/#19/#21/#22/#23)", () => {
 		expect(targets("[y](a<b.md)")).toEqual(["a<b.md"]);
 	});
 
+	it("rejects an empty angle destination (<>) after stripping delimiters", () => {
+		expect(extractAnchorLinks(["[x](<>)"], noFences)).toEqual([]);
+	});
+
+	it("treats a trailing bare # as an empty anchor, omitting the anchor field", () => {
+		const links = extractAnchorLinks(["[x](path.md#)"], noFences);
+		expect(links).toEqual([{ line: 1, targetFile: "path.md", raw: "[x](path.md#)" }]);
+	});
+
 	it("enforces a real total-length destination cap under budget (#23)", () => {
 		const start = Date.now();
 		expect(extractAnchorLinks([`[x]((${"a".repeat(100_000)}))`], noFences)).toEqual([]);
@@ -365,6 +374,20 @@ describe("entity decode + unicode boundaries (round-5 #13/#17)", () => {
 		expect(kinds("Appendix C 𝐀")).toEqual(["appendix:C"]);
 		expect(kinds("x\udc00Section 7")).toEqual(["section:7"]);
 	});
+
+	it("rejects a word ref glued to a REAL preceding surrogate PAIR (astral letter)", () => {
+		// "𝐀" (U+1D400) is a genuine two-code-unit surrogate pair, unlike the
+		// unpaired low surrogate above — exercises codePointEndingBefore's
+		// isPair=true path (both the high- and low-surrogate range checks).
+		expect(extractSectionRefs(["𝐀Section 7"], noFences)).toEqual([]);
+		expect(extractSectionRefs(["𝐀Appendix C"], noFences)).toEqual([]);
+	});
+
+	it("drops a section token that is only a bare dot (asSectionNumber empty-after-trim)", () => {
+		// "§." captures "." as the token; stripping the trailing "." leaves an
+		// empty string, so asSectionNumber returns undefined and no ref is added.
+		expect(extractSectionRefs(["See §. here."], noFences)).toEqual([]);
+	});
 });
 
 describe("Setext structure (round-5 #15/#16)", () => {
@@ -408,6 +431,26 @@ describe("Setext structure (round-5 #15/#16)", () => {
 	it("rejects tab-indented code as Setext text (#16)", () => {
 		expect(extractHeadings(["\tcode", "==="], noFences)).toEqual([]);
 		expect(extractHeadings(["  \tcode", "==="], noFences)).toEqual([]);
+	});
+
+	it("stops a paragraph fold at a fenced continuation line, even though the line would otherwise be eligible", () => {
+		// Line 2 (1-based) is marked fenced — setextTextRunEnd's
+		// `!fencedLines.has(j + 2)` guard must stop the run there instead of
+		// folding "para two" in, so lines[j+1] ("para two") is checked as the
+		// underline candidate and fails (not "---"/"===") → no heading at all.
+		expect(extractHeadings(["para one", "para two", "---"], new Set([2]))).toEqual([]);
+	});
+
+	it("starts a fresh Setext run right after a preceding heading's underline", () => {
+		// The line right after "===" is the underline itself, which is NOT
+		// setext-text-eligible — isSetextRunStart's `!isSetextTextEligible(prev)`
+		// must read true so "Second" starts its OWN run instead of being treated
+		// as a mid-run continuation of the first heading.
+		const hs = extractHeadings(["First", "===", "Second", "---"], noFences);
+		expect(hs.map((h) => [h.text, h.level])).toEqual([
+			["First", 1],
+			["Second", 2],
+		]);
 	});
 
 	it("recognizes an empty ATX heading (round-6 #11)", () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,6 +98,8 @@ describe("runQuery", () => {
 			"builtin-protected",
 		]);
 		expect(result.stats.truncated).toBe(false);
+		// A full scan that never hit the limit must not be reported as limit-stopped.
+		expect(result.limitStopped).toBe(false);
 	});
 
 	it("aggregates with --by across array fan-out", () => {
@@ -129,6 +131,11 @@ describe("runQuery", () => {
 			"2026-07-24T10:03:00Z",
 		]);
 		expect(result.sinceStopped).toBe(true);
+		// Scanning stops right after the first out-of-bound record (10:01), not
+		// before (immediate stop) or after (full scan to 10:00).
+		expect(result.stats.recordsParsed).toBe(3);
+		// A since-triggered stop is never also reported as a limit-triggered stop.
+		expect(result.limitStopped).toBe(false);
 	});
 
 	it("stops early once --limit rows match", () => {
@@ -147,6 +154,41 @@ describe("queryCommand", () => {
 		const joined = logs.join("\n");
 		expect(joined).toContain("blocks");
 		expect(joined).toContain("Examples");
+	});
+
+	it("prints the full catalog body: header, per-source hints, examples, and scan note", async () => {
+		await queryCommand(undefined, { cwd: dir });
+		const joined = logs.join("\n");
+		expect(joined).toContain("interlinked query <source>");
+		// Only rendered by the per-source loop body — proves the loop actually ran.
+		expect(joined).toContain("what the guard refused, with rule ids");
+		expect(joined).toContain("interlinked query blocks --limit 10");
+		expect(joined).toContain("interlinked query checks --by checks.id --since 7d");
+		expect(joined).toContain("interlinked query costs --by session_id --sum output_tokens");
+		expect(joined).toContain("interlinked query recurrences --by check_id --last 50000");
+		expect(joined).toContain("interlinked query .interlinked/tests.jsonl --where kind=vitest");
+		expect(joined).toContain(
+			"Scans are bounded (default: newest 20k records / 64 MB tail); the footer always says how much was scanned.",
+		);
+		expect(joined).not.toContain("Stryker was here");
+		// Real multi-line output, not everything joined onto one line.
+		expect(joined.split("\n").length).toBeGreaterThan(10);
+	});
+
+	it("right-pads catalog name/file columns to the widest entry (Math.max, not Math.min)", async () => {
+		await queryCommand(undefined, { cwd: dir });
+		// Stripping ANSI color codes.
+		const stripped = logs.join("\n").replace(/\x1b\[[0-9]+m/g, "");
+		// "costs" (5 chars) is one of the shortest source names; "reservations"
+		// (12 chars) is the longest, so nameWidth must be 12 — 7 padding + 2
+		// separator = 9 spaces after "costs" at the start of a catalog row.
+		const nameMatch = stripped.match(/^ {2}costs( +)/m);
+		expect((nameMatch?.[1] ?? "").length).toBe(9);
+		// "costs.jsonl" (11 chars) is one of the shortest file names;
+		// "suggestion-telemetry.jsonl" (26 chars) is the longest, so fileWidth
+		// must be 26 — 15 padding + 2 separator = 17 spaces after "costs.jsonl".
+		const fileMatch = stripped.match(/costs\.jsonl( +)/);
+		expect((fileMatch?.[1] ?? "").length).toBe(17);
 	});
 
 	it("errors with the known-source list on an unknown source", async () => {
@@ -183,9 +225,11 @@ describe("queryCommand", () => {
 		await queryCommand("costs", { cwd: dir, json: true, by: "session_id", sum: "output_tokens" });
 		const payload = JSON.parse(logs.join("\n")) as {
 			by: string;
+			sum: string;
 			aggregate: Array<{ key: string; sum: number }>;
 		};
 		expect(payload.by).toBe("session_id");
+		expect(payload.sum).toBe("output_tokens");
 		expect(payload.aggregate[0]).toEqual({ key: "s2", count: 1, sum: 900 });
 	});
 
@@ -211,6 +255,190 @@ describe("queryCommand", () => {
 	it("rejects an invalid --limit", async () => {
 		await queryCommand("blocks", { cwd: dir, limit: "zero" });
 		expect(errors.join("\n")).toContain("Invalid --limit");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("rejects an invalid --last with the --last flag name in the message", async () => {
+		await queryCommand("blocks", { cwd: dir, last: "zero" });
+		expect(errors.join("\n")).toContain("Invalid --last");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("rejects an invalid --max-mb with the --max-mb flag name in the message", async () => {
+		await queryCommand("blocks", { cwd: dir, maxMb: "zero" });
+		expect(errors.join("\n")).toContain("Invalid --max-mb");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("threads --last into the record scan budget", async () => {
+		await queryCommand("blocks", { cwd: dir, json: true, last: "1" });
+		const payload = JSON.parse(logs.join("\n")) as {
+			stats: { recordsParsed: number; truncated: boolean };
+		};
+		expect(payload.stats.recordsParsed).toBe(1);
+		expect(payload.stats.truncated).toBe(true);
+	});
+
+	it("threads --max-mb into the byte scan budget", async () => {
+		await queryCommand("blocks", { cwd: dir, json: true, maxMb: "0.0001" });
+		const payload = JSON.parse(logs.join("\n")) as {
+			rows: unknown[];
+			stats: { truncated: boolean };
+		};
+		// 0.0001 MB * (1024*1024) rounds to 105 bytes — nonzero, so the tiny
+		// fixture file (a few hundred bytes) still reads through in one shot
+		// and is not truncated. An incorrect MB→byte multiplier (e.g. 1 instead
+		// of 1024*1024) rounds 0.0001 down to a 0-byte budget, which stops the
+		// scan before it reads anything.
+		expect(payload.rows).toHaveLength(2);
+		expect(payload.stats.truncated).toBe(false);
+	});
+
+	it("accepts a valid numeric --limit", async () => {
+		await queryCommand("blocks", { cwd: dir, json: true, limit: "1" });
+		const payload = JSON.parse(logs.join("\n")) as { rows: unknown[] };
+		expect(payload.rows).toHaveLength(1);
+	});
+
+	it("applies an explicit --fields list over the source default", async () => {
+		await queryCommand("blocks", { cwd: dir, fields: " tool , summary " });
+		const joined = logs.join("\n");
+		expect(joined).toContain("Bash");
+		expect(joined).not.toContain("builtin-rm-rf");
+	});
+
+	it("infers display fields from the first row on an explicit path with no source", async () => {
+		await queryCommand(join(dir, ".interlinked", "costs.jsonl"), { cwd: dir });
+		const joined = logs.join("\n");
+		expect(joined).toContain("s1");
+		expect(joined).toContain("100");
+	});
+
+	it("uses the source's declared fields (not first-row inference) for a known source", async () => {
+		await queryCommand("blocks", { cwd: dir });
+		const joined = logs.join("\n");
+		// "blocks" declares fields ["tool","guard_rule_id","summary"] — "type" is
+		// not among them, so the literal type value must never render even
+		// though every matched row's `type` is "guard_block".
+		expect(joined).not.toContain("guard_block");
+		expect(joined).toContain("builtin-rm-rf");
+	});
+
+	it("skips the reserved inferred-field keys (ts/timestamp/schema/schema_version/uuid/seq)", async () => {
+		const explicitPath = join(dir, ".interlinked", "skip-fields.jsonl");
+		const record = {
+			ts: "2031-01-01T00:00:00Z",
+			timestamp: "TIMESTAMP_MARK",
+			schema: "SCHEMA_MARK",
+			schema_version: "SCHEMAVERSION_MARK",
+			uuid: "UUID_MARK",
+			seq: "SEQ_MARK",
+			widget: "WIDGET_MARK",
+		};
+		writeFileSync(explicitPath, `${JSON.stringify(record)}\n`);
+		await queryCommand(explicitPath, { cwd: dir });
+		const joined = logs.join("\n");
+		expect(joined).toContain("WIDGET_MARK");
+		expect(joined).not.toContain("2031-01-01T00:00:00Z");
+		expect(joined).not.toContain("TIMESTAMP_MARK");
+		expect(joined).not.toContain("SCHEMA_MARK");
+		expect(joined).not.toContain("SCHEMAVERSION_MARK");
+		expect(joined).not.toContain("UUID_MARK");
+		expect(joined).not.toContain("SEQ_MARK");
+	});
+
+	it("renders 'no matching records' for an explicit path with zero rows matched", async () => {
+		await queryCommand(join(dir, ".interlinked", "costs.jsonl"), {
+			cwd: dir,
+			where: ["session_id=nonexistent"],
+		});
+		expect(logs.join("\n")).toContain("no matching records");
+	});
+
+	it("threads --since through queryCommand", async () => {
+		await queryCommand("blocks", {
+			cwd: dir,
+			json: true,
+			since: "2026-07-24T10:02:30Z",
+		});
+		const payload = JSON.parse(logs.join("\n")) as { rows: Array<{ ts: string }> };
+		expect(payload.rows.map((r) => r.ts)).toEqual(["2026-07-24T10:03:00Z"]);
+	});
+
+	it("emits an aggregate envelope with --by and no --sum (no sum key)", async () => {
+		await queryCommand("costs", { cwd: dir, json: true, by: "session_id" });
+		const payload = JSON.parse(logs.join("\n")) as {
+			by: string;
+			sum?: string;
+			aggregate: Array<{ key: string; count: number }>;
+		};
+		expect(payload.by).toBe("session_id");
+		expect(payload.sum).toBeUndefined();
+		expect(payload.aggregate).toEqual([
+			{ key: "s1", count: 2 },
+			{ key: "s2", count: 1 },
+		]);
+	});
+
+	it("renders an aggregate table in normal mode", async () => {
+		await queryCommand("costs", { cwd: dir, by: "session_id", sum: "output_tokens" });
+		const joined = logs.join("\n");
+		expect(joined).toContain("s2");
+		expect(joined).toContain("900");
+	});
+
+	it("shows the limit-stopped footer text when --limit truncates matches", async () => {
+		await queryCommand("blocks", { cwd: dir, limit: "1" });
+		const joined = logs.join("\n");
+		expect(joined).toContain("more may match (raise --limit)");
+	});
+
+	it("truncates long cell values in normal mode but shows them in full mode", async () => {
+		const longSummary = "y".repeat(200);
+		appendFileSync(
+			join(dir, ".interlinked", "activity.jsonl"),
+			`${JSON.stringify({
+				ts: "2026-07-24T10:04:00Z",
+				type: "guard_block",
+				tool: "Bash",
+				guard_rule_id: "long-rule",
+				summary: longSummary,
+			})}\n`,
+		);
+		await queryCommand("blocks", { cwd: dir });
+		const normalJoined = logs.join("\n");
+		expect(normalJoined).toContain("…");
+		expect(normalJoined).not.toContain(longSummary);
+
+		logs = [];
+		await queryCommand("blocks", { cwd: dir, full: true });
+		const fullJoined = logs.join("\n");
+		expect(fullJoined).toContain(longSummary);
+	});
+
+	it("renders in short mode (body only, no footer)", async () => {
+		await queryCommand("blocks", { cwd: dir, short: true });
+		const joined = logs.join("\n");
+		expect(joined).toContain("builtin-rm-rf");
+		expect(joined).not.toContain("scanned all");
+	});
+
+	it("renders in full mode (body plus footer, untruncated cells)", async () => {
+		await queryCommand("blocks", { cwd: dir, full: true });
+		const joined = logs.join("\n");
+		expect(joined).toContain("builtin-rm-rf");
+		expect(joined).toContain("scanned all");
+	});
+
+	it("prints the catalog as JSON when --json is passed with no target", async () => {
+		await queryCommand(undefined, { cwd: dir, json: true });
+		const payload = JSON.parse(logs.join("\n")) as { sources: Array<{ name: string }> };
+		expect(payload.sources.map((s) => s.name)).toContain("blocks");
+	});
+
+	it("falls back to process.cwd() when no --cwd is given", async () => {
+		await queryCommand("nonsense-source-xyz", {});
+		expect(errors.join("\n")).toContain('Unknown source "nonsense-source-xyz"');
 		expect(process.exitCode).toBe(1);
 	});
 });

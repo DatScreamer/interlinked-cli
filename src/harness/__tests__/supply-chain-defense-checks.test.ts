@@ -174,6 +174,27 @@ async function poll() {
 		const code = "while (true) { try { await x(); } catch { continue; } }";
 		expect(checkInfiniteRetryLoop(code, "src/poll.test.ts")).toEqual([]);
 	});
+
+	it("skips non-JS/TS files", () => {
+		const code = "while (true) { try {} catch { continue; } }";
+		expect(checkInfiniteRetryLoop(code, "src/poll.py")).toEqual([]);
+	});
+
+	it("caps matches at 5 per file", () => {
+		const block = `
+async function poll() {
+  while (true) {
+    try {
+      await fetch("/api");
+    } catch (e) {
+      continue;
+    }
+  }
+}`;
+		const code = Array(7).fill(block).join("\n");
+		const matches = checkInfiniteRetryLoop(code, "src/poll.ts");
+		expect(matches.length).toBe(5);
+	});
 });
 
 describe("checkHardcodedLocalhost", () => {
@@ -197,6 +218,33 @@ describe("checkHardcodedLocalhost", () => {
 		const code = 'const API = "http://localhost:8787";\n';
 		expect(checkHardcodedLocalhost(code, "src/commands/dev.ts")).toEqual([]);
 	});
+
+	it("skips non-JS/TS files", () => {
+		const code = 'const API = "http://localhost:8787";\n';
+		expect(checkHardcodedLocalhost(code, "src/api.py")).toEqual([]);
+	});
+
+	it("does NOT flag *.config.ts / *.fixture.ts / *.mock.ts / *.stub.ts files", () => {
+		const code = 'const API = "http://localhost:8787";\n';
+		expect(checkHardcodedLocalhost(code, "src/api.config.ts")).toEqual([]);
+	});
+
+	it("does NOT flag files under __mocks__", () => {
+		const code = 'const API = "http://localhost:8787";\n';
+		expect(checkHardcodedLocalhost(code, "src/__mocks__/api.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a commented-out localhost URL", () => {
+		const code = '// const API = "http://localhost:8787";\n';
+		expect(checkHardcodedLocalhost(code, "src/api.ts")).toEqual([]);
+	});
+
+	it("caps matches at 5 per file", () => {
+		const line = 'const API = "http://localhost:8787/api";\n';
+		const code = line.repeat(6);
+		const matches = checkHardcodedLocalhost(code, "src/api.ts");
+		expect(matches.length).toBe(5);
+	});
 });
 
 describe("checkProcessExitInLibrary", () => {
@@ -216,6 +264,22 @@ describe("checkProcessExitInLibrary", () => {
 		const code = "process.exit(1);\n";
 		expect(checkProcessExitInLibrary(code, "src/handler.test.ts")).toEqual([]);
 	});
+
+	it("skips non-JS/TS files", () => {
+		const code = "process.exit(1);\n";
+		expect(checkProcessExitInLibrary(code, "src/handler.py")).toEqual([]);
+	});
+
+	it("caps matches at 3 per file", () => {
+		const code = Array(4).fill("process.exit(1);\n").join("");
+		const matches = checkProcessExitInLibrary(code, "src/utils/handler.ts");
+		expect(matches.length).toBe(3);
+	});
+
+	it("does NOT flag a commented-out process.exit call", () => {
+		const code = "// process.exit(1);\n";
+		expect(checkProcessExitInLibrary(code, "src/utils/handler.ts")).toEqual([]);
+	});
 });
 
 describe("checkImportFromDist", () => {
@@ -234,6 +298,23 @@ describe("checkImportFromDist", () => {
 	it("does NOT flag normal imports", () => {
 		const code = 'import { foo } from "../utils/bar";\n';
 		expect(checkImportFromDist(code, "src/index.ts")).toEqual([]);
+	});
+
+	it("skips non-JS/TS files", () => {
+		const code = 'import { foo } from "../dist/utils";\n';
+		expect(checkImportFromDist(code, "src/index.py")).toEqual([]);
+	});
+
+	it("skips test files", () => {
+		const code = 'import { foo } from "../dist/utils";\n';
+		expect(checkImportFromDist(code, "src/index.test.ts")).toEqual([]);
+	});
+
+	it("caps matches at 5 per file", () => {
+		const line = 'import { foo } from "../dist/utils";\n';
+		const code = line.repeat(6);
+		const matches = checkImportFromDist(code, "src/index.ts");
+		expect(matches.length).toBe(5);
 	});
 });
 
@@ -265,6 +346,24 @@ describe("checkPlaceholderValues", () => {
 		const code = 'const x = "YOUR_API_KEY_HERE";\n';
 		expect(checkPlaceholderValues(code, "src/index.ts")).toEqual([]);
 	});
+
+	it("detects placeholders in .env.local (prefix match, not exact .env)", () => {
+		const code = "API_KEY=YOUR_API_KEY_HERE\n";
+		const matches = checkPlaceholderValues(code, ".env.local");
+		expect(matches.length).toBe(1);
+	});
+
+	it("does NOT flag settings.example.json (example template, config-extension path)", () => {
+		const code = "SECRET=YOUR_API_KEY_HERE\n";
+		expect(checkPlaceholderValues(code, "settings.example.json")).toEqual([]);
+	});
+
+	it("caps matches at 5 per file", () => {
+		const line = "KEY=YOUR_API_KEY_HERE\n";
+		const code = line.repeat(6);
+		const matches = checkPlaceholderValues(code, ".env");
+		expect(matches.length).toBe(5);
+	});
 });
 
 describe("checkErrorMessageLeakage", () => {
@@ -294,6 +393,23 @@ describe("checkErrorMessageLeakage", () => {
 	it("skips test files", () => {
 		const code = "catch (err) { res.json({ error: err.message }); }\n";
 		expect(checkErrorMessageLeakage(code, "src/handler.test.ts")).toEqual([]);
+	});
+
+	it("skips non-JS/TS files", () => {
+		const code = "catch (err) { res.json({ error: err.message }); }\n";
+		expect(checkErrorMessageLeakage(code, "src/handler.py")).toEqual([]);
+	});
+
+	it("does NOT flag a commented-out leak pattern", () => {
+		const code = "// catch (err) { res.json({ error: err.message }); }\n";
+		expect(checkErrorMessageLeakage(code, "src/handler.ts")).toEqual([]);
+	});
+
+	it("caps matches at 5 per file", () => {
+		const line = "catch (err) { res.json({ error: err.message }); }\n";
+		const code = line.repeat(6);
+		const matches = checkErrorMessageLeakage(code, "src/handler.ts");
+		expect(matches.length).toBe(5);
 	});
 });
 

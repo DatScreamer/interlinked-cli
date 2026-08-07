@@ -85,6 +85,47 @@ describe("driveGraphPrediction — non-applicable events", () => {
 	});
 });
 
+describe("driveGraphPrediction — malformed / edge inputs", () => {
+	it("returns null when a file-write event carries no resolvable file path", () => {
+		const r = driveGraphPrediction({
+			event: {
+				hook_event: "PreToolUse",
+				session_id: "sess-1",
+				agent_source: "claude",
+				tool_name: "Write",
+				tool_input: { content: "no path fields here" },
+				timestamp: "2026-05-10T00:00:00Z",
+				cwd: dir,
+			},
+			cwd: dir,
+			mode: "enforced",
+		});
+		expect(r).toBeNull();
+	});
+
+	it("returns null reading a shard with no pending prediction row for this session", () => {
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(join(dir, "src", "noreq.ts"), "export {}");
+		writeFileSync(join(dir, "src", "noreq.graph.ts"), "// @generated");
+		setMtime(join(dir, "src", "noreq.ts"), t);
+		setMtime(join(dir, "src", "noreq.graph.ts"), t);
+
+		const readEvent: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "sess-1",
+			agent_source: "claude",
+			tool_name: "Read",
+			tool_input: { file_path: join(dir, "src", "noreq.graph.ts") },
+			timestamp: "2026-05-10T00:00:01Z",
+			cwd: dir,
+		};
+		// No prediction was ever submitted for noreq.ts, so recordShardRead has
+		// no prior row to stamp and falls through to null (pass-through read).
+		const r = driveGraphPrediction({ event: readEvent, cwd: dir, mode: "enforced" });
+		expect(r).toBeNull();
+	});
+});
+
 describe("driveGraphPrediction — shadow mode", () => {
 	const mode: GraphPredictionMode = "shadow";
 
@@ -179,6 +220,45 @@ describe("driveGraphPrediction — soft_gate mode", () => {
 		});
 		expect(r?.decision).toBe("allow");
 		expect(r?.additional_context).toBeDefined();
+	});
+
+	it("re-blocks on a cached format-violation prediction, asking for a narrower top-K", () => {
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(join(dir, "src", "fv.ts"), "export {}");
+		writeFileSync(join(dir, "src", "fv.graph.ts"), "// @generated");
+		setMtime(join(dir, "src", "fv.ts"), t);
+		setMtime(join(dir, "src", "fv.graph.ts"), t);
+
+		appendPredictionRow(dir, {
+			session_id: "sess-1",
+			file_path: join(dir, "src", "fv.ts"),
+			source_mtime: new Date(t).toISOString(),
+			shard_mtime: new Date(t).toISOString(),
+			shard_path: join(dir, "src", "fv.graph.ts"),
+			emitted_at: "2026-05-10T12:01:00Z",
+			tool_input_hash: "",
+			case: "E-fresh",
+			prediction: {
+				deps: { imports: [], imported_by: [] },
+				calls: { callers: [], callees: [] },
+				impact: null,
+			},
+			comparison_status: "parse_failed",
+		});
+
+		const r = driveGraphPrediction({
+			event: eventForWrite(join(dir, "src", "fv.ts")),
+			cwd: dir,
+			mode,
+		});
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toBe(
+			[
+				`[interlinked:graph-pred] Cached prediction for ${join(dir, "src", "fv.ts")} violated the format contract (per-section entry cap is 50).`,
+				"Narrow your prediction to the entries that matter most, or use `unknown` for any list you can't bound.",
+				"Re-submit by writing to .interlinked/predictions/incoming/sess-1/fv.yaml",
+			].join("\n"),
+		);
 	});
 });
 
@@ -297,6 +377,52 @@ describe("driveGraphPrediction — enforced mode (ack required)", () => {
 		});
 		expect(r?.decision).toBe("allow");
 		expect(r?.additional_context).toMatch(/Comparison|HIGH|severity/i);
+	});
+
+	it("accepting an ack via the ack sentinel path clears ack_required, then re-blocks on the shard-read gate", () => {
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		highSeverityCachedPrediction(t);
+
+		// Fire 2: ack required.
+		const blocked = driveGraphPrediction({
+			event: eventForWrite(join(dir, "src", "hi.ts")),
+			cwd: dir,
+			mode,
+		});
+		expect(blocked?.decision).toBe("block");
+
+		// Submit the ack via the ack sentinel path.
+		const ackYaml = [
+			"graph_prediction_ack:",
+			`  file: ${join(dir, "src", "hi.ts")}`,
+			"  acknowledged_triggers:",
+			"    - risk_underestimated",
+		].join("\n");
+		const ackEvent: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "sess-1",
+			agent_source: "claude",
+			tool_name: "Write",
+			tool_input: {
+				file_path: join(dir, ".interlinked", "predictions", "ack", "sess-1", "hi.yaml"),
+				content: ackYaml,
+			},
+			timestamp: "2026-05-10T00:00:02Z",
+			cwd: dir,
+		};
+		const ackResult = driveGraphPrediction({ event: ackEvent, cwd: dir, mode });
+		expect(ackResult?.decision).toBe("allow");
+		expect(ackResult?.additional_context).toMatch(/Acknowledgement for/);
+
+		// Retry: ack_required is satisfied now, so the flow falls through to the
+		// enforced-mode shard-read gate instead of re-asking for an ack.
+		const retried = driveGraphPrediction({
+			event: eventForWrite(join(dir, "src", "hi.ts")),
+			cwd: dir,
+			mode,
+		});
+		expect(retried?.decision).toBe("block");
+		expect(retried?.reason).toMatch(/Read the oracle shard/);
 	});
 });
 

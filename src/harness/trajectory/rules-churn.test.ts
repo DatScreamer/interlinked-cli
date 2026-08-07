@@ -496,6 +496,124 @@ describe("churn_revert_after_check_fail_combo", () => {
 });
 
 // ===========================================
+// Additional branch coverage — missing file_path guards + crafted-state paths
+// ===========================================
+describe("additional branch coverage", () => {
+	function postEditEvent(tool: "Edit" | "Write" | "MultiEdit", input: ToolEvent["input"]): ToolEvent {
+		return {
+			ts: "2026-01-01T00:00:00Z",
+			session: "s",
+			agent: "a",
+			tool,
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input,
+			contentSha256: sha256(input.new_string ?? ""),
+			toolOutcome: "success",
+			checkDecision: "allow",
+			failedCheckIds: [],
+		};
+	}
+
+	it("churn_sha_cycle_revisit: returns null when the event has no file_path", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("churn_sha_cycle_revisit: falls back to an empty edit log via a crafted state (fileEditLog has no entry for the file)", () => {
+		const state = createState("s");
+		state.fileShaHistory.set("src/craft.ts", [
+			{ sha: "A", normSha: "a", atStep: 1 },
+			{ sha: "B", normSha: "b", atStep: 2 },
+			{ sha: "A", normSha: "a", atStep: 3 },
+		]);
+		state.stepCount = 3;
+		// fileEditLog deliberately left empty for this file — hits the `?? []` fallback.
+		const ev = postEditEvent("Edit", { file_path: "src/craft.ts", old_string: "x", new_string: "A" });
+		const v = churnShaCycleRevisit(state, ev);
+		// priorIdxs has 1 match (not >=2) and no fileEditLog entries so no failing check
+		// intervened either — the FP guard suppresses firing, but the fallback line executed.
+		expect(v).toBeNull();
+	});
+
+	it("churn_literal_edit_revert: returns null when the event has no file_path", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
+		expect(churnLiteralEditRevert(state, ev)).toBeNull();
+	});
+
+	it("churn_undo_war_value_toggle: returns null when the event has no file_path", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
+		expect(churnUndoWarValueToggle(state, ev)).toBeNull();
+	});
+
+	it("churn_undo_war_value_toggle: does not fire when the freshest anchor entry equals its own predecessor", () => {
+		// Three consecutive no-op-content edits at the same anchor: a2 === b === a,
+		// so `a.valueHash === b.valueHash` short-circuits before the toggle check.
+		const v = run([
+			...editEvents("src/same.ts", F1, F2),
+			...editEvents("src/same.ts", F2, F2),
+			...editEvents("src/same.ts", F2, F2),
+		]);
+		expect(firedIds(v).has("churn_undo_war_value_toggle")).toBe(false);
+	});
+
+	it("churn_undo_war_value_toggle: does not fire on a stale toggle left by a non-latest anchor", () => {
+		const state = createState("s");
+		const file = "src/stale.ts";
+		const events = [
+			...editEvents(file, F1, F2),
+			...editEvents(file, F2, F1),
+			...editEvents(file, F1, F2), // completes the A,B,A toggle at this anchor, at step 3
+		];
+		for (const ev of events) applyEvent(state, ev);
+		// A later edit at a DIFFERENT anchor becomes the freshest step, leaving the
+		// F-anchor's toggle stale (its `a.atStep` no longer equals state.stepCount).
+		const freshest = editEvents(file, "let x = 1", "let x = 2")[1]!;
+		applyEvent(state, freshest);
+		expect(churnUndoWarValueToggle(state, freshest)).toBeNull();
+	});
+
+	it("churn_edits_without_green: falls back to 0 via a fresh, unfolded state", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { file_path: "src/fresh.ts", old_string: "a", new_string: "b" });
+		expect(churnEditsWithoutGreen(state, ev)).toBeNull();
+	});
+
+	it("churn_rerun_failing_test_no_source_change: returns null when the Bash event has no command", () => {
+		const state = createState("s");
+		const ev: ToolEvent = {
+			ts: "t",
+			session: "s",
+			agent: "a",
+			tool: "Bash",
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input: {},
+			toolOutcome: "fail",
+		};
+		expect(churnRerunFailingTestNoSourceChange(state, ev)).toBeNull();
+	});
+
+	it("churn_revert_after_check_fail_combo: returns null when the event has no file_path", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
+		expect(churnRevertAfterCheckFailCombo(state, ev)).toBeNull();
+	});
+
+	it("churn_revert_after_check_fail_combo: returns null when the latest (E3) edit is a no-op", () => {
+		const v = run([
+			...editEvents("src/noop3.ts", "a", "b", { fail: true }),
+			...editEvents("src/noop3.ts", "b", "a", { fail: true }),
+			...editEvents("src/noop3.ts", "same", "same", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+});
+
+// ===========================================
 // Wiring sanity
 // ===========================================
 describe("CHURN_RULES registry", () => {

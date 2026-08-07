@@ -59,15 +59,30 @@ type ConnHandler = (sock: FakeSocket) => void;
 interface FakeServer {
 	listen: MockInstance;
 	close: MockInstance;
+	on: (event: string, listener: (...args: never[]) => void) => FakeServer;
+	/** Fires a registered `on("error", ...)` listener, or re-throws (mirrors
+	 *  real EventEmitter default behavior: an 'error' with no listener is
+	 *  fatal) so a test omitting `.on("error", ...)` coverage fails loudly
+	 *  instead of silently no-op'ing. */
+	emitError: (err: unknown) => void;
 	__handler: ConnHandler;
 }
 
 let lastServer: FakeServer | null = null;
 
 function buildFakeServer(handler: ConnHandler): FakeServer {
+	const errorListeners: Array<(err: unknown) => void> = [];
 	const server: FakeServer = {
 		listen: vi.fn(),
 		close: vi.fn(),
+		on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+			if (event === "error") errorListeners.push(listener as (err: unknown) => void);
+			return server;
+		}),
+		emitError: (err: unknown) => {
+			if (errorListeners.length === 0) throw err;
+			for (const listener of errorListeners) listener(err);
+		},
 		__handler: handler,
 	};
 	lastServer = server;
@@ -213,6 +228,27 @@ describe("startRawServer + createRawSocketServer connection handling", () => {
 		expect(createServerImpl).toHaveBeenCalledTimes(1);
 		expect(typeof createServer).toBe("function");
 		expect(lastServer?.listen).toHaveBeenCalledWith("/tmp/listen.sock");
+	});
+
+	it("registers an 'error' listener before listen() (a bind failure is FATAL, not survivable)", () => {
+		// Regression: `rawServer.listen()` with no 'error' listener lets a bind
+		// failure become an uncaught exception, which `installCrashResilience()`
+		// deliberately SURVIVES — leaving a process alive with no working raw
+		// listener even though `writePidFile()` already claimed the pid file
+		// earlier in startup (the exact zombie shape `isDaemonSocketServing`
+		// exists to detect from the outside). This asserts the hole is closed
+		// at the source: a listen failure exits the process instead.
+		const { deps, logAlways } = makeDeps();
+		const lc = createSocketLifecycle(deps);
+		lc.startRawServer();
+		expect(lastServer?.on).toHaveBeenCalledWith("error", expect.any(Function));
+
+		const err = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+		lastServer?.emitError(err);
+
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(logAlways).toHaveBeenCalledTimes(1);
+		expect(String(logAlways.mock.calls[0]?.[0])).toContain("EADDRINUSE");
 	});
 
 	it("on connect: counts the connection and logs the total", () => {

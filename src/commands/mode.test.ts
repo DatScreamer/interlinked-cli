@@ -42,12 +42,16 @@ function primeConfirm(answer: string | typeof THROW): void {
 }
 
 let tmp = "";
-let originalCwd = "";
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. modeCommand/writeMode read
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 let originalIsTTY: boolean | undefined;
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-mode-"));
-	originalCwd = process.cwd();
-	process.chdir(tmp);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	mkdirSync(join(tmp, ".interlinked"));
 	process.exitCode = 0;
 	originalIsTTY = process.stdin.isTTY;
@@ -55,7 +59,7 @@ beforeEach(() => {
 	fsStub.readSyncImpl = () => 0;
 });
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy?.mockRestore();
 	process.exitCode = 0;
 	rmSync(tmp, { recursive: true, force: true });
 	(process.stdin as { isTTY: boolean | undefined }).isTTY = originalIsTTY;

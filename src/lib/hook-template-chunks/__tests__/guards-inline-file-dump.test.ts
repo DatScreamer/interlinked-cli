@@ -12,7 +12,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GUARDS_INLINE_CHUNK } from "../guards-inline.js";
 
 interface GuardDecision {
@@ -44,7 +44,14 @@ function buildRuntimeInlineGuard(): InlineFn {
 }
 
 let dir: string;
-let originalCwd: string;
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. All paths passed into the
+// inline guard in this file are already absolute (`join(dir, name)`), so the
+// generated code's `resolve(process.cwd(), t)` fallback is never exercised
+// on a relative path here — the spy just keeps `process.cwd()` from drifting.
+let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 function writeFile(name: string, bytes: number): string {
 	const p = join(dir, name);
@@ -60,12 +67,11 @@ function writeFileLines(name: string, lineCount: number): string {
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "inline-file-dump-"));
-	originalCwd = process.cwd();
-	process.chdir(dir);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
 });
 
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy.mockRestore();
 	rmSync(dir, { recursive: true, force: true });
 });
 

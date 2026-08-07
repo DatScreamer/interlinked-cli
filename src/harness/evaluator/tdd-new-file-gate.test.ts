@@ -6,7 +6,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { readOpenDebts } from "../obligation-ledger-io.js";
@@ -16,6 +16,7 @@ import {
 	companionTestCandidates,
 	evaluateTddNewFileGate,
 	evaluateTddNewFileGateForEvent,
+	hasTddExemptDirective,
 } from "./tdd-new-file-gate.js";
 
 let tmp: string;
@@ -273,6 +274,109 @@ describe("evaluateTddNewFileGate — blocking", () => {
 	});
 });
 
+describe("evaluateTddNewFileGate — relative filePath / omitted cwd", () => {
+	it("resolves a relative filePath against the provided cwd (isAbsolute false, cwd truthy)", () => {
+		const decision = evaluateTddNewFileGate({
+			filePath: "src/bar.ts",
+			cwd: tmp,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain("src/bar.test.ts");
+	});
+
+	it("falls back to process.cwd() when cwd is omitted and filePath is relative", () => {
+		const relPath = `zz-tdd-gate-omitted-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}.ts`;
+		const decision = evaluateTddNewFileGate({
+			filePath: relPath,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		expect(decision?.decision).toBe("block");
+		// companionHintPath's `dir && dir !== "."` is false for a root-level
+		// relative path — the hint has no directory prefix.
+		expect(decision?.reason).toContain(`Create ${relPath.replace(/\.ts$/, ".test.ts")} first`);
+		// shortest() with cwd undefined returns the resolved absolute candidate path unchanged.
+		const expectedAbs = resolve(process.cwd(), relPath.replace(/\.ts$/, ".test.ts"));
+		expect(decision?.reason).toContain(`(Searched: ${expectedAbs}`);
+	});
+});
+
+describe("evaluateTddNewFileGate — public surface extraction limit", () => {
+	it("caps the extracted public surface at SURFACE_LIMIT (10) entries", () => {
+		const content = Array.from({ length: 12 }, (_, i) => `export function fn${i}() {}`).join("\n");
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/many.ts"),
+			cwd: tmp,
+			session: undefined,
+			content,
+			testFirstMode: "enforce",
+		});
+		const searched = /Public surface to test \(extracted from your content\): (.*?)\./.exec(
+			decision?.reason ?? "",
+		);
+		expect(searched?.[1]?.split(", ")).toEqual([
+			"fn0",
+			"fn1",
+			"fn2",
+			"fn3",
+			"fn4",
+			"fn5",
+			"fn6",
+			"fn7",
+			"fn8",
+			"fn9",
+		]);
+	});
+});
+
+describe("evaluateTddNewFileGateForEvent — missing tool_input / missing cwd", () => {
+	it("treats a missing tool_input as an empty object (filePath resolves empty, gate no-ops)", () => {
+		const decision = evaluateTddNewFileGateForEvent(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-noinput",
+				agent_source: "claude",
+				tool_name: "Write",
+				cwd: tmp,
+				timestamp: "t",
+			},
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("returns the hard block unchanged when the event has no cwd (can't resolve the debt ledger)", () => {
+		const relPath = `zz-tdd-gate-nocwd-${Date.now()}-${Math.random().toString(36).slice(2)}.ts`;
+		const decision = evaluateTddNewFileGateForEvent(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-nocwd",
+				agent_source: "claude",
+				tool_name: "Write",
+				tool_input: { file_path: relPath, content: "export const x = 1;\n" },
+				timestamp: "t",
+			},
+			rulesFor(true),
+			makeSession([]),
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("tdd_new_file_gate");
+	});
+});
+
+describe("hasTddExemptDirective", () => {
+	it("returns true when the exempt directive appears in the first bytes", () => {
+		expect(hasTddExemptDirective("// interlinked-tdd: exempt\nexport const x = 1;\n")).toBe(true);
+	});
+
+	it("returns false when there is no exempt directive", () => {
+		expect(hasTddExemptDirective("export const x = 1;\n")).toBe(false);
+	});
+});
+
 describe("evaluateTddNewFileGate — non-source extensions", () => {
 	it("returns null for a .js file (not our concern)", () => {
 		const decision = evaluateTddNewFileGate({
@@ -480,6 +584,32 @@ describe("evaluateTddNewFileGate — separate-tree layout (mirrored candidates)"
 		writeFileSync(join(repo, "tests/other.test.ts"), "");
 		writeFileSync(join(repo, "src/lib/foo.test.ts"), "");
 		expect(gateAt(repo, "src/lib/foo.ts")).toBeNull();
+	});
+
+	it("handles a source file at the separate-tree project root (relDir === '.', flat candidate only)", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/other.test.ts"), "");
+		const decision = gateAt(repo, "index.ts");
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toContain(join("tests", "index.test.ts"));
+	});
+
+	it("returns no mirrored candidates when the source lives outside the project root", () => {
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests/other.test.ts"), "");
+		const outside = join(
+			tmpdir(),
+			`tdd-outside-${Date.now()}-${Math.random().toString(36).slice(2)}.ts`,
+		);
+		const decision = evaluateTddNewFileGate({
+			filePath: outside,
+			cwd: repo,
+			session: undefined,
+			testFirstMode: "enforce",
+		});
+		expect(decision?.decision).toBe("block");
+		// shortest() falls back to the raw absolute path since it isn't under `repo`.
+		expect(decision?.reason).toContain(outside.replace(/\.ts$/, ".test.ts"));
 	});
 });
 

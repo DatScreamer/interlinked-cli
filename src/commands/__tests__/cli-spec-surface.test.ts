@@ -22,12 +22,7 @@ import { isStrictTestFile } from "../../harness/checks/shared.js";
 import { nonNull } from "../../lib/non-null.js";
 
 /** Flags with no test mention yet — tracked debt, may only shrink. */
-const PINNED_UNTESTED = new Set<string>([
-	// `interlinked compact --keep-recent-mb`: the activity-log compaction
-	// size knob has no behavior-pinning test yet (seeded at audit birth,
-	// 2026-06; the only test-silent flag of the entire CLI surface).
-	"--keep-recent-mb",
-]);
+const PINNED_UNTESTED = new Set<string>([]);
 
 const OPTION_CALL_RE = /\.option\(\s*["'`]([^"'`]+)["'`]/g;
 const LONG_FLAG_RE = /--[A-Za-z][\w-]*/;

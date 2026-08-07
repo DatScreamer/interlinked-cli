@@ -135,6 +135,20 @@ describe("rotation", () => {
 		expect(fnv1a32("abc")).not.toBe(fnv1a32("abd"));
 		expect(windowNumber(ROTATION_WINDOW_MS * 7 + 1)).toBe(7);
 	});
+
+	it("falls back to the last candidate when total weight is zero", () => {
+		// All-zero weights make `total` 0, so `slot = fnv % 0` is NaN and the
+		// subtraction loop's `slot < 0` check never trips — exercises the
+		// `?? null` fallback tail of selectCreative.
+		const feed = makePayload({
+			creatives: [
+				{ id: "a", campaign: "c", text: "a", url: "https://a.example", weight: 0 },
+				{ id: "b", campaign: "c", text: "b", url: "https://b.example", weight: 0 },
+			],
+		});
+		const now = Date.parse("2026-06-12T00:00:00Z");
+		expect(selectCreative(feed, now)?.id).toBe("b");
+	});
 });
 
 describe("click + beacon urls", () => {
@@ -149,6 +163,10 @@ describe("click + beacon urls", () => {
 		expect(beaconUrlFromFeedUrl("https://w.example/v1/feed")).toBe(
 			"https://w.example/v1/beacon",
 		);
+	});
+
+	it("returns null for an unparseable feed url", () => {
+		expect(beaconUrlFromFeedUrl("not a url")).toBeNull();
 	});
 });
 
@@ -177,6 +195,21 @@ describe("sponsor.status writer", () => {
 		writeSponsorStatus(dir, { enabled: false });
 		expect(readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8")).toContain("enabled=0");
 	});
+
+	it("falls back to the creative's own url when no clickUrl is given", () => {
+		writeSponsorStatus(dir, {
+			enabled: true,
+			creative: {
+				id: "alpha",
+				campaign: "friends",
+				text: "Alpha",
+				url: "https://alpha.example/direct",
+				weight: 1,
+			},
+		});
+		const body = readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8");
+		expect(body).toContain("url=https://alpha.example/direct");
+	});
 });
 
 describe("wire cache", () => {
@@ -184,6 +217,12 @@ describe("wire cache", () => {
 		expect(loadCachedWire(dir)).toBeNull();
 		saveCachedWire(dir, '{"key_id":"k"}');
 		expect(loadCachedWire(dir)).toBe('{"key_id":"k"}');
+	});
+
+	it("swallows atomic-write errors instead of throwing (missing parent dir)", () => {
+		const missingDir = join(dir, "does", "not", "exist");
+		expect(() => saveCachedWire(missingDir, '{"key_id":"k"}')).not.toThrow();
+		expect(loadCachedWire(missingDir)).toBeNull();
 	});
 });
 
@@ -222,6 +261,43 @@ describe("beacons", () => {
 		// Empty buffer flush is a success no-op.
 		writeFileSync(join(dir, BEACON_FILE), "");
 		expect(await flushBeacons(dir, "https://w.example/v1/beacon", failing)).toBe(true);
+	});
+
+	it("succeeds as a no-op when there is no buffer file at all", async () => {
+		const fetchImpl = (async () => {
+			throw new Error("should not be called");
+		}) as unknown as typeof fetch;
+		// Fresh dir: no appendBeacon call yet, so readFileSync hits ENOENT.
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
+	});
+
+	it("drops unparseable buffered rows rather than wedging the buffer", async () => {
+		writeFileSync(join(dir, BEACON_FILE), "not json\n{also bad\n");
+		const fetchImpl = (async () => {
+			throw new Error("should not be called: nothing valid to send");
+		}) as unknown as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
+	});
+
+	it("keeps the buffer when the server responds non-2xx", async () => {
+		appendBeacon(dir, beacon);
+		const fetchImpl = (async () => ({ ok: false }) as unknown as Response) as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(false);
+		expect(readFileSync(join(dir, BEACON_FILE), "utf8")).toContain("alpha");
+	});
+
+	it("skips appending once the buffer file exceeds the size cap", () => {
+		// Pre-populate a file larger than BEACON_FILE_MAX_BYTES (1 MiB) so the
+		// existsSync/statSync guard's `size > cap` arm is exercised.
+		const big = "x".repeat(1024 * 1024 + 1);
+		writeFileSync(join(dir, BEACON_FILE), big);
+		appendBeacon(dir, beacon);
+		expect(readFileSync(join(dir, BEACON_FILE), "utf8")).toBe(big);
+	});
+
+	it("swallows write errors instead of throwing (missing parent dir)", () => {
+		const missingDir = join(dir, "does", "not", "exist");
+		expect(() => appendBeacon(missingDir, beacon)).not.toThrow();
 	});
 });
 

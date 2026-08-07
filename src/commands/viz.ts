@@ -11,6 +11,7 @@ import { ProjectGraph } from "../harness/project-graph.js";
 import { getOutputMode, output } from "../lib/output.js";
 import { buildGraphSnapshot } from "../lib/viz/graph-snapshot.js";
 import { startVizServer, type VizServerHandle } from "../lib/viz/server.js";
+import { clearVizStatus, writeVizStatus } from "../lib/viz/status-file.js";
 
 export interface VizOpts {
 	port?: string;
@@ -29,10 +30,11 @@ export interface VizServeDeps {
 export function formatBanner(url: string, root: string): string {
 	return [
 		"",
-		"  ▞▞ INTERLINKED // BASELINE TEST",
-		`  cells. interlinked. — ${root}`,
+		"  ▞▞ INTERLINKED // LIVE DASHBOARD",
+		`  live dashboard · files, imports, gates, tests, mutants, agents`,
+		`  ${root}`,
 		`  ▸ ${url}`,
-		"  recite your baseline · ctrl-c to end",
+		"  open the url in a browser · ctrl-c to stop",
 		"",
 	].join("\n");
 }
@@ -51,6 +53,9 @@ export async function runVizServe(opts: VizOpts, deps: VizServeDeps = {}): Promi
 	const start = deps.startServer ?? startVizServer;
 	const port = opts.port ? Number(opts.port) : undefined;
 	const handle = await start(port === undefined ? { root } : { root, port });
+	// Publish the live URL so the statusline can offer a click-through while the
+	// server is up, and clear it on the way out so no dead link survives.
+	writeVizStatus(root, { url: handle.url, pid: process.pid, root });
 
 	if (mode === "json") {
 		console.log(JSON.stringify({ url: handle.url, port: handle.port, root }, null, 2));
@@ -58,8 +63,12 @@ export async function runVizServe(opts: VizOpts, deps: VizServeDeps = {}): Promi
 		process.stdout.write(`${formatBanner(handle.url, root)}\n`);
 	}
 
-	await (deps.waitForStop ?? waitForSignal)();
-	await handle.close();
+	try {
+		await (deps.waitForStop ?? waitForSignal)();
+	} finally {
+		clearVizStatus(root);
+		await handle.close();
+	}
 	return 0;
 }
 
@@ -74,7 +83,7 @@ export async function runVizSnapshot(opts: VizOpts): Promise<number> {
 	output(mode, snap, {
 		json: () => snap,
 		normal: () =>
-			`${snap.node_count} cells · ${snap.edge_count} interlinks · stem ${snap.super_hub?.id ?? "—"}`,
+			`${snap.node_count} files · ${snap.edge_count} imports · most depended-on: ${snap.super_hub?.id ?? "—"}`,
 	});
 	return 0;
 }

@@ -1,16 +1,43 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyManifest } from "./manifest.js";
-import {
+import type { MutationManifest } from "./types.js";
+
+// Override hook for `mutationIdentityAvailable` — null (the default) passes
+// through to the REAL implementation so every other test in this file keeps
+// exercising the actual TypeScript-availability check; a single test sets
+// this to `false` for its own duration to reach the (otherwise environment-
+// dependent — this repo always has `typescript` installed) "identity
+// unavailable" branch of `explainRefusal`, then resets it in `afterEach`.
+let identityAvailableOverride: boolean | null = null;
+vi.mock("./identity.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./identity.js")>();
+	// `explainRefusal` (measure.ts) only calls `mutationIdentityAvailable`, but
+	// `seedFileBaseline` (adopt.ts, imported separately) calls `deriveIdentities`
+	// / `computeSymbolHashes` directly — both must degrade together for the
+	// override to reach the SAME "unavailable" outcome `recordMeasurement`
+	// would see for real (a missing `typescript` optionalDependency), rather
+	// than explainRefusal disagreeing with what seedFileBaseline actually did.
+	return {
+		...actual,
+		mutationIdentityAvailable: () =>
+			identityAvailableOverride ?? actual.mutationIdentityAvailable(),
+		deriveIdentities: (...args: Parameters<typeof actual.deriveIdentities>) =>
+			identityAvailableOverride === false ? null : actual.deriveIdentities(...args),
+		computeSymbolHashes: (...args: Parameters<typeof actual.computeSymbolHashes>) =>
+			identityAvailableOverride === false ? null : actual.computeSymbolHashes(...args),
+	};
+});
+
+const {
 	buildMeasureOverlays,
 	buildScopedMeasureOverlays,
 	configuredRunnerEndpoints,
-	type FetchResponseLike,
 	MAX_MEASURE_OVERLAYS,
 	measureFile,
 	recordMeasurement,
 	requestWholeFileReport,
-} from "./measure.js";
-import type { MutationManifest } from "./types.js";
+} = await import("./measure.js");
+type FetchResponseLike = import("./measure.js").FetchResponseLike;
 
 const META = {
 	engine: "stryker",
@@ -48,6 +75,10 @@ function fakeResponse(status: number, body: unknown): FetchResponseLike {
 	return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
+afterEach(() => {
+	identityAvailableOverride = null;
+});
+
 describe("buildMeasureOverlays", () => {
 	it("P1: includes the companion test when it exists on disk", () => {
 		const disk = new Map([["src/a.test.ts", "test content"]]);
@@ -80,6 +111,14 @@ describe("buildMeasureOverlays", () => {
 		const overlays = buildMeasureOverlays(FILE, disk.get("src/a.ts") ?? "", (p) => disk.get(p) ?? null);
 		const sharedCount = overlays.filter((o) => o.path === "src/shared.ts").length;
 		expect(sharedCount).toBe(1);
+	});
+
+	it("N3: skips the companion entirely when the target has no test-pairable extension (companion === file)", () => {
+		// `expectedCompanionTest` only rewrites a recognized `.ts`/`.js`/… suffix;
+		// an extensionless path comes back UNCHANGED, so `companion !== file` is
+		// false and the companion push is skipped outright.
+		const overlays = buildMeasureOverlays("src/README", "readme content", () => "should never be read");
+		expect(overlays).toEqual([{ path: "src/README", content: "readme content" }]);
 	});
 });
 
@@ -157,6 +196,35 @@ describe("buildScopedMeasureOverlays", () => {
 			expect(result.overlays.some((o) => o.path === t)).toBe(true);
 		}
 	});
+
+	it("N4: a testScope entry that duplicates an already-collected path (the companion) is skipped, not re-added", () => {
+		const disk = new Map([["src/a.ts", CONTENT], ["src/a.test.ts", "no imports"]]);
+		const result = buildScopedMeasureOverlays(FILE, CONTENT, (p) => disk.get(p) ?? null, [
+			"src/a.test.ts", // == the companion, already collected before the scope loop runs
+		]);
+		expect(result.overlays.map((o) => o.path)).toEqual(["src/a.ts", "src/a.test.ts"]);
+		expect(result.unreadable).toEqual([]);
+	});
+
+	it("N5: reports a non-empty `capped.dropped` when the DEPENDENCY closure (not the required set) overflows the cap", () => {
+		const disk = new Map<string, string>([["src/a.ts", CONTENT]]);
+		const depCount = MAX_MEASURE_OVERLAYS + 2;
+		const imports = Array.from({ length: depCount }, (_, i) => `import './dep-${i}.js';`).join("\n");
+		disk.set("src/a.test.ts", imports);
+		for (let i = 0; i < depCount; i++) {
+			disk.set(`src/dep-${i}.ts`, "export const z = 1;\n");
+		}
+		const result = buildScopedMeasureOverlays(FILE, CONTENT, (p) => disk.get(p) ?? null, []);
+		expect(result.capped).toBeDefined();
+		expect(result.capped?.limit).toBe(MAX_MEASURE_OVERLAYS);
+		expect(result.capped?.dropped.length).toBeGreaterThan(0);
+		// The required set (target + companion) is NEVER among the dropped paths.
+		expect(result.capped?.dropped).not.toContain("src/a.ts");
+		expect(result.capped?.dropped).not.toContain("src/a.test.ts");
+		expect(result.overlays.length).toBe(MAX_MEASURE_OVERLAYS);
+		expect(result.overlays.some((o) => o.path === "src/a.ts")).toBe(true);
+		expect(result.overlays.some((o) => o.path === "src/a.test.ts")).toBe(true);
+	});
 });
 
 describe("configuredRunnerEndpoints", () => {
@@ -181,6 +249,12 @@ describe("configuredRunnerEndpoints", () => {
 	it("N2: returns no endpoints when the local rules file is malformed JSON", () => {
 		const cfg = configuredRunnerEndpoints("/repo", () => "{not json");
 		expect(cfg.endpoints).toEqual([]);
+	});
+
+	it("N3: valid JSON with no `per_edit_mutation` key yields no endpoints and no token", () => {
+		const files = new Map([["/repo/.interlinked/guard-rules.local.json", JSON.stringify({ other: true })]]);
+		const cfg = configuredRunnerEndpoints("/repo", (p) => files.get(p) ?? null);
+		expect(cfg).toEqual({ endpoints: [] });
 	});
 });
 
@@ -282,6 +356,33 @@ describe("requestWholeFileReport", () => {
 		});
 		expect(outcome).toEqual({ ok: false, reason: "runner HTTP 500" });
 		expect((outcome as { busy?: boolean }).busy).toBeUndefined();
+	});
+
+	it("P4: forwards `testScope` verbatim in the request body when provided", async () => {
+		let capturedBody = "";
+		await requestWholeFileReport({
+			...baseArgs,
+			endpoints: ["http://runner/"],
+			testScope: ["src/a.test.ts", "src/b.test.ts"],
+			fetchImpl: async (_url, init) => {
+				capturedBody = init.body;
+				return fakeResponse(200, { files: {} });
+			},
+		});
+		expect(JSON.parse(capturedBody).testScope).toEqual(["src/a.test.ts", "src/b.test.ts"]);
+	});
+
+	it("N4: omits `testScope` from the request body entirely when not provided", async () => {
+		let capturedBody = "";
+		await requestWholeFileReport({
+			...baseArgs,
+			endpoints: ["http://runner/"],
+			fetchImpl: async (_url, init) => {
+				capturedBody = init.body;
+				return fakeResponse(200, { files: {} });
+			},
+		});
+		expect(Object.prototype.hasOwnProperty.call(JSON.parse(capturedBody), "testScope")).toBe(false);
 	});
 });
 
@@ -386,6 +487,75 @@ describe("measureFile", () => {
 		});
 		expect(outcome.status).toBe("error");
 	});
+
+	it("P4: forwards `testScope` through to the wire request", async () => {
+		let capturedBody = "";
+		await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			testScope: ["src/a.test.ts"],
+			fetchImpl: async (_url, init) => {
+				capturedBody = init.body;
+				return fakeResponse(200, { files: {} });
+			},
+		});
+		expect(JSON.parse(capturedBody).testScope).toEqual(["src/a.test.ts"]);
+	});
+
+	it("P5: a not_measurable response WITH a detail folds it into the reason as `<reason>: <detail>`", async () => {
+		const body = { not_measurable: { reason: "no_tests", detail: "no companion test on disk" } };
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, body),
+		});
+		expect(outcome.status).toBe("not_measurable");
+		expect(outcome.reason).toBe("no_tests: no companion test on disk");
+	});
+
+	it("N4: a body with no `files` key summarizes to zero mutants rather than throwing", async () => {
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, { unrelated: true }),
+		});
+		expect(outcome.status).toBe("measured");
+		expect(outcome).toMatchObject({ mutantCount: 0, survivorCount: 0, survivors: [] });
+	});
+
+	it("N5: tolerates malformed per-file / per-mutant shapes — skips what it can't read, defaults the rest", async () => {
+		const body = {
+			files: {
+				"not-a-record": "just a string, not an object",
+				"missing-mutants-array": { source: "x", mutants: "not an array" },
+				[FILE]: {
+					source: CONTENT,
+					mutants: [
+						"not a record — skipped entirely",
+						{
+							// No `location` at all, and every scalar field is the WRONG type —
+							// every `typeof === "string"` / `isRecord` fallback should fire.
+							mutatorName: 123,
+							replacement: 456,
+							status: 789,
+						},
+						{ mutatorName: "EqualityOperator", replacement: ">=", status: "Survived" },
+					],
+				},
+			},
+		};
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, body),
+		});
+		expect(outcome.status).toBe("measured");
+		// "not-a-record" and "missing-mutants-array" contribute nothing; the
+		// string mutant entry is skipped; the two remaining object mutants land.
+		expect(outcome.mutantCount).toBe(2);
+		expect(outcome.survivorCount).toBe(1);
+		expect(outcome.survivors).toEqual([{ line: 0, mutator: "EqualityOperator", replacement: ">=" }]);
+	});
 });
 
 describe("recordMeasurement — the only write path, and it goes through seedFileBaseline", () => {
@@ -441,6 +611,15 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		const result = recordMeasurement({ base, file: FILE, content: CONTENT, rawReport: { files: {} }, at: "t" });
 		expect(result.recorded).toBe(false);
 		expect(result.reason).toContain("zero mutants");
+	});
+
+	it("N4: refuses (and explains) when the TypeScript identity API is unavailable", () => {
+		identityAvailableOverride = false;
+		const base = emptyManifest(META);
+		const result = recordMeasurement({ base, file: FILE, content: CONTENT, rawReport: report("Survived"), at: "t" });
+		expect(result.recorded).toBe(false);
+		expect(result.reason).toContain("TypeScript API is unavailable");
+		expect(result.manifest).toBeUndefined();
 	});
 
 	it("keys an absolute-path measurement under the SAME repo-relative key a relative one would use", () => {

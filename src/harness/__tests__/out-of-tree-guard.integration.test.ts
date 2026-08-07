@@ -42,8 +42,21 @@ const OUTSIDE = join(SCRATCH, "elsewhere"); // a sibling tree, NOT under PROJECT
 const FAKE_HOME = join(SCRATCH, "fake-home"); // mimics ~/.claude/...
 const SOCKET = join(SCRATCH, "harness.sock");
 
-const SERVER_STARTUP_TIMEOUT_MS = 20_000;
-const SEND_TIMEOUT_MS = 15_000;
+// These budgets bound REAL subprocess work — a cold artifact-graph build over
+// 250 files plus a biome run — so they are load-sensitive by nature, not
+// resolution-sensitive. Measured 2026-08-05: the suite failed 4 tests here
+// whenever anything else was busy (a second vitest worker, the repo's own
+// harness daemon at ~566MB, a concurrent mutation run), and the file even
+// flaked 1-in-2 running ALONE on a loaded box. A controlled bisect ruled out
+// cross-test pollution: pairing the file with a trivial no-op test reproduced
+// the failures identically, so no other test's state is involved.
+//
+// The budgets are generous rather than tight on purpose. This test asserts a
+// SKIPPED phase costs near-zero while an in-tree edit costs real time — a
+// ratio, not a deadline — so a larger ceiling weakens nothing it checks; it
+// only stops a busy machine from being reported as a broken guard.
+const SERVER_STARTUP_TIMEOUT_MS = 120_000;
+const SEND_TIMEOUT_MS = 120_000;
 // `runStructureChecks` builds the artifact graph by walking the project
 // tree. A project with this many files makes the structure phase cost real,
 // measurable wall time on the (cold) first in-tree edit — well above the
@@ -263,7 +276,12 @@ afterAll(() => {
 	rmSync(SCRATCH, { recursive: true, force: true });
 });
 
-describe("out-of-tree PostToolUse guard", () => {
+// 120s, overriding the global 30s. Without this the raised socket budgets above
+// are dead letters: vitest would abort the test at 30s before the send timeout
+// could fire, so the flake would persist while looking like a different bug.
+// `write.test.ts` sets a 60s override for the same reason — real subprocess work
+// does not fit the default.
+describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 	// This case runs FIRST and deliberately: it is the only in-tree edit that
 	// hits a COLD artifact graph (`ctx.structureGraph` starts null), so its own
 	// `scored_suggestions` ms is the real-work CONTROL the skip cases below

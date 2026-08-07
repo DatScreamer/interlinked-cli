@@ -15,15 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProjectGraph } from "../../harness/project-graph.js";
-import {
-	type CheckEvent,
-	createActivityTailer,
-	createChecksTailer,
-	formatSse,
-	seedRecentChecks,
-	seedRecentEvents,
-	type VizEvent,
-} from "./event-stream.js";
+import { buildFeeds, defaultFeedPaths, type FeedPaths, type VizFeed } from "./feeds.js";
 import { buildGraphSnapshot, type VizGraphSnapshot } from "./graph-snapshot.js";
 
 /** Default loopback port for the viz dashboard. Public API. */
@@ -34,12 +26,9 @@ const ROUTE = {
 	INDEX: "/index.html",
 	GRAPH: "/api/graph",
 	HEALTH: "/api/health",
-	STREAM: "/api/stream",
-	CHECKS: "/api/checks",
 } as const;
 
 const HTTP = { OK: 200, NOT_FOUND: 404, SERVER_ERROR: 500 } as const;
-const SEED_EVENTS = 40;
 
 export interface VizServerOptions {
 	root: string;
@@ -51,6 +40,10 @@ export interface VizServerOptions {
 	activityPath?: string;
 	/** Check-results log to tail for gate decisions (default: cwd/.interlinked/check-results.jsonl). */
 	checkResultsPath?: string;
+	/** Test feed to tail for the TESTS lens (default: cwd/.interlinked/test-events.jsonl). */
+	testEventsPath?: string;
+	/** Mutation manifest to watch for the MUTANTS lens (default: cwd/.interlinked/mutation-manifest.json). */
+	mutationManifestPath?: string;
 	/** Tailer poll interval in ms (default 1000). */
 	pollMs?: number;
 }
@@ -109,11 +102,15 @@ function loadDashboardHtml(webRoot: string | undefined): Buffer | null {
 export async function startVizServer(opts: VizServerOptions): Promise<VizServerHandle> {
 	const host = opts.host ?? "127.0.0.1";
 	const rootLabel = basename(opts.root.replace(/[/\\]+$/, "")) || opts.root;
-	const activityPath = opts.activityPath ?? join(process.cwd(), ".interlinked", "activity.jsonl");
-	const checkResultsPath = opts.checkResultsPath ?? join(process.cwd(), ".interlinked", "check-results.jsonl");
-	const sseClients = new Set<SseClient>();
-	const checkClients = new Set<SseClient>();
+	const feeds = buildFeeds(resolveFeedPaths(opts), opts.pollMs ?? 1000);
+	const hosted = feeds.map(hostFeed);
 	let snapshot: VizGraphSnapshot | null = null;
+
+	// The graph body is ~1MB of JSON on a mid-size repo and never changes while
+	// the server runs, so it is serialized ONCE and every later request is a
+	// buffer write. Re-stringifying per request cost ~10ms of main-loop time on
+	// each reconnect for a byte-identical result.
+	let graphBody: Buffer | null = null;
 
 	const getSnapshot = (): VizGraphSnapshot => {
 		if (!snapshot) {
@@ -124,55 +121,90 @@ export async function startVizServer(opts: VizServerOptions): Promise<VizServerH
 		return snapshot;
 	};
 
-	const broadcast = (ev: VizEvent): void => {
-		const data = formatSse(ev);
-		for (const client of sseClients) {
-			if (!client.res.writableEnded) client.res.write(data);
-		}
+	const getGraphBody = (): Buffer => {
+		if (!graphBody) graphBody = Buffer.from(JSON.stringify(getSnapshot()));
+		return graphBody;
 	};
-	const broadcastCheck = (ev: CheckEvent): void => {
-		const data = formatSse(ev);
-		for (const client of checkClients) {
-			if (!client.res.writableEnded) client.res.write(data);
-		}
-	};
-	const pollMs = opts.pollMs ?? 1000;
-	const tailer = createActivityTailer(activityPath, broadcast, pollMs);
-	const checksTailer = createChecksTailer(checkResultsPath, broadcastCheck, pollMs);
 
 	const dashHtml = loadDashboardHtml(opts.webRoot);
-	const server = createServer((req, res) =>
-		handleRequest(req, res, { getSnapshot, sseClients, checkClients, dashHtml, activityPath, checkResultsPath }),
-	);
+	const server = createServer((req, res) => handleRequest(req, res, { getSnapshot, getGraphBody, dashHtml, hosted }));
 	await new Promise<void>((resolve) => server.listen(opts.port ?? DEFAULT_VIZ_PORT, host, resolve));
+
+	// Warm the graph the moment we are listening, not on the first request. The
+	// walk+parse costs ~2s on a 3k-file repo; running it here overlaps it with
+	// the browser fetching and parsing the page, so `/api/graph` is usually
+	// already a cached buffer by the time the dashboard asks for it. Deferred by
+	// one tick so `listen` resolves first — the URL must be printable instantly.
+	setImmediate(() => {
+		try {
+			getGraphBody();
+		} catch (err) {
+			void err; /* a build failure surfaces on the request path, not here */
+		}
+	});
 
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : (opts.port ?? DEFAULT_VIZ_PORT);
 
 	const close = (): Promise<void> => {
-		tailer.stop();
-		checksTailer.stop();
-		for (const client of [...sseClients]) {
-			if (!client.res.writableEnded) client.res.end();
-		}
-		for (const client of [...checkClients]) {
-			if (!client.res.writableEnded) client.res.end();
-		}
-		sseClients.clear();
-		checkClients.clear();
+		for (const feed of hosted) feed.close();
 		return new Promise<void>((resolve) => server.close(() => resolve()));
 	};
 
 	return { url: `http://${host}:${port}`, port, close };
 }
 
+/** Resolve every feed path, honoring per-path overrides over the cwd defaults. */
+function resolveFeedPaths(opts: VizServerOptions): FeedPaths {
+	const defaults = defaultFeedPaths(process.cwd());
+	return {
+		activity: opts.activityPath ?? defaults.activity,
+		checkResults: opts.checkResultsPath ?? defaults.checkResults,
+		testEvents: opts.testEventsPath ?? defaults.testEvents,
+		mutationManifest: opts.mutationManifestPath ?? defaults.mutationManifest,
+	};
+}
+
+/** A feed plus its connected clients and running subscription. */
+interface HostedFeed {
+	feed: VizFeed;
+	clients: Set<SseClient>;
+	close: () => void;
+}
+
+/**
+ * Start a feed's subscription and broadcast every event to its clients. One
+ * subscription per feed regardless of how many browsers are watching.
+ */
+function hostFeed(feed: VizFeed): HostedFeed {
+	const clients = new Set<SseClient>();
+	const subscription = feed.subscribe((ev) => {
+		const data = sseFrame(ev);
+		for (const client of clients) {
+			if (!client.res.writableEnded) client.res.write(data);
+		}
+	});
+	const close = (): void => {
+		subscription.stop();
+		for (const client of [...clients]) {
+			if (!client.res.writableEnded) client.res.end();
+		}
+		clients.clear();
+	};
+	return { feed, clients, close };
+}
+
+/** Frame any serializable event as an SSE `data:` line. */
+function sseFrame(ev: unknown): string {
+	return `data: ${JSON.stringify(ev)}\n\n`;
+}
+
 interface RequestContext {
 	getSnapshot: () => VizGraphSnapshot;
-	sseClients: Set<SseClient>;
-	checkClients: Set<SseClient>;
+	/** Pre-serialized `/api/graph` body — built once, written many times. */
+	getGraphBody: () => Buffer;
 	dashHtml: Buffer | null;
-	activityPath: string;
-	checkResultsPath: string;
+	hosted: HostedFeed[];
 }
 
 function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: RequestContext): void {
@@ -182,7 +214,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: RequestCo
 		return;
 	}
 	if (path === ROUTE.GRAPH) {
-		sendJson(res, ctx.getSnapshot());
+		sendJsonBuffer(res, ctx.getGraphBody());
 		return;
 	}
 	if (path === ROUTE.HEALTH) {
@@ -190,20 +222,22 @@ function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: RequestCo
 		sendJson(res, { ok: true, root: s.root, node_count: s.node_count, edge_count: s.edge_count });
 		return;
 	}
-	if (path === ROUTE.STREAM) {
-		openStream(req, res, ctx.sseClients, ctx.activityPath);
-		return;
-	}
-	if (path === ROUTE.CHECKS) {
-		openChecksStream(req, res, ctx.checkClients, ctx.checkResultsPath);
+	const hosted = ctx.hosted.find((h) => h.feed.route === path);
+	if (hosted) {
+		openFeedStream(req, res, hosted);
 		return;
 	}
 	sendStatus(res, HTTP.NOT_FOUND, "not found");
 }
 
 function sendJson(res: ServerResponse, body: unknown): void {
+	sendJsonBuffer(res, Buffer.from(JSON.stringify(body)));
+}
+
+/** Write an already-serialized JSON body. The graph path uses this to skip re-stringifying ~1MB. */
+function sendJsonBuffer(res: ServerResponse, body: Buffer): void {
 	res.writeHead(HTTP.OK, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-	res.end(JSON.stringify(body));
+	res.end(body);
 }
 
 function sendStatus(res: ServerResponse, code: number, message: string): void {
@@ -231,40 +265,16 @@ function openSseHead(res: ServerResponse, hello: string): void {
 }
 
 /**
- * Open a Server-Sent-Events connection: send the recent backlog as seed, then
- * register the client so the shared activity tailer broadcasts new events to it.
+ * Open a Server-Sent-Events connection for one feed: replay its recent backlog
+ * as seed, then register the client so the feed's single subscription broadcasts
+ * new events to it. Deregisters on disconnect.
  */
-function openStream(
-	req: IncomingMessage,
-	res: ServerResponse,
-	sseClients: Set<SseClient>,
-	activityPath: string,
-): void {
-	openSseHead(res, "interlinked baseline stream");
-	for (const ev of seedRecentEvents(activityPath, SEED_EVENTS)) res.write(formatSse(ev));
+function openFeedStream(req: IncomingMessage, res: ServerResponse, hosted: HostedFeed): void {
+	openSseHead(res, hosted.feed.hello);
+	for (const ev of hosted.feed.seed()) res.write(sseFrame(ev));
 	const client: SseClient = { res };
-	sseClients.add(client);
+	hosted.clients.add(client);
 	req.on("close", () => {
-		sseClients.delete(client);
-	});
-}
-
-/**
- * Open a Server-Sent-Events connection for gate decisions: seed the recent
- * check-results backlog, then register the client so the shared checks tailer
- * broadcasts new rows to it. Mirrors `openStream`.
- */
-function openChecksStream(
-	req: IncomingMessage,
-	res: ServerResponse,
-	checkClients: Set<SseClient>,
-	checkResultsPath: string,
-): void {
-	openSseHead(res, "interlinked checks stream");
-	for (const ev of seedRecentChecks(checkResultsPath, SEED_EVENTS)) res.write(formatSse(ev));
-	const client: SseClient = { res };
-	checkClients.add(client);
-	req.on("close", () => {
-		checkClients.delete(client);
+		hosted.clients.delete(client);
 	});
 }

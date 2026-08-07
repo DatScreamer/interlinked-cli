@@ -58,6 +58,14 @@ function scopeFromEnv(): string[] {
 export default defineConfig({
 	test: {
 		include: scopeFromEnv(),
+		// NO `pool` override here — deliberately. A `pool: "forks"` was added on
+		// 2026-08-04 to dodge `process.chdir()` throwing under worker threads, but
+		// it was the wrong layer twice over: Stryker's vitest runner pins its own
+		// pool anyway, and forks spawn a CHILD PROCESS PER TEST FILE, which pushed
+		// even a 2-file scope into "FATAL ERROR: Reached heap limit". The chdir
+		// problem is fixed where it belonged — the tests now use
+		// `vi.spyOn(process, "cwd")` instead (59 files swept) — so nothing needs
+		// the forks pool, and reinstating it would only reintroduce the OOM.
 		setupFiles: ["./src/test-setup/property-budget.ts"],
 		testTimeout: 30_000,
 		hookTimeout: 30_000,

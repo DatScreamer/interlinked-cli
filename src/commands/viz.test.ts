@@ -10,10 +10,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { formatBanner, runVizServe, runVizSnapshot, waitForSignal } from "./viz.js";
 
 describe("formatBanner", () => {
-	it("renders the baseline banner with the url and root", () => {
+	it("renders the startup banner with the url and root", () => {
 		const banner = formatBanner("http://127.0.0.1:6403", "/proj/here");
 		expect(banner).toContain("http://127.0.0.1:6403");
-		expect(banner).toContain("BASELINE");
+		expect(banner).toContain("LIVE DASHBOARD");
 		expect(banner).toContain("/proj/here");
 	});
 });
@@ -83,20 +83,20 @@ describe("runVizSnapshot", () => {
 		expect(printed).toContain('"node_count": 2');
 	});
 
-	it("prints a normal-mode summary naming the stem", async () => {
+	it("prints a normal-mode summary naming the most depended-on file", async () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		await runVizSnapshot({ root: proj });
 		const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
 		log.mockRestore();
-		expect(printed).toContain("2 cells");
-		expect(printed).toContain("stem a.ts");
+		expect(printed).toContain("2 files");
+		expect(printed).toContain("most depended-on: a.ts");
 	});
 
-	it("handles an empty project with no stem", async () => {
+	it("handles an empty project with no most-depended-on file", async () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		await runVizSnapshot({ root: empty });
 		const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
 		log.mockRestore();
-		expect(printed).toContain("stem —");
+		expect(printed).toContain("most depended-on: —");
 	});
 });

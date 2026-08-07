@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import {
 	cleanupOrphans,
 	daemonPathsFor,
 	discoverDaemons,
+	isDaemonSocketServing,
 	liveForeignDaemonPid,
 	sanitizeSessionId,
 } from "./session-paths.js";
@@ -123,5 +125,63 @@ describe("cleanupOrphans", () => {
 		writeFileSync(join(tmp, ".interlinked", "harness-live.pid"), `${process.pid}`);
 		const cleaned = cleanupOrphans(tmp);
 		expect(cleaned.length).toBe(0);
+	});
+});
+
+// ===========================================================================
+// isDaemonSocketServing — the anti-stomp "is the incumbent actually
+// answering" probe (session-paths.ts). Real Unix-domain sockets, not mocks:
+// this is exactly the connect-level distinction the function exists to make.
+// ===========================================================================
+describe("isDaemonSocketServing", () => {
+	let server: Server | null = null;
+
+	afterEach(async () => {
+		if (server) {
+			await new Promise<void>((resolve) => nonNull(server).close(() => resolve()));
+			server = null;
+		}
+	});
+
+	it("resolves true for a real listener actively accepting connections", async () => {
+		const sockPath = join(tmp, ".interlinked", "serving.sock");
+		server = createServer((sock) => sock.destroy());
+		await new Promise<void>((resolve) => nonNull(server).listen(sockPath, () => resolve()));
+
+		await expect(isDaemonSocketServing(sockPath)).resolves.toBe(true);
+	});
+
+	it("resolves false when the socket path does not exist (ENOENT — nobody ever bound it)", async () => {
+		const sockPath = join(tmp, ".interlinked", "never-bound.sock");
+		await expect(isDaemonSocketServing(sockPath)).resolves.toBe(false);
+	});
+
+	it("resolves false for a stale socket FILE left behind by a dead listener (ECONNREFUSED)", async () => {
+		// Bind a real server, then close it WITHOUT unlinking the path — the
+		// exact zombie shape: the pid is (hypothetically) still alive, the
+		// inode is still on disk, but nothing is bound there anymore.
+		const sockPath = join(tmp, ".interlinked", "stale.sock");
+		const s = createServer();
+		await new Promise<void>((resolve) => s.listen(sockPath, () => resolve()));
+		await new Promise<void>((resolve) => s.close(() => resolve()));
+		writeFileSync(sockPath, ""); // recreate a plain file at the same path — nothing listens on it
+
+		await expect(isDaemonSocketServing(sockPath)).resolves.toBe(false);
+	});
+
+	it("resolves true on a bare successful connect, even when the listener never sends data back", async () => {
+		// Deliberately connect-only semantics: a listener that accepts the
+		// connection but never responds still counts as "serving" — the probe
+		// proves a bound listener exists, it does not attempt a protocol
+		// round-trip (see the function's own doc comment for why: no
+		// coupling to raw vs. framed wire format, no side effects on the
+		// incumbent from the probe itself).
+		const sockPath = join(tmp, ".interlinked", "silent.sock");
+		server = createServer(() => {
+			/* never destroy/respond — connection stays open */
+		});
+		await new Promise<void>((resolve) => nonNull(server).listen(sockPath, () => resolve()));
+
+		await expect(isDaemonSocketServing(sockPath, { timeout_ms: 200 })).resolves.toBe(true);
 	});
 });

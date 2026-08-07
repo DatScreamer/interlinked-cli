@@ -18,10 +18,10 @@
 // only (e.g. "vendorModelV6", "handleAuth").
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import { extractTrigrams, packTrigram, TrigramIndex } from "./trigram-index.js";
 import {
@@ -248,17 +248,21 @@ describe("TrigramIndex.build", () => {
 		// finally restores cwd so sibling tests are unaffected.
 		const dir = makeTmpDir("trigram-build-cwd-");
 		writeFileSync(join(dir, "soleFile.ts"), "export const soleIdentifier = 'present';");
-		const original = process.cwd();
+		// SPY, not process.chdir(): chdir THROWS in a worker thread, and Stryker's
+		// vitest runner pins its own pool, so a chdir here fails the mutation dry
+		// run for every file whose graph-selected test scope includes this one —
+		// surfacing only as a generic "There were failed tests in the initial test
+		// run" that names nothing (measured 2026-08-04).
+		// realpathSync matches what chdir used to give us: the canonical,
+		// symlink-resolved form, which is what TrigramIndex.build stores.
+		const expectedCwd = realpathSync(dir);
+		const spy = vi.spyOn(process, "cwd").mockReturnValue(expectedCwd);
 		try {
-			process.chdir(dir);
-			// resolve() of the chdir'd cwd is the canonical (symlink-resolved) form,
-			// which is what TrigramIndex.build stores.
-			const expectedCwd = process.cwd();
 			const index = TrigramIndex.build(); // no options → cwd defaults to process.cwd()
 			expect(index.cwd).toBe(expectedCwd);
 			expect(index.files).toContain("soleFile.ts");
 		} finally {
-			process.chdir(original);
+			spy.mockRestore();
 		}
 	});
 

@@ -615,3 +615,43 @@ describe("id extraction hardening (round-7 ids-deep)", () => {
 		).toEqual([expect.objectContaining({ from: 1, to: 20 })]);
 	});
 });
+
+describe("branch-coverage batch (line-array holes, span merge, binary search)", () => {
+	it("extractRangeClaims tolerates a missing (undefined) line entry instead of throwing", () => {
+		// A sparse/type-unsafe `lines` array is the only way `lines[i] ?? ""`
+		// ever sees its fallback — with a real string[] the loop bound guarantees
+		// every index is defined. extractRangeClaims guards BEFORE stripping, so
+		// it survives; extractIdNamespaces does not (see note in the campaign
+		// report — its `lines.map(stripEmphasis)` crashes on the same hole before
+		// collectHits' own `?? ""` guard is ever reached, so that guard is dead).
+		const withHole = ["FG-INV-01 through FG-INV-05", undefined as unknown as string, "FG-INV-03"];
+		expect(() => extractRangeClaims(withHole)).not.toThrow();
+	});
+
+	it("merges a range-claim span fully contained in a preceding span on the same line, and still excludes both endpoints", () => {
+		// Two explicit spans on line 1: [4,7) then a CONTAINED [4,6) — sorted with
+		// equal starts, the second's end (6) does not exceed the first's (7), so
+		// sortAndMergeSpans must take its "keep existing end" branch rather than
+		// growing it. Z-2 sits inside both; Z-1/Z-3/Z-4/Z-5 sit outside either.
+		const doc = ["Z-1 Z-2 Z-3 Z-4 Z-5"];
+		const rangeClaims = [
+			{ prefix: "Z", style: "dashed" as const, from: 2, to: 2, toExplicit: false, raw: "Z-2", line: 1, col: 4 },
+			{ prefix: "Z", style: "dashed" as const, from: 2, to: 2, toExplicit: false, raw: "Z-", line: 1, col: 4 },
+		];
+		const ns = extractIdNamespaces(doc, rangeClaims);
+		expect(ns.find((n) => n.prefix === "Z")?.ids.map((i) => i.num)).toEqual([1, 3, 4, 5]);
+	});
+
+	it("binary-searches past a span that starts after the queried column (col < span start)", () => {
+		// A custom range-claim placed AFTER the ids on the same line means the
+		// lookup for each id's column must walk the low half of the search
+		// (col < s), not just the high half — the only way to reach inSortedSpan's
+		// `hi = mid - 1` arm.
+		const doc = ["Z-1 Z-2 Z-3 filler filler filler"];
+		const rangeClaims = [
+			{ prefix: "Q", style: "dashed" as const, from: 1, to: 2, toExplicit: false, raw: "QQQQQ", line: 1, col: 20 },
+		];
+		const ns = extractIdNamespaces(doc, rangeClaims);
+		expect(ns.find((n) => n.prefix === "Z")?.ids.map((i) => i.num)).toEqual([1, 2, 3]);
+	});
+});

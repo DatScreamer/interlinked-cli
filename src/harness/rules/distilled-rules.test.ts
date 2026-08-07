@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import { getDistilledRulesWatchPaths, loadDistilledRules } from "./distilled-rules.js";
 
@@ -167,6 +167,78 @@ describe("loadDistilledRules", () => {
 		const rules = loadDistilledRules(tmpRoot);
 		expect(rules).toHaveLength(1);
 		expect(nonNull(rules[0]).id).toBe(SECOND_RULE.id);
+	});
+
+	it("returns [] when distilled-rules.json parses to a non-object value (e.g. a bare number)", () => {
+		mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+		writeFileSync(join(tmpRoot, ".interlinked", "distilled-rules.json"), "42");
+		expect(loadDistilledRules(tmpRoot)).toEqual([]);
+	});
+
+	it("ignores overrides that parse to a non-object value and still loads pristine rules", () => {
+		writeDistilled({ rules: [SAMPLE_RULE] });
+		mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+		writeFileSync(join(tmpRoot, ".interlinked", "distilled-rules.overrides.json"), "null");
+		const rules = loadDistilledRules(tmpRoot);
+		expect(rules).toHaveLength(1);
+		expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
+	});
+
+	it("skips a rule with a ReDoS-prone pattern and logs a warning to stderr", () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const unsafeRule = {
+				...SAMPLE_RULE,
+				id: "enforce-redos-prone",
+				patterns: [{ field: "command", regex: "(a+)+" }],
+			};
+			writeDistilled({ rules: [unsafeRule, SECOND_RULE] });
+			const rules = loadDistilledRules(tmpRoot);
+			expect(rules).toHaveLength(1);
+			expect(nonNull(rules[0]).id).toBe(SECOND_RULE.id);
+			expect(stderrSpy).toHaveBeenCalledTimes(1);
+			expect(stderrSpy.mock.calls[0]?.[0]).toContain("enforce-redos-prone");
+			expect(stderrSpy.mock.calls[0]?.[0]).toContain("ReDoS-prone pattern");
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it("keeps a rule with no patterns array at all (ReDoS check short-circuits)", () => {
+		const { patterns: _drop, ...noPatterns } = SAMPLE_RULE;
+		writeDistilled({ rules: [noPatterns] });
+		const rules = loadDistilledRules(tmpRoot);
+		expect(rules).toHaveLength(1);
+		expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
+	});
+
+	it("skips non-object entries in rules[] without throwing", () => {
+		writeDistilled({ rules: [null, 42, SAMPLE_RULE] });
+		const rules = loadDistilledRules(tmpRoot);
+		expect(rules).toHaveLength(1);
+		expect(nonNull(rules[0]).id).toBe(SAMPLE_RULE.id);
+	});
+
+	it("applies modifications.enabled alone (no action/severity in the modification)", () => {
+		writeDistilled({ rules: [SAMPLE_RULE] });
+		writeOverrides({
+			modifications: {
+				[SAMPLE_RULE.id]: { enabled: false },
+			},
+		});
+		const rules = loadDistilledRules(tmpRoot);
+		expect(rules).toHaveLength(1);
+		expect(nonNull(rules[0]).action).toBe(SAMPLE_RULE.action);
+		expect(nonNull(rules[0]).severity).toBe(SAMPLE_RULE.severity);
+		expect(nonNull(rules[0]).enabled).toBe(false);
+	});
+
+	it("defaults enabled to true when the source rule omits it and no override touches it", () => {
+		const { enabled: _drop, ...noEnabled } = SAMPLE_RULE;
+		writeDistilled({ rules: [noEnabled] });
+		const rules = loadDistilledRules(tmpRoot);
+		expect(rules).toHaveLength(1);
+		expect(nonNull(rules[0]).enabled).toBe(true);
 	});
 
 	it("removed_rule_ids takes precedence over modifications", () => {

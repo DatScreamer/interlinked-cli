@@ -5,7 +5,7 @@
 // Every case runs against a real temp repo — the module's whole job is reading
 // the tree and the harness's own artifacts, so mocking fs would test nothing.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -73,6 +73,19 @@ describe("enumerateEligibleFiles", () => {
 	it("returns an empty list for a tree with no code", () => {
 		write("README.md", "# hi\n");
 		expect(enumerateEligibleFiles(repo)).toEqual([]);
+	});
+
+	it("excludes a candidate file that cannot be opened (unreadable permissions) rather than throwing", () => {
+		write("src/a.ts", "export const a = 1;\n");
+		const unreadable = join(repo, "src", "locked.ts");
+		writeFileSync(unreadable, "export const locked = 1;\n");
+		chmodSync(unreadable, 0o000);
+		try {
+			expect(enumerateEligibleFiles(repo)).toEqual(["src/a.ts"]);
+		} finally {
+			// Restore so the afterEach rmSync can clean the temp dir up.
+			chmodSync(unreadable, 0o644);
+		}
 	});
 });
 
@@ -322,5 +335,85 @@ describe("buildGateReachStopWarning", () => {
 			gates: ["coverage_ratchet"],
 		});
 		expect(warning).toBeNull();
+	});
+
+	it("falls back to Date.now() when `now` is omitted", () => {
+		write("src/a.ts", "export const a = 1;\n");
+		const warning = buildGateReachStopWarning({ cwd: repo, sessionId: "s1", perEditCoverageEnabled: false });
+		expect(warning).not.toBeNull();
+	});
+
+	it("honors an explicit intervalMs override for the throttle", () => {
+		write("src/a.ts", "export const a = 1;\n");
+		const args = { cwd: repo, sessionId: "s1", perEditCoverageEnabled: false, now: 1000, intervalMs: 0 };
+		expect(buildGateReachStopWarning(args)).not.toBeNull();
+		// intervalMs: 0 means "always collect again" — a repeat one ms later still collects.
+		expect(buildGateReachStopWarning({ ...args, now: 1001 })).not.toBeNull();
+	});
+});
+
+describe("readLatestGateReachSnapshot — malformed-row handling", () => {
+	it("skips a non-object top-level JSON value", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		writeFileSync(join(repo, GATE_REACH_LEDGER_REL), "42\n", { flag: "a" });
+		expect(readLatestGateReachSnapshot(repo)).toBeNull();
+	});
+
+	it("skips a row whose version is not 1", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(repo, GATE_REACH_LEDGER_REL),
+			`${JSON.stringify({ version: 2, at: "x", session_id: "s", gates: [] })}\n`,
+		);
+		expect(readLatestGateReachSnapshot(repo)).toBeNull();
+	});
+
+	it("skips a row whose at/session_id are not strings", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(repo, GATE_REACH_LEDGER_REL),
+			`${JSON.stringify({ version: 1, at: 123, session_id: "s", gates: [] })}\n`,
+		);
+		expect(readLatestGateReachSnapshot(repo)).toBeNull();
+	});
+
+	it("skips a row whose gates field is not an array", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(repo, GATE_REACH_LEDGER_REL),
+			`${JSON.stringify({ version: 1, at: "2026-01-01T00:00:00.000Z", session_id: "s", gates: "nope" })}\n`,
+		);
+		expect(readLatestGateReachSnapshot(repo)).toBeNull();
+	});
+
+	it("returns null (fails soft) when the ledger path is a directory, not a file", () => {
+		mkdirSync(join(repo, GATE_REACH_LEDGER_REL), { recursive: true });
+		expect(readLatestGateReachSnapshot(repo)).toBeNull();
+	});
+
+	it("slices to the tail and drops a torn leading line when the ledger exceeds the read-tail bound", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		const path = join(repo, GATE_REACH_LEDGER_REL);
+		// Pad past READ_TAIL_BYTES (64KB) with filler lines before the real snapshot.
+		const filler = `${"x".repeat(2000)}\n`.repeat(40); // ~80KB
+		writeFileSync(path, filler);
+		const good = buildGateReachSnapshot({
+			sessionId: "tail-session",
+			at: 5000,
+			inputs: [{ gate: "g", eligible: 1, measured: 1 }],
+		});
+		writeFileSync(path, `${JSON.stringify(good)}\n`, { flag: "a" });
+		expect(readLatestGateReachSnapshot(repo)?.session_id).toBe("tail-session");
+	});
+});
+
+describe("shouldCollectGateReach — unparsable previous timestamp", () => {
+	it("collects again when the previous snapshot's `at` cannot be parsed as a date", () => {
+		mkdirSync(join(repo, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(repo, GATE_REACH_LEDGER_REL),
+			`${JSON.stringify({ version: 1, at: "not-a-real-date", session_id: "s", gates: [] })}\n`,
+		);
+		expect(shouldCollectGateReach({ cwd: repo, sessionId: "s", now: 2000 })).toBe(true);
 	});
 });

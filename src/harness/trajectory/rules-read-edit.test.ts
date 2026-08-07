@@ -357,6 +357,109 @@ describe("reb_import_added_without_reading_module (negative: stays silent)", () 
 });
 
 // ============================================================
+// Additional branch coverage — crafted-state paths + missing-field guards
+// ============================================================
+
+describe("additional branch coverage", () => {
+	it("lastReadStep: does not overwrite `best` when a later-iterated match has a lower step", () => {
+		// Both tokens are recorded within the SAME bash command, so they share the
+		// same state.stepCount — the second matching key's `step > best` is false.
+		const v = run(rebBlindEditUnreadFile, [
+			bash("cat lib/x.ts other/x.ts"),
+			edit("/repo/src/x.ts"),
+		]);
+		// Both paths suffix-match "x.ts", so the file counts as read either way.
+		expect(v).toBeNull();
+	});
+
+	it("rebBlindEditUnreadFile: falls back to 0 prior edits via a crafted state with no fileEditLog entry", () => {
+		const state = createState("s1");
+		const event = edit("/repo/src/crafted.ts");
+		// Deliberately skip applyEvent — simulates the rule seeing an edit whose
+		// fold left no fileEditLog entry, exercising the `?? 0` fallback.
+		const v = rebBlindEditUnreadFile(state, event);
+		expect(v?.ruleId).toBe("reb_blind_edit_unread_file");
+	});
+
+	it("rebReadRecencyDecayEdit: returns null when the event has no file_path", () => {
+		const state = createState("s1");
+		const event = ev("PostToolUse", "Edit", { old_string: TWO_LINES, new_string: "a\nb" });
+		expect(rebReadRecencyDecayEdit(state, event)).toBeNull();
+	});
+
+	it("rebReadRecencyDecayEdit: treats an empty recentEvents window as 0% unrelated (crafted state)", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = []; // deliberately empty — hits the `total === 0` branch
+		const event = edit("/repo/src/x.ts");
+		expect(rebReadRecencyDecayEdit(state, event)).toBeNull();
+	});
+
+	it("dirOf: a bare basename with no '/' yields an empty parent directory", () => {
+		// All reads share the same (empty) "directory", which is itself a coherent
+		// cluster — the read-storm rule should suppress, exercising the idx<0 branch.
+		const bareReads: ToolEvent[] = [];
+		for (let i = 0; i < 10; i++) bareReads.push(read(`bare${i}.ts`));
+		expect(run(rebReadStormNoEdit, bareReads)).toBeNull();
+	});
+
+	it("rebReadStormNoEdit: returns null when the Read event has no file_path", () => {
+		const state = createState("s1");
+		const event = ev("PostToolUse", "Read", {});
+		expect(rebReadStormNoEdit(state, event)).toBeNull();
+	});
+
+	it("rebReadStormNoEdit: skips a non-PostToolUse event in the recent-events window", () => {
+		const preLeg = ev("PreToolUse", "Read", { file_path: "/repo/pkgPre/mod.ts" });
+		const v = run(rebReadStormNoEdit, [preLeg, ...scatteredReads(10)]);
+		expect(v?.ruleId).toBe("reb_read_storm_no_edit");
+	});
+
+	it("rebReadStormNoEdit: skips a non-Read PostToolUse tool call inside the run without breaking it", () => {
+		const v = run(rebReadStormNoEdit, [
+			...scatteredReads(5),
+			bash("echo just looking"),
+			...scatteredReads(5).map((e, i) => read(`/repo/pkgLater${i}/mod.ts`)),
+		]);
+		expect(v?.ruleId).toBe("reb_read_storm_no_edit");
+	});
+
+	it("rebImportAddedWithoutReadingModule: returns null when the event has no file_path", () => {
+		const state = createState("s1");
+		const event = ev("PostToolUse", "Edit", { old_string: "a", new_string: 'import "./x.js";' });
+		expect(rebImportAddedWithoutReadingModule(state, event)).toBeNull();
+	});
+
+	it("rebImportAddedWithoutReadingModule: returns null on a non-JS/TS file", () => {
+		expect(
+			run(rebImportAddedWithoutReadingModule, [
+				edit("/repo/docs/notes.md", "old", 'import { x } from "./unseen.js";'),
+			]),
+		).toBeNull();
+	});
+
+	it("rebImportAddedWithoutReadingModule: returns null when new_string/content are both absent (crafted event)", () => {
+		const state = createState("s1");
+		const event = ev("PostToolUse", "Edit", { file_path: "/repo/src/a.ts", old_string: "x" });
+		expect(rebImportAddedWithoutReadingModule(state, event)).toBeNull();
+	});
+
+	it("rebImportAddedWithoutReadingModule: returns null when the added text is empty", () => {
+		expect(
+			run(rebImportAddedWithoutReadingModule, [edit("/repo/src/a.ts", "old text", "")]),
+		).toBeNull();
+	});
+
+	it("rebImportAddedWithoutReadingModule: resolves a relative (non-absolute) file_path (dir without leading '/')", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("src/a.ts", "// top", 'import { x } from "./unseen.js";'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+});
+
+// ============================================================
 // Wiring
 // ============================================================
 

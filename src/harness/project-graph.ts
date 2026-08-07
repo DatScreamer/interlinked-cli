@@ -67,6 +67,21 @@ const SKIP_DIRS = new Set([
 	".gradle",
 	".svelte-kit",
 	".output",
+	// Tool sandboxes and caches. `.stryker-tmp` matters most: the mutation
+	// engine copies the ENTIRE tree into `.stryker-tmp/sandbox-*/`, so leaving it
+	// in multiplied this repo's graph 32119 nodes / 81050 edges against a real
+	// 2934 / 6680 — a 45s walk, and every symbol appeared to be duplicately
+	// exported by its own sandbox copy. A sandbox is a transient mirror of files
+	// already in the graph; it is never the source of truth.
+	".stryker-tmp",
+	".nyc_output",
+	".pytest_cache",
+	".mypy_cache",
+	".ruff_cache",
+	".tox",
+	".parcel-cache",
+	".vite",
+	".astro",
 ]);
 
 const TS_JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);

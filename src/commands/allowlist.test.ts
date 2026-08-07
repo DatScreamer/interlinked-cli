@@ -103,6 +103,14 @@ describe("addAllowlistCommand", () => {
 		).rejects.toThrow(/ecosystem/i);
 	});
 
+	it("prints the exact 'unknown ecosystem' message including the comma-joined valid list", async () => {
+		await expect(
+			addAllowlistCommand("badeco" as "npm", "foo", { by: "x", cwd: workspace }),
+		).rejects.toThrow(
+			'Unknown ecosystem "badeco". Valid: npm, pypi, cargo, rubygems, go, composer, maven, gradle, nuget',
+		);
+	});
+
 	it("refuses to approve a typosquat name (npm) without --force", async () => {
 		await expect(
 			addAllowlistCommand("npm", "chlk", { by: "x", cwd: workspace }),
@@ -158,6 +166,15 @@ describe("addAllowlistCommand — license screen", () => {
 		expect(out).toMatch(/--force/);
 	});
 
+	it("prints the exact comma-joined SPDX allowlist in the refusal message", async () => {
+		fetchRegistryMetadataMock.mockResolvedValue({ latestVersion: "2.0.0", license: "AGPL-3.0" });
+		await expect(
+			addAllowlistCommand("npm", "copyleft-pkg2", { by: "x", cwd: workspace }),
+		).rejects.toThrow(
+			'license "AGPL-3.0" is not in the SPDX license allowlist (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause',
+		);
+	});
+
 	it("respects a committed license_allowlist override", async () => {
 		// Seed an allowlist file whose license policy permits AGPL-3.0.
 		const dir = join(workspace, ".interlinked");
@@ -177,6 +194,20 @@ describe("addAllowlistCommand — license screen", () => {
 			packages: { npm: Record<string, { license?: string }> };
 		};
 		expect(nonNull(parsed.packages.npm["agpl-ok-here"]).license).toBe("AGPL-3.0");
+	});
+
+	it("uses the PINNED version's license (not the latest) for a --version-range approval", async () => {
+		fetchRegistryMetadataMock.mockResolvedValue({ latestVersion: "2.0.0", license: "MIT" });
+		fetchVersionMetadataMock.mockResolvedValue({ license: "GPL-3.0" });
+		await expect(
+			addAllowlistCommand("npm", "pinned-license-pkg", {
+				by: "x",
+				cwd: workspace,
+				versionRange: "1.2.3",
+			}),
+		).rejects.toThrow(/license "GPL-3\.0" is not in the SPDX license allowlist/);
+		expect(fetchVersionMetadataMock).toHaveBeenCalledWith("npm", "pinned-license-pkg", "1.2.3");
+		expect(readAllowlistFile()).toBeNull();
 	});
 
 	it("approves with a loud note when the license is unknown", async () => {
@@ -270,6 +301,29 @@ describe("addAllowlistCommand — advisory screen", () => {
 		expect(readAllowlistFile()).toBeNull(); // refused, nothing written
 	});
 
+	it("names 'latest' and the singular 'advisory' when exactly one advisory is open and no pin was given", async () => {
+		queryOsvAdvisoriesMock.mockResolvedValue([{ id: "GHSA-xxxx" }]);
+		await expect(
+			addAllowlistCommand("npm", "vuln-pkg2", { by: "x", cwd: workspace }),
+		).rejects.toThrow(/1 open advisory against latest 1\.0\.0: GHSA-xxxx\./);
+	});
+
+	it("names 'pinned' and lists only the first 5 advisory ids (slice bound) when more than 5 are open", async () => {
+		queryOsvAdvisoriesMock.mockResolvedValue([
+			{ id: "GHSA-1" },
+			{ id: "GHSA-2" },
+			{ id: "GHSA-3" },
+			{ id: "GHSA-4" },
+			{ id: "GHSA-5" },
+			{ id: "GHSA-6" },
+		]);
+		await expect(
+			addAllowlistCommand("npm", "manyvuln-pkg", { by: "x", cwd: workspace, versionRange: "2.0.0" }),
+		).rejects.toThrow(
+			/6 open advisories against pinned 2\.0\.0: GHSA-1, GHSA-2, GHSA-3, GHSA-4, GHSA-5\. See/,
+		);
+	});
+
 	it("--force approves a vulnerable pinned Go module with a loud note (metadata null)", async () => {
 		fetchRegistryMetadataMock.mockResolvedValue(null);
 		queryOsvAdvisoriesMock.mockResolvedValue([{ id: "GO-2023-vuln" }]);
@@ -284,6 +338,59 @@ describe("addAllowlistCommand — advisory screen", () => {
 		expect(out).toMatch(/GO-2023-vuln/);
 		expect(out).toMatch(/pinned 0\.9\.1/);
 		expect(readAllowlistFile()).not.toBeNull();
+	});
+});
+
+describe("addAllowlistCommand — persisted output and fields", () => {
+	it("prints the exact approved line (with license) and no note lines for a clean npm package", async () => {
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "lodash", { by: "qcody", cwd: workspace }),
+		);
+		expect(out).toBe("approved: npm:lodash (by qcody) — license MIT\n");
+	});
+
+	it("prints the exact approved line WITHOUT a license suffix when license is unknown", async () => {
+		fetchRegistryMetadataMock.mockResolvedValue({ latestVersion: "1.0.0", license: undefined });
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "mystery2", { by: "qcody", cwd: workspace }),
+		);
+		expect(out).toBe(
+			"approved: npm:mystery2 (by qcody)\n" +
+				"  note: license: unknown — not recorded; review the package and set it in package-allowlist.json\n",
+		);
+	});
+
+	it("records the version_range field verbatim on the entry when --version-range is given", async () => {
+		await addAllowlistCommand("npm", "ranged-pkg", { by: "x", cwd: workspace, versionRange: "^2.0.0" });
+		const parsed = readAllowlistFile() as {
+			packages: { npm: Record<string, { version_range?: string }> };
+		};
+		expect(nonNull(parsed.packages.npm["ranged-pkg"]).version_range).toBe("^2.0.0");
+	});
+
+	it("does not record a version_range field when --version-range is not given", async () => {
+		await addAllowlistCommand("npm", "unranged-pkg", { by: "x", cwd: workspace });
+		const parsed = readAllowlistFile() as {
+			packages: { npm: Record<string, { version_range?: string }> };
+		};
+		expect(nonNull(parsed.packages.npm["unranged-pkg"]).version_range).toBeUndefined();
+	});
+
+	it("notes when --version-range is not statically resolvable and falls back to latest", async () => {
+		// "<2.0.0" is a pure upper bound — resolveScreenVersion returns null.
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "unresolvable-pkg", { by: "x", cwd: workspace, versionRange: "<2.0.0" }),
+		);
+		expect(out).toMatch(
+			/version range "<2\.0\.0" not statically resolvable — screens fall back to the registry latest/,
+		);
+	});
+
+	it("does NOT push the unresolvable-range note when the range IS resolvable", async () => {
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "resolvable-pkg", { by: "x", cwd: workspace, versionRange: "^1.2.3" }),
+		);
+		expect(out).not.toMatch(/not statically resolvable/);
 	});
 });
 
@@ -309,6 +416,26 @@ describe("removeAllowlistCommand", () => {
 		expect(npmRecord.nonexistent).toBeUndefined();
 		expect(before).toBeNull();
 	});
+
+	it("rejects an unknown ecosystem with the exact message", () => {
+		expect(() =>
+			removeAllowlistCommand("badeco" as "npm", "foo", { cwd: workspace }),
+		).toThrow(
+			'Unknown ecosystem "badeco". Valid: npm, pypi, cargo, rubygems, go, composer, maven, gradle, nuget',
+		);
+	});
+
+	it("prints exactly 'no entry: ...' and does NOT create the allowlist file when removing a non-existent entry", () => {
+		const out = capture(() => removeAllowlistCommand("npm", "nonexistent", { cwd: workspace }));
+		expect(out).toBe("no entry: npm:nonexistent\n");
+		expect(readAllowlistFile()).toBeNull();
+	});
+
+	it("prints the exact 'removed: ...' line on successful removal", async () => {
+		await addAllowlistCommand("npm", "lodash", { by: "x", cwd: workspace });
+		const out = capture(() => removeAllowlistCommand("npm", "lodash", { cwd: workspace }));
+		expect(out).toBe("removed: npm:lodash\n");
+	});
 });
 
 describe("listAllowlistCommand", () => {
@@ -326,6 +453,45 @@ describe("listAllowlistCommand", () => {
 		expect(out).toMatch(/npm/);
 		expect(out).toMatch(/pypi/);
 		expect(out).toMatch(/license MIT/);
+	});
+
+	it("prints the exact per-entry line including approver, reason, and license", async () => {
+		await addAllowlistCommand("npm", "lodash", { by: "qcody", reason: "util", cwd: workspace });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace }));
+		expect(out).toBe("npm:\n  lodash  (by qcody, util, license MIT)\n");
+	});
+
+	it("prints the exact per-entry line WITHOUT a reason suffix when no reason was given", async () => {
+		await addAllowlistCommand("npm", "noreasonpkg", { by: "qcody", cwd: workspace });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace }));
+		expect(out).toBe("npm:\n  noreasonpkg  (by qcody, license MIT)\n");
+	});
+
+	it("prints the exact per-entry line WITHOUT a license suffix when license is unknown", async () => {
+		fetchRegistryMetadataMock.mockResolvedValue({ latestVersion: "1.0.0", license: undefined });
+		await addAllowlistCommand("npm", "nolicensepkg", { by: "qcody", cwd: workspace });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace }));
+		expect(out).toBe("npm:\n  nolicensepkg  (by qcody)\n");
+	});
+
+	it("does not print a snapshots section when there are no snapshots", async () => {
+		await addAllowlistCommand("npm", "lodash", { by: "x", cwd: workspace });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace }));
+		expect(out).not.toMatch(/snapshots:/);
+	});
+
+	it("filters to an ecosystem with zero entries and reports the exact empty message", async () => {
+		await addAllowlistCommand("npm", "lodash", { by: "x", cwd: workspace });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace, ecosystem: "pypi" }));
+		expect(out).toBe("allowlist is empty — no entries approved\n");
+	});
+
+	it("prints the snapshots section (not the empty message) when there are snapshots but zero packages (AND boundary)", () => {
+		writeFileSync(join(workspace, "package.json"), '{"name":"x"}');
+		snapshotAllowlistCommand({ cwd: workspace, by: "x" });
+		const out = capture(() => listAllowlistCommand({ cwd: workspace }));
+		expect(out).not.toMatch(/allowlist is empty/);
+		expect(out).toMatch(/^snapshots:\n  package\.json  [0-9a-f]{12}…  \(by x\)\n$/);
 	});
 
 	it("supports --json output", async () => {
@@ -387,6 +553,18 @@ describe("snapshotAllowlistCommand", () => {
 		expect(out).toMatch(/no.*manifest|no.*lockfile|nothing/i);
 	});
 
+	it("skips a candidate name that is actually a directory, not a file", () => {
+		mkdirSync(join(workspace, "yarn.lock"));
+		writeFileSync(join(workspace, "package.json"), '{"name":"x"}');
+		const out = capture(() => snapshotAllowlistCommand({ cwd: workspace, by: "x" }));
+		const parsed = readAllowlistFile() as {
+			lockfile_snapshots: Record<string, unknown>;
+		};
+		expect(parsed.lockfile_snapshots["yarn.lock"]).toBeUndefined();
+		expect(parsed.lockfile_snapshots["package.json"]).toBeDefined();
+		expect(out).toBe("snapshotted 1 file(s):\n  package.json\n");
+	});
+
 	it("auto-discovers and snapshots a variably-named *.csproj", () => {
 		writeFileSync(
 			join(workspace, "App.csproj"),
@@ -405,6 +583,27 @@ describe("snapshotAllowlistCommand", () => {
 		);
 		const out = capture(() => snapshotAllowlistCommand({ cwd: workspace, by: "x" }));
 		expect(out).toMatch(/src\/Lib\/Lib\.csproj/);
+	});
+
+	it("records the reason field on a snapshot entry when --reason is given", () => {
+		writeFileSync(join(workspace, "package.json"), '{"name":"x"}');
+		snapshotAllowlistCommand({ cwd: workspace, by: "x", reason: "bootstrap" });
+		const parsed = readAllowlistFile() as {
+			lockfile_snapshots: Record<string, { reason?: string }>;
+		};
+		expect(nonNull(parsed.lockfile_snapshots["package.json"]).reason).toBe("bootstrap");
+	});
+
+	it("only auto-discovers .csproj files, not arbitrary files (extension guard)", () => {
+		writeFileSync(join(workspace, "App.csproj"), "<Project></Project>");
+		writeFileSync(join(workspace, "random-notes.txt"), "hello");
+		const out = capture(() => snapshotAllowlistCommand({ cwd: workspace, by: "x" }));
+		const parsed = readAllowlistFile() as {
+			lockfile_snapshots: Record<string, unknown>;
+		};
+		expect(parsed.lockfile_snapshots["App.csproj"]).toBeDefined();
+		expect(parsed.lockfile_snapshots["random-notes.txt"]).toBeUndefined();
+		expect(out).not.toMatch(/random-notes\.txt/);
 	});
 });
 
@@ -570,6 +769,64 @@ describe("libyear screen (screen 4, warn-only, npm-only)", () => {
 		expect(libyearsBehind(DATES, "3.0.0")?.years).toBe(0);
 	});
 
+	it("libyearsBehind returns null when the approved version's date is unparseable", () => {
+		// The finite-check (line 155) is the ONLY guard here — with the check
+		// disabled, execution would fall through to a NaN-years object instead
+		// of null.
+		expect(libyearsBehind({ "1.0.0": "not-a-date" }, "1.0.0")).toBeNull();
+	});
+
+	it("ignores the 'unpublished' bookkeeping key even when it holds the newest timestamp", () => {
+		// Mirrors the created/modified case below but for the third bookkeeping
+		// key on line 159 — if its string literal is mutated away, "unpublished"
+		// would be treated as a real version and wrongly reported as latest.
+		const dates = {
+			unpublished: "2099-01-01T00:00:00.000Z",
+			"1.0.0": "2020-01-01T00:00:00.000Z",
+			"2.0.0": "2021-01-01T00:00:00.000Z",
+		};
+		expect(libyearsBehind(dates, "1.0.0")?.latestVersion).toBe("2.0.0");
+	});
+
+	it("ignores 'created'/'modified' bookkeeping keys even when they hold the newest timestamp", () => {
+		// If the bookkeeping-key skip on line 159 is disabled for either clause,
+		// the loop treats "created" or "modified" as a real version and — since
+		// both are dated LATER than every real version here — wrongly reports
+		// one of them as latestVersion instead of "2.0.0".
+		const dates = {
+			created: "2099-01-01T00:00:00.000Z",
+			modified: "2098-01-01T00:00:00.000Z",
+			"1.0.0": "2020-01-01T00:00:00.000Z",
+			"2.0.0": "2021-01-01T00:00:00.000Z",
+		};
+		expect(libyearsBehind(dates, "1.0.0")?.latestVersion).toBe("2.0.0");
+	});
+
+	it("only advances latestVersion for a FINITE, STRICTLY LATER date (guards NaN and earlier/equal entries)", () => {
+		// Iteration order: 1.0.0 (self), 2.0.0 (later — should win), 0.5.0
+		// (earlier — must NOT win), bad (unparseable — must NOT win). Any of
+		// the four line-161 mutants (force-true, && -> ||, sub-condition
+		// force-true) makes the LAST entry ("bad", NaN) win instead.
+		const dates = {
+			"1.0.0": "2020-01-01T00:00:00.000Z",
+			"2.0.0": "2021-01-01T00:00:00.000Z",
+			"0.5.0": "2019-01-01T00:00:00.000Z",
+			bad: "not-a-real-date",
+		};
+		const behind = libyearsBehind(dates, "1.0.0");
+		expect(behind?.latestVersion).toBe("2.0.0");
+		expect(Number.isFinite(behind?.years)).toBe(true);
+	});
+
+	it("keeps the first-seen version on an exact date tie (guards > vs >=)", () => {
+		const dates = {
+			"1.0.0": "2020-01-01T00:00:00.000Z",
+			"2.0.0": "2021-01-01T00:00:00.000Z",
+			"2.0.0-tie": "2021-01-01T00:00:00.000Z",
+		};
+		expect(libyearsBehind(dates, "1.0.0")?.latestVersion).toBe("2.0.0");
+	});
+
 	it("warns on a stale npm pin, still approves, and names the gap", async () => {
 		fetchNpmPublishDatesMock.mockResolvedValue(DATES);
 		const out = await captureAsync(() =>
@@ -604,5 +861,59 @@ describe("libyear screen (screen 4, warn-only, npm-only)", () => {
 		fetchNpmPublishDatesMock.mockClear();
 		await addAllowlistCommand("cargo", "serde", { by: "x", cwd: workspace, versionRange: "1.0.0" });
 		expect(fetchNpmPublishDatesMock).not.toHaveBeenCalled();
+	});
+
+	it("does not call the npm publish-date fetch when approving latest (no --version-range)", async () => {
+		await addAllowlistCommand("npm", "latestpkg", { by: "x", cwd: workspace });
+		expect(fetchNpmPublishDatesMock).not.toHaveBeenCalled();
+	});
+
+	it("notes when no publish date is recorded for the pinned version (dates present, version missing)", async () => {
+		fetchNpmPublishDatesMock.mockResolvedValue({ "9.9.9": "2024-01-01T00:00:00.000Z" });
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "missingdatepkg", { by: "x", cwd: workspace, versionRange: "0.9.1" }),
+		);
+		expect(out).toMatch(/no publish date recorded for 0\.9\.1 — libyear screen skipped/);
+	});
+
+	it("prints the exact libyear warning note text (full message, not a substring)", async () => {
+		fetchVersionMetadataMock.mockResolvedValue({ license: "MIT" });
+		const approvedIso = "2020-01-01T00:00:00.000Z";
+		const approvedMs = Date.parse(approvedIso);
+		const latestIso = new Date(approvedMs + 3 * 365.25 * 24 * 60 * 60 * 1000).toISOString();
+		fetchNpmPublishDatesMock.mockResolvedValue({ "0.9.1": approvedIso, "9.9.9": latestIso });
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "stalepkg", { by: "x", cwd: workspace, versionRange: "0.9.1" }),
+		);
+		expect(out).toBe(
+			"approved: npm:stalepkg (by x) — license MIT\n" +
+				'  note: screens inspected pinned 0.9.1 (resolved from "0.9.1")\n' +
+				"  note: libyear: pinned 0.9.1 is 3.0 years behind latest 9.9.9 (warn threshold 2y) — stale pins " +
+				"miss upstream fixes; consider approving a newer release.\n",
+		);
+	});
+});
+
+describe("libyear screen — exact threshold boundary (<=LIBYEAR_WARN_YEARS)", () => {
+	const approvedIso = "2020-01-01T00:00:00.000Z";
+	const approvedMs = Date.parse(approvedIso);
+	const twoYearsMs = 2 * 365.25 * 24 * 60 * 60 * 1000;
+
+	it("does not warn when the gap is exactly 2.0 years (boundary is inclusive)", async () => {
+		const latestIso = new Date(approvedMs + twoYearsMs).toISOString();
+		fetchNpmPublishDatesMock.mockResolvedValue({ "0.9.1": approvedIso, "9.9.9": latestIso });
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "boundarypkg", { by: "x", cwd: workspace, versionRange: "0.9.1" }),
+		);
+		expect(out).not.toMatch(/libyear/);
+	});
+
+	it("warns when the gap is 2.0 years plus 1ms (just past the boundary)", async () => {
+		const latestIso = new Date(approvedMs + twoYearsMs + 1).toISOString();
+		fetchNpmPublishDatesMock.mockResolvedValue({ "0.9.1": approvedIso, "9.9.9": latestIso });
+		const out = await captureAsync(() =>
+			addAllowlistCommand("npm", "overpkg", { by: "x", cwd: workspace, versionRange: "0.9.1" }),
+		);
+		expect(out).toMatch(/libyear: pinned 0\.9\.1 is 2\.0 years behind latest 9\.9\.9/);
 	});
 });

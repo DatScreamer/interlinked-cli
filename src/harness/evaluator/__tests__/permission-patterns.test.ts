@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addPermissionToSettings, extractPermissionPattern } from "../permission-patterns.js";
 
 describe("extractPermissionPattern", () => {
@@ -57,15 +57,21 @@ describe("extractPermissionPattern", () => {
 
 describe("addPermissionToSettings", () => {
 	let tmpDir: string;
-	const origCwd = process.cwd();
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry run
+	// for any file whose graph-selected test scope includes this one.
+	// addPermissionToSettings resolves the settings dir via
+	// `join(process.cwd(), ".claude")`, so the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "perm-"));
-		process.chdir(tmpDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
 	});
 
 	afterEach(() => {
-		process.chdir(origCwd);
+		cwdSpy.mockRestore();
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 

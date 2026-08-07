@@ -327,6 +327,125 @@ describe("parseGraphPredictionsFromText — format-cap enforcement", () => {
 	});
 });
 
+describe("parseGraphPredictionsFromText — quoted/plain scalar edge cases in list fields", () => {
+	it("treats a quoted \"unknown\" string as the unknown sentinel (not the bare-word fast path)", () => {
+		const text = [
+			"```yaml",
+			"graph_prediction:",
+			"  file: src/foo.ts",
+			"  deps:",
+			'    imports: "unknown"',
+			"    imported_by: []",
+			"```",
+		].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("ok");
+		expect(nonNull(pred).deps?.imports).toBe("unknown");
+	});
+
+	it("treats a bare non-list, non-unknown scalar under a list field as an empty list", () => {
+		const text = [
+			"```yaml",
+			"graph_prediction:",
+			"  file: src/foo.ts",
+			"  deps:",
+			"    imports: banana",
+			"    imported_by: []",
+			"```",
+		].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("ok");
+		expect(nonNull(pred).deps?.imports).toEqual([]);
+	});
+});
+
+describe("parseGraphPredictionsFromText — malformed structural shapes", () => {
+	it("fails when `file:` holds a non-string value", () => {
+		const text = ["```yaml", "graph_prediction:", "  file: 123", "```"].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_error).toBe("file field missing or non-string");
+	});
+
+	it("fails when `file:` has an empty value", () => {
+		const text = ["```yaml", "graph_prediction:", "  file:", "```"].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_error).toBe("file field missing or non-string");
+	});
+
+	it("returns parse_failed for a list item that precedes any key (true orphan, no tokens at all)", () => {
+		const text = ["```yaml", "- orphan", "graph_prediction:", "  file: src/foo.ts", "```"].join(
+			"\n",
+		);
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_error).toBe('orphan list item "orphan" — no parent key found');
+	});
+
+	it("returns parse_failed for a list item nested under a key that already has a scalar value", () => {
+		const text = [
+			"```yaml",
+			"graph_prediction:",
+			"  file: src/foo.ts",
+			"  bogus: value",
+			"    - x",
+			"```",
+		].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("parse_failed");
+		expect(nonNull(pred).parse_error).toBe(
+			'list item "x" under "bogus" which already has a scalar value',
+		);
+	});
+
+	it("returns parse_failed with empty file attribution when `file:` itself is empty and a later line is malformed", () => {
+		const yaml = ["graph_prediction:", "  file:", "  this is { broken yaml"].join("\n");
+		const pred = parseBarePrediction(yaml);
+		expect(pred.parse_status).toBe("parse_failed");
+		expect(pred.file).toBe("");
+	});
+
+	it("returns parse_failed when graph_prediction has no fields at all", () => {
+		const pred = parseBarePrediction("graph_prediction:\n");
+		expect(pred.parse_status).toBe("parse_failed");
+		expect(pred.parse_error).toBe("no fields under graph_prediction");
+	});
+
+	it("skips an unrecognized top-level field and its deeper-indented children without failing the parse", () => {
+		const text = [
+			"```yaml",
+			"graph_prediction:",
+			"  file: src/foo.ts",
+			"  extra:",
+			"    child: 1",
+			"```",
+		].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("ok");
+		expect(nonNull(pred).file).toBe("src/foo.ts");
+		expect(nonNull(pred).deps).toBeNull();
+	});
+
+	it("skips an unrecognized subfield key and a stray deeper-nested token inside a known section", () => {
+		const text = [
+			"```yaml",
+			"graph_prediction:",
+			"  file: src/foo.ts",
+			"  deps:",
+			"    imports: []",
+			"    weird:",
+			"      nested: x",
+			"    imported_by: []",
+			"```",
+		].join("\n");
+		const [pred] = parseGraphPredictionsFromText(text);
+		expect(nonNull(pred).parse_status).toBe("ok");
+		expect(nonNull(pred).deps?.imports).toEqual([]);
+		expect(nonNull(pred).deps?.imported_by).toEqual([]);
+	});
+});
+
 describe("parseBarePrediction — sentinel-path entry point", () => {
 	// `parseBarePrediction` is the no-fence form. Sentinel-path
 	// prediction submissions write bare YAML to a `.yaml` file; fences

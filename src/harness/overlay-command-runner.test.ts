@@ -1,8 +1,15 @@
 // Tests for the generic overlay command runner — the P4 spike seam
 // (docs/design/overlay-exec-runtime-oracles.md §2). Drives the injectable
-// spawn so no real process runs.
+// spawn so no real process runs — EXCEPT the dedicated `defaultSpawn` block
+// below, which exercises the real `node:child_process` spawn path (it is not
+// exported, so the only way to reach it is to omit the injected `spawnFn`
+// and drive it through `runArgvInOverlay` with real `node` subprocesses
+// against a real tmpdir overlay root).
 
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	type OverlaySpawnFn,
 	resolveOverlayBin,
@@ -92,5 +99,81 @@ describe("resolveOverlayBin", () => {
 		expect(resolveOverlayBin("/repo", "definitely-not-a-real-bin")).toBe(
 			"definitely-not-a-real-bin",
 		);
+	});
+});
+
+// ===========================================
+// defaultSpawn — real node:child_process, no injected spawnFn
+// ===========================================
+// `defaultSpawn` is module-private; the only seam to reach it is calling
+// `runArgvInOverlay` WITHOUT a `spawnFn` argument. A real tmpdir stands in
+// for the overlay root (defaultSpawn passes it straight through as `cwd`),
+// and every child here is a real, short-lived `node -e ...` subprocess.
+
+describe("runArgvInOverlay — defaultSpawn (real subprocess)", () => {
+	let overlayRoot = "";
+
+	beforeAll(() => {
+		overlayRoot = mkdtempSync(join(tmpdir(), "overlay-runner-"));
+	});
+
+	afterAll(() => {
+		if (overlayRoot) rmSync(overlayRoot, { recursive: true, force: true });
+	});
+
+	it("captures real stdout and a zero exit code, cwd'd to the overlay root", async () => {
+		const r = await runArgvInOverlay(
+			["node", "-e", "process.stdout.write('hi-from-overlay'); process.exit(0);"],
+			overlayRoot,
+			10_000,
+		);
+		expect(r.exitCode).toBe(0);
+		expect(r.timedOut).toBe(false);
+		expect(r.stdout).toBe("hi-from-overlay");
+		expect(r.error).toBeUndefined();
+	});
+
+	it("captures real stderr and a nonzero exit code", async () => {
+		const r = await runArgvInOverlay(
+			["node", "-e", "process.stderr.write('boom'); process.exit(3);"],
+			overlayRoot,
+			10_000,
+		);
+		expect(r.exitCode).toBe(3);
+		expect(r.stderr).toBe("boom");
+	});
+
+	it("kills a child that outlives its budget and reports timedOut", async () => {
+		const r = await runArgvInOverlay(
+			["node", "-e", "setTimeout(() => {}, 60000);"],
+			overlayRoot,
+			200,
+		);
+		expect(r.timedOut).toBe(true);
+		expect(r.exitCode).toBeNull();
+		expect(r.error).toContain("timed out after 200 ms");
+	}, 10_000);
+
+	it("reports a real ENOENT launch failure for a bin that doesn't exist", async () => {
+		const r = await runArgvInOverlay(
+			["definitely-not-a-real-bin-xyz-123"],
+			overlayRoot,
+			5000,
+		);
+		expect(r.exitCode).toBeNull();
+		expect(r.timedOut).toBe(false);
+		expect(r.error).toContain("definitely-not-a-real-bin-xyz-123");
+		expect(r.error).toContain("failed to launch");
+	});
+
+	it("catches a synchronous spawn() throw (null byte in the command)", async () => {
+		// node:child_process validates the file argument before any process
+		// exists — a null byte throws SYNCHRONOUSLY, inside defaultSpawn's own
+		// try/catch rather than surfacing via the async 'error' event.
+		const r = await runArgvInOverlay(["bad\0bin"], overlayRoot, 5000);
+		expect(r.exitCode).toBeNull();
+		expect(r.timedOut).toBe(false);
+		expect(r.error).toContain("failed to launch");
+		expect(r.error).toMatch(/null byte/i);
 	});
 });

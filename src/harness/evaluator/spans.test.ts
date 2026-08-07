@@ -183,6 +183,51 @@ describe("heredoc data-sink masking", () => {
 		const spans = classifySpans(cmd);
 		expect(spans.map((s) => s.text).join("")).toBe(cmd);
 	});
+
+	it("a heredoc header with no trailing newline at all keeps the header as executed text", () => {
+		const cmd = "cat <<EOF";
+		const spans = classifySpans(cmd);
+		expect(spans).toHaveLength(1);
+		expect(spans[0]?.kind).toBe("executed");
+		expect(spans[0]?.text).toBe(cmd);
+	});
+
+	it("an unterminated heredoc body (no closer line) runs to end of string", () => {
+		const cmd = "cat <<EOF\nbody without a closer\n";
+		const spans = classifySpans(cmd);
+		const body = spans.find((s) => s.kind === "heredoc");
+		expect(body?.end).toBe(cmd.length);
+		expect(body?.text).toBe("body without a closer\n");
+	});
+
+	it("an unterminated single-quote runs to end of string without crashing", () => {
+		const cmd = "echo 'unterminated";
+		const spans = classifySpans(cmd);
+		expect(spans.map((s) => s.text).join("")).toBe(cmd);
+		const quoted = spans.find((s) => s.kind === "quoted");
+		expect(quoted?.text).toBe("'unterminated");
+	});
+
+	it("does not treat << followed by an invalid tag (a digit) as a heredoc", () => {
+		const cmd = "echo << 5\n";
+		const spans = classifySpans(cmd);
+		expect(spans.every((s) => s.kind !== "heredoc")).toBe(true);
+		expect(spans.map((s) => s.text).join("")).toBe(cmd);
+	});
+
+	it("a heredoc body immediately followed by the closer line reassembles correctly (zero-length body)", () => {
+		const cmd = "cat <<EOF\nEOF\n";
+		const spans = classifySpans(cmd);
+		expect(spans.map((s) => s.text).join("")).toBe(cmd);
+		expect(spans.some((s) => s.kind === "heredoc")).toBe(false);
+	});
+
+	it("a comment as the FIRST character of the string is still recognized (no preceding char to check)", () => {
+		const cmd = "# just a comment\n";
+		const spans = classifySpans(cmd);
+		expect(spans[0]?.kind).toBe("comment");
+		expect(spans[0]?.text).toBe("# just a comment");
+	});
 });
 
 describe("resolveHeredocTarget", () => {
@@ -209,6 +254,28 @@ describe("resolveHeredocTarget", () => {
 
 	it("returns null when no command word exists", () => {
 		expect(targetOf("<<EOF\nx\nEOF")).toBe(null);
+	});
+
+	it("skips a leading redirect/flag token before the actual command word", () => {
+		expect(targetOf("<in.txt cat <<EOF\nx\nEOF")).toBe("cat");
+	});
+
+	it("returns null when the before-segment is ONLY a wrapper with no real command", () => {
+		expect(targetOf("sudo <<EOF\nx\nEOF")).toBe(null);
+	});
+
+	it("tracks double-quote state while scanning the before-segment for separators", () => {
+		// The quote scanner must flip `inDouble` on the opening AND closing `"` so a
+		// `;`/`|` INSIDE the quoted token is never mistaken for a segment separator.
+		expect(targetOf('"x" cat <<EOF\nbody\nEOF')).toBe('"x"');
+	});
+
+	it("looks right of the operator when nothing precedes it on the line, even with no trailing newline", () => {
+		expect(targetOf("<<EOF cat")).toBe("cat");
+	});
+
+	it("stops the right-hand lookup at a separator (;) after the operator", () => {
+		expect(targetOf("<<EOF cat; echo hi\nbody\nEOF")).toBe("cat");
 	});
 });
 
@@ -247,5 +314,12 @@ describe("inline-exec payload classification", () => {
 	it("does not treat non-interpreter -e flags as exec payloads (grep -e)", () => {
 		const cmd = "grep -e 'rm -rf /' notes.md";
 		expect(extractScannableText(cmd)).not.toContain("rm -rf /");
+	});
+
+	it("classifies an ANSI-C $'...' inline-exec payload (bash -c $'...') as inline_code", () => {
+		const cmd = "bash -c $'rm -rf /'";
+		const spans = classifySpans(cmd);
+		expect(spans.some((s) => s.kind === "inline_code")).toBe(true);
+		expect(extractScannableText(cmd)).toContain("rm -rf /");
 	});
 });

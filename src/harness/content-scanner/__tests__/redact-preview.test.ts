@@ -1,4 +1,14 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync as fsWriteFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -118,6 +128,36 @@ describe("writePendingPrompt", () => {
 		writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
 		const files = readdirSync(join(tmp, ".interlinked", "scanner", "pending"));
 		expect(files).toHaveLength(1);
+	});
+
+	it("defaults a part's spans to [] when it has no entry in findingsBySource", () => {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [
+				{ source: "Write.content", text: "email alice@example.com" },
+				{ source: "Write.otherField", text: "no findings here" },
+			],
+		};
+		// findingsBySource only has an entry for the first part -> the second
+		// part's `findingsBySource.get(...) ?? []` fallback is exercised.
+		const findingsBySource = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[
+					finding({
+						label: "private_email",
+						start: 6,
+						text: "alice@example.com",
+						source: "Write.content",
+					}),
+				],
+			],
+		]);
+		const relPath = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		const raw = readFileSync(join(tmp, relPath as string), "utf-8");
+		const parsed = JSON.parse(raw);
+		expect(parsed.parts[1].source).toBe("Write.otherField");
+		expect(parsed.parts[1].spans).toEqual([]);
 	});
 
 	it("writes the full unmasked content with a LOCAL-ONLY note", () => {
@@ -392,5 +432,189 @@ describe("buildAskReason", () => {
 			pendingPromptPath: undefined,
 		});
 		expect(reason).not.toContain("Full unmasked content");
+	});
+
+	// escapeRowValue's per-row truncation (SYSTEM_MESSAGE_ROW_VALUE_MAX = 200),
+	// exercised through the systemMessage row for one oversized finding.
+	it("truncates an individual row value over 200 chars with a breadcrumb", () => {
+		const longValue = "Y".repeat(250);
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: longValue }],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[finding({ label: "secret", start: 0, text: longValue, source: "Write.content" })],
+			],
+		]);
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage).toContain("(truncated)");
+		expect(systemMessage).not.toContain(longValue);
+	});
+
+	it("does not truncate a row value at or under 200 chars", () => {
+		const value = "Z".repeat(50);
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: value }],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[finding({ label: "secret", start: 0, text: value, source: "Write.content" })],
+			],
+		]);
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage).toContain(`"secret": "${value}"`);
+		expect(systemMessage).not.toContain("(truncated)");
+	});
+});
+
+describe("buildRedactedPreview — truncate() prefix/suffix ellipsis branches", () => {
+	it("omits the leading ellipsis when the truncation window starts at offset 0", () => {
+		// Hit near the very start of a long text -> centered window clamps to
+		// start=0 (no leading "…") but still cuts off the tail (trailing "…").
+		const text = `alice@example.com${"x".repeat(400)}`;
+		const spans = [finding({ label: "private_email", start: 0, text: "alice@example.com" })];
+		const preview = buildRedactedPreview(text, spans);
+		expect(preview.startsWith("<PRIVATE_EMAIL>")).toBe(true);
+		expect(preview.endsWith("…")).toBe(true);
+	});
+
+	it("omits the trailing ellipsis when the truncation window reaches the end of the text", () => {
+		// Hit near the very end of a long text -> centered window clamps its end
+		// to text.length (no trailing "…") but still cuts off the head (leading "…").
+		const text = `${"x".repeat(400)}alice@example.com`;
+		const hitStart = text.indexOf("alice@example.com");
+		const spans = [finding({ label: "private_email", start: hitStart, text: "alice@example.com" })];
+		const preview = buildRedactedPreview(text, spans);
+		expect(preview.startsWith("…")).toBe(true);
+		expect(preview.endsWith("<PRIVATE_EMAIL>")).toBe(true);
+	});
+});
+
+describe("writePendingPrompt — filesystem failure paths", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "interlinked-scanner-fail-"));
+	});
+	afterEach(() => {
+		// Restore perms before recursive cleanup in case a test locked a dir down.
+		try {
+			chmodSync(join(tmp, ".interlinked", "scanner", "pending"), 0o700);
+		} catch {
+			// dir may not exist in every test — fine.
+		}
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function simpleRequest(): {
+		request: ContentScanRequest;
+		findingsBySource: Map<string, ScanFinding[]>;
+	} {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: "email alice@example.com" }],
+		};
+		const findingsBySource = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[
+					finding({
+						label: "private_email",
+						start: 6,
+						text: "alice@example.com",
+						source: "Write.content",
+					}),
+				],
+			],
+		]);
+		return { request, findingsBySource };
+	}
+
+	it("returns undefined and does not throw when the pending dir cannot be created", () => {
+		// Make the ".interlinked" segment a plain FILE so mkdirSync(..., {recursive})
+		// fails with ENOTDIR when trying to create scanner/pending underneath it.
+		fsWriteFileSync(join(tmp, ".interlinked"), "not a directory");
+		const { request, findingsBySource } = simpleRequest();
+		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		expect(result).toBeUndefined();
+	});
+
+	it("returns undefined and does not throw when writeFileSync fails (dir not writable)", () => {
+		const dir = join(tmp, ".interlinked", "scanner", "pending");
+		mkdirSync(dir, { recursive: true });
+		chmodSync(dir, 0o500); // read + execute, no write
+		const { request, findingsBySource } = simpleRequest();
+		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		expect(result).toBeUndefined();
+	});
+
+	it("skips mkdirSync entirely (no throw) when the pending dir already exists", () => {
+		const dir = join(tmp, ".interlinked", "scanner", "pending");
+		mkdirSync(dir, { recursive: true });
+		const { request, findingsBySource } = simpleRequest();
+		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		expect(result).toBeDefined();
+	});
+});
+
+describe("writePendingPrompt — pruneStale GC", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "interlinked-scanner-prune-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function simpleRequest(text: string): {
+		request: ContentScanRequest;
+		findingsBySource: Map<string, ScanFinding[]>;
+	} {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text }],
+		};
+		const findingsBySource = new Map<string, ScanFinding[]>([
+			[
+				"Write.content",
+				[finding({ label: "private_email", start: 0, text, source: "Write.content" })],
+			],
+		]);
+		return { request, findingsBySource };
+	}
+
+	it("deletes a pending file older than the TTL but keeps a fresh one", () => {
+		const { request, findingsBySource } = simpleRequest("old-one@example.com");
+		const oldRel = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		expect(oldRel).toBeDefined();
+		const oldAbs = join(tmp, oldRel as string);
+		const wayPast = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2h ago > 1h TTL
+		utimesSync(oldAbs, wayPast, wayPast);
+
+		// A broken symlink alongside it exercises the per-entry catch (statSync
+		// throws ENOENT on a dangling symlink) without crashing the GC sweep.
+		const dir = join(tmp, ".interlinked", "scanner", "pending");
+		symlinkSync(join(dir, "does-not-exist.json"), join(dir, "broken-link.json"));
+
+		const { request: req2, findingsBySource: fb2 } = simpleRequest("fresh@example.com");
+		const freshRel = writePendingPrompt({ cwd: tmp, request: req2, findingsBySource: fb2, toolName: "Write" });
+		expect(freshRel).toBeDefined();
+
+		const remaining = readdirSync(dir);
+		expect(remaining).not.toContain(oldRel?.split("/").pop());
+		expect(remaining).toContain((freshRel as string).split("/").pop());
 	});
 });

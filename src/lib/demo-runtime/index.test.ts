@@ -6,7 +6,66 @@ import {
 	demoData,
 	demoStateSummary,
 	mountDemoBanner,
+	subscribeToDemoState,
+	unmountDemoBanner,
 } from "./index.js";
+
+/**
+ * Minimal DOM stand-in for the vanilla-DOM banner. Vitest runs this suite in
+ * `environment: "node"` (see vitest.config.ts), so there is no real `document`
+ * — mountDemoBanner/DemoBanner/unmountDemoBanner branch on `typeof document`
+ * and are otherwise dead code under the existing tests. This fake implements
+ * only the surface `mountDemoBanner` actually calls (createElement, body,
+ * appendChild/removeChild, dataset/style/textContent/setAttribute), so it
+ * exercises the real DOM-branch logic without pulling in jsdom.
+ */
+interface FakeElement {
+	dataset: Record<string, string>;
+	style: { cssText: string; display: string };
+	textContent: string;
+	parentNode: FakeElement | null;
+	children: FakeElement[];
+	setAttribute: (name: string, value: string) => void;
+	appendChild: (child: FakeElement) => void;
+	removeChild: (child: FakeElement) => void;
+}
+
+function makeFakeElement(): FakeElement {
+	const el: FakeElement = {
+		dataset: {},
+		style: { cssText: "", display: "" },
+		textContent: "",
+		parentNode: null,
+		children: [],
+		setAttribute() {
+			/* no-op: role/aria-live are asserted indirectly via behavior, not markup */
+		},
+		appendChild(child) {
+			child.parentNode = el;
+			el.children.push(child);
+		},
+		removeChild(child) {
+			el.children = el.children.filter((c) => c !== child);
+			child.parentNode = null;
+		},
+	};
+	return el;
+}
+
+function installFakeDocument(): { body: FakeElement; restore: () => void } {
+	const body = makeFakeElement();
+	const fakeDoc = { body, createElement: () => makeFakeElement() };
+	const previous = (globalThis as { document?: unknown }).document;
+	// SAFETY: test-only stand-in implementing exactly the DOM surface
+	// mountDemoBanner calls; cast bridges the fake shape to the DOM lib type.
+	(globalThis as { document?: unknown }).document = fakeDoc as unknown as Document;
+	return {
+		body,
+		restore: () => {
+			(globalThis as { document?: unknown }).document = previous;
+		},
+	};
+}
 
 describe("demoData", () => {
 	beforeEach(() => __resetDemoRegistry());
@@ -68,5 +127,190 @@ describe("mountDemoBanner / DemoBanner (vanilla DOM)", () => {
 		// `<DemoBanner />` calls work in React/Preact codebases without
 		// taking on a framework dependency in this package.
 		expect(typeof DemoBanner).toBe("function");
+	});
+});
+
+describe("subscribeToDemoState", () => {
+	beforeEach(() => __resetDemoRegistry());
+	afterEach(() => __resetDemoRegistry());
+
+	it("calls the listener immediately with the current summary on subscribe", () => {
+		demoData("revenue", []);
+		const seen: string[][] = [];
+		const unsubscribe = subscribeToDemoState((summary) => {
+			seen.push(summary.entries.map((e) => e.key));
+		});
+		expect(seen).toEqual([["revenue"]]);
+		unsubscribe();
+	});
+
+	it("notifies subscribed listeners on every subsequent demoData call", () => {
+		const seen: number[] = [];
+		const unsubscribe = subscribeToDemoState((summary) => {
+			seen.push(summary.entries.length);
+		});
+		demoData("users", []);
+		demoData("orders", []);
+		// Initial subscribe call (0) + one notification per demoData call.
+		expect(seen).toEqual([0, 1, 2]);
+		unsubscribe();
+	});
+
+	it("stops notifying once unsubscribed", () => {
+		const seen: number[] = [];
+		const unsubscribe = subscribeToDemoState((summary) => {
+			seen.push(summary.entries.length);
+		});
+		unsubscribe();
+		demoData("users", []);
+		// Only the initial subscribe call landed; the post-unsubscribe demoData
+		// call produced no further notification.
+		expect(seen).toEqual([0]);
+	});
+
+	it("a listener that throws during notifyListeners does not break demoData or other listeners", () => {
+		// The initial subscribe-time call in subscribeToDemoState is unguarded
+		// by design (it runs before the listener is registered); only the
+		// notifyListeners fan-out on later demoData() calls is try/catch
+		// wrapped. So the bad listener must stay quiet on its first call and
+		// throw only from the second call onward to exercise that catch.
+		let calls = 0;
+		const unsubBad = subscribeToDemoState(() => {
+			calls += 1;
+			if (calls > 1) throw new Error("listener boom");
+		});
+		const seen: number[] = [];
+		const unsubGood = subscribeToDemoState((summary) => {
+			seen.push(summary.entries.length);
+		});
+		expect(() => demoData("users", [])).not.toThrow();
+		expect(seen).toEqual([0, 1]);
+		unsubBad();
+		unsubGood();
+	});
+});
+
+describe("mountDemoBanner — with a DOM present", () => {
+	beforeEach(() => __resetDemoRegistry());
+	afterEach(() => __resetDemoRegistry());
+
+	it("appends a hidden banner element to document.body and shows it once demo data is registered", () => {
+		const { body, restore } = installFakeDocument();
+		try {
+			const unmount = mountDemoBanner();
+			expect(body.children).toHaveLength(1);
+			const banner = nonNull(body.children[0]);
+			expect(banner.style.display).toBe("none");
+
+			demoData("revenue", [], { reason: "API pending" });
+			expect(banner.style.display).toBe("");
+			expect(banner.textContent).toContain("revenue");
+			expect(banner.textContent).toContain("DEMO DATA");
+
+			unmount();
+			expect(body.children).toHaveLength(0);
+			expect(banner.parentNode).toBeNull();
+		} finally {
+			restore();
+		}
+	});
+
+	it("a second banner mounted after a reset starts hidden against the now-empty registry", () => {
+		// __resetDemoRegistry() clears LISTENERS along with the registry, so an
+		// already-mounted banner's subscription is wiped rather than notified —
+		// there is no "goes back to hidden" transition to observe on it. What IS
+		// observable: a banner mounted fresh AFTER a reset starts from the
+		// correct (hidden) state instead of inheriting the previous registry.
+		const { body, restore } = installFakeDocument();
+		try {
+			demoData("users", []);
+			const firstUnmount = mountDemoBanner();
+			expect(nonNull(body.children[0]).style.display).toBe("");
+			firstUnmount();
+
+			__resetDemoRegistry();
+			const secondUnmount = mountDemoBanner();
+			const banner = nonNull(body.children[0]);
+			expect(banner.style.display).toBe("none");
+
+			demoData("orders", []);
+			expect(banner.style.display).toBe("");
+			expect(banner.textContent).toContain("orders");
+
+			secondUnmount();
+		} finally {
+			restore();
+		}
+	});
+
+	it("mounts into a custom container when one is supplied", () => {
+		const { restore } = installFakeDocument();
+		try {
+			const container = makeFakeElement();
+			// SAFETY: container only needs the appendChild surface mountDemoBanner
+			// calls; the fake implements it, the DOM lib type does not describe it.
+			const unmount = mountDemoBanner({ container: container as unknown as HTMLElement });
+			expect(container.children).toHaveLength(1);
+			unmount();
+			expect(container.children).toHaveLength(0);
+		} finally {
+			restore();
+		}
+	});
+
+	it("sets and clears document.body.dataset.demo when a DOM is present", () => {
+		const { body, restore } = installFakeDocument();
+		try {
+			expect(body.dataset.demo).toBeUndefined();
+			demoData("revenue", []);
+			expect(body.dataset.demo).toBe("true");
+
+			__resetDemoRegistry();
+			expect(body.dataset.demo).toBeUndefined();
+		} finally {
+			restore();
+		}
+	});
+});
+
+describe("DemoBanner / unmountDemoBanner — auto-mount lifecycle", () => {
+	beforeEach(() => __resetDemoRegistry());
+	afterEach(() => {
+		unmountDemoBanner();
+		__resetDemoRegistry();
+	});
+
+	it("mounts once on first call and is a no-op on subsequent calls", () => {
+		const { body, restore } = installFakeDocument();
+		try {
+			expect(DemoBanner()).toBeNull();
+			expect(body.children).toHaveLength(1);
+
+			expect(DemoBanner()).toBeNull();
+			// Still exactly one banner element — the second call did not mount again.
+			expect(body.children).toHaveLength(1);
+		} finally {
+			restore();
+		}
+	});
+
+	it("unmountDemoBanner tears down the mounted banner and allows a fresh mount afterward", () => {
+		const { body, restore } = installFakeDocument();
+		try {
+			DemoBanner();
+			expect(body.children).toHaveLength(1);
+
+			unmountDemoBanner();
+			expect(body.children).toHaveLength(0);
+
+			DemoBanner();
+			expect(body.children).toHaveLength(1);
+		} finally {
+			restore();
+		}
+	});
+
+	it("unmountDemoBanner is a safe no-op when nothing was ever mounted", () => {
+		expect(() => unmountDemoBanner()).not.toThrow();
 	});
 });

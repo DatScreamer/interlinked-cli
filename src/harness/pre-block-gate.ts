@@ -30,6 +30,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { buildAgentSafetyChecks, buildCheckInstructions } from "./check-registry/builders.js";
+import { CHECK_REGISTRY } from "./check-registry/registry.js";
 import type { InlineMatch } from "./check-registry/types.js";
 import {
 	type FileSuppressions,
@@ -49,6 +50,9 @@ export interface PreBlockCheckOutcome {
 	preexisting: InlineMatch[];
 	/** The check's fix_instruction, for message building. */
 	instruction: string;
+	/** True when the check is marked `deferrable` — the caller routes these to
+	 *  the transient-debt ledger instead of refusing the edit outright. */
+	deferrable: boolean;
 }
 
 export interface PreBlockGateArgs {
@@ -78,6 +82,12 @@ export function resolveDiskBaseline(filePath: string): string | null {
 /** Whitespace-normalized multiset key for a finding — line-number-free so an
  *  edit that shifts or reflows unrelated lines cannot re-classify a
  *  pre-existing finding as introduced. */
+/** Check ids marked `deferrable` in the registry. Built once — the registry is
+ *  a module-level constant, so a per-edit scan would be pure waste. */
+const DEFERRABLE_CHECK_IDS: ReadonlySet<string> = new Set(
+	CHECK_REGISTRY.filter((c) => c.deferrable === true).map((c) => c.id),
+);
+
 function matchKey(m: InlineMatch): string {
 	return m.text.replace(/\s+/g, " ").trim();
 }
@@ -175,6 +185,7 @@ export function runPreBlockRegistryGate(args: PreBlockGateArgs): PreBlockCheckOu
 			introduced,
 			preexisting,
 			instruction: instructions[check.name] ?? "",
+			deferrable: DEFERRABLE_CHECK_IDS.has(check.name),
 		});
 	}
 	return outcomes;

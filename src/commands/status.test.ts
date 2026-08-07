@@ -20,6 +20,9 @@ vi.hoisted(() => {
 });
 
 import type { ResolvedConfig } from "../lib/config.js";
+// Real (unmocked) formatter helper used to build exact-expected rendered lines
+// so mutation-killing assertions don't hand-count padding/whitespace.
+import { kvLine } from "../lib/formatter.js";
 import type {
 	LocalActivityEvent,
 	LocalStats,
@@ -1019,5 +1022,458 @@ describe("statusCommand — watch mode", () => {
 		expect(loggedText()).toContain("Using 10s");
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(loggedText()).toContain("Refreshing every 10s");
+	});
+
+	it("never enters the watch loop when opts.watch is entirely absent", async () => {
+		// Mutation target: `opts.watch !== undefined && opts.watch !== false`
+		// forced to `true` would enter the loop even for a plain `{}` call.
+		setReaders({});
+
+		await statusCommand({});
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		expect(loggedText()).not.toContain("Refreshing every");
+	});
+
+	it("accepts watch='2' at the exact MIN_WATCH_SEC boundary with no clamp warning", async () => {
+		// Mutation target: `parsedWatch >= MIN_WATCH_SEC` flipped to `>` would
+		// reject the boundary value 2 and clamp it to the 10s default instead.
+		setReaders({});
+
+		await statusCommand({ watch: "2" });
+
+		expect(loggedText()).not.toContain("Watch interval must be");
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(loggedText()).toContain("Refreshing every 2s");
+	});
+});
+
+// ===========================================
+// unknownRecentCount / unknownSessionCount — exact filter-predicate coverage
+// ===========================================
+//
+// `unknownRecentCount`/`unknownSessionCount` feed the `> 0 || >= 3` guard at
+// the top of renderGuidance. Each pair below isolates ONE counter at a time
+// (holding the other at a value that cannot independently satisfy the OR) so
+// a broken predicate — over-count, under-count, or a dropped `.filter()`
+// entirely — flips the boolean outcome of the "attributed to 'unknown'" line.
+
+describe("statusCommand — unknown-attribution predicate boundaries", () => {
+	it("counts exactly 3 unknown-agent activity events as meeting the >=3 threshold", async () => {
+		setReaders({
+			sessions: [], // unknownSessionCount stays 0 — isolates the activity filter
+			activity: [
+				makeActivity({ agent: "unknown" }),
+				makeActivity({ agent: "unknown" }),
+				makeActivity({ agent: "unknown" }),
+			],
+		});
+
+		await statusCommand({});
+
+		const out = firstLog();
+		expect(out).toContain("attributed to 'unknown'");
+		expect(out).toContain(
+			"Regenerate hooks (`interlinked enable`) and/or set a stable identity (`interlinked attach --agent <name>`).",
+		);
+	});
+
+	it("does not count named-agent events as unknown (mixed 2-unknown/3-named, under threshold)", async () => {
+		setReaders({
+			sessions: [],
+			activity: [
+				makeActivity({ agent: "unknown" }),
+				makeActivity({ agent: "unknown" }),
+				makeActivity({ agent: "Alice" }),
+				makeActivity({ agent: "Bob" }),
+				makeActivity({ agent: "Carol" }),
+			],
+		});
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("attributed to 'unknown'");
+	});
+
+	it("counts a single unknown-agent session as meeting the >0 threshold", async () => {
+		setReaders({
+			sessions: [makeSession({ agent: "unknown" })],
+			activity: [], // unknownRecentCount stays 0 — isolates the session filter
+		});
+
+		await statusCommand({});
+
+		expect(firstLog()).toContain("attributed to 'unknown'");
+	});
+
+	it("does not count named-agent sessions as unknown (3 distinctly-named sessions)", async () => {
+		setReaders({
+			sessions: [
+				makeSession({ session_id: "a", agent: "Alice" }),
+				makeSession({ session_id: "b", agent: "Bob" }),
+				makeSession({ session_id: "c", agent: "Carol" }),
+			],
+			activity: [],
+		});
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("attributed to 'unknown'");
+	});
+
+	it("calls readLocalActivity with the exact {limit:10} argument for the recent-activity fetch", async () => {
+		setReaders({});
+
+		await statusCommand({});
+
+		expect(mockReadLocalActivity).toHaveBeenCalledWith({ limit: 10 });
+	});
+});
+
+// ===========================================
+// renderGuidance — server/local boundary conditions (negative direction)
+// ===========================================
+//
+// Existing tests exercise the "shows" (true) direction of each guidance
+// clause. These add the "should NOT show" boundary so a `&&`/`||` swap or a
+// clause dropped from the compound condition is caught.
+
+describe("statusCommand — guidance negative boundaries", () => {
+	it("does not show the agent-name nudge but does show its full copy when it IS unconfigured", async () => {
+		setReaders({ config: makeConfig({ agent_name: undefined }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).toContain(
+			"Project-level capture is active with session-scoped agent IDs.",
+		);
+	});
+
+	it("local server reachable+authenticated: does NOT show the 'auth is optional' nudge", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({ config: makeConfig({ server_url: "http://localhost:9999" }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("auth is optional on localhost");
+	});
+
+	it("remote unreachable: does NOT show the local-server-unreachable nudge", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: false, authenticated: false });
+		setReaders({ config: makeConfig({ server_url: "https://remote.example.com" }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("Local server is not reachable");
+	});
+
+	it("remote reachable+authenticated: does NOT show the 'reachable but not authenticated' nudge", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({ config: makeConfig({ server_url: "https://remote.example.com" }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("Server reachable but not authenticated");
+	});
+
+	it("remote reachable+unauthenticated: shows the full local-only-commands copy", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: false });
+		setReaders({ config: makeConfig({ server_url: "https://remote.example.com" }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).toContain(
+			"Local-only commands still work: interlinked status, activity, explain, doctor.",
+		);
+	});
+});
+
+// ===========================================
+// renderServerSection — exact kvLine assertions
+// ===========================================
+//
+// Built from the real (unmocked) `kvLine` so exact padding/label text is
+// asserted without hand-counting whitespace. Catches label/value
+// StringLiteral mutants that a `.toContain` substring check would miss when
+// the mutated string collides with other rendered text.
+
+describe("statusCommand — server section exact lines", () => {
+	it("renders exact URL/Status/Auth/Workspace/key lines when reachable+authenticated", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({
+			config: makeConfig({
+				server_url: "https://server.example.com",
+				workspace_id: "ws_42",
+				default_workspace_key: "wsk",
+				default_project: "projX",
+			}),
+		});
+
+		await statusCommand({});
+
+		const lines = firstLog().split("\n");
+		expect(lines).toContain(kvLine("URL", "https://server.example.com"));
+		expect(lines).toContain(kvLine("Status", "reachable"));
+		expect(lines).toContain(kvLine("Auth", "authenticated"));
+		expect(lines).toContain(kvLine("Workspace", "ws_42"));
+		expect(lines).toContain(kvLine("workspace_key", "wsk"));
+		expect(lines).toContain(kvLine("project_key", "projX"));
+	});
+
+	it("renders the exact 'Auth: not authenticated' line when reachable but unauthenticated", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: false });
+		setReaders({});
+
+		await statusCommand({});
+
+		expect(firstLog().split("\n")).toContain(kvLine("Auth", "not authenticated"));
+	});
+
+	it("renders the exact 'Status: unreachable' line when unreachable", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: false, authenticated: false });
+		setReaders({ sessions: [] });
+
+		await statusCommand({});
+
+		expect(firstLog().split("\n")).toContain(kvLine("Status", "unreachable"));
+	});
+
+	it("falls back workspace_key/project_key to the exact 'main' value when both are unset", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({
+			config: makeConfig({
+				workspace_id: "ws_y",
+				default_workspace_key: undefined,
+				default_project: undefined,
+			}),
+		});
+
+		await statusCommand({});
+
+		const lines = firstLog().split("\n");
+		expect(lines).toContain(kvLine("workspace_key", "main"));
+		expect(lines).toContain(kvLine("project_key", "main"));
+	});
+});
+
+// ===========================================
+// renderSyncStatus — exact kvLine assertions
+// ===========================================
+
+describe("statusCommand — sync status exact lines", () => {
+	it("renders exact zero-state Log size / Unsynced / retry-buffer / sync-errors lines, no last-sync lines", async () => {
+		setReaders({
+			stats: makeStats({ total_events: 0, pending_sync: 0, file_size_bytes: 0 }),
+			sync: makeSync({ pending_realtime_retry: 0, sync_error_count: 0 }),
+		});
+
+		await statusCommand({});
+
+		const out = firstLog();
+		const lines = out.split("\n");
+		expect(lines).toContain(kvLine("Log size", "0 B"));
+		expect(lines).toContain(kvLine("Unsynced", "0"));
+		expect(lines).toContain(kvLine("Realtime retry buffer", "0"));
+		expect(lines).toContain(kvLine("Sync errors", "0"));
+		expect(out).not.toContain("Last sync success");
+		expect(out).not.toContain("Last sync error");
+	});
+
+	it("renders the exact 'N events' pluralized Unsynced line when pending_sync > 0", async () => {
+		setReaders({ stats: makeStats({ total_events: 4, pending_sync: 4 }) });
+
+		await statusCommand({});
+
+		expect(firstLog().split("\n")).toContain(kvLine("Unsynced", "4 events"));
+	});
+
+	it("renders the Last-sync-error line (and omits Last-sync-success) when only error_at is set", async () => {
+		setReaders({
+			sync: makeSync({ last_sync_error_at: "2026-06-01T09:30:00Z" }),
+		});
+
+		await statusCommand({});
+
+		const out = firstLog();
+		expect(out.split("\n")).toContain(kvLine("Last sync error", "2026-06-01T09:30:00Z"));
+		expect(out).not.toContain("Last sync success");
+	});
+
+	it("formats exactly 1024 bytes as '1.0 KB' (BYTES_PER_KB boundary)", async () => {
+		setReaders({ stats: makeStats({ file_size_bytes: 1024 }) });
+
+		await statusCommand({});
+
+		expect(firstLog().split("\n")).toContain(kvLine("Log size", "1.0 KB"));
+	});
+
+	it("formats exactly 1048576 bytes as '1.0 MB' (BYTES_PER_MB boundary)", async () => {
+		setReaders({ stats: makeStats({ file_size_bytes: 1048576 }) });
+
+		await statusCommand({});
+
+		expect(firstLog().split("\n")).toContain(kvLine("Log size", "1.0 MB"));
+	});
+});
+
+// ===========================================
+// renderNormal — additional exact/negative assertions
+// ===========================================
+
+describe("statusCommand — normal mode additional coverage", () => {
+	it("does not render the empty-state copy when a session is present", async () => {
+		setReaders({ sessions: [makeSession({ phase: "ACTIVE" })] });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("No sessions recorded");
+	});
+
+	it("renders the exact '[active]' badge and Phase/Tools table headers for an active session", async () => {
+		setReaders({ sessions: [makeSession({ phase: "ACTIVE" })] });
+
+		await statusCommand({});
+
+		const out = firstLog();
+		expect(out).toContain("[active]");
+		expect(out).toContain("Phase");
+		expect(out).toContain("Tools");
+	});
+
+	it("omits the ended-session footnote entirely when there are zero ended sessions", async () => {
+		setReaders({ sessions: [makeSession({ phase: "ACTIVE" })] });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("ended session");
+	});
+
+	it("never leaks the Stryker sentinel string from an active+ended session footnote", async () => {
+		setReaders({
+			sessions: [
+				makeSession({ session_id: "act", phase: "ACTIVE" }),
+				makeSession({ session_id: "end1", phase: "ENDED" }),
+			],
+		});
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("Stryker was here");
+	});
+
+	it("never leaks the Stryker sentinel string from any normal-mode array initializer", async () => {
+		setReaders({ sessions: [makeSession()], activity: [makeActivity()] });
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("Stryker was here");
+	});
+
+	it("does not append a '[tool]' detail suffix to normal-mode activity rows", async () => {
+		setReaders({
+			activity: [makeActivity({ agent: "Bob", tool: "Bash", summary: "ls -la" })],
+		});
+
+		await statusCommand({});
+
+		expect(firstLog()).not.toContain("[Bash]");
+	});
+
+	it("joins rendered lines with an actual newline (Total events directly precedes Log size)", async () => {
+		setReaders({ stats: makeStats({ total_events: 0, file_size_bytes: 0 }) });
+
+		await statusCommand({});
+
+		expect(firstLog()).toContain(
+			`${kvLine("Total events", "0")}\n${kvLine("Log size", "0 B")}`,
+		);
+	});
+});
+
+// ===========================================
+// renderFull — additional exact/negative assertions
+// ===========================================
+
+describe("statusCommand — full mode additional coverage", () => {
+	it("healthy config: skips Guidance and Oldest/Newest-event lines and leaks no Stryker sentinel", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({}); // default config: agent_name set, no unknowns, remote reachable+authed
+
+		await statusCommand({ full: true });
+
+		const out = firstLog();
+		expect(out).not.toContain("Guidance");
+		expect(out).not.toContain("Oldest event");
+		expect(out).not.toContain("Newest event");
+		expect(out).not.toContain("Stryker was here");
+	});
+
+	it("joins full-mode lines with an actual newline (Total events directly precedes Log size)", async () => {
+		setReaders({
+			sessions: [makeSession()],
+			stats: makeStats({ total_events: 0, file_size_bytes: 0 }),
+		});
+
+		await statusCommand({ full: true });
+
+		expect(firstLog()).toContain(
+			`${kvLine("Total events", "0")}\n${kvLine("Log size", "0 B")}`,
+		);
+	});
+});
+
+// ===========================================
+// Server health: exact server-status object (timeout / thrown)
+// ===========================================
+
+describe("statusCommand — server health exact object shape", () => {
+	it("timeout produces an exact {reachable:false, authenticated:false, ...} server object (json)", async () => {
+		mockHealthCheck.mockReturnValue(new Promise<never>(() => {}));
+		setReaders({});
+
+		const p = statusCommand({ json: true });
+		await vi.advanceTimersByTimeAsync(3000);
+		await p;
+
+		const parsed = JSON.parse(firstLog()) as { server: unknown };
+		expect(parsed.server).toStrictEqual({
+			reachable: false,
+			authenticated: false,
+			workspaceName: null,
+			error: "Timeout (3s)",
+		});
+	});
+
+	it("a thrown health check produces an exact {reachable:false, authenticated:false, ...} server object (json)", async () => {
+		mockHealthCheck.mockRejectedValue(new Error("client exploded"));
+		setReaders({});
+
+		await statusCommand({ json: true });
+
+		const parsed = JSON.parse(firstLog()) as { server: unknown };
+		expect(parsed.server).toStrictEqual({
+			reachable: false,
+			authenticated: false,
+			workspaceName: null,
+			error: "Not configured or unreachable",
+		});
+	});
+});
+
+// ===========================================
+// renderShort — exact whole-string assertion
+// ===========================================
+
+describe("statusCommand — short mode exact output", () => {
+	it("renders the exact zero-state summary string with no leading sentinel prefix", async () => {
+		mockHealthCheck.mockResolvedValue({ serverReachable: true, authenticated: true });
+		setReaders({
+			sessions: [],
+			stats: makeStats({ total_events: 0, pending_sync: 0 }),
+		});
+
+		await statusCommand({ short: true });
+
+		expect(firstLog()).toBe("0 sessions, 0 events, mcp-server: ok");
 	});
 });

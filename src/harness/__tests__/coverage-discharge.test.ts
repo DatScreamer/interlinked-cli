@@ -11,7 +11,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	dischargeObligationsAfterGreenRun,
 	isCoverageSuiteCommand,
@@ -24,6 +24,37 @@ import {
 	recordCoverageDischarge,
 	recordCoverageObligation,
 } from "../coverage-obligation-ledger.js";
+
+// Real fs, but statSync throws for any path under a directory whose name
+// contains "STATFAIL" — used to exercise mtimeOf's catch branch (a report
+// that parsed fine but whose mtime stat fails degrades to mtime 0, not a
+// crash). Every other path passes through to the real implementation.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		statSync: (path: Parameters<typeof actual.statSync>[0]) => {
+			if (typeof path === "string" && path.includes("STATFAIL")) {
+				throw new Error("simulated stat failure");
+			}
+			return actual.statSync(path);
+		},
+	};
+});
+
+// Real ledger, but readOpenCoverageObligations throws for the sentinel
+// session id "EXPLODE" — used to exercise dischargeObligationsAfterGreenRun's
+// top-level catch (bookkeeping must never crash the PostToolUse pipeline).
+vi.mock("../coverage-obligation-ledger.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../coverage-obligation-ledger.js")>();
+	return {
+		...actual,
+		readOpenCoverageObligations: (projectRoot: string, sessionId: string) => {
+			if (sessionId === "EXPLODE") throw new Error("simulated ledger read failure");
+			return actual.readOpenCoverageObligations(projectRoot, sessionId);
+		},
+	};
+});
 
 let tmp: string;
 
@@ -223,5 +254,110 @@ describe("readOpenCoverageObligations — netting + cross-session discharges", (
 	it("still filters OBLIGATIONS to the requested session (who deferred is session-scoped)", () => {
 		recordCoverageObligation(tmp, obligation("src/a.ts", "someone-else"));
 		expect(readOpenCoverageObligations(tmp, "sess-1")).toEqual([]);
+	});
+});
+
+describe("isCoverageSuiteCommand — additional branch coverage", () => {
+	it("recognizes a bare `python -m pytest --cov` as a coverage suite run", () => {
+		expect(isCoverageSuiteCommand("python -m pytest --cov")).toBe(true);
+	});
+
+	it("does not treat `python -m <non-test-module> --cov` as a coverage suite run", () => {
+		expect(isCoverageSuiteCommand("python -m build --cov")).toBe(false);
+	});
+
+	it("treats `npm run test -- --coverage` (the `run` subcommand form) as a coverage suite run", () => {
+		expect(isCoverageSuiteCommand("npm run test -- --coverage")).toBe(true);
+	});
+
+	it("does not treat `npm run build -- --coverage` as a coverage suite run (non-test script)", () => {
+		expect(isCoverageSuiteCommand("npm run build -- --coverage")).toBe(false);
+	});
+
+	it("ignores an empty segment produced by a leading `;` while still matching a later real segment", () => {
+		expect(isCoverageSuiteCommand(" ; pytest --cov")).toBe(true);
+	});
+
+	it("rejects a comment line (`#`-prefixed head is not a command)", () => {
+		expect(isCoverageSuiteCommand("# vitest run --coverage")).toBe(false);
+	});
+});
+
+describe("noteCoverageSuiteRunStart — timestamp parsing branches", () => {
+	it("falls back to Date.now() when no timestamp is provided", () => {
+		const before = Date.now();
+		noteCoverageSuiteRunStart("no-ts-session");
+		recordCoverageObligation(tmp, obligation("src/a.ts", "no-ts-session"));
+		writeLcov("src/a.ts");
+		const discharged = dischargeObligationsAfterGreenRun(
+			tmp,
+			"no-ts-session",
+			"2026-06-09T00:00:00.000Z",
+		);
+		// The report was written after `before`, so a Date.now()-based start
+		// (rather than NaN or a stale value) is what lets this discharge.
+		expect(before).toBeLessThanOrEqual(Date.now());
+		expect(discharged).toEqual(["src/a.ts"]);
+	});
+
+	it("falls back to Date.now() when the timestamp is unparseable", () => {
+		noteCoverageSuiteRunStart("bad-ts-session", "not-a-real-timestamp");
+		recordCoverageObligation(tmp, obligation("src/a.ts", "bad-ts-session"));
+		writeLcov("src/a.ts");
+		const discharged = dischargeObligationsAfterGreenRun(
+			tmp,
+			"bad-ts-session",
+			"2026-06-09T00:00:00.000Z",
+		);
+		expect(discharged).toEqual(["src/a.ts"]);
+	});
+});
+
+describe("measuredCoverageFiles — istanbul coverage-final.json branch", () => {
+	it("includes a file measured only by coverage-final.json (no LCOV report present)", () => {
+		const absFile = join(tmp, "src", "a.ts");
+		writeFileSync(
+			join(tmp, "coverage", "coverage-final.json"),
+			JSON.stringify({
+				[absFile]: {
+					path: absFile,
+					statementMap: {},
+					s: {},
+					fnMap: {},
+					f: {},
+				},
+			}),
+		);
+		const reports = measuredCoverageFiles(tmp);
+		expect(reports).toHaveLength(1);
+		expect(reports[0]?.files.has("src/a.ts")).toBe(true);
+		expect(reports[0]?.mtimeMs).toBeGreaterThan(0);
+	});
+});
+
+describe("mtimeOf — statSync failure degrades to mtime 0, not a crash", () => {
+	it("returns mtime 0 for a report that parses fine but whose stat call fails", () => {
+		const dir = mkdtempSync(join(tmpdir(), "cov-discharge-STATFAIL-"));
+		try {
+			mkdirSync(join(dir, "coverage"), { recursive: true });
+			writeFileSync(
+				join(dir, "coverage", "lcov.info"),
+				["SF:src/a.ts", "DA:1,1", "end_of_record", ""].join("\n"),
+			);
+			const reports = measuredCoverageFiles(dir);
+			expect(reports).toHaveLength(1);
+			expect(reports[0]?.files.has("src/a.ts")).toBe(true);
+			expect(reports[0]?.mtimeMs).toBe(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("dischargeObligationsAfterGreenRun — top-level catch", () => {
+	it("returns [] instead of throwing when the obligation ledger read fails", () => {
+		noteCoverageSuiteRunStart("EXPLODE", new Date().toISOString());
+		const result = dischargeObligationsAfterGreenRun(tmp, "EXPLODE", "2026-06-09T00:00:00.000Z");
+		expect(result).toEqual([]);
 	});
 });

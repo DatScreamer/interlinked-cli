@@ -77,6 +77,47 @@ describe("detectHookManagers", () => {
 		expect(result).toHaveLength(0);
 	});
 
+	it("detects lefthook via package.json devDependencies", () => {
+		mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+			return String(path).endsWith("package.json");
+		});
+		mockReadFileSync.mockReturnValue(JSON.stringify({ devDependencies: { lefthook: "^1.0.0" } }));
+
+		const result = detectHookManagers("/test/project");
+		expect(result.some((m) => m.name === "lefthook")).toBe(true);
+		expect(result.find((m) => m.name === "lefthook")!.detected_at).toBe("package.json");
+	});
+
+	it("detects lefthook via package.json dependencies (also covers a real `dependencies` object field)", () => {
+		mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+			return String(path).endsWith("package.json");
+		});
+		mockReadFileSync.mockReturnValue(JSON.stringify({ dependencies: { lefthook: "^1.0.0" } }));
+
+		const result = detectHookManagers("/test/project");
+		expect(result.some((m) => m.name === "lefthook")).toBe(true);
+	});
+
+	it("treats a package.json that parses to a non-object (e.g. a JSON array) as empty", () => {
+		mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+			return String(path).endsWith("package.json");
+		});
+		mockReadFileSync.mockReturnValue(JSON.stringify(["not", "an", "object"]));
+
+		const result = detectHookManagers("/test/project");
+		expect(result).toEqual([]);
+	});
+
+	it("treats malformed package.json JSON as empty (falls into the parse catch)", () => {
+		mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
+			return String(path).endsWith("package.json");
+		});
+		mockReadFileSync.mockReturnValue("{ not valid json");
+
+		const result = detectHookManagers("/test/project");
+		expect(result).toEqual([]);
+	});
+
 	it("detects multiple managers", () => {
 		mockExistsSync.mockImplementation((path: string | Buffer | URL) => {
 			const p = String(path);

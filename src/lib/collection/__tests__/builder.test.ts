@@ -505,6 +505,39 @@ describe("buildCollectionRecord — provider", () => {
 		)!;
 		expect(rec.provider).toBe("codex");
 	});
+
+	it("detects mcp-proxy from client_runner field", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, client_runner: "mcp-proxy" }),
+		)!;
+		expect(rec.provider).toBe("mcp-proxy");
+	});
+
+	it("detects copilot from client_runner field", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, client_runner: "copilot" }),
+		)!;
+		expect(rec.provider).toBe("copilot");
+	});
+
+	it("detects gemini-cli from a BeforeTool/AfterTool hook_event", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, hook_event: "BeforeTool" }),
+		)!;
+		expect(rec.provider).toBe("gemini-cli");
+	});
+
+	it("detects cursor from cursor_version/conversation_id fields", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				hook_event: undefined,
+				cursor_version: "1.2.3",
+			}),
+		)!;
+		expect(rec.provider).toBe("cursor");
+	});
 });
 
 // -------------------------------------------------------
@@ -528,6 +561,32 @@ describe("buildCollectionRecord — edge cases", () => {
 		expect(rec.action).toMatchObject({ command: "" });
 	});
 
+	it("falls back to session_id_hint when session is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				session: undefined,
+				session_id_hint: "hint-1",
+			}),
+		)!;
+		expect(rec.session_id).toBe("hint-1");
+	});
+
+	it("includes seq when the event carries a numeric seq", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, seq: 7 }),
+		)!;
+		expect(rec.seq).toBe(7);
+	});
+
+	it("omits seq when the event carries no numeric seq", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" } }),
+		)!;
+		expect(rec.seq).toBeUndefined();
+	});
+
 	it("carries session_id and tool_use_id", () => {
 		const rec = buildCollectionRecord(
 			baseEvent({
@@ -542,6 +601,379 @@ describe("buildCollectionRecord — edge cases", () => {
 		expect(rec.session_id).toBe("sess-42");
 		expect(rec.tool_use_id).toBe("tu-7");
 		expect(rec.turn_id).toBe("turn-3");
+	});
+});
+
+// -------------------------------------------------------
+// mcp_call — parseMcpProviderTool edge shapes
+// -------------------------------------------------------
+describe("buildCollectionRecord — mcp_call provider-name edge shapes", () => {
+	it("falls back to the whole tool name when no server delimiter is present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "mcp__onlyname", tool_input: {} }),
+		)!;
+
+		expect(rec.action).toEqual({
+			server: null,
+			tool: "onlyname",
+			params: {},
+			params_ref: null,
+		});
+	});
+
+	it("treats an empty server segment as absent (null)", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "mcp____toolname", tool_input: {} }),
+		)!;
+
+		expect(rec.action).toEqual({
+			server: null,
+			tool: "toolname",
+			params: {},
+			params_ref: null,
+		});
+	});
+
+	it("falls back to the full remainder when the tool segment after the delimiter is empty", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "mcp__server__", tool_input: {} }),
+		)!;
+
+		expect(rec.action).toEqual({
+			server: "server",
+			tool: "server__",
+			params: {},
+			params_ref: null,
+		});
+	});
+});
+
+// -------------------------------------------------------
+// apply_patch — Move to: header
+// -------------------------------------------------------
+describe("buildCollectionRecord — apply_patch Move to header", () => {
+	it("extracts the destination path from a Move to header", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: {
+					command: "*** Move to: /src/renamed.ts\n*** Update File: /src/main.ts",
+				},
+				tool_response: "Patch applied",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ path: "/src/renamed.ts" });
+	});
+});
+
+// -------------------------------------------------------
+// Mutation-result observation (file_edit/file_write) — non-string responses
+// -------------------------------------------------------
+describe("buildCollectionRecord — mutation result observation edge shapes", () => {
+	it("treats a non-string edit response as applied with no result message", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: { file_path: "/x.ts", old_string: "a", new_string: "b" },
+				tool_response: {},
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ applied: true, result_message: null, provider_echo_ref: null });
+	});
+
+	it("marks applied false when the response message signals failure", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: { file_path: "/x.ts", old_string: "a", new_string: "b" },
+				tool_response: "Error: failed to apply edit",
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({
+			applied: false,
+			result_message: "Error: failed to apply edit",
+			provider_echo_ref: null,
+		});
+	});
+});
+
+// -------------------------------------------------------
+// MultiEdit — malformed entries
+// -------------------------------------------------------
+describe("buildCollectionRecord — MultiEdit malformed entries", () => {
+	it("skips non-object entries in the edits array", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "MultiEdit",
+				tool_input: {
+					file_path: "/src/main.ts",
+					edits: [null, "not-an-object", { old_string: "a", new_string: "b" }],
+				},
+				tool_response: "File edited successfully",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({
+			path: "/src/main.ts",
+			diff: { hunks: [{ old: "a", new: "b" }] },
+		});
+	});
+
+	it("defaults missing old_string/new_string on an edit entry to empty strings", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "MultiEdit",
+				tool_input: {
+					file_path: "/src/main.ts",
+					edits: [{}],
+				},
+				tool_response: "File edited successfully",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({
+			path: "/src/main.ts",
+			diff: { hunks: [{ old: "", new: "" }] },
+		});
+	});
+});
+
+// -------------------------------------------------------
+// shell_exec observation — non-string, non-object response
+// -------------------------------------------------------
+describe("buildCollectionRecord — shell_exec observation edge shapes", () => {
+	it("returns the empty observation shape for a non-string non-object response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, tool_response: 42 }),
+		)!;
+
+		expect(rec.observation).toEqual({ stdout: null, stderr: null, exit_code: null, duration_ms: null });
+	});
+});
+
+// -------------------------------------------------------
+// file_read observation — edge shapes
+// -------------------------------------------------------
+describe("buildCollectionRecord — file_read observation edge shapes", () => {
+	it("returns null content for a non-object non-string response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Read", tool_input: { file_path: "/x.ts" }, tool_response: 42 }),
+		)!;
+
+		expect(rec.observation).toEqual({ content: null, content_ref: null, line_count: null, byte_count: null });
+	});
+
+	it("reads content directly when the response has no nested file object", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Read",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: { content: "direct content" },
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({
+			content: "direct content",
+			content_ref: null,
+			line_count: 1,
+			byte_count: Buffer.byteLength("direct content", "utf8"),
+		});
+	});
+});
+
+// -------------------------------------------------------
+// search observation — non-string response
+// -------------------------------------------------------
+describe("buildCollectionRecord — search observation edge shapes", () => {
+	it("returns a null result_text for a non-string response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Grep", tool_input: { pattern: "TODO" }, tool_response: { raw: true } }),
+		)!;
+
+		expect(rec.observation).toEqual({ matches: null, match_count: null, result_text: null });
+	});
+});
+
+// -------------------------------------------------------
+// fetch observation — edge shapes
+// -------------------------------------------------------
+describe("buildCollectionRecord — fetch observation edge shapes", () => {
+	it("falls back to the content field when the response has no result field", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "WebFetch",
+				tool_input: { url: "https://example.com" },
+				tool_response: { status: 200, content: "page body" },
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ status: 200, result: "page body", result_ref: null, bytes: null });
+	});
+
+	it("returns a null result when neither result nor content fields are present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "WebFetch",
+				tool_input: { url: "https://example.com" },
+				tool_response: { status: 204 },
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ status: 204, result: null, result_ref: null, bytes: null });
+	});
+
+	it("wraps a raw string response as the result", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "WebFetch",
+				tool_input: { url: "https://example.com" },
+				tool_response: "raw text body",
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ status: null, result: "raw text body", result_ref: null, bytes: null });
+	});
+
+	it("returns the empty observation shape for a non-object non-string response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "WebFetch", tool_input: { url: "https://example.com" }, tool_response: 42 }),
+		)!;
+
+		expect(rec.observation).toEqual({ status: null, result: null, result_ref: null, bytes: null });
+	});
+});
+
+// -------------------------------------------------------
+// task / notebook_edit / other observations
+// -------------------------------------------------------
+describe("buildCollectionRecord — task/notebook_edit/other observations", () => {
+	it("builds a task observation as a passthrough of the response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "TaskCreate",
+				tool_input: { subject: "do thing" },
+				tool_response: { task_id: "t1" },
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ result: { task_id: "t1" } });
+	});
+
+	it("marks notebook_edit applied with a string response message", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "NotebookEdit",
+				tool_input: { file_path: "/nb.ipynb", cell: "1" },
+				tool_response: "Cell updated",
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ applied: true, result_message: "Cell updated" });
+	});
+
+	it("marks notebook_edit applied with a null result_message for a non-string response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "NotebookEdit",
+				tool_input: { file_path: "/nb.ipynb", cell: "1" },
+				tool_response: { ok: true },
+			}),
+		)!;
+
+		expect(rec.observation).toEqual({ applied: true, result_message: null });
+	});
+
+	it("builds an other observation as a passthrough of the provider response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "SomeMcpTool", tool_input: {}, tool_response: { anything: 1 } }),
+		)!;
+
+		expect(rec.observation).toEqual({ provider_output: { anything: 1 }, provider_output_ref: null });
+	});
+});
+
+// -------------------------------------------------------
+// Fidelity — non-string field values
+// -------------------------------------------------------
+describe("buildCollectionRecord — fidelity byte counting for non-string field values", () => {
+	it("computes captured_bytes via JSON serialization for a non-string fidelity field", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "WebFetch",
+				tool_input: { url: "https://example.com" },
+				tool_response: { result: { nested: "value" } },
+				tool_output_bytes: 10,
+			}),
+		)!;
+
+		const resultFidelity = rec.fidelity.fields["observation.result"];
+		expect(resultFidelity).toBeDefined();
+		expect(nonNull(resultFidelity).captured_bytes).toBe(
+			Buffer.byteLength(JSON.stringify({ nested: "value" }), "utf8"),
+		);
+	});
+});
+
+// -------------------------------------------------------
+// Guard telemetry — legacy type field discriminator
+// -------------------------------------------------------
+describe("buildCollectionRecord — guard telemetry via legacy type field", () => {
+	it("returns null when only the legacy type field (not event_type) is guard_-prefixed", () => {
+		expect(
+			buildCollectionRecord(baseEvent({ event_type: "tool_use", type: "guard_block" })),
+		).toBeNull();
+	});
+});
+
+// -------------------------------------------------------
+// event_type resolution — fallback chain
+// -------------------------------------------------------
+describe("buildCollectionRecord — event_type resolution fallback", () => {
+	it("falls back to the legacy type field when event_type is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ event_type: undefined, type: "tool_use", tool_name: "Bash" }),
+		)!;
+
+		expect(rec.phase).toBe("post");
+	});
+
+	it("returns null when both event_type and the legacy type field are absent", () => {
+		expect(
+			buildCollectionRecord(baseEvent({ event_type: undefined, type: undefined, tool_name: "Bash" })),
+		).toBeNull();
+	});
+});
+
+// -------------------------------------------------------
+// tool name resolution — missing tool_name/tool
+// -------------------------------------------------------
+describe("buildCollectionRecord — tool name resolution", () => {
+	it("returns null when neither tool_name nor tool is present", () => {
+		expect(buildCollectionRecord(baseEvent({ tool_name: undefined }))).toBeNull();
+	});
+
+	it("falls back to the legacy tool field when tool_name is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: undefined, tool: "Bash", tool_input: { command: "echo" } }),
+		)!;
+
+		expect(rec.provider_tool).toBe("Bash");
+	});
+});
+
+// -------------------------------------------------------
+// ts field — missing fallback
+// -------------------------------------------------------
+describe("buildCollectionRecord — ts field fallback", () => {
+	it("defaults ts to an empty string when the event carries no ts", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ ts: undefined, tool_name: "Bash", tool_input: { command: "echo" } }),
+		)!;
+
+		expect(rec.ts).toBe("");
 	});
 });
 

@@ -1,11 +1,13 @@
 import {
+	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -297,6 +299,92 @@ describe("parseGraphFile", () => {
 		expect(parseGraphFile(content, "x.ts", "x.graph.ts")).toBeNull();
 	});
 
+	it("nulls [impact] when `transitive` is non-numeric, leaves other fields intact", () => {
+		const content = [
+			"// @generated supermodel-shard — do not edit",
+			"// [impact]",
+			"// risk        HIGH",
+			"// direct      3",
+			"// transitive  banana",
+		].join("\n");
+		const graph = parseGraphFile(content, "x.ts", "x.graph.ts");
+		expect(graph?.impact).toBeNull();
+	});
+
+	it("treats a `domains` key with no value as empty (falsy-value branch)", () => {
+		const content = [
+			"// @generated supermodel-shard — do not edit",
+			"// [impact]",
+			"// risk        LOW",
+			"// domains",
+			"// direct      1",
+			"// transitive  1",
+		].join("\n");
+		const graph = parseGraphFile(content, "x.ts", "x.graph.ts");
+		expect(graph?.impact).toEqual({
+			risk: "LOW",
+			domains: [],
+			direct: 1,
+			transitive: 1,
+			affects: [],
+		});
+	});
+
+	it("treats an `affects` key with no value as empty (falsy-value branch)", () => {
+		const content = [
+			"// @generated supermodel-shard — do not edit",
+			"// [impact]",
+			"// risk        LOW",
+			"// direct      0",
+			"// transitive  0",
+			"// affects",
+		].join("\n");
+		const graph = parseGraphFile(content, "x.ts", "x.graph.ts");
+		expect(graph?.impact).toEqual({
+			risk: "LOW",
+			domains: [],
+			direct: 0,
+			transitive: 0,
+			affects: [],
+		});
+	});
+
+	it("skips a deps line whose key has no value, and an unrecognized key", () => {
+		const content = [
+			"// @generated supermodel-shard — do not edit",
+			"// [deps]",
+			"// imports",
+			"// unknown-key   whatever.ts",
+			"// imports     src/real.ts",
+		].join("\n");
+		const graph = parseGraphFile(content, "x.ts", "x.graph.ts");
+		expect(graph?.deps).toEqual({ imports: ["src/real.ts"], importedBy: [] });
+	});
+
+	it("parses every [calls] rest-token shape in one shard", () => {
+		const content = [
+			"// @generated supermodel-shard — do not edit",
+			"// [calls]",
+			"// not an arrow line at all",
+			"// runA ← callerOnly",
+			"// runB ← callerB    file.ts:abc",
+			"// runC ← callerC    ?",
+			"// runD ← First Last",
+			"//  ← lonelyCaller",
+			"// runE → calleeE    src/e.ts:7",
+		].join("\n");
+		const graph = parseGraphFile(content, "x.ts", "x.graph.ts");
+		expect(graph?.calls).toEqual({
+			callers: [
+				{ fn: "runA", caller: "callerOnly", file: "", line: 0 },
+				{ fn: "runB", caller: "callerB    file.ts:abc", file: "", line: 0 },
+				{ fn: "runC", caller: "callerC", file: "", line: 0 },
+				{ fn: "runD", caller: "First Last", file: "", line: 0 },
+			],
+			callees: [{ fn: "runE", callee: "calleeE", file: "src/e.ts", line: 7 }],
+		});
+	});
+
 	it("preserves multi-token domain lists (regression: split tail join)", () => {
 		const content = [
 			"// @generated supermodel-shard — do not edit",
@@ -356,6 +444,37 @@ describe("loadGraphForFile", () => {
 	it("returns null when the source path is empty", () => {
 		expect(loadGraphForFile("", FIXTURES_DIR)).toBeNull();
 		expect(loadGraphForFile("   ", FIXTURES_DIR)).toBeNull();
+	});
+
+	it("accepts a cwd that already ends with the path separator", () => {
+		const cwdWithSep = FIXTURES_DIR.endsWith(sep) ? FIXTURES_DIR : FIXTURES_DIR + sep;
+		const graph = loadGraphForFile("medium-risk.ts", cwdWithSep);
+		expect(graph?.impact?.risk).toBe("MEDIUM");
+	});
+
+	it("returns null when the shard path exists but is a directory, not a file", () => {
+		const dir = mkdtempSync(join(tmpdir(), "supermodel-dirshard-"));
+		try {
+			// The shard path Supermodel would use for `x.ts` is `x.graph.ts` —
+			// create it as a directory so `stats.isFile()` is false.
+			mkdirSync(join(dir, "x.graph.ts"), { recursive: true });
+			expect(loadGraphForFile(join(dir, "x.ts"))).toBeNull();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("returns null on an I/O error reading an unreadable shard file", () => {
+		const dir = mkdtempSync(join(tmpdir(), "supermodel-noperm-"));
+		const shard = join(dir, "x.graph.ts");
+		writeFileSync(shard, "// @generated supermodel-shard — do not edit\n");
+		try {
+			chmodSync(shard, 0o000);
+			expect(loadGraphForFile(join(dir, "x.ts"))).toBeNull();
+		} finally {
+			chmodSync(shard, 0o644);
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

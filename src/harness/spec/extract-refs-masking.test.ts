@@ -107,4 +107,19 @@ describe("whole-line HTML comment blocks (round-5 #20)", () => {
 		expect(hs).toHaveLength(1);
 		expect(hs[0]?.level).toBe(1);
 	});
+
+	it("an unterminated multiline comment block with no closer at all hides through EOF", () => {
+		const doc = ["<!--", "unterminated body 1", "unterminated body 2"];
+		expect([...htmlCommentBlockLines(doc, noFences)]).toEqual([1, 2, 3]);
+	});
+});
+
+describe("precedence scan — comment loses, then disables itself when unclosed (round-7 #24 extension)", () => {
+	it("an UNCLOSED comment that opens before a still-pending span disables itself so the span still masks", () => {
+		// The comment opens first (loses nothing — no closer exists at all), so it
+		// stays literal; the backtick span AFTER it must still mask normally.
+		const masked = maskInlineIgnorable("<!-- open ` x ` more");
+		expect(masked).toBe(`<!-- open${" ".repeat(7)}more`);
+		expect(masked.length).toBe("<!-- open ` x ` more".length);
+	});
 });

@@ -9,6 +9,21 @@ import {
 	observeBlockWorkaround,
 	recordBlockFingerprint,
 } from "./block-fingerprint-session.js";
+import { clearArchive, persistArmedFingerprints } from "./fingerprint-archive.js";
+
+function write(filePath: string | undefined, content: string): HarnessEvent {
+	const tool_input: Record<string, unknown> = { content };
+	if (filePath !== undefined) tool_input.file_path = filePath;
+	return {
+		hook_event: "PreToolUse",
+		session_id: "s",
+		agent_source: "claude",
+		tool_name: "Write",
+		tool_input,
+		cwd: "/repo",
+		timestamp: "t",
+	};
+}
 
 function bash(command: string): HarnessEvent {
 	return {
@@ -167,6 +182,41 @@ describe("observeBlockWorkaround (choke-point glue)", () => {
 		const sig = observeBlockWorkaround(s, bash("git commit -m x"), BLOCK, "/repo", T0 + 1000);
 		expect(sig).toBeNull();
 		expect(s.workaround_signals ?? []).toHaveLength(0);
+	});
+
+	it("arms a fingerprint from a blocked Write, extracting content + target via strField", () => {
+		const s = fresh();
+		observeBlockWorkaround(s, write("src/danger.ts", "eval(x)"), BLOCK, "/repo", T0);
+		expect(s.block_fingerprints).toHaveLength(1);
+		expect(s.block_fingerprints?.[0]?.target).toBe("src/danger.ts");
+	});
+
+	it("arms with a null target when a blocked Write carries no file_path/path", () => {
+		const s = fresh();
+		observeBlockWorkaround(s, write(undefined, "eval(x)"), BLOCK, "/repo", T0);
+		expect(s.block_fingerprints).toHaveLength(1);
+		expect(s.block_fingerprints?.[0]?.target).toBeNull();
+	});
+
+	it("hydrates persisted signals from a prior daemon on the first event of a fresh session", () => {
+		const cwd = process.cwd();
+		const sessionId = `hydrate-signals-${T0}`;
+		persistArmedFingerprints(
+			cwd,
+			sessionId,
+			[],
+			[{ detector: "escape-env-after-block", ruleId: "empty_catch" }],
+		);
+		try {
+			const s = new SessionTracker().recordEvent(bash("ls"));
+			const event: HarnessEvent = { ...bash("echo hi"), session_id: sessionId };
+			observeBlockWorkaround(s, event, ALLOW, cwd, T0);
+			expect(s.workaround_signals).toEqual([
+				{ detector: "escape-env-after-block", ruleId: "empty_catch" },
+			]);
+		} finally {
+			clearArchive(cwd, sessionId);
+		}
 	});
 });
 

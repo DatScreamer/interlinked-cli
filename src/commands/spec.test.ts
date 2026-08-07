@@ -27,15 +27,21 @@ describe("interlinked spec agenda", () => {
 			// bind "bet"→FG-INV by same-line co-occurrence and re-poison the noun.
 			"Six bets do the work.\nFG-INV-01 and FG-INV-02 both apply here.",
 		);
-		const prev = process.cwd();
-		process.chdir(cwd);
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins its own pool, so a real chdir here fails the mutation dry
+		// run for any file whose graph-selected test scope includes this one.
+		// The spec command action handlers read `process.cwd()` explicitly, so
+		// the spy exercises the same path; `cwd` is already realpathSync'd
+		// above, matching what a real chdir would have resolved through.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
 			const program = new Command();
 			registerSpecCommands(program);
 			await program.parseAsync(["node", "interlinked", "spec", "agenda"]);
 		} finally {
-			process.chdir(prev);
+			cwdSpy.mockRestore();
 			log.mockRestore();
 		}
 		const path = join(cwd, ".interlinked", "review-agenda.md");
@@ -56,15 +62,31 @@ describe("interlinked spec invariants", () => {
 			join(cwd, "plan.md"),
 			"| **FG-INV-18** | indexes never authoritative |\nThe commit stream MUST remain sole truth for recovery.",
 		);
-		const prev = process.cwd();
-		process.chdir(cwd);
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins its own pool, so a real chdir here fails the mutation dry
+		// run for any file whose graph-selected test scope includes this one.
+		// The spec command action handler reads `process.cwd()` explicitly for
+		// the OUTPUT dir, so the spy covers that; but it also does
+		// `readFileSync(file, ...)` on the raw <file> arg, which Node resolves
+		// against the REAL OS cwd (not the process.cwd() spy) — so the input
+		// path is passed absolute instead. `basename(file)` (used for the
+		// output artifact name) is unaffected by that, so the assertions below
+		// are unchanged.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
 			const program = new Command();
 			registerSpecCommands(program);
-			await program.parseAsync(["node", "interlinked", "spec", "invariants", "plan.md"]);
+			await program.parseAsync([
+				"node",
+				"interlinked",
+				"spec",
+				"invariants",
+				join(cwd, "plan.md"),
+			]);
 		} finally {
-			process.chdir(prev);
+			cwdSpy.mockRestore();
 			log.mockRestore();
 		}
 		const artifact = readFileSync(

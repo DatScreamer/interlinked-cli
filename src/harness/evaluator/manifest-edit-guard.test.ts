@@ -722,6 +722,189 @@ describe("evaluateManifestEdit — license policy (recorded field, never network
 	});
 });
 
+describe("evaluateManifestEdit — requirements.in", () => {
+	it("blocks a new unapproved Python dep line in requirements.in", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "requirements.in",
+				current: "requests==2.31.0\n",
+				next: "requests==2.31.0\nevil-pkg==1.0\n",
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil-pkg/);
+	});
+});
+
+describe("evaluateManifestEdit — requirements.txt pip-flag and unparseable lines", () => {
+	it("ignores a pip flag line (not '-e ') and still blocks the real new dep", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "requirements.txt",
+				current: "",
+				next: "--no-binary :all:\nevil==1.0\n",
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("skips a line that doesn't match the name pattern", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "requirements.txt",
+				current: "",
+				next: "===not-a-name===\n",
+			}),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — go.mod", () => {
+	it("blocks a new unapproved go.mod require (block form) and skips the already-present one", () => {
+		const before = `module example.com/app\n\ngo 1.22\n\nrequire (\n\tgithub.com/existing/pkg v1.0.0\n)`;
+		const after = `module example.com/app\n\ngo 1.22\n\nrequire (\n\tgithub.com/existing/pkg v1.0.0\n\tgithub.com/evil/pkg v1.0.0\n)`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "go.mod", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/github\.com\/evil\/pkg/);
+		expect(r?.reason).not.toMatch(/existing/);
+		expect(r?.reason).toMatch(/go/);
+	});
+
+	it("allows an allowlisted go.mod require", () => {
+		addToAllowlist(workspace, "go", "github.com/ok/pkg", { approved_by: "x" });
+		const before = `module example.com/app\n`;
+		const after = `module example.com/app\n\nrequire github.com/ok/pkg v1.0.0\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "go.mod", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — package.json with non-object parsed shape", () => {
+	it("treats a non-object valid-JSON 'before' as having no existing deps (recordOf guard)", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify("just a string"),
+				next: JSON.stringify({ dependencies: { evil: "1.0.0" } }, null, 2),
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("blocks a new dep pinned to a file: spec", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: {} }, null, 2),
+				next: JSON.stringify({ dependencies: { evil: "file:../evil" } }, null, 2),
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file:/);
+	});
+});
+
+describe("evaluateManifestEdit — package.json manifest unreadable on disk (safeRead catch)", () => {
+	it("treats an unreadable existing manifest as empty (EISDIR) rather than crashing", () => {
+		const path = join(workspace, "package.json");
+		mkdirSync(path, { recursive: true }); // a directory at the manifest's path — readFileSync throws EISDIR
+		const r = evaluateManifestEdit({
+			filePath: path,
+			newContent: JSON.stringify({ dependencies: { evil: "1.0.0" } }, null, 2),
+			allowlist: loadAllowlist(workspace),
+			cwd: workspace,
+		});
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+});
+
+describe("evaluateManifestEdit — pyproject.toml project.dependencies array form", () => {
+	it("blocks a new unapproved entry in the PEP 508 dependencies array", () => {
+		const before = `dependencies = [\n  "requests==2.31.0",\n]\n`;
+		const after = `dependencies = [\n  "requests==2.31.0",\n  "evil==1.0",\n]\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("allows an allowlisted entry in the dependencies array", () => {
+		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
+		const before = `dependencies = [\n]\n`;
+		const after = `dependencies = [\n  "requests==2.31.0",\n]\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — pyproject.toml malformed lines / unnamed array items", () => {
+	it("skips a poetry-block line that doesn't match key = value", () => {
+		const before = `[tool.poetry.dependencies]\npython = "^3.11"\n`;
+		const after = `[tool.poetry.dependencies]\npython = "^3.11"\nnot-a-kv-line\nevil = "^1.0"\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("ignores a dependencies-array item that doesn't start with a valid name", () => {
+		const before = `dependencies = [\n  "requests==2.31.0",\n]\n`;
+		const after = `dependencies = [\n  "requests==2.31.0",\n  "===not-a-name",\n]\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — Cargo.toml preamble and non-matching lines", () => {
+	it("skips content before the [dependencies] header and unmatched lines inside it", () => {
+		const before = `# top comment\n[dependencies]\nnot-a-valid-line-without-equals\nserde = "1"\n`;
+		const after = `# top comment\n[dependencies]\nnot-a-valid-line-without-equals\nserde = "1"\nevil = "1"\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("blocks a Cargo.toml url= inline-table repin to a non-registry source", () => {
+		addToAllowlist(workspace, "cargo", "serde", { approved_by: "x" });
+		const before = `[dependencies]\nserde = "1"\n`;
+		const after = `[dependencies]\nserde = { url = "https://attacker.com/serde.tar.gz" }\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+	});
+});
+
+describe("evaluateManifestEdit — Gemfile without a version constraint", () => {
+	it("blocks a new gem line with no version argument", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "Gemfile",
+				current: `gem "foo"\n`,
+				next: `gem "foo"\ngem "evil"\n`,
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+});
+
 describe("evaluateManifestEdit — .csproj / version-catalog / gradle map-notation (hardening)", () => {
 	it("blocks an unapproved <PackageReference> added to a .csproj (modern .NET form)", () => {
 		const r = evaluateManifestEdit(

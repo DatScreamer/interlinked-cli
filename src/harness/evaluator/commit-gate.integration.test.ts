@@ -710,6 +710,125 @@ describe("checkCommitGate — fail-open", () => {
 		expect(errSpy).toHaveBeenCalled();
 		errSpy.mockRestore();
 	});
+
+	it("stringifies a thrown non-Error value instead of using its (absent) .message", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const throwingDeps: CommitGateDeps = {
+			runnerFor: () => stubRunner(coverageResult("src/a.ts", [])).runner,
+			gitChangedFiles: () => {
+				// Intentionally throwing a non-Error to exercise the String(err) fallback.
+				throw "git exploded (not an Error)";
+			},
+			cyclomaticFor: () => () => [],
+			clock: () => 0,
+			readFile: () => JS_SRC,
+		};
+		const decision = await checkCommitGate(commitEvent('git commit -m "x"'), rules(), throwingDeps);
+		expect(decision).toBeNull();
+		const written = errSpy.mock.calls.map((c) => String(c[0])).join("");
+		expect(written).toContain("git exploded (not an Error)");
+		errSpy.mockRestore();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkCommitGate — no-op edge inputs (falsy command, missing cwd)
+// ---------------------------------------------------------------------------
+
+describe("checkCommitGate — falsy/missing event fields", () => {
+	it("treats a missing tool_input.command as empty (not a commit; no-op)", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/a.ts", []));
+		const decision = await checkCommitGate(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-no-command",
+				agent_source: "claude",
+				tool_name: "Bash",
+				tool_input: {},
+				timestamp: "2026-06-07T00:00:00.000Z",
+				cwd: root,
+			},
+			rules(),
+			deps(runner, ["src/a.ts"]),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(false);
+	});
+
+	it("falls back to process.cwd() for commandCwd/projectRoot when the event carries no cwd", async () => {
+		const capturedRoots: (string | undefined)[] = [];
+		const { runner } = stubRunner(
+			coverageResult("src/a.ts", [{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 }]),
+		);
+		const customDeps: CommitGateDeps = {
+			runnerFor: () => runner,
+			gitChangedFiles: (pr) => {
+				capturedRoots.push(pr);
+				return ["src/a.ts"];
+			},
+			cyclomaticFor: () => () => [fn({ name: "f", line: 1, endLine: 3, cyclomatic: 3 })],
+			clock: () => 0,
+			readFile: () => JS_SRC,
+		};
+		const decision = await checkCommitGate(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-no-cwd",
+				agent_source: "claude",
+				tool_name: "Bash",
+				tool_input: { command: 'git commit -m "x"' },
+				timestamp: "2026-06-07T00:00:00.000Z",
+				// cwd intentionally omitted
+			},
+			rules(),
+			customDeps,
+		);
+		expect(capturedRoots).toEqual([process.cwd()]);
+		expect(decision).toBeNull();
+	});
+
+	it("falls back to Date.now() for the discharge timestamp when the event's timestamp is empty", async () => {
+		writeSource("src/a.ts", JS_SRC);
+		const result = coverageResult("src/a.ts", [
+			{ name: "f", line: 1, endLine: 3, hits: 5, statement_pct: 100 },
+		]);
+		const discharges: Array<{ file: string; sessionId: string; ts: string }> = [];
+		const customDeps: CommitGateDeps = {
+			runnerFor: () => stubRunner(result).runner,
+			gitChangedFiles: () => ["src/a.ts"],
+			cyclomaticFor: () => () => [fn({ name: "f", line: 1, endLine: 3, cyclomatic: 3 })],
+			clock: () => 0,
+			readFile: (abs) => {
+				try {
+					return readFileSync(abs, "utf-8");
+				} catch {
+					return null;
+				}
+			},
+			recordDischarge: (_root, file, sessionId, ts) => {
+				discharges.push({ file, sessionId, ts });
+			},
+		};
+		const decision = await checkCommitGate(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-no-ts",
+				agent_source: "claude",
+				tool_name: "Bash",
+				tool_input: { command: 'git commit -m "x"' },
+				timestamp: "",
+				cwd: root,
+			},
+			rules(),
+			customDeps,
+		);
+		expect(decision).toBeNull();
+		expect(discharges).toHaveLength(1);
+		expect(discharges[0]?.sessionId).toBe("sess-no-ts");
+		// No eventTs was spread onto the context, so runSuiteAndScan fell back to
+		// `new Date().toISOString()` — still a real ISO timestamp, not "" or undefined.
+		expect(discharges[0]?.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -743,6 +862,33 @@ describe("checkCommitGate — --no-verify note", () => {
 		);
 		expect(decision?.decision).toBe("block");
 		expect(decision?.warnings?.some((w: string) => /--no-verify/.test(w))).toBe(true);
+	});
+
+	const NO_VERIFY_WARNING =
+		"[interlinked:commit-gate] NOTE: `--no-verify` was passed — it bypasses git's own " +
+		"commit hooks. The interlinked commit-time quality gate still evaluated this commit.";
+
+	it("attaches the --no-verify note even when nothing gated changed at all (no-decidable-axis, no source)", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/a.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x" --no-verify'),
+			rules(),
+			deps(runner, ["README.md"]),
+		);
+		expect(ran()).toBe(false); // no gated-language file → suite never spent
+		expect(decision).toEqual({ decision: "allow", warnings: [NO_VERIFY_WARNING] });
+	});
+
+	it("attaches the --no-verify note on the block_on_test_failure-off no-decidable-axis path too", async () => {
+		writeSource("src/a.test.ts", "it('x', () => {});\n");
+		const { runner, ran } = stubRunner(coverageResult("src/other.ts", []));
+		const decision = await checkCommitGate(
+			commitEvent('git commit -m "x" --no-verify'),
+			rules({ block_on_test_failure: false }),
+			deps(runner, ["src/a.test.ts"]),
+		);
+		expect(ran()).toBe(false);
+		expect(decision).toEqual({ decision: "allow", warnings: [NO_VERIFY_WARNING] });
 	});
 });
 
@@ -1091,6 +1237,52 @@ describe("checkCommitGate — changed-file query flags by mode (findings 2026-06
 		};
 		await checkCommitGate(commitEvent("cd sub && git commit -am x"), rules(), deps);
 		expect(rootsQueried).toEqual([root]); // anchored at the toplevel
+	});
+});
+
+describe("checkCommitGate — DEFAULT_DEPS wiring (production dependencies, no injected stubs)", () => {
+	let repo: string;
+
+	function git(...args: string[]): void {
+		execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+	}
+
+	beforeEach(() => {
+		repo = realpathSync(mkdtempSync(join(tmpdir(), "commit-gate-default-deps-")));
+		git("init", "-q");
+		git("config", "user.email", "t@t.test");
+		git("config", "user.name", "t");
+		mkdirSync(join(repo, "src"), { recursive: true });
+		writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n", "utf-8");
+		git("add", "src/a.ts");
+		git("commit", "-qm", "init");
+	});
+
+	afterEach(() => {
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	it("is a real no-op through the production readFile wiring for a staged declaration-only file (no deps injected)", async () => {
+		writeFileSync(join(repo, "src/types.d.ts"), "export declare const x: number;\n", "utf-8");
+		git("add", "src/types.d.ts");
+		const event: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "sess-default-deps",
+			agent_source: "claude",
+			tool_name: "Bash",
+			tool_input: { command: 'git commit -m "x"' },
+			timestamp: "2026-06-07T00:00:00.000Z",
+			cwd: repo,
+		};
+		// No third argument — this exercises DEFAULT_DEPS end to end: the real
+		// defaultGitChangedFiles/defaultResolveRepoRoot (git plumbing), the real
+		// materializeIndexSnapshot, and — the line this test targets — the real
+		// readFile closure (existsSync ? readFileSync : null / try-catch). A
+		// declaration-only staged file means suiteLanguages/sources both stay
+		// empty, so the gate returns before ever invoking the real coverage
+		// runner or cyclomatic analyzer (never spawns a test suite).
+		const decision = await checkCommitGate(event, rules());
+		expect(decision).toBeNull();
 	});
 });
 

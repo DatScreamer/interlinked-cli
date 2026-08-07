@@ -125,4 +125,132 @@ describe("verify-changeset — preview-not-bypass self-gate", () => {
 		expect(process.exitCode).toBe(2);
 		expect(gateProposedContent).not.toHaveBeenCalled();
 	});
+
+	it("--file pointing at a nonexistent path -> usage error naming the file", async () => {
+		const missing = join(tmp, "does-not-exist.json");
+		await verifyChangesetCommand({ file: missing, json: true });
+		expect(process.exitCode).toBe(2);
+		const out = JSON.parse(logs.join("\n"));
+		expect(out.error).toContain(`Could not read changeset file ${missing}`);
+		expect(gateProposedContent).not.toHaveBeenCalled();
+	});
+
+	it("neither --file nor --stdin -> usage error", async () => {
+		await verifyChangesetCommand({ json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toBe("Provide --file <changeset.json> or --stdin.");
+		expect(gateProposedContent).not.toHaveBeenCalled();
+	});
+
+	it("--stdin reads process.stdin to EOF and gates the parsed changeset", async () => {
+		const target = join(tmp, "stdin-target.ts");
+		const payload = JSON.stringify({
+			version: 1,
+			changes: [{ path: target, content: "export const z = 1;\n" }],
+		});
+		const promise = verifyChangesetCommand({ stdin: true, json: true });
+		process.stdin.emit("data", Buffer.from(payload));
+		process.stdin.emit("end");
+		await promise;
+		expect(process.exitCode).toBe(0);
+		expect(gateProposedContent).toHaveBeenCalledWith(
+			[{ path: target, content: "export const z = 1;\n" }],
+			expect.objectContaining({ skipPreWarn: true }),
+		);
+	});
+
+	it("invalid JSON changeset -> usage error naming the parse failure", async () => {
+		const p = join(tmp, "invalid.json");
+		writeFileSync(p, "{ this is not json");
+		await verifyChangesetCommand({ file: p, json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toContain("Changeset is not valid JSON");
+		expect(gateProposedContent).not.toHaveBeenCalled();
+	});
+
+	it("changeset that parses to a non-object (e.g. a JSON string) -> usage error", async () => {
+		const p = join(tmp, "primitive.json");
+		writeFileSync(p, JSON.stringify("just a string"));
+		await verifyChangesetCommand({ file: p, json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toBe(
+			"Changeset must be a JSON object { version: 1, changes: [...] }.",
+		);
+	});
+
+	it("wrong changeset version -> usage error naming the offending version", async () => {
+		const p = join(tmp, "v2.json");
+		writeFileSync(p, JSON.stringify({ version: 2, changes: [{ path: "x.ts", content: "y" }] }));
+		await verifyChangesetCommand({ file: p, json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toBe("Changeset version must be 1 (got 2).");
+	});
+
+	it("changes[i] that isn't an object -> usage error naming the index", async () => {
+		const p = join(tmp, "notobj.json");
+		writeFileSync(p, JSON.stringify({ version: 1, changes: ["nope"] }));
+		await verifyChangesetCommand({ file: p, json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toBe(
+			"changes[0] must be an object { path, content | old_string+new_string | edits }.",
+		);
+	});
+
+	it("changes[i] missing a non-empty path -> usage error naming the index", async () => {
+		const p = join(tmp, "nopath.json");
+		writeFileSync(p, JSON.stringify({ version: 1, changes: [{ content: "x" }] }));
+		await verifyChangesetCommand({ file: p, json: true });
+		expect(process.exitCode).toBe(2);
+		expect(JSON.parse(logs.join("\n")).error).toBe("changes[0].path must be a non-empty string.");
+	});
+
+	it("json failure output includes column and hint when the gate provides them", async () => {
+		gateProposedContent.mockReturnValue({
+			ok: false,
+			failures: [
+				{
+					path: "x.ts",
+					tool: "pre_block",
+					code: "secret",
+					line: 1,
+					column: 5,
+					message: "boom",
+					severity: "error",
+					hint: "fix it",
+				},
+			],
+			elapsedMs: 4,
+		});
+		await verifyChangesetCommand({
+			file: manifest([{ path: join(tmp, "x.ts"), content: "x" }]),
+			json: true,
+		});
+		const out = JSON.parse(logs.join("\n"));
+		expect(out.failures).toEqual([
+			{
+				path: "x.ts",
+				tool: "pre_block",
+				code: "secret",
+				line: 1,
+				message: "boom",
+				severity: "error",
+				column: 5,
+				hint: "fix it",
+			},
+		]);
+	});
+
+	it("usage error in human mode goes to console.error, not console.log", async () => {
+		await verifyChangesetCommand({});
+		expect(process.exitCode).toBe(2);
+		expect(logs).toHaveLength(0);
+		expect(errs.join("\n")).toContain("Provide --file <changeset.json> or --stdin.");
+	});
+
+	it("blocking failure in human mode names the real gate blocking it on submit", async () => {
+		gateProposedContent.mockReturnValue(blockingResult());
+		await verifyChangesetCommand({ file: manifest([{ path: join(tmp, "new2.ts"), content: "x" }]) });
+		expect(process.exitCode).toBe(1);
+		expect(logs.join("\n")).toContain("The real gate blocks this on submit until fixed.");
+	});
 });

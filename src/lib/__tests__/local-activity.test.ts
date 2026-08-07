@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	appendActivityRecordOnly,
 	appendLocalActivity,
@@ -995,14 +995,19 @@ describe("appendLocalActivity — collection mirror", () => {
 // ---------------------------------------------------------------------------
 describe("default cwd resolution", () => {
 	let tmp: string;
-	let prevCwd: string;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry
+	// run for any file whose graph-selected test scope includes this one.
+	// The functions under test resolve cwd via `cwd || process.cwd()` /
+	// `?? process.cwd()`, so the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "la-defaultcwd-"));
-		prevCwd = process.cwd();
-		process.chdir(tmp);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	});
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy?.mockRestore();
 		rmSync(tmp, { recursive: true, force: true });
 	});
 

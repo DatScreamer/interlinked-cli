@@ -6,8 +6,15 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { blockingCycles, clearCycles, collectCycles, sessionSnapshotPaths } from "./tdd.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	blockingCycles,
+	clearCycles,
+	collectCycles,
+	sessionSnapshotPaths,
+	tddClearCommand,
+	tddStatusCommand,
+} from "./tdd.js";
 
 let root: string;
 
@@ -131,5 +138,145 @@ describe("clearCycles", () => {
 		clearCycles(root, "/r/a.ts");
 		const snap = JSON.parse(readFileSync(join(root, ".interlinked", "sessions", "s1.json"), "utf-8"));
 		expect(snap.tool_call_count).toBe(77);
+	});
+
+	it("skips a snapshot with no tdd_cycles field at all", () => {
+		writeFileSync(
+			join(root, ".interlinked", "sessions", "s1.json"),
+			JSON.stringify({ tool_call_count: 5 }),
+		);
+		snapshot("s2", 50, [redCycle]);
+		expect(clearCycles(root, "/r/a.ts")).toBe(1);
+	});
+});
+
+// ===========================================
+// tddStatusCommand / tddClearCommand — live commands, console/stderr captured
+// ===========================================
+
+async function runCmd(fn: () => Promise<void>): Promise<{ out: string; err: string; exitCode: number | undefined }> {
+	const priorExit = process.exitCode;
+	process.exitCode = undefined;
+	const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+	const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await fn();
+		return {
+			out: logSpy.mock.calls.map((c) => String(c[0])).join("\n"),
+			err: errSpy.mock.calls.map((c) => String(c[0])).join("\n"),
+			exitCode: process.exitCode,
+		};
+	} finally {
+		logSpy.mockRestore();
+		errSpy.mockRestore();
+		process.exitCode = priorExit;
+	}
+}
+
+describe("tddStatusCommand", () => {
+	it("reports 'No TDD cycles tracked.' when nothing is tracked", async () => {
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root }));
+		expect(out).toBe("No TDD cycles tracked.");
+	});
+
+	it("normal mode lists only the blocking cycles, with age and set-by command", async () => {
+		snapshot("s1", 146, [
+			redCycle,
+			{ ...redCycle, source_file: "/r/b.ts", state: "green" },
+		]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root }));
+		expect(out).toContain("2 tracked cycle(s), 1 would block a commit:");
+		expect(out).toContain("RED        /r/a.ts — red 106 tool call(s) ago");
+		expect(out).toContain("set by: npx vitest run /r/a.test.ts");
+		expect(out).not.toContain("/r/b.ts");
+	});
+
+	it("normal mode reports '(none blocking)' when nothing would block a commit", async () => {
+		snapshot("s1", 50, [{ ...redCycle, state: "green" }]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root }));
+		expect(out).toContain("1 tracked cycle(s), 0 would block a commit:");
+		expect(out).toContain("(none blocking)");
+	});
+
+	it("flags a cycle with no companion test", async () => {
+		snapshot("s1", 50, [{ ...redCycle, test_file: null }]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root }));
+		expect(out).toContain("[no companion test — cannot be greened by a targeted run]");
+	});
+
+	it("short mode prints a one-line count", async () => {
+		snapshot("s1", 50, [redCycle, { ...redCycle, source_file: "/r/b.ts", state: "green" }]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root, short: true }));
+		expect(out).toBe("2 cycle(s), 1 blocking");
+	});
+
+	it("json mode prints total, blocking, and full cycle rows", async () => {
+		// ONE parse. `output()` stringifies the json renderer's return value, so
+		// the renderer must hand back an object; when it returned a pre-stringified
+		// string the CLI emitted a JSON *string containing JSON* and every
+		// consumer's `JSON.parse(out).total` was undefined. Parsing once is the
+		// assertion that the double-encoding is gone.
+		snapshot("s1", 146, [redCycle]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root, json: true }));
+		const parsed = JSON.parse(out) as { total: number; blocking: number; cycles: unknown[] };
+		expect(parsed).toMatchObject({ total: 1, blocking: 1 });
+		expect(parsed.cycles).toHaveLength(1);
+	});
+
+	it("full mode lists every cycle, not just the blocking ones", async () => {
+		snapshot("s1", 50, [redCycle, { ...redCycle, source_file: "/r/b.ts", state: "green" }]);
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root, full: true }));
+		expect(out).toContain("/r/a.ts");
+		expect(out).toContain("/r/b.ts");
+	});
+
+	it("full mode reports 'No TDD cycles tracked.' too when empty", async () => {
+		const { out } = await runCmd(() => tddStatusCommand({ cwd: root, full: true }));
+		expect(out).toBe("No TDD cycles tracked.");
+	});
+});
+
+describe("tddClearCommand", () => {
+	it("reports an error and exits 1 when no cycle matches a given file", async () => {
+		snapshot("s1", 50, [redCycle]);
+		const { out, err, exitCode } = await runCmd(() => tddClearCommand("/r/nope.ts", { cwd: root }));
+		expect(out).toBe("");
+		expect(err).toBe("Error: No TDD cycle matched /r/nope.ts.");
+		expect(exitCode).toBe(1);
+	});
+
+	it("reports an error without a filename when clearing all matches nothing", async () => {
+		const { err, exitCode } = await runCmd(() => tddClearCommand(undefined, { cwd: root }));
+		expect(err).toBe("Error: No TDD cycle matched.");
+		expect(exitCode).toBe(1);
+	});
+
+	it("normal mode reports the count and the restart/re-measure notes", async () => {
+		snapshot("s1", 50, [redCycle]);
+		const { out, exitCode } = await runCmd(() => tddClearCommand("/r/a.ts", { cwd: root }));
+		expect(exitCode).toBeUndefined();
+		expect(out).toContain("Cleared 1 TDD cycle(s).");
+		expect(out).toContain("interlinked harness restart");
+		expect(out).toContain("commit gate re-measures on the next test run");
+		expect(collectCycles(root)).toHaveLength(0);
+	});
+
+	it("short mode prints 'cleared N'", async () => {
+		snapshot("s1", 50, [redCycle, { ...redCycle, source_file: "/r/b.ts" }]);
+		const { out } = await runCmd(() => tddClearCommand(undefined, { cwd: root, short: true }));
+		expect(out).toBe("cleared 2");
+	});
+
+	it("json mode prints the removed count", async () => {
+		// One parse — see the sibling assertion in tddStatusCommand's json test.
+		snapshot("s1", 50, [redCycle]);
+		const { out } = await runCmd(() => tddClearCommand("/r/a.ts", { cwd: root, json: true }));
+		expect(JSON.parse(out)).toEqual({ removed: 1 });
+	});
+
+	it("full mode reports the snapshot count scanned", async () => {
+		snapshot("s1", 50, [redCycle]);
+		const { out } = await runCmd(() => tddClearCommand("/r/a.ts", { cwd: root, full: true }));
+		expect(out).toBe("Cleared 1 TDD cycle(s) from 1 snapshot(s).");
 	});
 });

@@ -25,10 +25,12 @@ or block.
 | Gate | Blocks when | Threshold | Correct response |
 |---|---|---|---|
 | **Line cap** | a Write/Edit grows a *cappable* file past its ceiling | **500** lines (`DEFAULT_MAX_LINES`) | Decompose into a re-exporting entry + sibling modules |
-| **Cyclomatic — over cap** | edit adds/raises a function over the hard cap | **25** | Extract cohesive branches into named helpers |
+| **Cyclomatic — over cap** | edit adds/raises a function over the hard cap | **22** | Extract cohesive branches into named helpers |
 | **Cyclomatic — slew** | a uniquely-named ≤cap function jumps **>2** branches in one edit | tolerance **2**/edit | Extract cohesive branches into named helpers; do not stage one logical complexity increase across edits |
+| **Cognitive — over cap** | edit leaves a function over the cognitive cap | **30** | Flatten: guard clauses, extract the deepest-nested block |
+| **Cognitive — slew** | a uniquely-named ≤cap function jumps **>4** cognitive points in one edit | tolerance **4**/edit | Flatten rather than extract-in-place; a branch pulled out unchanged keeps its nesting cost |
 | **Per-edit coverage** | edit adds an uncovered executable line/function, or drops a file's coverage vs its high-water | gate default on; drop ε 0.005; floor default 0 (off) | Stay within the source/test pair and add coverage; default debt mode allows the first uncovered/red edit but blocks unrelated wandering |
-| **CRAP** | a touched function is both complex AND under-covered | **30**, default on | Decompose OR add coverage (both lower CRAP) |
+| **CRAP** | a touched function is both complex AND under-covered | **25**, default on | Decompose OR add coverage (both lower CRAP) |
 | **Per-edit mutation** | a measured edit adds a changed-region survivor/uncovered site, makes affected tests red, or exceeds the site limit | default **off**; site limit **50**; `mode: block\|warn\|off` | Strengthen the test, fix/remove the source behavior, or split an oversized behavioral change |
 | **Baseline-integrity** | a Write/Edit *loosens* any `.interlinked/` water-line | per-file direction | Meet the bar; don't edit the baseline |
 
@@ -40,9 +42,16 @@ exempt: `.d.ts`, anything under `.interlinked/`, root `scratch/`, non-code exten
 content), test/spec paths, and `@codegen-data`-marked modules.
 
 **Cyclomatic** — strict, **no override**. Over-cap uses an identity-free multiset compare (a new
-over-cap function, or raising one past 25, blocks); sub-cap limits a named function to +2
+over-cap function, or raising one past the cap, blocks); sub-cap limits a named function to +2
 branches/edit. JS/TS via the TS AST, Python via `radon`, other languages skipped. **Fails open
 (allows) + warns loudly** when the analyzer is unavailable — never a silent skip.
+
+**Cognitive** — same three rules, promoted from warn-only to blocking 2026-08-01 (measured p99 26
+vs cap 30). Two ways it is *stricter* than cyclomatic: uniquely-named functions are compared by
+identity rather than rank, so relocating complexity into a newly-created over-cap helper still
+blocks; and the remedy is flattening, not extraction — pulling a deeply-nested branch into its
+own function unchanged carries the nesting cost with it. Run `interlinked caps` for live values;
+the numbers in this table are the committed defaults, not a promise about your repo.
 
 **Per-edit coverage** — default **ON**. Runs the *affected tests only* under a scoped overlay,
 then decides: red-bar (default on) → uncovered-added-line → per-file coverage drop vs
@@ -182,7 +191,7 @@ Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline 
 | `interlinked coverage check [--update-baseline] [--json]` | Full-suite per-file coverage ratchet vs `coverage-baseline.json`. |
 | `interlinked mutation check [--report <p>] [--update-baseline]` | Per-file mutation-score ratchet vs `mutation-baseline.json` (needs a Stryker report). |
 | `interlinked metrics [--top <n>] [--json]` | Read-only whole-repo scan: companion-test, coverage, cyclomatic, CRAP hotspots + gate verdicts. |
-| `interlinked debt list \| show <file> \| resolve <file>` | The pair-scoped TDD obligation ledger (coverage / red-suite debts). |
+| `interlinked debt list \| show <file> \| resolve <file>` | The obligation ledger — coverage / red-suite debts AND `transient` debts (the deferred tsc/registry findings a coordinated edit opens). All three verbs see every kind; `resolve` is the human override for a debt no future edit will clear. |
 | `interlinked adopt [--dry-run] [--suite-baseline]` | Seed the supported adoption artifacts from the repo's current state (see below; mutation state is excluded). |
 
 `interlinked coverage`/`mutation` need a report on disk first (a coverage run / `stryker run`) —

@@ -62,6 +62,19 @@ describe("signature_change_callers_not_updated", () => {
 		expect(signatureChangeCallersNotUpdated.fn(session, lastEvent)).toEqual([]);
 	});
 
+	it("truncates the evidence list and adds a '+N more' suffix when unresolved exceeds 3", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/auth.ts" } },
+		]);
+		session.pending_completions.set("src/auth.ts", {
+			...makeCompletion(),
+			affected_files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"],
+		});
+		const [match] = signatureChangeCallersNotUpdated.fn(session, lastEvent);
+		expect(match?.message).toContain("(+2 more)");
+		expect(match?.evidence).toEqual(["a.ts", "b.ts", "c.ts"]);
+	});
+
 	it("fires only for the partially-resolved completions, not the fully-resolved ones", () => {
 		const { session, lastEvent } = buildTrajectoryFixture([
 			{ tool_name: "Edit", tool_input: { file_path: "src/auth.ts" } },
@@ -117,6 +130,19 @@ describe("regression_test_missing_after_fix", () => {
 		const { session, lastEvent } = buildTrajectoryFixture([
 			{ tool_name: "Edit", tool_input: { file_path: "src/foo.ts" } },
 			{ tool_name: "Edit", tool_input: { file_path: "src/foo.spec.ts" } },
+		]);
+		session.failed_files.set("src/foo.ts", {
+			failure_count: 1,
+			checks: ["tsc"],
+			recorded_at: "2026-05-27T00:00:00Z",
+			tool_call_count: 1,
+		});
+		expect(regressionTestMissingAfterFix.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("does not fire when the failed file itself was never written this session", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Read", tool_input: { file_path: "src/foo.ts" } },
 		]);
 		session.failed_files.set("src/foo.ts", {
 			failure_count: 1,
@@ -223,6 +249,75 @@ describe("stale_doc_sibling", () => {
 			tool_input: { file_path: "src/foo.ts" },
 		});
 		expect(staleDocSibling.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the Edit candidate has no file_path at all", () => {
+		const { session } = buildTrajectoryFixture([{ tool_name: "Edit", tool_input: {} }]);
+		const candidate = makeCandidate({ tool_name: "Edit", tool_input: {} });
+		expect(staleDocSibling.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the edited file is not a source file (e.g. .json)", () => {
+		const { session } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/config.json" } },
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: "src/config.json" },
+		});
+		expect(staleDocSibling.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the only existing sibling doc was already READ this session (continues past it)", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "stale-doc-"));
+		try {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			mkdirSync(join(dir, "docs"), { recursive: true });
+			writeFileSync(join(dir, "src", "foo.ts"), "// foo\n");
+			writeFileSync(join(dir, "docs", "foo.md"), "# foo\n");
+			const sourcePath = join(dir, "src", "foo.ts");
+			const docPath = join(dir, "docs", "foo.md");
+			const { session } = buildTrajectoryFixture([
+				{ tool_name: "Edit", tool_input: { file_path: sourcePath }, cwd: dir },
+				{ tool_name: "Read", tool_input: { file_path: docPath }, cwd: dir },
+			]);
+			const candidate = makeCandidate({
+				tool_name: "Edit",
+				tool_input: { file_path: sourcePath },
+				cwd: dir,
+			});
+			expect(staleDocSibling.fn(session, candidate)).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves a RELATIVE file_path against cwd (not-absolute branch) and still fires", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "stale-doc-"));
+		try {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			mkdirSync(join(dir, "docs"), { recursive: true });
+			writeFileSync(join(dir, "src", "foo.ts"), "// foo\n");
+			writeFileSync(join(dir, "docs", "foo.md"), "# foo\n");
+			const { session } = buildTrajectoryFixture([
+				{ tool_name: "Edit", tool_input: { file_path: "src/foo.ts" }, cwd: dir },
+			]);
+			const candidate = makeCandidate({
+				tool_name: "Edit",
+				tool_input: { file_path: "src/foo.ts" },
+				cwd: dir,
+			});
+			const matches = staleDocSibling.fn(session, candidate);
+			expect(matches.length).toBe(1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -377,6 +472,23 @@ describe("coverage_silent_regression", () => {
 			"src/b.ts",
 			"src/c.ts",
 		]);
+		session.test_runs.set("src/a.test.ts", { status: "pass", at_step: 1 });
+		expect(coverageSilentRegression.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("does not fire when a test file was only READ (not written) this session", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		session.files_written = new Set([
+			"src/a.ts",
+			"src/b.ts",
+			"src/c.ts",
+			"src/d.ts",
+			"src/e.ts",
+			"src/f.ts",
+		]);
+		session.files_read = new Set(["src/a.test.ts"]);
 		session.test_runs.set("src/a.test.ts", { status: "pass", at_step: 1 });
 		expect(coverageSilentRegression.fn(session, lastEvent)).toEqual([]);
 	});
@@ -766,6 +878,32 @@ describe("plan_vs_trajectory_drift_quality", () => {
 			tool_name: "Bash",
 			tool_input: { command: "ls" },
 		});
+		expect(planVsTrajectoryDriftQuality.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the plan's steps carry no tool_hint at all (empty hints)", () => {
+		const { session } = buildTrajectoryFixture([
+			{ tool_name: "Read", tool_input: { file_path: "src/auth.ts" } },
+		]);
+		session.declared_plan = {
+			session_id: "test-session",
+			agent_name: "tester",
+			created_at_iso: "2026-05-27T00:00:00.000Z",
+			created_at_step: 0,
+			source: "TaskCreate",
+			steps: [{ intent: "edit auth", status: "pending" }],
+		};
+		const candidate = makeCandidate({
+			tool_name: "Bash",
+			tool_input: { command: "ls" },
+		});
+		expect(planVsTrajectoryDriftQuality.fn(session, candidate)).toEqual([]);
+	});
+
+	it("does not fire when the candidate has no tool_name at all", () => {
+		const session = planSession();
+		const candidate = makeCandidate({ tool_input: { command: "ls" } });
+		candidate.tool_name = undefined;
 		expect(planVsTrajectoryDriftQuality.fn(session, candidate)).toEqual([]);
 	});
 

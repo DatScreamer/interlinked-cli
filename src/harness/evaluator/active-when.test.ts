@@ -174,6 +174,15 @@ describe("evaluateActiveWhen — after_command axis", () => {
 		});
 		expect(evaluateActiveWhen(rule, session, makeEvent())).toBe(true);
 	});
+
+	it("window_steps <= 0 scans the full commands_run history (no slicing)", () => {
+		const recent = Array.from({ length: 20 }, (_, i) => `step-${i}`);
+		const session = makeSession({ commands_run: ["/ship", ...recent] });
+		const rule = makeRule({
+			active_when: { after_command: { pattern: "^/ship\\b", window_steps: 0 } },
+		});
+		expect(evaluateActiveWhen(rule, session, makeEvent())).toBe(true);
+	});
 });
 
 describe("evaluateActiveWhen — file_scope axis", () => {
@@ -216,6 +225,16 @@ describe("evaluateActiveWhen — agent_source / overlay axes", () => {
 			true,
 		);
 		expect(evaluateActiveWhen(rule, makeSession(), makeEvent({ agent_source: "claude" }))).toBe(
+			false,
+		);
+	});
+
+	it("agent_source axis accepts an array of allowed sources", () => {
+		const rule = makeRule({ active_when: { agent_source: ["codex", "claude"] } });
+		expect(evaluateActiveWhen(rule, makeSession(), makeEvent({ agent_source: "claude" }))).toBe(
+			true,
+		);
+		expect(evaluateActiveWhen(rule, makeSession(), makeEvent({ agent_source: "cursor" }))).toBe(
 			false,
 		);
 	});
@@ -330,5 +349,58 @@ describe("describeActiveWhen", () => {
 		expect(desc).toContain("skill∈{ship,review}");
 		expect(desc).toContain("file_scope~/^src/");
 		expect(desc).toContain("∧");
+	});
+
+	it("formats the phase axis", () => {
+		expect(describeActiveWhen({ phase: { name: "ship_phase", value: "green" } })).toBe(
+			"phase=ship_phase:green",
+		);
+	});
+
+	it("formats the after_command axis", () => {
+		expect(describeActiveWhen({ after_command: { pattern: "^/ship\\b" } })).toBe(
+			"after_command~/^/ship\\b/",
+		);
+	});
+
+	it("formats a single-string overlay axis", () => {
+		expect(describeActiveWhen({ overlay: "claude" })).toBe("overlay∈{claude}");
+	});
+
+	it("formats a multi-value overlay axis", () => {
+		expect(describeActiveWhen({ overlay: ["claude", "cursor"] })).toBe(
+			"overlay∈{claude,cursor}",
+		);
+	});
+
+	it("formats a single-string agent_source axis", () => {
+		expect(describeActiveWhen({ agent_source: "codex" })).toBe("agent_source∈{codex}");
+	});
+
+	it("formats a multi-value agent_source axis", () => {
+		expect(describeActiveWhen({ agent_source: ["codex", "claude"] })).toBe(
+			"agent_source∈{codex,claude}",
+		);
+	});
+
+	it("formats the predicate axis", () => {
+		expect(
+			describeActiveWhen({ predicate: { name: "active_agent_count_at_least" } }),
+		).toBe("predicate=active_agent_count_at_least");
+	});
+
+	it("joins every axis together when all are present", () => {
+		const desc = describeActiveWhen({
+			skill: "ship",
+			phase: { name: "ship_phase", value: "green" },
+			after_command: { pattern: "^/ship\\b" },
+			file_scope: "^src/",
+			overlay: "claude",
+			agent_source: "codex",
+			predicate: { name: "active_agent_count_at_least" },
+		});
+		expect(desc).toBe(
+			"skill∈{ship} ∧ phase=ship_phase:green ∧ after_command~/^/ship\\b/ ∧ file_scope~/^src// ∧ overlay∈{claude} ∧ agent_source∈{codex} ∧ predicate=active_agent_count_at_least",
+		);
 	});
 });

@@ -75,6 +75,27 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs[0]?.text).toBe("boom");
 	});
 
+	it("emits a user_prompt for a text block inside a user content array", () => {
+		const recs = parseTranscriptEntry(user([{ type: "text", text: "array-form prompt" }]));
+		expect(recs).toHaveLength(1);
+		expect(recs[0]?.category).toBe("user_prompt");
+		expect(recs[0]?.text).toBe("array-form prompt");
+	});
+
+	it("flattens a tool_result content array of mixed block shapes via blockText", () => {
+		const recs = parseTranscriptEntry(
+			user([
+				{
+					type: "tool_result",
+					tool_use_id: "toolu_2",
+					content: ["plain string element", { text: "block with text" }, { type: "other" }, 42],
+				},
+			]),
+		);
+		expect(recs).toHaveLength(1);
+		expect(recs[0]?.text).toBe("plain string element\nblock with text");
+	});
+
 	it("carries a sidechain entry's agentId as agent_id (subagent attribution)", () => {
 		const entry = {
 			...assistant([{ type: "text", text: "subagent result" }]),

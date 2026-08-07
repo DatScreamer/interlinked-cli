@@ -23,6 +23,7 @@ import {
 	isOrphanedDebt,
 	readDebtTxnsForFile,
 	readOpenDebts,
+	readOpenTransientDebts,
 } from "../harness/obligation-ledger-io.js";
 import type { Obligation, ObligationTxn } from "../harness/obligations.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -84,9 +85,24 @@ function renderDebtTable(open: Obligation[], projectRoot: string = process.cwd()
 	].join("\n");
 }
 
+/**
+ * Every open debt of every kind, for the OPERATOR surfaces.
+ *
+ * The gate readers are split on purpose — `readOpenDebts` (coverage/red_suite)
+ * and `readOpenTransientDebts` have different teeth and must never discharge
+ * each other. Reporting and human override are the opposite case: a debt the
+ * operator cannot see is a debt they cannot clear, and a wrongly-opened
+ * transient debt was unclearable by any command until this existed (found
+ * 2026-08-04, after a dry-run probe left one that blocked unrelated edits).
+ * Unscoped by session deliberately, as `readOpenTransientDebts` documents.
+ */
+function readAllOpenDebts(projectRoot: string): Obligation[] {
+	return [...readOpenDebts(projectRoot), ...readOpenTransientDebts(projectRoot)];
+}
+
 export async function debtListCommand(opts: DebtCommandOpts): Promise<void> {
 	const projectRoot = opts.cwd ?? process.cwd();
-	const open = readOpenDebts(projectRoot);
+	const open = readAllOpenDebts(projectRoot);
 	output(getOutputMode(opts), open, {
 		json: () => open,
 		short: () =>
@@ -130,7 +146,7 @@ export async function debtShowCommand(
 		outputError(mode, `no ledger history for ${target} — nothing has opened a debt on it`);
 		return;
 	}
-	const open = readOpenDebts(cwd).filter((d) => d.file === target);
+	const open = readAllOpenDebts(cwd).filter((d) => d.file === target);
 	output(mode, { file: target, open, txns }, {
 		json: () => ({ file: target, open, txns }),
 		normal: () =>
@@ -152,7 +168,7 @@ export async function debtResolveCommand(
 	const target = requireFileArg(file, "resolve");
 	if (!target) return;
 	const cwd = opts.cwd ?? process.cwd();
-	const open = readOpenDebts(cwd).filter((d) => d.file === target);
+	const open = readAllOpenDebts(cwd).filter((d) => d.file === target);
 	const atMs = Date.now();
 	for (const d of open) {
 		appendDebtTxn(cwd, { op: "discharge", id: d.id, source: "local", atMs });

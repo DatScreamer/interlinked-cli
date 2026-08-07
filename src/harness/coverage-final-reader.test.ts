@@ -7,6 +7,7 @@ import {
 	__resetCoverageFinalCache,
 	coverageForFile,
 	loadCoverageFinal,
+	loadCoverageFinalSummary,
 } from "./coverage-final-reader.js";
 
 // ==================================================================
@@ -264,5 +265,292 @@ describe("coverageForFile", () => {
 		const result = loadCoverageFinal(coveragePath, tmp);
 		// Windows-style lookup should still find the POSIX-keyed entry.
 		expect(coverageForFile(result as never, "src\\foo.ts")).toBeDefined();
+	});
+});
+
+// ==================================================================
+// buildPerFileCoverage / extractFunctionCoverage / extractLineCoverage —
+// field-omission and fallback branches not reached by the fixture above.
+// ==================================================================
+
+describe("loadCoverageFinal — field-omission and fallback branches", () => {
+	it("an entry missing every optional field parses to empty functions and no per-line data", () => {
+		const absPath = join(tmp, "src/empty.ts");
+		writeFixture({
+			[absPath]: { path: absPath },
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/empty.ts");
+		expect(entry?.functions).toEqual([]);
+		expect(entry?.coveredLines).toBeUndefined();
+		expect(entry?.uncoveredLines).toBeUndefined();
+	});
+
+	it("skips a falsy raw entry while still parsing sibling valid entries", () => {
+		const absPath = join(tmp, "src/real.ts");
+		writeFixture({
+			"/some/ghost/key": null,
+			[absPath]: {
+				path: absPath,
+				fnMap: { "0": { name: "f", decl: { start: { line: 1 }, end: { line: 1 } } } },
+				f: { "0": 1 },
+				statementMap: { "0": { start: { line: 1 } } },
+				s: { "0": 1 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		expect(result?.size).toBe(1);
+		expect(coverageForFile(result as never, "src/real.ts")).toBeDefined();
+	});
+
+	it("skips an entry whose path key resolves to nothing (empty path and empty key)", () => {
+		writeFixture({
+			"": { path: "", fnMap: {}, f: {}, statementMap: {}, s: {} },
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		expect(result?.size).toBe(0);
+	});
+
+	it("uses fnEntry.loc when decl is absent, and falls back to fnEntry.line when neither decl nor loc is present", () => {
+		const absPath = join(tmp, "src/fallback.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {
+					// loc only (no decl) — exercises `decl ?? loc`.
+					"0": { name: "viaLoc", loc: { start: { line: 5 }, end: { line: 7 } } },
+					// neither decl nor loc — exercises `fnEntry.line` fallback.
+					"1": { name: "viaLine", line: 20 },
+					// startLine resolves to 0 — must be skipped entirely.
+					"2": { name: "zeroLine", line: 0 },
+				},
+				f: { "0": 1, "1": 1 },
+				statementMap: {
+					"0": { start: { line: 5 } },
+					"1": { start: { line: 20 } },
+				},
+				s: { "0": 1, "1": 1 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/fallback.ts");
+		expect(entry?.functions.map((f) => f.name)).toEqual(["viaLoc", "viaLine"]);
+		const viaLoc = entry?.functions.find((f) => f.name === "viaLoc");
+		expect(viaLoc?.line).toBe(5);
+		expect(viaLoc?.endLine).toBe(7); // from loc.end
+		const viaLine = entry?.functions.find((f) => f.name === "viaLine");
+		expect(viaLine?.line).toBe(20);
+		expect(viaLine?.endLine).toBe(20); // no loc/decl end — falls back to startLine
+	});
+
+	it("prefers decl.end over startLine when loc is absent but decl.end is present", () => {
+		const absPath = join(tmp, "src/declend.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {
+					"0": { name: "f", decl: { start: { line: 1 }, end: { line: 9 } } },
+				},
+				f: {},
+				statementMap: { "0": { start: { line: 1 } } },
+				s: { "0": 1 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/declend.ts");
+		expect(entry?.functions[0]?.endLine).toBe(9);
+		// `f` has no "0" entry — exercises `hits[id] ?? 0`.
+		expect(entry?.functions[0]?.hits).toBe(0);
+	});
+
+	it("extractLineCoverage: a statement with no start.line is skipped; one with start.line 0 is skipped", () => {
+		const absPath = join(tmp, "src/nostart.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {},
+				f: {},
+				statementMap: {
+					"0": { end: { line: 3 } }, // no start at all
+					"1": { start: { line: 0 }, end: { line: 1 } }, // start.line <= 0
+				},
+				s: { "0": 1, "1": 1 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/nostart.ts");
+		expect(entry?.coveredLines).toBeUndefined();
+		expect(entry?.uncoveredLines).toBeUndefined();
+	});
+
+	it("extractLineCoverage: a zero-hit single-line statement with no `end` field spans only its start line", () => {
+		const absPath = join(tmp, "src/noend.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {},
+				f: {},
+				statementMap: {
+					"0": { start: { line: 40 } }, // no end field
+				},
+				s: { "0": 0 },
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/noend.ts");
+		expect(entry?.uncoveredLines?.has(40)).toBe(true);
+		expect([...(entry?.uncoveredLines ?? [])]).toEqual([40]);
+	});
+
+	it("computeStatementPct: skips a statement whose start.line is null and treats a missing hit entry as 0", () => {
+		const absPath = join(tmp, "src/nullline.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				fnMap: {
+					"0": { name: "f", decl: { start: { line: 1 }, end: { line: 5 } } },
+				},
+				f: { "0": 1 },
+				statementMap: {
+					"0": { end: { line: 2 } }, // no start.line — must be skipped, not counted
+					"1": { start: { line: 2 } }, // in-range, no `s` entry — defaults to 0
+				},
+				s: {},
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		const entry = coverageForFile(result as never, "src/nullline.ts");
+		// Only statement "1" counts toward the range (statement "0" has no start.line);
+		// it has no hit recorded, so it's uncovered → 0%.
+		expect(entry?.functions[0]?.statement_pct).toBe(0);
+	});
+
+	it("resolveFileKey: a non-string path field is rejected outright (no fallback to the map key)", () => {
+		const absPath = join(tmp, "src/numeric-path.ts");
+		writeFixture({
+			[absPath]: {
+				path: 12345, // truthy but non-string — fails the typeof guard
+				fnMap: {},
+				f: {},
+				statementMap: {},
+				s: {},
+			},
+		});
+		const result = loadCoverageFinal(coveragePath, tmp);
+		expect(result?.size).toBe(0);
+	});
+});
+
+// ==================================================================
+// loadCoverageFinalSummary
+// ==================================================================
+
+describe("loadCoverageFinalSummary", () => {
+	it("returns null when the file is missing", () => {
+		expect(loadCoverageFinalSummary(join(tmp, "nope.json"), tmp)).toBeNull();
+	});
+
+	it("returns null for malformed JSON", () => {
+		writeFileSync(coveragePath, "{ not json", "utf-8");
+		expect(loadCoverageFinalSummary(coveragePath, tmp)).toBeNull();
+	});
+
+	it("returns null for non-object JSON", () => {
+		writeFileSync(coveragePath, "\"a string\"", "utf-8");
+		expect(loadCoverageFinalSummary(coveragePath, tmp)).toBeNull();
+	});
+
+	it("skips a falsy entry and one missing statementMap/s, returns null when nothing usable remains", () => {
+		writeFixture({
+			ghost: null,
+			[join(tmp, "src/noshape.ts")]: { path: join(tmp, "src/noshape.ts") },
+		});
+		expect(loadCoverageFinalSummary(coveragePath, tmp)).toBeNull();
+	});
+
+	it("skips an entry outside the repo root via relKeyFor", () => {
+		const outside = "/tmp/some-other-repo/src/bar.ts";
+		writeFixture({
+			[outside]: {
+				path: outside,
+				statementMap: { "0": { start: { line: 1 }, end: { line: 1 } } },
+				s: { "0": 1 },
+			},
+		});
+		expect(loadCoverageFinalSummary(coveragePath, tmp)).toBeNull();
+	});
+
+	it("computes lines and branches pct from statementMap/s/b, taking the MAX hit per shared line", () => {
+		const absPath = join(tmp, "src/foo.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				statementMap: {
+					// Two statements share line 1 — one hit, one not; the line wins on max.
+					"0": { start: { line: 1 }, end: { line: 1 } },
+					"1": { start: { line: 1 }, end: { line: 1 } },
+					"2": { start: { line: 2 }, end: { line: 2 } },
+				},
+				s: { "0": 0, "1": 3, "2": 0 },
+				b: {
+					"0": [1, 0],
+					"1": [2, 2],
+				},
+			},
+		});
+		const summary = loadCoverageFinalSummary(coveragePath, tmp);
+		expect(summary).not.toBeNull();
+		const entry = summary?.["src/foo.ts"];
+		expect(entry?.lines).toEqual({ pct: 50, covered: 1, total: 2 });
+		expect(entry?.branches).toEqual({ pct: 75, covered: 3, total: 4 });
+	});
+
+	it("reports 100% for a file with zero statements and zero branches (istanbul convention)", () => {
+		const absPath = join(tmp, "src/nada.ts");
+		writeFixture({
+			[absPath]: { path: absPath, statementMap: {}, s: {} },
+		});
+		const summary = loadCoverageFinalSummary(coveragePath, tmp);
+		const entry = summary?.["src/nada.ts"];
+		expect(entry?.lines).toEqual({ pct: 100, covered: 0, total: 0 });
+		expect(entry?.branches).toEqual({ pct: 100, covered: 0, total: 0 });
+	});
+
+	it("branchMetricsOf skips non-array `b` values and non-numeric entries within an array", () => {
+		const absPath = join(tmp, "src/weirdb.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				statementMap: { "0": { start: { line: 1 }, end: { line: 1 } } },
+				s: { "0": 1 },
+				b: {
+					"0": "not-an-array",
+					// Deliberately malformed for the guard branch.
+					"1": [1, "x", null, 0],
+				},
+			},
+		});
+		const summary = loadCoverageFinalSummary(coveragePath, tmp);
+		const entry = summary?.["src/weirdb.ts"];
+		// Only the numeric slots in "1" count: [1, 0] → 1 covered of 2 total.
+		expect(entry?.branches).toEqual({ pct: 50, covered: 1, total: 2 });
+	});
+
+	it("lineMetricsOf skips statements with no start.line or start.line <= 0", () => {
+		const absPath = join(tmp, "src/badstart.ts");
+		writeFixture({
+			[absPath]: {
+				path: absPath,
+				statementMap: {
+					"0": { end: { line: 5 } }, // no start
+					"1": { start: { line: 0 }, end: { line: 1 } }, // start <= 0
+					"2": { start: { line: 3 }, end: { line: 3 } },
+				},
+				s: { "0": 1, "1": 1, "2": 1 },
+			},
+		});
+		const summary = loadCoverageFinalSummary(coveragePath, tmp);
+		const entry = summary?.["src/badstart.ts"];
+		expect(entry?.lines).toEqual({ pct: 100, covered: 1, total: 1 });
 	});
 });

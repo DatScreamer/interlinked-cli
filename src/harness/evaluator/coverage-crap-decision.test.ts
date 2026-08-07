@@ -5,13 +5,16 @@
 // in isolation.
 
 import { describe, expect, it, vi } from "vitest";
+import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
+import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
 import type { PerFileCoverage } from "../coverage-final-reader.js";
 import type { HarnessDecision } from "../types.js";
 import {
 	type CrapInput,
 	DEFAULT_CRAP_THRESHOLD,
 	decideCrap,
+	defaultCyclomaticFor,
 	hasPerLineData,
 } from "./coverage-crap-decision.js";
 
@@ -56,6 +59,17 @@ const baseInput = (over: Partial<CrapInput>): CrapInput => ({
 	threshold: DEFAULT_CRAP_THRESHOLD,
 	analyzer: () => [fn("big", 1, 3, 10)],
 	...over,
+});
+
+describe("defaultCyclomaticFor", () => {
+	it("resolves js and ts to the real TS-AST analyzer", () => {
+		expect(defaultCyclomaticFor("js")).toBe(computeCyclomaticAst);
+		expect(defaultCyclomaticFor("ts")).toBe(computeCyclomaticAst);
+	});
+
+	it("resolves python to the real radon-backed analyzer", () => {
+		expect(defaultCyclomaticFor("python")).toBe(computeCyclomaticPython);
+	});
 });
 
 describe("DEFAULT_CRAP_THRESHOLD", () => {
@@ -121,6 +135,87 @@ describe("decideCrap — per-line (coverage.py) shape", () => {
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/CRAP score of 52/);
 		expect(decision?.reason).toMatch(/coverage 25%/);
+	});
+
+	it("skips a function with zero measurable lines in range and one under threshold, blocking on the worst of two over-threshold functions (sort comparator)", () => {
+		// Four functions sharing one coverage map, exercising every branch of
+		// crapViolationsPerLine in one pass:
+		//   - "big"   (1..6):   covered{3}, uncovered{4,5,6} → 25% → CRAP ≈ 52 (kept, over threshold)
+		//   - "small" (10..12): fully covered, low cyclomatic → CRAP under threshold (continue, L159 true)
+		//   - "empty" (20..22): no covered/uncovered lines fall in range → executable===0 (continue, L156 true)
+		//   - "big2"  (30..35): covered{32}, uncovered{33,34,35,36} minus 36 (out of range) → also over threshold, DIFFERENT score than "big" so the sort comparator (b.crap_score - a.crap_score) actually discriminates between two elements
+		const decision = decideCrap(
+			{
+				relPath: "src/a.py",
+				proposed: "def big():\n    pass\n",
+				cov: perLineCov(
+					[3, 10, 11, 12, 32],
+					[4, 5, 6, 33, 34, 35],
+				),
+				editedLines: undefined,
+				threshold: DEFAULT_CRAP_THRESHOLD,
+				analyzer: () => [
+					{ name: "big", line: 1, endLine: 6, cyclomatic: 10, language: "python" },
+					{ name: "small", line: 10, endLine: 12, cyclomatic: 1, language: "python" },
+					{ name: "empty", line: 20, endLine: 22, cyclomatic: 20, language: "python" },
+					{ name: "big2", line: 30, endLine: 35, cyclomatic: 8, language: "python" },
+				],
+			},
+			failIfDegraded(),
+		);
+		expect(decision?.decision).toBe("block");
+		// "big" (cyclomatic 10 @ 25%) scores higher than "big2" (cyclomatic 8 @ 25%)
+		// — the sort must surface "big", not just whichever came first.
+		expect(decision?.reason).toContain("`big`");
+		expect(decision?.reason).not.toContain("`small`");
+		expect(decision?.reason).not.toContain("`empty`");
+	});
+
+	it("falls back to an empty set when coveredLines is undefined (uncoveredLines-only report)", () => {
+		const cov: PerFileCoverage = {
+			filePath: "src/a.py",
+			mtime: 0,
+			functions: [],
+			uncoveredLines: new Set([1, 2, 3, 4, 5, 6]),
+			// coveredLines intentionally omitted
+		};
+		const decision = decideCrap(
+			{
+				relPath: "src/a.py",
+				proposed: "def big():\n    pass\n",
+				cov,
+				editedLines: undefined,
+				threshold: DEFAULT_CRAP_THRESHOLD,
+				analyzer: () => [{ name: "big", line: 1, endLine: 6, cyclomatic: 10, language: "python" }],
+			},
+			failIfDegraded(),
+		);
+		// 0% covered (empty covered-lines fallback) — the highest possible CRAP.
+		expect(decision?.decision).toBe("block");
+		expect(decision?.reason).toMatch(/coverage 0%/);
+	});
+
+	it("falls back to an empty set when uncoveredLines is undefined (coveredLines-only report)", () => {
+		const cov: PerFileCoverage = {
+			filePath: "src/a.py",
+			mtime: 0,
+			functions: [],
+			coveredLines: new Set([1, 2, 3, 4, 5, 6]),
+			// uncoveredLines intentionally omitted
+		};
+		const decision = decideCrap(
+			{
+				relPath: "src/a.py",
+				proposed: "def big():\n    pass\n",
+				cov,
+				editedLines: undefined,
+				threshold: DEFAULT_CRAP_THRESHOLD,
+				analyzer: () => [{ name: "big", line: 1, endLine: 6, cyclomatic: 10, language: "python" }],
+			},
+			failIfDegraded(),
+		);
+		// 100% covered (empty uncovered-lines fallback) — low CRAP, no block.
+		expect(decision).toBeNull();
 	});
 });
 

@@ -2,7 +2,16 @@
 // (per-runner subtree, contribution blobs + checksums, manifest generations)
 // and the section 12 atomicity requirements (CAS promotion, torn data reads as
 // absent, accepted state never corrupted).
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -297,5 +306,196 @@ describe("blob + manifest integration", () => {
 		promoteManifest(storeDir, sampleManifest(1), null);
 		expect(existsSync(join(root, ".interlinked/coverage-index/vitest/manifest.json"))).toBe(true);
 		expect(readFileSync(join(storeDir, "manifest.json"), "utf-8")).toContain('"runnerId": "vitest"');
+	});
+});
+
+describe("contributionFromJson — element-set field validation", () => {
+	// Reach numberKeyMap / stringKeyMap / elementSetFromJson via the only
+	// public entry point that calls them: contributionFromJson's per-file
+	// element-set revival.
+	function withFiles(files: unknown): unknown {
+		return { version: 1, shardId: "s", files };
+	}
+
+	it("rejects a non-array `lines` field", () => {
+		expect(
+			contributionFromJson(withFiles([["f.ts", { lines: "nope", branches: [], functions: [] }]])),
+		).toBeNull();
+	});
+
+	it("rejects a `lines` pair that is not an array", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [[1, 2], "bad"], branches: [], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("rejects a `lines` pair whose key is not a number", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [["x", 2]], branches: [], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("rejects a `lines` pair whose hit-count is not a number", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [[1, "y"]], branches: [], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("rejects a non-array `branches` field", () => {
+		expect(
+			contributionFromJson(withFiles([["f.ts", { lines: [], branches: "nope", functions: [] }]])),
+		).toBeNull();
+	});
+
+	it("rejects a `branches` pair that is not an array", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [], branches: [["b", 1], "bad"], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("rejects a `branches` pair whose key is not a string", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [], branches: [[5, 1]], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("rejects a `branches` pair whose hit-count is not a number", () => {
+		expect(
+			contributionFromJson(
+				withFiles([["f.ts", { lines: [], branches: [["b", "y"]], functions: [] }]]),
+			),
+		).toBeNull();
+	});
+
+	it("accepts a well-formed element set with all dimensions present", () => {
+		const revived = contributionFromJson(
+			withFiles([
+				["f.ts", { lines: [[1, 2]], branches: [["b", 1]], functions: [["fn", 3]] }],
+			]),
+		);
+		expect(revived?.files.get("f.ts")?.lines.get(1)).toBe(2);
+	});
+
+	it("rejects a raw element-set value that is not an object (null pair[1])", () => {
+		expect(contributionFromJson(withFiles([["f.ts", null]]))).toBeNull();
+	});
+
+	it("rejects an element-set whose `statements` field is malformed", () => {
+		expect(
+			contributionFromJson(
+				withFiles([
+					[
+						"f.ts",
+						{ lines: [], branches: [], functions: [], statements: [["x", "not-a-number"]] },
+					],
+				]),
+			),
+		).toBeNull();
+	});
+
+	it("accepts an element-set whose `statements` field is well-formed", () => {
+		const revived = contributionFromJson(
+			withFiles([
+				["f.ts", { lines: [], branches: [], functions: [], statements: [["0:0", 4]] }],
+			]),
+		);
+		expect(revived?.files.get("f.ts")?.statements?.get("0:0")).toBe(4);
+	});
+
+	it("rejects a top-level `files` pair that is not an array", () => {
+		expect(contributionFromJson(withFiles(["not-a-pair"]))).toBeNull();
+	});
+
+	it("rejects a top-level `files` pair whose key is not a string", () => {
+		expect(
+			contributionFromJson(withFiles([[42, { lines: [], branches: [], functions: [] }]])),
+		).toBeNull();
+	});
+});
+
+describe("readAcceptedManifest — top-level field validation", () => {
+	function writeManifestRaw(value: unknown): void {
+		mkdirSync(storeDir, { recursive: true });
+		writeFileSync(join(storeDir, "manifest.json"), JSON.stringify(value), "utf-8");
+	}
+
+	it("rejects a top-level array (not a plain object)", () => {
+		writeManifestRaw([1, 2, 3]);
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("rejects a top-level null", () => {
+		writeManifestRaw(null);
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("rejects a version other than 1", () => {
+		writeManifestRaw({ ...sampleManifest(1), version: 2 });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("rejects a non-integer generation", () => {
+		writeManifestRaw({ ...sampleManifest(1), generation: "one" });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("rejects a non-string runnerId", () => {
+		writeManifestRaw({ ...sampleManifest(1), runnerId: 42 });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("rejects a `shards` field that is not a plain object", () => {
+		writeManifestRaw({ ...sampleManifest(1), shards: [] });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("accepts a well-formed manifest with all top-level fields valid", () => {
+		writeManifestRaw(sampleManifest(1));
+		expect(readAcceptedManifest(storeDir)?.generation).toBe(1);
+	});
+});
+
+describe("atomic-write failure paths (rename collision forces the catch branch)", () => {
+	it("writeContributionBlob returns null when the blob's rename target is an existing directory", () => {
+		const contribution = sampleContribution();
+		// Pre-create the exact blob path AS A DIRECTORY so atomicWrite's
+		// renameSync(tmp, absPath) fails with EISDIR after writeFileSync(tmp)
+		// already succeeded — forces atomicWrite's own catch (rmSync + rethrow)
+		// and writeContributionBlob's outer catch.
+		const relPath = `shards/${createHash("sha256").update(contribution.shardId).digest("hex").slice(0, 32)}.json.gz`;
+		mkdirSync(join(storeDir, relPath), { recursive: true });
+		expect(writeContributionBlob(storeDir, contribution)).toBeNull();
+	});
+
+	it("promoteManifest returns false when the manifest rename target is an existing directory", () => {
+		// Pre-create manifest.json AS A DIRECTORY so the CAS write's rename
+		// fails after the temp file was already written.
+		mkdirSync(join(storeDir, "manifest.json"), { recursive: true });
+		expect(promoteManifest(storeDir, sampleManifest(1), null)).toBe(false);
+	});
+});
+
+describe("readContributionBlob — decompression failure", () => {
+	it("reads as null when the checksum matches but the bytes are not valid gzip", () => {
+		const contribution = sampleContribution();
+		const entry = writeContributionBlob(storeDir, contribution);
+		if (!entry) throw new Error("write failed");
+		// Overwrite with bytes whose sha256 matches the recomputed checksum
+		// (recompute against the NEW bytes) but that fail to gunzip — forces
+		// the JSON.parse(gunzipSync(...)) catch, not the checksum-mismatch path.
+		const badBytes = Buffer.from([0x1f, 0x8b, 0x00, 0x00, 0xff, 0xff, 0xff]); // gzip magic, garbage body
+		writeFileSync(join(storeDir, entry.contributionPath), badBytes);
+		const badChecksum = createHash("sha256").update(badBytes).digest("hex");
+		expect(readContributionBlob(storeDir, { ...entry, contributionChecksum: badChecksum })).toBeNull();
 	});
 });

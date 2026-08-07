@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +22,17 @@ import {
 } from "./session-daemon.js";
 import type { DaemonPaths } from "./session-paths.js";
 import type { TsgoRunner } from "./tsgo-runner.js";
+import type { HarnessDecision } from "./types.js";
+import type { UnifiedHookEvent } from "./unified-event.js";
+
+// Partial mock: keep every real helper (daemonPathsFor, sanitizeSessionId, ...)
+// except `isDaemonSocketServing`, which the anti-stomp zombie-reap tests below
+// need to control deterministically (serving / not-serving / throwing) rather
+// than depend on a real socket-connect race.
+vi.mock("./session-paths.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./session-paths.js")>();
+	return { ...actual, isDaemonSocketServing: vi.fn(actual.isDaemonSocketServing) };
+});
 
 let tmp = "";
 let daemon: SessionDaemonHandle | null = null;
@@ -225,16 +244,29 @@ describe("startSessionDaemon", () => {
 		expect(asError.error?.code).toBe("bad_request");
 	});
 
-	it("refuses to steal a framed socket owned by a live PID", async () => {
-		const paths = makePaths("owned");
+	// -------------------------------------------------------------------------
+	// Zombie-incumbent reap (regression: a live PID alone is NOT proof of a
+	// healthy incumbent — `installCrashResilience()` keeps a daemon process
+	// resident through an unexpected error even after its socket LISTENER
+	// died. Mirrors the raw-socket path's four cases in
+	// `server.ts` / `server.test.ts`'s "anti-stomp loser paths": a serving
+	// incumbent still wins, a live-but-silent incumbent is reaped and taken
+	// over, a dead pid takes over without even probing, and a throwing probe
+	// fails safe by deferring.
+	// -------------------------------------------------------------------------
+
+	it("(a) refuses to steal a framed socket owned by a live AND SERVING PID", async () => {
+		const paths = makePaths("owned-serving");
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(true);
 
 		let caught: unknown;
 		try {
 			await startSessionDaemon({
 				paths,
-				session_id: "owned",
+				session_id: "owned-serving",
 				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
 			});
 		} catch (err) {
@@ -245,8 +277,68 @@ describe("startSessionDaemon", () => {
 		expect(caught).toBeInstanceOf(DaemonOwnershipConflictError);
 		expect((caught as DaemonOwnershipConflictError).ownerPid).toBe(1);
 		expect((caught as Error).message).toContain("already running");
-		// A losing claim must never touch the socket path — the pre-seeded
-		// placeholder content proves nothing rebound over it.
+		// A losing claim must never touch the socket or pid path — the
+		// pre-seeded placeholder content proves nothing rebound over them.
+		expect(readFileSync(paths.socket, "utf-8")).toBe("");
+		expect(readFileSync(paths.pid, "utf-8")).toBe("1");
+	});
+
+	it("(b) a live but NOT SERVING incumbent is reaped and taken over (no throw)", async () => {
+		const paths = makePaths("owned-zombie");
+		writeFileSync(paths.pid, "1");
+		writeFileSync(paths.socket, "");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(false);
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "owned-zombie",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		expect(killSpy).toHaveBeenCalledWith(1, "SIGTERM");
+		// The stale claim is force-taken over: OUR pid now owns the file, and
+		// the daemon bound its own socket over the placeholder.
+		expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
+		expect(existsSync(paths.socket)).toBe(true);
+		killSpy.mockRestore();
+	});
+
+	it("(c) a dead pid takes over without probing the socket", async () => {
+		const paths = makePaths("owned-dead");
+		writeFileSync(paths.pid, "2147480000"); // effectively never live on a test host
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.isDaemonSocketServing).mockClear();
+
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "owned-dead",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		expect(vi.mocked(sp.isDaemonSocketServing)).not.toHaveBeenCalled();
+		expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
+	});
+
+	it("(d) a throwing probe fails safe and defers to the incumbent (throws)", async () => {
+		const paths = makePaths("owned-throw");
+		writeFileSync(paths.pid, "1");
+		writeFileSync(paths.socket, "");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.isDaemonSocketServing).mockRejectedValueOnce(new Error("unexpected probe failure"));
+
+		let caught: unknown;
+		try {
+			await startSessionDaemon({
+				paths,
+				session_id: "owned-throw",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			});
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(DaemonOwnershipConflictError);
+		expect((caught as DaemonOwnershipConflictError).ownerPid).toBe(1);
+		// Never stomped the placeholder socket while deferring.
 		expect(readFileSync(paths.socket, "utf-8")).toBe("");
 	});
 
@@ -316,5 +408,331 @@ describe("startSessionDaemon", () => {
 		daemon = null;
 		expect(existsSync(paths.pid)).toBe(false);
 		expect(existsSync(paths.socket)).toBe(false);
+	});
+
+	it("daemon.shutdown RPC drives state.shutdown -> handle.stop() (line 134)", async () => {
+		const paths = makePaths("t6");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t6",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// `state.shutdown` (the daemon.shutdown handler) fires `void handle.stop()`
+		// SYNCHRONOUSLY inside `dispatchRpc`, before the handler writes its ack —
+		// and `stop()` destroys every connected client (including this one) as
+		// its very first synchronous act. So the client-visible contract here is
+		// "the connection is torn down", not "an ack frame arrives" — assert the
+		// socket closes and the daemon actually tore itself down.
+		const closed = await new Promise<boolean>((resolve, reject) => {
+			const socket = createConnection(paths.socket);
+			const timer = setTimeout(() => {
+				socket.destroy();
+				reject(new Error("timeout"));
+			}, 1500);
+			socket.on("connect", () => {
+				socket.write(
+					encodeFrame({
+						schema_version: "1",
+						id: "shut-1",
+						method: "daemon.shutdown",
+						params: { reason: "test" },
+					} as RpcMessage),
+				);
+			});
+			socket.on("close", () => {
+				clearTimeout(timer);
+				resolve(true);
+			});
+			socket.on("error", () => {
+				clearTimeout(timer);
+				resolve(true);
+			});
+		});
+		expect(closed).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(existsSync(paths.pid)).toBe(false);
+		expect(existsSync(paths.socket)).toBe(false);
+	});
+
+	it("a decoded response-shaped (non-request) frame is dropped silently (line 169)", async () => {
+		const paths = makePaths("t7");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t7",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		const responses = await new Promise<RpcMessage[]>((resolve, reject) => {
+			const socket = createConnection(paths.socket);
+			let pending = "";
+			const out: RpcMessage[] = [];
+			const timer = setTimeout(() => {
+				socket.destroy();
+				reject(new Error("timeout"));
+			}, 1000);
+			socket.on("connect", () => {
+				// A well-formed, decodable frame with an `id` but no `method` —
+				// isRequest() returns false, so the daemon must drop it silently
+				// and never write a reply for it.
+				socket.write(`${JSON.stringify({ schema_version: "1", id: "resp-1", result: { ok: true } })}\n`);
+				socket.write(
+					encodeFrame({
+						schema_version: "1",
+						id: "real-1",
+						method: "daemon.health",
+						params: {},
+					} as RpcMessage),
+				);
+			});
+			socket.on("data", (b: Buffer) => {
+				const { frames, remainder } = splitFrames(b.toString("utf-8"), pending);
+				pending = remainder;
+				for (const frame of frames) out.push(JSON.parse(frame) as RpcMessage);
+			});
+			socket.on("error", (err) => {
+				clearTimeout(timer);
+				reject(err);
+			});
+			// Only one real response is ever written back; give the socket a
+			// moment to prove no second frame follows, then resolve.
+			setTimeout(() => {
+				clearTimeout(timer);
+				socket.destroy();
+				resolve(out);
+			}, 300);
+		});
+		expect(responses.map((r) => r.id)).toEqual(["real-1"]);
+	});
+
+	it("a rejecting evaluateHook makes dispatchRpc throw, caught into an internal error (line 177)", async () => {
+		const paths = makePaths("t8");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t8",
+			state: {
+				tsgo: makeTsgo(),
+				getEvaluatorContext: makeEvaluatorContext,
+				evaluateHook: vi.fn().mockRejectedValue(new Error("boom")),
+			},
+		});
+		const response = await roundTrip(paths, {
+			schema_version: "1",
+			id: "hook-1",
+			method: "hook.pre_tool_use",
+			params: {
+				schema_version: "1",
+				event_id: "e1",
+				session_id: "t8",
+				ts: "2026-08-05T00:00:00.000Z",
+				runner: "claude",
+				runner_native_event: "PreToolUse",
+				phase: "pre-tool",
+				context: { cwd: "/repo" },
+				action: { kind: "tool_call", tool_name: "Bash", tool_input: {} },
+			},
+		} as unknown as RpcMessage);
+		const asError = response as { error?: { code: string; message: string } };
+		expect(asError.error?.code).toBe("internal");
+		expect(asError.error?.message).toBe("boom");
+	});
+
+	it("the idle-shutdown poller stops the daemon after true inactivity (lines 202-204)", async () => {
+		const paths = makePaths("t9");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t9",
+			idle_shutdown_ms: 50,
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// No activity at all after start — wait past the idle window plus the
+		// poller's own tick interval (Math.min(idleMs, 60_000) = 50ms).
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(existsSync(paths.pid)).toBe(false);
+		expect(existsSync(paths.socket)).toBe(false);
+		daemon = null;
+	});
+
+	it("the idle-shutdown poller does not fire while requests are still in flight (line 202 true side)", async () => {
+		const paths = makePaths("t10");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "t10",
+			idle_shutdown_ms: 50,
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// A live connection kept open plus recent traffic resets lastActivity
+		// on every frame, so a single idle-window wait alone would already
+		// prove the timer branch — assert the daemon is still alive right up
+		// against the idle window as the direct evidence.
+		await roundTrip(paths, {
+			schema_version: "1",
+			id: "keepalive-1",
+			method: "daemon.health",
+			params: {},
+		} as RpcMessage);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(existsSync(paths.pid)).toBe(true);
+		expect(existsSync(paths.socket)).toBe(true);
+	});
+
+	it("claimSessionPid: a path that is a directory fails the read as null, then throws on the write attempt (line 241)", () => {
+		const dirPidPath = join(tmp, "pid-is-a-dir");
+		mkdirSync(dirPidPath);
+		expect(() => claimSessionPid(dirPidPath, process.pid)).toThrow();
+	});
+
+	it("claimSessionPid: a non-EEXIST wx-write failure (permission denied) is rethrown, not swallowed (branch 88 true side)", () => {
+		const readonlyDir = join(tmp, "readonly");
+		mkdirSync(readonlyDir);
+		chmodSync(readonlyDir, 0o555);
+		const target = join(readonlyDir, "harness.pid");
+		try {
+			expect(() => claimSessionPid(target, process.pid)).toThrow(/EACCES|permission denied/);
+		} finally {
+			// Restore write permission so afterEach's rmSync(tmp, {recursive:true}) can clean up.
+			chmodSync(readonlyDir, 0o755);
+		}
+	});
+
+	it("claimSessionPid: readPidFile treats non-numeric / non-positive content as absent (branch 239 false side)", () => {
+		const pidPath = join(tmp, "garbage.pid");
+		writeFileSync(pidPath, "not-a-pid");
+		// existingPid resolves to null (NaN is not finite), so the claim
+		// proceeds as if nothing were there and succeeds outright.
+		const claim = claimSessionPid(pidPath, process.pid);
+		expect(claim).toEqual({ claimed: true });
+	});
+
+	it("startSessionDaemon creates missing .interlinked/ and logs/ directories on first start (lines 111, 113 true side)", async () => {
+		const nestedRoot = join(tmp, "not-yet-created");
+		const paths: DaemonPaths = {
+			socket: join(nestedRoot, "harness-nested.sock"),
+			pid: join(nestedRoot, "harness-nested.pid"),
+			log: join(nestedRoot, "logs", "daemon-nested.log"),
+		};
+		expect(existsSync(nestedRoot)).toBe(false);
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "nested",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		expect(existsSync(nestedRoot)).toBe(true);
+		expect(existsSync(join(nestedRoot, "logs"))).toBe(true);
+	});
+
+	it("skips mkdirSync for the logs/ directory when it already exists (branch 113 false side)", async () => {
+		const preexistingLogsDir = join(tmp, "logs");
+		mkdirSync(preexistingLogsDir, { recursive: true });
+		expect(existsSync(preexistingLogsDir)).toBe(true);
+		const paths = makePaths("preexisting-logs");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "preexisting-logs",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		expect(existsSync(paths.pid)).toBe(true);
+	});
+
+	it("startSessionDaemon removes a stale leftover socket file before binding (line 122 true side)", async () => {
+		const paths = makePaths("stale-sock");
+		writeFileSync(paths.socket, "stale placeholder, not a real socket");
+		expect(existsSync(paths.socket)).toBe(true);
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "stale-sock",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// The real bind succeeded (the stale file was removed first) — the path
+		// now exists again, but as a genuine live socket, not the placeholder.
+		expect(existsSync(paths.socket)).toBe(true);
+	});
+
+	it("idle_shutdown_ms: 0 disables the poller entirely — stop() then skips clearInterval (branches 199, 219 false sides)", async () => {
+		const paths = makePaths("no-idle");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "no-idle",
+			idle_shutdown_ms: 0,
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// No idle timer was armed; give it well past any short idle window to
+		// prove it never self-stops.
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(existsSync(paths.pid)).toBe(true);
+		await daemon.stop();
+		daemon = null;
+		expect(existsSync(paths.pid)).toBe(false);
+	});
+
+	it("the idle poller's inflight guard defers shutdown while a slow RPC is still in flight (branch 202 true side)", async () => {
+		const paths = makePaths("slow-inflight");
+		let resolveHook: (() => void) | undefined;
+		const slowEvaluateHook = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					resolveHook = () => resolve({ decision: "allow" });
+				}),
+		);
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "slow-inflight",
+			idle_shutdown_ms: 50,
+			state: {
+				tsgo: makeTsgo(),
+				getEvaluatorContext: makeEvaluatorContext,
+				evaluateHook: slowEvaluateHook as unknown as (
+					event: UnifiedHookEvent,
+				) => Promise<HarnessDecision>,
+			},
+		});
+		// Fire the slow hook RPC without awaiting it — it stays in flight.
+		const pending = roundTrip(paths, {
+			schema_version: "1",
+			id: "slow-1",
+			method: "hook.pre_tool_use",
+			params: {
+				schema_version: "1",
+				event_id: "e-slow",
+				session_id: "slow-inflight",
+				ts: "2026-08-05T00:00:00.000Z",
+				runner: "claude",
+				runner_native_event: "PreToolUse",
+				phase: "pre-tool",
+				context: { cwd: "/repo" },
+				action: { kind: "tool_call", tool_name: "Bash", tool_input: {} },
+			},
+		} as unknown as RpcMessage);
+		// Let at least two idle-poller ticks (50ms each) pass while inflight>0.
+		await new Promise((resolve) => setTimeout(resolve, 130));
+		expect(existsSync(paths.pid)).toBe(true);
+		expect(daemon.rpcInflight()).toBe(1);
+		resolveHook?.();
+		await pending;
+		expect(daemon.rpcInflight()).toBe(0);
+	});
+
+	it("the idle poller's window check survives a tick when recent activity keeps the daemon under the threshold (branch 203 true side)", async () => {
+		const paths = makePaths("under-window");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "under-window",
+			idle_shutdown_ms: 200,
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		// Wait most of the way through the first 200ms tick period, THEN send
+		// activity — so when the first tick fires (~200ms from start),
+		// `Date.now() - lastActivity` is small (a comfortable margin under the
+		// threshold, not a borderline value right at it) and the poller must
+		// take the "survive" branch rather than stopping.
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		await roundTrip(paths, {
+			schema_version: "1",
+			id: "keepalive-2",
+			method: "daemon.health",
+			params: {},
+		} as RpcMessage);
+		// Land the check comfortably after the first tick (~200ms) but well
+		// before the second (~400ms).
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(existsSync(paths.pid)).toBe(true);
 	});
 });

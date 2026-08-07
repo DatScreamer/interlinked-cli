@@ -48,6 +48,56 @@ describe("c (ANSI wrappers)", () => {
 		expect(stripAnsi(c.bold("hi")).length).toBe(2);
 		expect(stripAnsi(c.red("hello"))).toBe("hello");
 	});
+
+	it("italic/cyan/magenta/gray/white strip to the original text", () => {
+		expect(stripAnsi(c.italic("i"))).toBe("i");
+		expect(stripAnsi(c.cyan("c"))).toBe("c");
+		expect(stripAnsi(c.magenta("m"))).toBe("m");
+		expect(stripAnsi(c.gray("g"))).toBe("g");
+		expect(stripAnsi(c.white("w"))).toBe("w");
+	});
+
+	it("bg* helpers strip to the original text (bgRed/bgGreen/bgYellow/bgBlue)", () => {
+		expect(stripAnsi(c.bgRed("r"))).toBe("r");
+		expect(stripAnsi(c.bgGreen("g"))).toBe("g");
+		expect(stripAnsi(c.bgYellow("y"))).toBe("y");
+		expect(stripAnsi(c.bgBlue("b"))).toBe("b");
+	});
+
+	it("ansi()-based and bg* helpers take both branches of the supportsColor ternary", async () => {
+		// `supportsColor` is computed once at module load from
+		// process.stdout.isTTY / NO_COLOR / CI, so we force both states by
+		// stubbing isTTY and re-importing the module fresh each time.
+		const originalIsTTY = process.stdout.isTTY;
+		try {
+			vi.resetModules();
+			Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+			vi.stubEnv("NO_COLOR", "");
+			vi.stubEnv("CI", "");
+			const colored = await import("../formatter.js");
+			expect(colored.c.bgRed("x")).toBe("\x1b[41m\x1b[37mx\x1b[0m");
+			expect(colored.c.bgGreen("x")).toBe("\x1b[42m\x1b[30mx\x1b[0m");
+			expect(colored.c.bgYellow("x")).toBe("\x1b[43m\x1b[30mx\x1b[0m");
+			expect(colored.c.bgBlue("x")).toBe("\x1b[44m\x1b[37mx\x1b[0m");
+			expect(colored.c.bold("x")).toBe("\x1b[1mx\x1b[0m");
+
+			vi.resetModules();
+			Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+			const plain = await import("../formatter.js");
+			expect(plain.c.bgRed("x")).toBe("x");
+			expect(plain.c.bgGreen("x")).toBe("x");
+			expect(plain.c.bgYellow("x")).toBe("x");
+			expect(plain.c.bgBlue("x")).toBe("x");
+			expect(plain.c.bold("x")).toBe("x");
+		} finally {
+			Object.defineProperty(process.stdout, "isTTY", {
+				value: originalIsTTY,
+				configurable: true,
+			});
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		}
+	});
 });
 
 describe("truncate", () => {
@@ -115,6 +165,32 @@ describe("table", () => {
 		expect(stripAnsi(table(["Col"], []))).toMatch(/\(none\)/);
 	});
 
+	it("does not truncate a cell even when maxWidth caps the computed column width below it", () => {
+		// maxWidth caps the computed column width below the actual cell
+		// length, so `widths[i] - stripped.length` goes negative and the
+		// Math.max(0, ...) clamp in the padding calc must kick in.
+		const out = table(["Col"], [["a-very-long-cell-value"]], { maxWidth: 3 });
+		const lines = stripAnsi(out).split("\n");
+		expect(lines[2]).toBe("a-very-long-cell-value");
+	});
+
+	it("treats a missing cell (row shorter than headers) as empty when measuring width", () => {
+		const out = stripAnsi(table(["A", "B"], [["only-a"]]));
+		const lines = out.split("\n");
+		// Header row still renders both columns; the short row's missing `B`
+		// cell falls back to "" rather than throwing.
+		expect(lines[0]).toBe("A       B");
+	});
+
+	it("clamps padding to 0 for a cell with no corresponding header (row longer than headers)", () => {
+		const out = stripAnsi(table(["A"], [["a", "extra"]]));
+		const lines = out.split("\n");
+		// `extra` has no width entry, so its own padding falls back to 0 (no
+		// trailing spaces on that cell) — only the fixed 2-space column
+		// separator appears between it and `a`.
+		expect(lines[2]).toBe("a  extra");
+	});
+
 	it("columns align to the longest cell", () => {
 		const out = stripAnsi(
 			table(
@@ -143,6 +219,25 @@ describe("badge", () => {
 
 	it("unknown statuses get the dim default", () => {
 		expect(stripAnsi(badge("mystery"))).toBe("[mystery]");
+	});
+
+	it("covers every case label in the switch (green/dim/yellow/blue/red groups)", () => {
+		expect(stripAnsi(badge("active"))).toBe("[active]");
+		expect(stripAnsi(badge("completed"))).toBe("[completed]");
+		expect(stripAnsi(badge("done"))).toBe("[done]");
+		expect(stripAnsi(badge("offline"))).toBe("[offline]");
+		expect(stripAnsi(badge("inactive"))).toBe("[inactive]");
+		expect(stripAnsi(badge("deactivated"))).toBe("[deactivated]");
+		expect(stripAnsi(badge("pending"))).toBe("[pending]");
+		expect(stripAnsi(badge("waiting"))).toBe("[waiting]");
+		expect(stripAnsi(badge("in_progress"))).toBe("[in_progress]");
+		expect(stripAnsi(badge("working"))).toBe("[working]");
+		expect(stripAnsi(badge("blocked"))).toBe("[blocked]");
+		expect(stripAnsi(badge("failed"))).toBe("[failed]");
+	});
+
+	it("is case-insensitive via toLowerCase", () => {
+		expect(stripAnsi(badge("ONLINE"))).toBe("[ONLINE]");
 	});
 });
 
@@ -184,6 +279,11 @@ describe("relativeTime", () => {
 			/^\d+d ago$/,
 		);
 	});
+
+	it("falls back to a localized date string past 30 days", () => {
+		const old = new Date(FROZEN_NOW - 90 * 24 * 60 * 60_000);
+		expect(relativeTime(old.toISOString())).toBe(old.toLocaleDateString());
+	});
 });
 
 describe("shortTimestamp", () => {
@@ -207,8 +307,28 @@ describe("formatTokens / estimateCost", () => {
 		expect(formatTokens({})).toBe("0 tokens");
 	});
 
+	it("formatTokens omits the `out` segment when output is absent", () => {
+		expect(formatTokens({ input: 500 })).toBe("500 in");
+	});
+
+	it("formatTokens includes the `cache` segment when cache_read is present", () => {
+		expect(formatTokens({ input: 500, cache_read: 1200 })).toBe("500 in / 1.2k cache");
+	});
+
 	it("estimateCost includes a `$` prefix", () => {
 		expect(estimateCost({ input: 1000, output: 500 })).toMatch(/^~\$/);
+	});
+
+	it("estimateCost treats a missing input/output/cache_read as 0 cost contribution", () => {
+		// Same fields present in both calls; omitting one must produce the
+		// identical result to passing it as 0 (the `|| 0` fallback arm), for
+		// each of the three fields independently.
+		expect(estimateCost({ output: 500 })).toBe(estimateCost({ input: 0, output: 500 }));
+		expect(estimateCost({ input: 1000 })).toBe(estimateCost({ input: 1000, output: 0, cache_read: 0 }));
+	});
+
+	it("estimateCost renders 4 decimal places under $0.01", () => {
+		expect(estimateCost({ input: 1 })).toBe("~$0.0000");
 	});
 
 	it("opus pricing is higher than sonnet for the same tokens", () => {

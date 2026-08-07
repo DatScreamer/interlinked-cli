@@ -42,8 +42,13 @@ describe("stryker.conf.json — operator coverage", () => {
 
 	it("keeps the harness socket out of the sandbox", () => {
 		// Stryker sandboxes by copying the tree and crashes on the Unix socket
-		// under .interlinked/ (found live 2026-07-02).
-		expect(loadConfig().ignorePatterns).toContain(".interlinked");
+		// under .interlinked/ (found live 2026-07-02). Accept either the bare
+		// name or the root-anchored `/.interlinked` form — entries were anchored
+		// 2026-08-05 because an unanchored pattern also strips same-named
+		// directories out of test fixtures.
+		expect(loadConfig().ignorePatterns).toEqual(
+			expect.arrayContaining([expect.stringMatching(/^\/?\.interlinked$/)]),
+		);
 	});
 
 	it("runs the project's actual test runner", () => {

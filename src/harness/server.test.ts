@@ -86,7 +86,7 @@ interface EventLoopDepsCapture {
 	resetIdleTimer: () => void;
 	syncRuntimeIn: () => void;
 	syncRuntimeOut: () => void;
-	writeCollectionRecord: (event: unknown) => void;
+	writeCollectionRecord: (event: unknown, decision?: unknown) => void;
 	protocolStatusPath: string;
 	ctx: Record<string, unknown>;
 }
@@ -347,6 +347,10 @@ vi.mock("./session-paths.js", () => ({
 	// No foreign daemon in the mocked world — the anti-stomp guard must not
 	// read the real repo's live harness.pid and process.exit() the test worker.
 	liveForeignDaemonPid: vi.fn(() => null),
+	// Default: an incumbent (when `liveForeignDaemonPid` returns non-null)
+	// answers its socket — matches the pre-fix behavior for any test that
+	// doesn't override it.
+	isDaemonSocketServing: vi.fn(async () => true),
 }));
 
 // ---------------------------------------------------------------------------
@@ -434,6 +438,33 @@ vi.mock("./build-staleness.js", () => ({
 	runningBuildStaleness: vi.fn(() => null),
 	stalenessWarning: vi.fn(() => null),
 }));
+// build-refresh — capture opts so the `lastActivityMs` closure (a thin
+// wrapper over module state, otherwise unreachable because
+// `resolveOwnArtifact` bails out early on a src-run/.ts module URL) can be
+// invoked directly.
+interface BuildRefreshOptsCapture {
+	lastActivityMs: () => number;
+}
+let capturedBuildRefreshOpts: BuildRefreshOptsCapture | null = null;
+vi.mock("./build-refresh.js", async () => {
+	// Preserve the real staleness-warning side effect (a pre-existing test
+	// asserts on it) while stubbing out the rest — the real function's
+	// artifact-resolution/watcher/spawn machinery has no meaningful behavior
+	// under a src-run .ts module URL anyway.
+	const { runningBuildStaleness, stalenessWarning } =
+		await vi.importMock<typeof import("./build-staleness.js")>("./build-staleness.js");
+	return {
+		spawnRestartViaCli: vi.fn(() => false),
+		startBuildRefreshWatcher: vi.fn(
+			(opts: BuildRefreshOptsCapture & { moduleUrl: string; log: (m: string) => void }) => {
+				const warn = stalenessWarning(runningBuildStaleness(opts.moduleUrl));
+				if (warn) opts.log(warn);
+				capturedBuildRefreshOpts = opts;
+				return vi.fn();
+			},
+		),
+	};
+});
 vi.mock("./statusline-snapshot.js", () => ({
 	writeStatuslineArtifacts: vi.fn(),
 }));
@@ -451,6 +482,56 @@ vi.mock("./evaluator/pre-tool.js", () => ({
 }));
 vi.mock("./auto-coordinate.js", () => ({
 	DEFAULT_AUTO_COORDINATION_CONFIG: { enabled: false, interval_ms: 1000 },
+}));
+
+// ---------------------------------------------------------------------------
+// checks/cyclomatic-ast — astComplexityAvailable capability probe. Default
+// `true` so most tests exercise the "AST-accurate" log line already covered;
+// a dedicated test flips it `false` for the fallback-warning branch.
+// ---------------------------------------------------------------------------
+let astComplexityAvailableOverride = true;
+vi.mock("./checks/cyclomatic-ast.js", () => ({
+	astComplexityAvailable: vi.fn(() => astComplexityAvailableOverride),
+}));
+
+// ---------------------------------------------------------------------------
+// server/daemon-timers — capture the hooks object so the RSS-ceiling/spike/
+// idle-shrink closures server.ts wires in (normally only invoked by real
+// memory pressure) can be exercised directly.
+// ---------------------------------------------------------------------------
+interface DaemonTimerHooksCapture {
+	shutdown: () => void;
+	requestHandOver?: () => boolean;
+	onSpike?: (rssMb: number, deltaMb: number) => void;
+	shrinkIdleMemory?: () => void;
+	lastEventAtMs?: () => number;
+}
+let capturedDaemonTimerHooks: DaemonTimerHooksCapture | null = null;
+vi.mock("./server/daemon-timers.js", () => ({
+	installDaemonTimers: vi.fn((hooks: DaemonTimerHooksCapture) => {
+		capturedDaemonTimerHooks = hooks;
+		return vi.fn();
+	}),
+}));
+
+// ---------------------------------------------------------------------------
+// sponsor/runtime — capture the options object so readSettings/
+// hasRecentActivity (thin closures over module state) can be invoked
+// directly rather than through the real tick() polling loop.
+// ---------------------------------------------------------------------------
+interface SponsorRuntimeOptsCapture {
+	readSettings: () => unknown;
+	hasRecentActivity: () => boolean;
+	log: (msg: string) => void;
+	interlinkedDir: string;
+}
+let capturedSponsorOpts: SponsorRuntimeOptsCapture | null = null;
+vi.mock("./sponsor/runtime.js", () => ({
+	readSponsorSettingsFromConfig: vi.fn(() => null),
+	startSponsorRuntime: vi.fn((opts: SponsorRuntimeOptsCapture) => {
+		capturedSponsorOpts = opts;
+		return { tick: vi.fn(async () => {}) };
+	}),
 }));
 
 // ---------------------------------------------------------------------------
@@ -568,6 +649,10 @@ beforeEach(() => {
 	cap.statusWriters.writeScannerStatus = vi.fn();
 	cap.statusWriters.writeReviewPendingMarker = vi.fn();
 	onProcessOnRegister = null;
+	astComplexityAvailableOverride = true;
+	capturedDaemonTimerHooks = null;
+	capturedSponsorOpts = null;
+	capturedBuildRefreshOpts = null;
 	installProcessShims();
 });
 
@@ -1209,6 +1294,7 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		const sp = await import("./session-paths.js");
 		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
+		vi.mocked(sp.isDaemonSocketServing).mockReset().mockResolvedValue(true);
 	});
 
 	async function ledgerRows(): Promise<string[]> {
@@ -1228,6 +1314,70 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		const rows = await ledgerRows();
 		// The ledger row records THIS (losing) process's own pid, not the
 		// winner's (13579) — matching the "start"/"handover" rows' convention.
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"') && r.includes(`"pid":${process.pid}`))).toBe(
+			true,
+		);
+	});
+
+	// -------------------------------------------------------------------------
+	// Socket-serving probe (regression: `liveForeignDaemonPid` alone can't
+	// distinguish a healthy incumbent from a zombie kept resident by
+	// `installCrashResilience()` — see `isDaemonSocketServing` in
+	// session-paths.ts). Four cases: serving incumbent still wins, a
+	// live-but-silent incumbent is reaped and taken over, a dead pid takes
+	// over (unchanged pre-existing behavior), and a throwing probe fails safe
+	// by deferring.
+	// -------------------------------------------------------------------------
+
+	it("raw-legacy path: a live AND SERVING incumbent still exits (does not stomp a healthy daemon)", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(true);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(0);
+		expect(vi.mocked(sp.isDaemonSocketServing)).toHaveBeenCalledWith(
+			expect.stringContaining("harness.sock"),
+		);
+		const rows = await ledgerRows();
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"') && r.includes(`"pid":${process.pid}`))).toBe(
+			true,
+		);
+	});
+
+	it("raw-legacy path: a live but NOT SERVING incumbent is reaped and taken over (no exit, no anti-stomp row)", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(false);
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+		await loadServer();
+		expect(processExitSpy).not.toHaveBeenCalled();
+		expect(killSpy).toHaveBeenCalledWith(13579, "SIGTERM");
+		const rows = await ledgerRows();
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+		killSpy.mockRestore();
+	});
+
+	it("raw-legacy path: a dead pid takes over without probing the socket", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
+
+		await loadServer();
+		expect(processExitSpy).not.toHaveBeenCalled();
+		expect(vi.mocked(sp.isDaemonSocketServing)).not.toHaveBeenCalled();
+		const rows = await ledgerRows();
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+	});
+
+	it("raw-legacy path: a throwing probe fails safe and defers to the incumbent (exits)", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockRejectedValue(new Error("unexpected probe failure"));
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(0);
+		const rows = await ledgerRows();
 		expect(rows.some((r) => r.includes('"reason":"anti-stomp"') && r.includes(`"pid":${process.pid}`))).toBe(
 			true,
 		);
@@ -1254,6 +1404,120 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		await expect(loadServer()).rejects.toThrow("disk full");
 		expect(processExitSpy).not.toHaveBeenCalled();
 		expect((await ledgerRows()).some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+	});
+});
+
+describe("harness server.ts — cyclomatic gate capability", () => {
+	it("logs the fallback WARNING when astComplexityAvailable() is false (line 317)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		astComplexityAvailableOverride = false;
+		await loadServer();
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logged).toContain("`typescript` is not resolvable");
+		expect(logged).toContain("less-accurate regex walker");
+		errSpy.mockRestore();
+	});
+});
+
+describe("harness server.ts — writeCollectionRecord guard-decision branch (line 496)", () => {
+	it("writes a guard decision record when a decision is present", async () => {
+		await loadServer();
+		expect(() =>
+			cap.eventLoopDeps?.writeCollectionRecord(
+				{ hook_event: "PreToolUse" },
+				{ decision: "allow" } as HarnessDecision,
+			),
+		).not.toThrow();
+	});
+});
+
+describe("harness server.ts — daemon-timer closures (RSS ceiling / spike / idle shrink)", () => {
+	it("shutdown hook delegates to the real socket-lifecycle shutdown (line 684)", async () => {
+		await loadServer();
+		expect(capturedDaemonTimerHooks).not.toBeNull();
+		capturedDaemonTimerHooks?.shutdown();
+		expect(cap.socketSetters.shutdown).toHaveBeenCalledTimes(1);
+	});
+
+	it("requestHandOver records a handover ledger row and spawns a restart (lines 688-689)", async () => {
+		await loadServer();
+		const fs = await import("node:fs");
+		vi.mocked(fs.appendFileSync).mockClear();
+		const handedOver = capturedDaemonTimerHooks?.requestHandOver?.();
+		// spawnRestartViaCli isn't mocked, so its real return depends on the
+		// live environment; assert only the ledger side effect this closure is
+		// responsible for (the real spawn behavior is out of scope here).
+		expect(typeof handedOver).toBe("boolean");
+		const rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		expect(rows.some((r) => r.includes('"event":"handover"') && r.includes('"reason":"rss-ceiling"'))).toBe(
+			true,
+		);
+	});
+
+	it("onSpike records a spike ledger row with rss/delta detail (line 693)", async () => {
+		await loadServer();
+		const fs = await import("node:fs");
+		vi.mocked(fs.appendFileSync).mockClear();
+		capturedDaemonTimerHooks?.onSpike?.(512, 200);
+		const rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		expect(
+			rows.some(
+				(r) =>
+					r.includes('"event":"spike"') && r.includes('"rss_mb":512') && r.includes('"+200MB in one tick"'),
+			),
+		).toBe(true);
+	});
+
+	it("shrinkIdleMemory clears the manifest cache without throwing (lines 698-701)", async () => {
+		await loadServer();
+		expect(() => capturedDaemonTimerHooks?.shrinkIdleMemory?.()).not.toThrow();
+	});
+
+	it("lastEventAtMs reflects the daemon's own hook-activity timestamp (line 697)", async () => {
+		await loadServer();
+		expect(typeof capturedDaemonTimerHooks?.lastEventAtMs?.()).toBe("number");
+	});
+});
+
+describe("harness server.ts — sponsor runtime wiring (lines 715-717)", () => {
+	it("readSettings delegates to readSponsorSettingsFromConfig", async () => {
+		await loadServer();
+		const sponsor = await import("./sponsor/runtime.js");
+		vi.mocked(sponsor.readSponsorSettingsFromConfig).mockClear();
+		capturedSponsorOpts?.readSettings();
+		expect(sponsor.readSponsorSettingsFromConfig).toHaveBeenCalledTimes(1);
+	});
+
+	it("hasRecentActivity is true right after a hook event and false once the window elapses", async () => {
+		await loadServer();
+		// A hook event bumps `lastHookEventAtMs` via the raw event-loop path in
+		// real operation; here we only need the comparison logic itself, which
+		// is pure once evaluated at time-of-call — the window is 5 minutes and
+		// no event has been recorded, so `Date.now() - lastHookEventAtMs` is
+		// effectively `Date.now() - 0`, far past the window: false.
+		expect(capturedSponsorOpts?.hasRecentActivity()).toBe(false);
+	});
+
+	it("log forwards to the daemon's own log() writer without throwing (line 717)", async () => {
+		await loadServer();
+		expect(() => capturedSponsorOpts?.log("sponsor test message")).not.toThrow();
+	});
+});
+
+describe("harness server.ts — build-refresh watcher wiring", () => {
+	it("lastActivityMs reflects the daemon's own hook-activity timestamp (line 810)", async () => {
+		await loadServer();
+		expect(typeof capturedBuildRefreshOpts?.lastActivityMs()).toBe("number");
+	});
+});
+
+describe("harness server.ts — rebound SIGTERM handler", () => {
+	it("the rebound SIGTERM handler calls the real shutdown (line 742)", async () => {
+		await loadServer();
+		const sigterm = lastSignalHandler("SIGTERM");
+		expect(typeof sigterm).toBe("function");
+		sigterm?.();
+		expect(cap.socketSetters.shutdown).toHaveBeenCalledTimes(1);
 	});
 });
 

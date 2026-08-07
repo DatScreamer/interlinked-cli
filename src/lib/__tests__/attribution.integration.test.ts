@@ -144,6 +144,99 @@ describe("calculateAttribution", () => {
 	});
 });
 
+describe("snapshotPreRun — untracked files", () => {
+	it("includes untracked files using wc line count", () => {
+		mockExecSync.mockImplementationOnce(() => "3\t0\ttracked.ts") // diff --numstat
+			.mockImplementationOnce(() => "untracked.ts") // ls-files --others
+			.mockImplementationOnce(() => "7"); // wc -l
+
+		const snap = snapshotPreRun("/test/cwd");
+		expect(snap.files["untracked.ts"]).toBe(7);
+	});
+
+	it("falls back to 1 line when wc invocation throws", () => {
+		mockExecSync
+			.mockImplementationOnce(() => "3\t0\ttracked.ts") // diff --numstat
+			.mockImplementationOnce(() => "untracked.ts") // ls-files --others
+			.mockImplementationOnce(() => {
+				throw new Error("wc failed");
+			});
+
+		const snap = snapshotPreRun("/test/cwd");
+		expect(snap.files["untracked.ts"]).toBe(1);
+	});
+
+	it("falls back to 1 line when wc output is not a number", () => {
+		mockExecSync
+			.mockImplementationOnce(() => "3\t0\ttracked.ts") // diff --numstat
+			.mockImplementationOnce(() => "untracked.ts") // ls-files --others
+			.mockImplementationOnce(() => "not-a-number");
+
+		const snap = snapshotPreRun("/test/cwd");
+		expect(snap.files["untracked.ts"]).toBe(1);
+	});
+
+	it("falls back to 0 added/deleted lines for non-numeric numstat fields and skips empty filenames", () => {
+		mockExecSync
+			.mockImplementationOnce(() => "abc\txyz\t\n5\t2\tvalid.ts") // diff --numstat
+			.mockImplementationOnce(() => ""); // ls-files --others
+
+		const snap = snapshotPreRun("/test/cwd");
+		expect(snap.files).toEqual({ "valid.ts": 7 });
+	});
+
+	it("skips malformed numstat lines with fewer than 3 fields", () => {
+		mockExecSync
+			.mockImplementationOnce(() => "10\t5") // malformed: missing filename
+			.mockImplementationOnce(() => ""); // ls-files --others
+
+		const snap = snapshotPreRun("/test/cwd");
+		expect(Object.keys(snap.files)).toHaveLength(0);
+	});
+
+	it("uses process.cwd() when no cwd argument is given", () => {
+		mockExecSync.mockReset();
+		mockExecSync.mockImplementation(() => "");
+		const snap = snapshotPreRun();
+		expect(snap.files).toEqual({});
+		expect(mockExecSync).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ cwd: process.cwd() }),
+		);
+	});
+});
+
+describe("calculateAttribution — reverted files and defaults", () => {
+	it("attributes reverted (pre-run only) files entirely to human", () => {
+		const preSnapshot: PreRunSnapshot = {
+			timestamp: "2025-01-01T00:00:00Z",
+			files: { "reverted.ts": 12 },
+		};
+
+		setupGitMock([
+			"", // diff --numstat: no current changes at all
+			"", // ls-files --others
+		]);
+
+		const result = calculateAttribution(preSnapshot, "/test/cwd");
+		expect(result.per_file["reverted.ts"]).toEqual({ agent: 0, human: 12 });
+		expect(result.human_lines).toBe(12);
+		expect(result.agent_lines).toBe(0);
+	});
+
+	it("uses process.cwd() when no cwd argument is given", () => {
+		mockExecSync.mockReset();
+		mockExecSync.mockImplementation(() => "");
+		const preSnapshot: PreRunSnapshot = { timestamp: "2025-01-01T00:00:00Z", files: {} };
+		const result = calculateAttribution(preSnapshot);
+		expect(result.total_lines).toBe(0);
+		expect(mockExecSync).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ cwd: process.cwd() }),
+		);
+	});
+});
+
 describe("readAttributionTrailer", () => {
 	it("parses attribution trailer from commit message", () => {
 		setupGitMock([
@@ -163,6 +256,23 @@ describe("readAttributionTrailer", () => {
 
 		const result = readAttributionTrailer("HEAD", "/test/cwd");
 		expect(result).toBeNull();
+	});
+
+	it("defaults ref to HEAD and cwd to process.cwd() when omitted", () => {
+		setupGitMock(["Fix bug\n\nInterlinked-Attribution: 50% agent (5/10 lines)"]);
+
+		const result = readAttributionTrailer();
+		expect(result).toEqual({
+			agent_lines: 5,
+			human_lines: 5,
+			total_lines: 10,
+			agent_percentage: 50,
+			per_file: {},
+		});
+		expect(mockExecSync).toHaveBeenCalledWith(
+			expect.stringContaining("log -1 --format=%B HEAD"),
+			expect.objectContaining({ cwd: process.cwd() }),
+		);
 	});
 
 	it("returns null on git error", () => {

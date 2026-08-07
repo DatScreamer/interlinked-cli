@@ -236,5 +236,20 @@ describe("fresh-process replay (proof-of-enforcement §15 step 0)", () => {
 			.filter((d) => !d.same)
 			.map((d) => d.path);
 		expect(diverged, `fresh-process divergence:\n${diverged.join("\n")}`).toEqual([]);
-	}, 60000);
+		// 240s, raised from 60s on 2026-08-05. This body spawns a FRESH process and
+		// replays the whole inline pipeline, so its cost tracks the size of the
+		// check registry and the corpus — both of which grow as the repo does. It
+		// was measured at 137s against the old 60s ceiling right after ~10 test
+		// files and several source modules landed, having passed comfortably in
+		// full-suite runs hours earlier.
+		//
+		// Verified NOT a check regression before raising: the one inline detector
+		// changed that day (redos_catastrophic, which gained a per-line
+		// comment scan) measures 0.148 ms/call on a large file — far too cheap to
+		// explain a 2x. The budget was simply outgrown.
+		//
+		// A ceiling like this is a latency alarm, not a correctness assertion; the
+		// determinism property is what the body actually checks. Keep it generous
+		// so a growing repo doesn't read as a broken pipeline.
+	}, 240_000);
 });

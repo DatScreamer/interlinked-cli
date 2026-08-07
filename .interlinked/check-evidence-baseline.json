@@ -57,7 +57,6 @@
 		"process_env_outside_config",
 		"raw_control_bytes",
 		"rust_test_nondeterminism",
-		"same_typed_primitive_params",
 		"self_import",
 		"snapshot_overuse",
 		"spec_capacity_claim",

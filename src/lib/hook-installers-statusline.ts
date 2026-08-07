@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { isNonEmptyString, isPlainObject } from "./hook-installers-shared.js";
 import { CLIENT_CLAUDE, CLIENT_COPILOT } from "./hook-types.js";
 import type { JsonObject } from "./json-types.js";
+import { STATUSLINE_SHELL_HELPERS } from "./statusline-shell-helpers.js";
 import type { ClientName } from "./settings.js";
 import { downBranchBash, resolveReviveBakes } from "./statusline-revive.js";
 
@@ -100,24 +101,7 @@ fi
 ID="$ROOT/.interlinked"
 SNAP="$ID/statusline.snapshot"
 
-# read_snap KEY [DEFAULT] — extract one key=value line from the snapshot.
-read_snap() {
-    local val
-    val=$(grep -E "^$1=" "$SNAP" 2>/dev/null | head -1 | cut -d= -f2-)
-    if [ -z "$val" ]; then
-        printf '%s' "$2"
-    else
-        printf '%s' "$val"
-    fi
-}
-
-# osc8 URL TEXT — wrap TEXT in an OSC 8 hyperlink using BEL terminator.
-# Outputs real ESC + BEL bytes so callers can concatenate with color
-# constants and emit via printf '%s'. Terminals that don't support OSC 8
-# strip the escape sequences and render TEXT cleanly.
-osc8() {
-    printf '\\033]8;;%s\\007%s\\033]8;;\\007' "$1" "$2"
-}
+${STATUSLINE_SHELL_HELPERS}
 
 # Daemon health glyph.
 ALIVE=0
@@ -137,6 +121,13 @@ RULES=$(read_snap rules_total 0)
 TOOL_CHECKS=$(read_snap tool_checks_enabled "")
 INLINE_CHECKS=$(read_snap inline_checks_enabled "")
 CHECKS=$(read_snap checks_enabled 0)
+# Work actually done on THIS codebase, lifetime and monotonic. Older daemons
+# do not write these keys, so every consumer below degrades to the inventory
+# rather than printing a confident zero.
+LIFE_BLOCKED=$(read_snap lifetime_blocked "")
+LIFE_CAUGHT=$(read_snap lifetime_caught "")
+CAP_CC=$(read_snap cap_cyclomatic "")
+CAP_CRAP=$(read_snap cap_crap "")
 CLSF=$(read_snap classifier_enabled disabled)
 SCNF=$(read_snap scanner_enabled disabled)
 IDXS=$(read_snap index_status missing)
@@ -233,6 +224,22 @@ else
 fi
 CHECKS_SEG="\${BOLD}$(osc8 "file://$ID/loaded-checks.md" "\${CHECKS_TEXT}")\${RESET}"
 
+# Work DONE here, not inventory. Rule/check counts say what ships; they are the
+# easiest number to inflate and provably overcount (6 of 252 registered checks
+# were measured unable to fire at all, 2026-08-04). These report outcomes:
+# lifetime totals that only grow, and caps, which only tighten. Both omit
+# themselves against an older daemon rather than render a confident zero.
+WORK_SEG=""
+if [ -n "$LIFE_BLOCKED" ] && [ -n "$LIFE_CAUGHT" ]; then
+    WORK_TEXT="$(fmt_count "$LIFE_BLOCKED") blocked / $(fmt_count "$LIFE_CAUGHT") caught"
+    WORK_SEG="\${SEP}\${BOLD}$(osc8 "file://$ID/enforcement-ledger.json" "\${WORK_TEXT}")\${RESET}"
+fi
+# Caps render as "≤N" because DOWN is progress here; a rising number regressed.
+CAPS_SEG=""
+if [ -n "$CAP_CC" ] && [ "$CAP_CC" != "0" ]; then
+    CAPS_SEG="\${SEP}$(osc8 "file://$ID/metric-caps.json" "cc≤\${CAP_CC} crap≤\${CAP_CRAP}")"
+fi
+
 # Off-state badges — each links to its most actionable target:
 # - classifier: docs explaining what it does (no toggle in user's config yet)
 # - PII filter: guard-rules.local.json (the existing content_scanner toggle)
@@ -282,7 +289,7 @@ if [ -n "$DISPLAY_PID" ]; then
     PID_SEG="\${SEP}\${DIM}$(osc8 "file://$ID/statusline.snapshot" "pid \${DISPLAY_PID}")\${RESET}"
 fi
 
-LINE1="\${BRAND}\${SEP}\${RULES_SEG}\${SEP}\${CHECKS_SEG}\${SEP}\${CLS_SEG}\${SEP}\${SCN_SEG}\${SEP}\${IDX_SEG}\${SYNC_SEG}\${PID_SEG}"
+LINE1="\${BRAND}\${SEP}\${RULES_SEG}\${SEP}\${CHECKS_SEG}\${WORK_SEG}\${CAPS_SEG}\${SEP}\${CLS_SEG}\${SEP}\${SCN_SEG}\${SEP}\${IDX_SEG}\${SYNC_SEG}\${PID_SEG}"
 
 # --- Row 2: outcome language from structured last-check.txt ---
 # LAST_*/REVIEW_COUNT and the fmt_age/last_field helpers were populated
@@ -339,6 +346,21 @@ else
     LINE2="\${DIM}ready · waiting for first edit to verify\${RESET}"
 fi
 
+# --- Row 3 (priority): live visualizer link ---
+# \`interlinked viz serve\` writes .interlinked/viz.status while it is listening
+# (url= + pid=). The link is rendered ONLY when that pid is still alive, so the
+# row never offers a dead link after the server exits. A live dashboard outranks
+# the sponsor slot for row 3 — it is the operator's own running process.
+VIZ_FILE="$ROOT/.interlinked/viz.status"
+VIZ_SEG=""
+if [ -f "$VIZ_FILE" ]; then
+    VZ_PID=$(grep -E '^pid=' "$VIZ_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    VZ_URL=$(grep -E '^url=' "$VIZ_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [ -n "\$VZ_PID" ] && [ -n "\$VZ_URL" ] && ps -p "\$VZ_PID" > /dev/null 2>&1; then
+        VIZ_SEG="\${DIM}◈ viz\${RESET}\${SEP}$(osc8 "\$VZ_URL" "\$VZ_URL") \${DIM}↗\${RESET}"
+    fi
+fi
+
 # --- Row 3: sponsor slot (opt-in; docs/design/sponsor-slots.md) ---
 # Reads the daemon-sanitized kv file. Rendered only when enabled=1 AND the
 # file is fresh (<30 min) — a dead daemon ages the sponsor out instead of
@@ -364,6 +386,9 @@ if [ -f "$SPONSOR_FILE" ]; then
         fi
     fi
 fi
+
+# A live dashboard takes row 3; the sponsor slot keeps it otherwise.
+[ -n "\$VIZ_SEG" ] && LINE3="\$VIZ_SEG"
 
 if [ -n "$LINE2" ] && [ -n "$LINE3" ]; then
     printf '%s\\n%s\\n%s' "$LINE1" "$LINE2" "$LINE3"

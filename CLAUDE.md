@@ -143,9 +143,14 @@ Cognitive complexity runs on two surfaces with two thresholds (deliberate):
 the advisory `cognitive_complexity` registry check at the Sonar-default 15,
 and the `cognitive` metric cap (`interlinked caps`, `max_cognitive`,
 tighten-only under the baseline-integrity gate) whose PreToolUse companion
-(`evaluator/cognitive-write-guard.ts`) WARNS when an edit grows a function
-past the cap — delta semantics, never a block until cross-repo FP calibration
-(plan 06 lane 3). The per-edit pulse line also carries `cogΣ` and `astΔ`
+(`evaluator/cognitive-write-guard.ts`) **BLOCKS** an edit that leaves a
+function over the cap — promoted from warn-only 2026-08-01 once measurement
+answered the FP-calibration hedge (p99 = 26 against a cap of 30, and the
+over-cap set overlaps heavily with what cyclomatic already refuses). Delta
+semantics, so holding or shrinking an already-over function never blocks; see
+*Monotonic metric ratchet* for the tolerance. `cognitiveWriteWarning` remains
+in the same module as the legacy warn-only signal. The per-edit pulse line
+also carries `cogΣ` and `astΔ`
 (AST semantic-delta: a rename is astΔ 0; a rewritten conditional is not).
 
 ## Scratchpad governance (added 2026-07-09)
@@ -179,6 +184,13 @@ repo spent the entire 2000-file cap, so both surviving manifests read
 `plm/apply.mjs` patch applier that motivated the row above. The scratchpad ROOT
 is never treated as foreign, so a lone `package.json` repro still archives.
 
+**A dry run must not move the gate.** `interlinked harness test --write/--edit`
+sets `dry_run: true` on its synthetic event and every evaluator that PERSISTS
+must honor it (`transient-debt-guard.ts`, `ephemeral-write-log.ts`). Found the
+hard way 2026-08-04: three simulated writes opened a real TS2305 transient debt
+against a file they never touched, which then blocked an unrelated edit. When
+adding an evaluator that writes to a ledger, thread `event.dry_run` or the
+read-only probe becomes a state mutation.
 
 ## Harness (Guard + Lifecycle + Auto-Reservation)
 
@@ -413,13 +425,14 @@ real functions showed that is the *75th percentile* and produced 2226 findings.
 Recalibrated to 80 it produces 17. Calibrate new checks against the tree, never
 against fixtures.
 
-Compliance at landing: **138/251 checks pass; 113 grandfathered** in
+Compliance (2026-08-04): **151/252 checks pass; 101 grandfathered** in
 `.interlinked/check-evidence-baseline.json` (committed, carved out of the
 `.interlinked/*` ignore). The list is **shrink-only** and enforced by
 `baseline_integrity_gate` (`check-evidence` kind) — adding an id there exempts a
 check from having to prove it works, so it blocks. New checks get no
-grandfathering. Worst tier is the strictest one: `pre_block` hard rails sit at
-43%, so backfill those first.
+grandfathering. Worst tier is still the strictest one: `pre_block` hard rails
+sit at 54% (20/37), so backfill those first. Re-derive these numbers with
+`npx tsx scratch/evidence-tier-census.mts` rather than trusting the prose.
 
 | `src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
 | `src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
@@ -616,6 +629,7 @@ The server (`Interlinked MCP Server`) is the remote Worker/DO system. Communicat
 | `src/lib/formatter.ts` | ANSI colors, tables, timestamps — hand-coded, no external deps. Respects `NO_COLOR`/`CI`. |
 | `src/lib/output.ts` | Output mode abstraction: `json`, `short`, `normal`, `full` |
 | `src/lib/settings.ts` | Client detection and settings file paths for claude/copilot/gemini/codex (registry consumed by `interlinked enable`/`disable`) |
+| `src/lib/viz/` | The loopback dashboard (`interlinked viz serve`). `feeds.ts` is the seam: each live lens is ONE `VizFeed` descriptor (route + seed + subscribe) and `server.ts` hosts them all through one generic SSE path — add a lens there, not by copying the plumbing. `agent-roster.ts` folds the activity stream into per-actor presence lanes (a subagent gets its OWN lane keyed `<agent>/<subagent_id>`, never merged into its parent's counters) and assigns each actor a stable hue — the ONE hashing rule for actor colour, reused by every surface that attributes work to an agent. Dashboard vocabulary is deliberately literal: dot = source file, line = import, lane = agent session, frame = one judged tool call. Feeds: activity, `check-results.jsonl`, `test-events.jsonl` (TESTS), `mutation-manifest.json` (MUTANTS). `reporter-vitest.ts` is the shipped producer for the test feed, published as the `interlinked-cli/viz-reporter` export and duck-typed against vitest so it never imports it. `status-file.ts` publishes `.interlinked/viz.status` so the statusline renders a `◈ viz` link only while a server is actually alive. Every feed renders an honest empty state when its file is absent — nothing is repo-specific. |
 
 ### Activity Event Pipeline
 
@@ -814,13 +828,14 @@ snapshot-review artifact (the snapshot analog of leaving an `.only`/`.skip` behi
 
 ## Monotonic metric ratchet (bounded per-edit growth, hard cap as backstop)
 
-Spec: `docs/design/monotonic-metric-ratchet.md`. Three metrics, each gated so no
-edit leaves a function past its hard cap and (cyclomatic) no single edit makes a
-big complexity jump (per tool call, trajectory-aware via the on-disk/baseline
-state):
+Spec: `docs/design/monotonic-metric-ratchet.md`. Four metrics, each gated so no
+edit leaves a function past its hard cap and (cyclomatic, cognitive) no single
+edit makes a big complexity jump (per tool call, trajectory-aware via the
+on-disk/baseline state). Every cap number below lives in
+`.interlinked/metric-caps.json` — read it, don't trust this prose:
 - **Cyclomatic** — `complexity-write-guard.ts`: a uniquely-named function present
   before+after may rise by at most `SUB_CAP_RATCHET_TOLERANCE` (= 2) branches *per
-  edit* while at/under the 25-branch cap (`subCapRatchetViolations`); a larger
+  edit* while at/under the 22-branch cap (`subCapRatchetViolations`); a larger
   one-edit jump blocks. New/anonymous/collision functions and any end-state over
   the cap are bounded by the cap (the over-cap path). No suppression; the escape
   is to decompose. Small rises across edits can walk a function toward the cap but
@@ -828,12 +843,24 @@ state):
   approach it). Set the constant to 1 for a tighter "+1/edit" policy.
 - **Coverage** — `coverage-write-decision.ts` (pre-existing): blocks an uncovered
   added line or a per-file coverage drop vs `coverage-baseline.json` (high-water).
+- **Cognitive** — `cognitive-write-guard.ts`: mirrors the cyclomatic rules against
+  the 30-point cognitive cap, with `SUB_CAP_COGNITIVE_RATCHET_TOLERANCE` (= 4),
+  not 2 — cognitive runs ~1.5x higher than cyclomatic at shallow nesting and
+  worse as it deepens, so copying 2 would false-block routine edits inside
+  already-nested code. STRICTER than cyclomatic in one respect: it compares
+  uniquely-named functions by identity (plus pooled rank for anonymous ones), so
+  "shrink the target, spawn an over-cap helper" still blocks — cyclomatic's
+  rank-only comparison reads that as an improvement and allows it. The block
+  message steers toward flattening (guard clauses, extract the deepest-nested
+  block), not cyclomatic's "extract a branch".
 - **CRAP** — implied: CRAP = cyclo²·(1−cov)³+cyclo is ↑ in cyclo, ↓ in cov, so the
   bounded cyclomatic slew + coverage-hold-or-↑ bound the per-edit CRAP rise — it
   inherits the relaxation automatically. There is **no** separate sub-cap CRAP
   ratchet: every CRAP gate (`decideCrap` block, `computeCrapRisers` advisory)
-  fires only at/over cap 30, which bounds new/touched functions and is the
-  end-state backstop.
+  fires only at/over cap 25, which bounds new/touched functions and is the
+  end-state backstop. A function whose coverage is UNKNOWN (no report entry)
+  yields no CRAP finding at all — unknown is not 0%, and treating it as 0% drove
+  CRAP to its ceiling and false-blocked edits to fully-covered code.
 
 Endgame seam (mutation, not built this session): the per-edit run returns the
 FULL `MetricRegression[]` (all metrics at once) so an agent fixes them in one

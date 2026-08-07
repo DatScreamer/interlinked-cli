@@ -295,6 +295,290 @@ describe("SidecarManager — shutdown", () => {
 	});
 });
 
+describe("SidecarManager — write/spawn failure paths", () => {
+	it("resolves failResponse when stdin.write throws (Error)", async () => {
+		const { mgr, child } = makeManager();
+		// Force the write to throw synchronously.
+		child.stdin.write = () => {
+			throw new Error("EPIPE");
+		};
+		const resp = await mgr.send({ op: "ping" });
+		expect(resp).toEqual({ ok: false, error: "write failed: EPIPE" });
+	});
+
+	it("resolves failResponse when stdin.write throws a non-Error value", async () => {
+		const { mgr, child } = makeManager();
+		child.stdin.write = () => {
+			// Exercising formatErr's non-Error branch.
+			throw "boom";
+		};
+		const resp = await mgr.send({ op: "ping" });
+		expect(resp).toEqual({ ok: false, error: "write failed: boom" });
+	});
+
+	it("resolves failResponse when spawnFn throws synchronously, and disables after max_restarts", async () => {
+		const spawn = vi.fn(() => {
+			throw new Error("no python3 on PATH");
+		});
+		const mgr = new SidecarManager({ ...makeOpts(), spawn, max_restarts: 3 });
+		const resp = await mgr.send({ op: "ping" });
+		expect(resp).toEqual({ ok: false, error: "sidecar spawn failed: no python3 on PATH" });
+		expect(mgr.getStatus().state).toBe("disabled");
+		expect(mgr.getStatus().detail).toBe("spawn failed: no python3 on PATH");
+	});
+});
+
+describe("SidecarManager — child error event", () => {
+	it("rejects pending and goes dormant (not disposed) on a child 'error' event", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "scan", text: "x" });
+		await Promise.resolve();
+
+		child.emit("error", new Error("ECONNRESET"));
+		const resp = await p;
+		expect(resp).toEqual({ ok: false, error: "sidecar error: ECONNRESET" });
+		expect(mgr.getStatus().state).toBe("dormant");
+		expect(mgr.getStatus().detail).toBe("child error: ECONNRESET");
+	});
+
+	it("stays disposed (no dormant transition) when a child 'error' fires after shutdown", async () => {
+		const { mgr, child } = makeManager();
+		void mgr.send({ op: "ping" });
+		await Promise.resolve();
+
+		const shutdownPromise = mgr.shutdown();
+		child.emit("error", new Error("late error"));
+		child.exit(0);
+		await vi.advanceTimersByTimeAsync(1100);
+		await shutdownPromise;
+		expect(mgr.getStatus().state).toBe("disabled");
+	});
+});
+
+describe("SidecarManager — malformed/edge protocol lines", () => {
+	it("silently drops a malformed JSON line and still delivers the next valid line", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.stdout.write("{not valid json\n");
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("ignores a blank line in the stdout stream", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.stdout.write("\n");
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("drops a parsed line that is not a record (e.g. a JSON array)", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.stdout.write("[1,2,3]\n");
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("drops a parsed line that is a bare primitive (JSON null)", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.stdout.write("null\n");
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("passes through a string error field from the sidecar response", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "scan", text: "x" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ id: sent.id, ok: false, error: "python trace: ValueError" });
+		const resp = await p;
+		expect(resp).toEqual({
+			ok: false,
+			error: "python trace: ValueError",
+			spans: undefined,
+			redacted_text: undefined,
+		});
+	});
+
+	it("drops a response with no id field", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ ok: true }); // no id — startup noise
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("drops a response whose id has no matching pending entry", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ id: "unknown-id", ok: true });
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+	});
+
+	it("defaults error to undefined when the response's error field is not a string", async () => {
+		const { mgr, child } = makeManager();
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ id: sent.id, ok: false, error: 42 });
+		const resp = await p;
+		expect(resp).toEqual({ ok: false, error: undefined, spans: undefined, redacted_text: undefined });
+	});
+});
+
+describe("SidecarManager — late timeout/abort races", () => {
+	it("does not double-resolve when the timeout timer fires after the response already arrived", async () => {
+		const { mgr, child } = makeManager({ scan_timeout_ms: 100 });
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+
+		// The (already-cleared) timer's callback body still runs under fake timers
+		// only if not cleared — here we assert no crash / no second resolution by
+		// advancing well past the original timeout window.
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(resp.ok).toBe(true);
+	});
+
+	it("does not throw when abort fires after the response already arrived", async () => {
+		const { mgr, child } = makeManager();
+		const controller = new AbortController();
+		const p = mgr.send({ op: "scan", text: "x", signal: controller.signal });
+		await Promise.resolve();
+		const sent = JSON.parse(nonNull(child.stdinLines[0]));
+
+		child.respond({ id: sent.id, ok: true });
+		const resp = await p;
+		expect(resp.ok).toBe(true);
+
+		// Fires the abort listener's "entry not found" branch — must not throw.
+		expect(() => controller.abort()).not.toThrow();
+	});
+});
+
+describe("SidecarManager — idle close after crash leaves no child to close", () => {
+	it("closeChildForIdle no-ops when the child already crashed to null before the idle timer fires", async () => {
+		const { mgr, child } = makeManager({ idle_shutdown_ms: 5000 });
+		const p = mgr.send({ op: "ping" });
+		await Promise.resolve();
+		child.respond({ id: JSON.parse(nonNull(child.stdinLines[0])).id, ok: true });
+		await p;
+
+		// Crash the child directly (sets this.child = null) without clearing the
+		// idle timer that was armed by the successful send().
+		child.exit(1);
+		await Promise.resolve();
+		expect(mgr.getStatus().state).toBe("dormant");
+
+		// The idle timer still fires — closeChildForIdle must no-op (no child).
+		await expect(vi.advanceTimersByTimeAsync(5000)).resolves.not.toThrow();
+	});
+});
+
+describe("SidecarManager — status sinceIso stability", () => {
+	it("keeps the same sinceIso when setStatus patches without changing state", async () => {
+		const { mgr, child } = makeManager();
+		void mgr.send({ op: "ping" });
+		await Promise.resolve();
+
+		const firstShutdown = mgr.shutdown();
+		await vi.advanceTimersByTimeAsync(1100);
+		await firstShutdown;
+		const sinceAfterFirst = mgr.getStatus().sinceIso;
+
+		// Second shutdown() call: state is already "disabled" — setStatus patches
+		// with the same state, so sinceIso must be left untouched.
+		const secondShutdown = mgr.shutdown();
+		await secondShutdown;
+		expect(mgr.getStatus().sinceIso).toBe(sinceAfterFirst);
+		void child;
+	});
+});
+
+describe("SidecarManager — default stderr sink", () => {
+	it("writes to process.stderr with the [opf-sidecar] prefix when no stderrSink override is given", async () => {
+		const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const child = makeFakeChild();
+			const spawn = vi.fn(() => child as unknown as import("node:child_process").ChildProcess);
+			const mgr = new SidecarManager({
+				python_bin: "python3",
+				script_path: "/tmp/fake-sidecar.py",
+				startup_timeout_ms: 500,
+				scan_timeout_ms: 100,
+				idle_shutdown_ms: 10_000,
+				max_restarts: 3,
+				spawn,
+				// no stderrSink override — exercises defaultStderrSink
+			});
+			void mgr.send({ op: "ping" });
+			await Promise.resolve();
+			child.stderr.write("model load warning\n");
+			await Promise.resolve();
+			expect(writeSpy).toHaveBeenCalledWith("[opf-sidecar] model load warning\n");
+		} finally {
+			writeSpy.mockRestore();
+		}
+	});
+});
+
+describe("SidecarManager — default spawn function", () => {
+	it("falls back to node:child_process.spawn when no spawn override is given", async () => {
+		vi.useRealTimers();
+		try {
+			const mgr = new SidecarManager({
+				python_bin: process.execPath,
+				script_path: "-e",
+				script_args: ["process.exit(0)"],
+				startup_timeout_ms: 5000,
+				scan_timeout_ms: 5000,
+				idle_shutdown_ms: 60_000,
+				max_restarts: 1,
+				stderrSink: () => {},
+			});
+			const resp = await mgr.send({ op: "ping" });
+			expect(resp).toEqual({ ok: false, error: "sidecar exited with code 0" });
+			await mgr.shutdown();
+		} finally {
+			vi.useFakeTimers();
+		}
+	}, 10_000);
+});
+
 describe("SidecarManager — idle recovery", () => {
 	// Regression for the bug where idle-timer close permanently bricked the
 	// scanner (shuttingDown latched true). Next send() must respawn.

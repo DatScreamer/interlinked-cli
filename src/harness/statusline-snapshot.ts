@@ -14,6 +14,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
+import { updateEnforcementLedger } from "./enforcement-ledger.js";
+import { crapThresholdFor, maxCyclomaticFor } from "./metric-caps.js";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
 import type { GuardRule, GuardRulesConfig, QualityCheckConfig } from "./types.js";
 
@@ -100,12 +102,37 @@ export function writeStatuslineArtifacts(input: StatuslineSnapshotInput): void {
 	}
 }
 
+/** Lifetime enforcement totals, or zeroes if the ledger cannot be read. */
+function safeWork(interlinkedDir: string): { blocked: number; caught: number; evaluated: number } {
+	try {
+		return updateEnforcementLedger(interlinkedDir, new Date().toISOString());
+	} catch (err) {
+		void err; // the snapshot is still worth writing without the counters
+		return { blocked: 0, caught: 0, evaluated: 0 };
+	}
+}
+
+/** Effective metric caps, or 0 (rendered as "off") when unreadable. */
+function safeCaps(interlinkedDir: string): { cyclomatic: number; crap: number } {
+	try {
+		const root = interlinkedDir.replace(/[/\\]\.interlinked[/\\]?$/, "");
+		return { cyclomatic: maxCyclomaticFor(root), crap: crapThresholdFor(root) };
+	} catch (err) {
+		void err;
+		return { cyclomatic: 0, crap: 0 };
+	}
+}
+
 function buildSnapshot(input: StatuslineSnapshotInput): string {
 	const modes = readModes(input.interlinkedDir);
 	const counts = countRules(input.rules);
 	const toggles = readToggles(input.rules);
 
 	const checks = countChecks(input.rules);
+	// WORK DONE, alongside the inventory. Both are best-effort: a counter must
+	// never be the reason a snapshot fails to write.
+	const work = safeWork(input.interlinkedDir);
+	const caps = safeCaps(input.interlinkedDir);
 
 	const rows: string[] = [
 		`harness_mode=${modes.harness}`,
@@ -135,6 +162,17 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		// Spec substrate (§11.1): -1 = ledger not built yet (bash → "spec off").
 		`spec_facts_total=${input.specFactsTotal ?? -1}`,
 		`review_findings_open=${input.reviewFindingsOpen ?? 0}`,
+		// Lifetime totals for this attachment, monotonic by construction, folded
+		// incrementally from a byte cursor (never a full read of activity.jsonl).
+		// These are what the harness has DONE here, as opposed to what it ships.
+		`lifetime_blocked=${work.blocked}`,
+		`lifetime_caught=${work.caught}`,
+		`lifetime_evaluated=${work.evaluated}`,
+		// Caps TIGHTEN over time (cyclomatic 25 -> 22, CRAP 30 -> 25), so a FALLING
+		// number here is progress; the statusline renders them as `cc<=N` so the
+		// direction reads correctly to someone glancing at it.
+		`cap_cyclomatic=${caps.cyclomatic}`,
+		`cap_crap=${caps.crap}`,
 		`generated_at=${new Date().toISOString()}`,
 	];
 	return `${rows.join("\n")}\n`;

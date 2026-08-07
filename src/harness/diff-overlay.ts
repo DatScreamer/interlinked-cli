@@ -18,6 +18,18 @@ const TS_OVERLAY_EXT = /\.(tsx?|mts|cts)$/;
 export interface DiffOverlayResult {
 	/** Findings present in the proposed content but not in the on-disk file. */
 	newFindings: CheckResult[];
+	/**
+	 * The checker's FULL answer for the proposed content — every finding, not
+	 * just the new ones — or null when the overlay short-circuited without
+	 * running (wrong extension, no disk state, content identical to disk).
+	 *
+	 * `newFindings` cannot answer "is it still there?": an unchanged, still-
+	 * present diagnostic is absent from the diff exactly as a fixed one is. The
+	 * transient-debt ledger discharges on the checker no longer seeing a
+	 * finding, so it needs the absolute answer — and needs `null` to mean
+	 * "don't know", never "clean".
+	 */
+	proposedFindings?: CheckResult[] | null;
 	/** Total wall-clock ms spent running the overlay (for budget/telemetry). */
 	elapsedMs: number;
 	/** True if latency exceeded the tool-specific budget — caller may demote to warn. */
@@ -165,6 +177,22 @@ export function isTscFindingBlocking(f: CheckResult): boolean {
 	return !TSC_WARN_ONLY_CODES.has(f.ruleId ?? "");
 }
 
+/**
+ * True for a diagnostic whose wrongness is DEFERRABLE — a property of a
+ * not-yet-complete tree that the coordinated change's other half resolves.
+ *
+ * Today this is exactly the demotion set, which is the point: the codes above
+ * were already judged "routinely fixed by the next edit", and the only thing
+ * wrong with that judgement was its conclusion. Demotion answers "should this
+ * block NOW?" with a permanent no; the transient ledger answers "by WHEN?"
+ * (`transient-debt.ts`). The predicate is named separately from
+ * `isTscFindingBlocking` so the two questions can diverge later — a code can be
+ * non-blocking and non-deferrable (a pure advisory that nobody owes work on).
+ */
+export function isTscFindingDeferrable(f: CheckResult): boolean {
+	return TSC_WARN_ONLY_CODES.has(f.ruleId ?? "");
+}
+
 /** A relative-import module-not-found (TS2307 for `./` or `../`). Its presence
  *  in a proposed file's diagnostics marks the TDD red step: the file references
  *  a sibling module not yet written (a test before its impl). `_`-prefixed so a
@@ -193,6 +221,7 @@ export function evaluateTscDiffOverlay(
 ): DiffOverlayResult {
 	const empty: DiffOverlayResult = {
 		newFindings: [],
+		proposedFindings: null,
 		elapsedMs: 0,
 		exceededBudget: false,
 	};
@@ -239,10 +268,10 @@ export function evaluateTscDiffOverlay(
 	// Suppress this file's introduced findings; the next edit (the impl, or a
 	// batch overlaying it) resolves the import and re-validates everything.
 	if (overlay.some(_isRelativeModuleNotFound)) {
-		return { newFindings: [], elapsedMs, exceededBudget };
+		return { newFindings: [], proposedFindings: overlay, elapsedMs, exceededBudget };
 	}
 
-	return { newFindings, elapsedMs, exceededBudget };
+	return { newFindings, proposedFindings: overlay, elapsedMs, exceededBudget };
 }
 
 /** Test-only reset of the underlying engine cache, not the overlay itself. */

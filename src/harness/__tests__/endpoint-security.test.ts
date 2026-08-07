@@ -159,6 +159,60 @@ describe("checkEndpointAuthMissing (B1)", () => {
 		const findings = checkEndpointAuthMissing(FILE, "", literalEndpoints, CONFIG);
 		expect(findings).toEqual([]);
 	});
+
+	it("does NOT fire when the auth middleware is mounted BELOW the route (whole-file scan, not upstream-only)", () => {
+		// detectAuthChain (the extractor) only walks lines strictly ABOVE the
+		// route, so auth_chain stays empty here. scanForMountLevelAuth is a
+		// whole-file scan and must still catch it as the defense-in-depth pass.
+		const content = [
+			"app.get('/api/users/:id', (req, res) => res.json({ id: req.params.id }));",
+			"app.use(requireAuth);",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		expect(nonNull(endpoints[0]).auth_chain).toEqual([]);
+		const findings = checkEndpointAuthMissing(FILE, content, endpoints, CONFIG);
+		expect(findings).toEqual([]);
+	});
+
+	it("still fires when a top-level .use() call names something other than an auth middleware", () => {
+		// scanForMountLevelAuth must actually iterate the regex match (not just
+		// short-circuit on "no .use() at all") and find the name doesn't match.
+		const content = [
+			"import express from 'express';",
+			"const app = express();",
+			"app.use(logger);",
+			"app.get('/api/users/:id', (req, res) => res.json({ id: req.params.id }));",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointAuthMissing(FILE, content, endpoints, CONFIG);
+		expect(findings.length).toBeGreaterThan(0);
+	});
+
+	it("defaults the finding line to 1 when the endpoint has no line number", () => {
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "GET",
+				path: "/api/unlined",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [],
+			},
+		];
+		const findings = checkEndpointAuthMissing(FILE, "", literalEndpoints, CONFIG);
+		expect(findings).toEqual([
+			{
+				check_id: "endpoint_auth_missing",
+				file: FILE,
+				line: 1,
+				message:
+					"Endpoint GET /api/unlined has no recognized auth middleware. Add an auth check (e.g. requireAuth, currentUser) or add the path to .interlinked/security-config.json#endpoint_auth_missing.exempt_paths.",
+				endpoint_path: "/api/unlined",
+				endpoint_method: "GET",
+			},
+		]);
+	});
 });
 
 // ---------- B2: endpoint_idor_shape ----------
@@ -240,6 +294,35 @@ describe("checkEndpointIdorShape (B2)", () => {
 		const findings = checkEndpointIdorShape(FILE, content, endpoints, CONFIG);
 		expect(findings).toEqual([]);
 	});
+
+	it("does NOT fire when the declared path param is never read in the handler body", () => {
+		const content = [
+			"app.get('/api/orders/:id', (req, res) => {",
+			"  res.json({ ok: true });",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointIdorShape(FILE, content, endpoints, CONFIG);
+		expect(findings).toEqual([]);
+	});
+
+	it("defaults the finding line to 1 when the endpoint has no line number", () => {
+		const content = "const order = await prisma.order.findUnique({ where: { id: req.params.id } });";
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "GET",
+				path: "/api/orders/:id",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [{ name: "id", source: "path" }],
+			},
+		];
+		const findings = checkEndpointIdorShape(FILE, content, literalEndpoints, CONFIG);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).line).toBe(1);
+	});
 });
 
 // ---------- B3: endpoint_missing_tenant_filter ----------
@@ -319,6 +402,49 @@ describe("checkEndpointMissingTenantFilter (B3)", () => {
 		const endpoints = extractExpressEndpoints(FILE, content);
 		const findings = checkEndpointMissingTenantFilter(FILE, content, endpoints, CONFIG);
 		expect(findings).toEqual([]);
+	});
+
+	it("does NOT fire when the query builds its WHERE clause dynamically", () => {
+		const content = [
+			"app.patch('/api/projects/:id', async (req, res) => {",
+			"  const updated = await prisma.project.update({ where: ...buildWhere(req), data: req.body });",
+			"  res.json(updated);",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointMissingTenantFilter(FILE, content, endpoints, CONFIG);
+		expect(findings).toEqual([]);
+	});
+
+	it("does NOT fire when the DB call has no extractable WHERE clause", () => {
+		const content = [
+			"app.get('/api/projects', async (req, res) => {",
+			"  const projects = await prisma.project.findMany();",
+			"  res.json(projects);",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointMissingTenantFilter(FILE, content, endpoints, CONFIG);
+		expect(findings).toEqual([]);
+	});
+
+	it("defaults the finding line to 1 when the endpoint has no line number", () => {
+		const content =
+			"const rows = await prisma.report.findMany({ where: { status: 'open' } });";
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "GET",
+				path: "/api/reports",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [],
+			},
+		];
+		const findings = checkEndpointMissingTenantFilter(FILE, content, literalEndpoints, CONFIG);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).line).toBe(1);
 	});
 });
 
@@ -404,6 +530,96 @@ describe("checkEndpointSsrfShape (B4)", () => {
 		const findings = checkEndpointSsrfShape(FILE, content, endpoints, CONFIG, SANITIZERS);
 		expect(findings).toEqual([]);
 	});
+
+	it("does NOT fire when the endpoint path is on the ssrf exempt_paths list", () => {
+		const content = [
+			"app.post('/api/proxy', async (req, res) => {",
+			"  const url = req.body.url;",
+			"  const r = await fetch(url);",
+			"  res.json(await r.json());",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const exemptConfig = {
+			...CONFIG,
+			endpoint_ssrf_shape: { ...CONFIG.endpoint_ssrf_shape, exempt_paths: ["/api/proxy"] },
+		};
+		const findings = checkEndpointSsrfShape(FILE, content, endpoints, exemptConfig, SANITIZERS);
+		expect(findings).toEqual([]);
+	});
+
+	it("does NOT fire when a URL-shaped value is read but never passed to an HTTP client", () => {
+		const content = [
+			"app.post('/api/proxy', async (req, res) => {",
+			"  const url = req.body.url;",
+			"  res.json({ received: url });",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointSsrfShape(FILE, content, endpoints, CONFIG, SANITIZERS);
+		expect(findings).toEqual([]);
+	});
+
+	it("collects URL-shaped names from declared params (name match, schema match, non-matches) and defaults the line", () => {
+		const content = [
+			"app.post('/api/proxy', async (req, res) => {",
+			"  const r = await fetch(req.body.target);",
+			"  res.json(await r.json());",
+			"});",
+		].join("\n");
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "POST",
+				path: "/api/proxy",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [
+					{ name: "notes", source: "body" },
+					{ name: "webhook", source: "body" },
+					{ name: "link", source: "body", schema_name: "HttpUrl" },
+					{ name: "count", source: "body", schema_name: "IntSchema" },
+				],
+			},
+		];
+		const findings = checkEndpointSsrfShape(FILE, content, literalEndpoints, CONFIG, SANITIZERS);
+		expect(findings).toEqual([
+			{
+				check_id: "endpoint_ssrf_shape",
+				file: FILE,
+				line: 1,
+				message:
+					"Endpoint POST /api/proxy reads a URL-shaped value (webhook, link, target) and passes it to an HTTP client without an allow-list check. Validate the URL host against an allow-list before issuing the request.",
+				endpoint_path: "/api/proxy",
+				endpoint_method: "POST",
+			},
+		]);
+	});
+
+	it("collects URL-shaped names from a Python signature, skipping non-matching and empty arg names", () => {
+		const content = [
+			"@app.post('/webhook')",
+			"def call_hook(webhook_url: str, unrelated: int, : str):",
+			"    r = httpx.get(webhook_url)",
+			"    return r.json()",
+		].join("\n");
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "fastapi",
+				method: "POST",
+				path: "/webhook",
+				file: PY_FILE,
+				line: 2,
+				auth_chain: [],
+				declared_params: [],
+			},
+		];
+		const findings = checkEndpointSsrfShape(PY_FILE, content, literalEndpoints, CONFIG, SANITIZERS);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).message).toContain("webhook_url");
+		expect(nonNull(findings[0]).message).not.toContain("unrelated");
+	});
 });
 
 // ---------- B5: endpoint_mass_assignment ----------
@@ -485,6 +701,54 @@ describe("checkEndpointMassAssignment (B5)", () => {
 		const findings = checkEndpointMassAssignment(FILE, content, endpoints, CONFIG);
 		expect(findings).toEqual([]);
 	});
+
+	it("still fires when the sanitizer pattern appears AFTER the mass-assignment call", () => {
+		const content = [
+			"app.post('/api/users', async (req, res) => {",
+			"  const user = await prisma.user.create({ data: req.body });",
+			"  const parsed = userSchema.parse(req.body);",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointMassAssignment(FILE, content, endpoints, CONFIG);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).check_id).toBe("endpoint_mass_assignment");
+	});
+
+	it("does NOT fire when the sanitizer pattern precedes an actual spread-body shape", () => {
+		// Distinct from the z.parse() negative case above (which never matches
+		// SPREAD_BODY_RE at all, so it short-circuits earlier at `!hit`): here
+		// the body genuinely spreads req.body AND a sanitizer call precedes it.
+		const content = [
+			"app.post('/api/users', async (req, res) => {",
+			"  const parsed = userSchema.parse(req.body);",
+			"  const user = await prisma.user.create({ data: req.body });",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		const endpoints = extractExpressEndpoints(FILE, content);
+		const findings = checkEndpointMassAssignment(FILE, content, endpoints, CONFIG);
+		expect(findings).toEqual([]);
+	});
+
+	it("defaults the finding line to 1 when the endpoint has no line number", () => {
+		const content = "const user = await prisma.user.create({ data: req.body });";
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "POST",
+				path: "/api/users",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [],
+			},
+		];
+		const findings = checkEndpointMassAssignment(FILE, content, literalEndpoints, CONFIG);
+		expect(findings.length).toBe(1);
+		expect(nonNull(findings[0]).line).toBe(1);
+	});
 });
 
 // ---------- Batch helper ----------
@@ -513,6 +777,87 @@ describe("runAllEndpointSecurityChecks()", () => {
 		expect(checkIds.has("endpoint_auth_missing")).toBe(true);
 		expect(checkIds.has("endpoint_idor_shape")).toBe(true);
 		expect(checkIds.has("endpoint_mass_assignment")).toBe(true);
+	});
+});
+
+// ---------- Handler-scope boundary (shared getHandlerScope helper) ----------
+
+describe("handler-scope boundary — next-endpoint-line detection", () => {
+	it("bounds a handler's scope at the next endpoint in the SAME file, skipping self, same-line siblings, undefined-line entries, and other files", () => {
+		const content = [
+			"app.post('/a', async (req, res) => {", // line 1
+			"  res.send('a');", // line 2
+			"});", // line 3
+			"", // line 4
+			"app.post('/b', async (req, res) => {", // line 5
+			"  res.send('b');", // line 6
+			"});", // line 7
+			"", // line 8
+			"", // line 9
+			"app.post('/c', async (req, res) => {", // line 10
+			"  const user = await prisma.user.create({ data: req.body });", // line 11
+			"  res.json(user);", // line 12
+			"});", // line 13
+		].join("\n");
+		const literalEndpoints: Endpoint[] = [
+			{
+				framework: "express",
+				method: "POST",
+				path: "/a",
+				file: FILE,
+				line: 1,
+				auth_chain: [],
+				declared_params: [],
+			},
+			{
+				// Same line as /a — exercises the "other.line > start" false arm.
+				framework: "express",
+				method: "POST",
+				path: "/a-dup",
+				file: FILE,
+				line: 1,
+				auth_chain: [],
+				declared_params: [],
+			},
+			{
+				framework: "express",
+				method: "POST",
+				path: "/c",
+				file: FILE,
+				line: 10,
+				auth_chain: [],
+				declared_params: [],
+			},
+			{
+				// Undefined line — exercises the "other.line === undefined" arm.
+				framework: "express",
+				method: "POST",
+				path: "/no-line",
+				file: FILE,
+				line: undefined,
+				auth_chain: [],
+				declared_params: [],
+			},
+			{
+				// Different file — exercises the "other.file !== endpoint.file" arm.
+				framework: "express",
+				method: "POST",
+				path: "/elsewhere",
+				file: "/tmp/other-handler.ts",
+				line: 5,
+				auth_chain: [],
+				declared_params: [],
+			},
+		];
+		const findings = checkEndpointMassAssignment(FILE, content, literalEndpoints, CONFIG);
+		const paths = findings.map((f) => f.endpoint_path);
+		// /a's scope is bounded at line 10 (the next same-file endpoint) so it
+		// never sees the mass-assignment shape on line 11.
+		expect(paths).not.toContain("/a");
+		expect(paths).not.toContain("/a-dup");
+		// /c has no later same-file endpoint, so its scope runs to EOF and DOES
+		// see the mass-assignment shape.
+		expect(paths).toContain("/c");
 	});
 });
 

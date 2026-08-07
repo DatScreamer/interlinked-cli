@@ -132,4 +132,73 @@ describe("healManifestFiles — merge semantics", () => {
 		const files = { "src/a.test.ts": { s1: sym("s1", "h1", [rec("m1", "survived")]) } };
 		expect(healManifestFiles(files, CWD)).toEqual({});
 	});
+
+	it("P: a reviewed disposition on the SECOND side wins over an unreviewed first side", () => {
+		const reviewed = rec("m1", "equivalent", { accepted_reason: "second side reviewed" });
+		const files = {
+			[`${CWD}/src/a.ts`]: { s1: sym("s1", "h1", [rec("m1", "survived")]) },
+			"src/a.ts": { s1: sym("s1", "h1", [reviewed]) },
+		};
+		const m1 = healManifestFiles(files, CWD)["src/a.ts"]?.s1?.mutants.m1;
+		expect(m1?.status).toBe("equivalent");
+		expect(m1?.accepted_reason).toBe("second side reviewed");
+	});
+
+	it("P: instability event log is deduped by at+kind across both sides, and sorted by `at`", () => {
+		const files = {
+			[`${CWD}/src/a.ts`]: {
+				s1: sym(
+					"s1",
+					"h1",
+					[rec("m1", "killed")],
+					instability({
+						events: [
+							{ at: "2026-02-01T00:00:00Z", kind: "id_churn" },
+							{ at: "2026-01-01T00:00:00Z", kind: "status_flip" },
+						],
+					}),
+				),
+			},
+			"src/a.ts": {
+				s1: sym(
+					"s1",
+					"h1",
+					[rec("m1", "killed")],
+					instability({
+						// Exact duplicate of the first event on the other side — must collapse to one.
+						events: [{ at: "2026-02-01T00:00:00Z", kind: "id_churn" }],
+					}),
+				),
+			},
+		};
+		const events = healManifestFiles(files, CWD)["src/a.ts"]?.s1?.instability.events ?? [];
+		expect(events).toEqual([
+			{ at: "2026-01-01T00:00:00Z", kind: "status_flip" },
+			{ at: "2026-02-01T00:00:00Z", kind: "id_churn" },
+		]);
+	});
+
+	it("N: a symbolId with DIFFERENT symbolHash where the OLDER side (a) has the more recent mutant wins whole", () => {
+		const older = sym("s1", "h1", [rec("m1", "survived", { firstSeen: "2026-06-01T00:00:00Z" })]);
+		const newer = sym("s1", "h2", [rec("m9", "killed", { firstSeen: "2026-01-01T00:00:00Z" })]);
+		const files = { [`${CWD}/src/a.ts`]: { s1: older }, "src/a.ts": { s1: newer } };
+		const s1 = healManifestFiles(files, CWD)["src/a.ts"]?.s1;
+		expect(s1?.symbolHash).toBe("h1");
+		expect(Object.keys(s1?.mutants ?? {})).toEqual(["m1"]);
+	});
+
+	it("P: latestFirstSeen picks the maximum across multiple mutants, not just the last one iterated", () => {
+		const older = sym("s1", "h1", [
+			rec("m1", "survived", { firstSeen: "2026-05-01T00:00:00Z" }),
+			rec("m2", "killed", { firstSeen: "2026-01-01T00:00:00Z" }),
+		]);
+		const newer = sym("s1", "h2", [rec("m9", "killed", { firstSeen: "2026-03-01T00:00:00Z" })]);
+		const files = { [`${CWD}/src/a.ts`]: { s1: older }, "src/a.ts": { s1: newer } };
+		const s1 = healManifestFiles(files, CWD)["src/a.ts"]?.s1;
+		// older's latest (2026-05) beats newer's only entry (2026-03), even though
+		// older's SECOND mutant (2026-01) is earlier than newer's — proving the max
+		// isn't just taking the last-iterated mutant's firstSeen.
+		expect(s1?.symbolHash).toBe("h1");
+		expect(Object.keys(s1?.mutants ?? {})).toEqual(["m1", "m2"]);
+	});
 });

@@ -61,14 +61,16 @@ export function readDebtTxns(projectRoot: string): ObligationTxn[] {
 
 /** True when a transition belongs to `file`'s obligations: an `open` names the
  *  file directly; a `discharge`/`escalate` carries only the obligation id, so
- *  it matches when the id is `kind:file` (file-level) or `kind:file:start-end`
- *  (region-level) for any registered kind — derived via `obligationId`, never
- *  re-parsed by hand. */
+ *  it matches when the id is `kind:file` (file-level), `kind:file:start-end`
+ *  (region-level), or either form suffixed `#detector` (transient) for any
+ *  registered kind — derived via `obligationId`, never re-parsed by hand. */
 function txnTouchesFile(txn: ObligationTxn, file: string): boolean {
 	if (txn.op === "open") return txn.file === file;
 	for (const kind of Object.keys(METRIC_DESCRIPTORS) as ObligationKind[]) {
 		const base = obligationId(kind, file);
-		if (txn.id === base || txn.id.startsWith(`${base}:`)) return true;
+		if (txn.id === base || txn.id.startsWith(`${base}:`) || txn.id.startsWith(`${base}#`)) {
+			return true;
+		}
 	}
 	return false;
 }
@@ -85,6 +87,27 @@ export function readDebtTxnsForFile(projectRoot: string, file: string): Obligati
 export function readOpenDebts(projectRoot: string): Obligation[] {
 	const state = replayObligations(readDebtTxns(projectRoot));
 	return [...openObligations(state, "coverage"), ...openObligations(state, "red_suite")];
+}
+
+/**
+ * The currently-open `transient` debts this session can act on.
+ *
+ * Deliberately a SEPARATE reader from `readOpenDebts`: transient debt must
+ * never feed the coverage/red-suite WIP rule (different teeth, different
+ * relatedness), and coverage debt must never be discharged by a tsc overlay.
+ * Same fail-open contract.
+ *
+ * Session-scoped for the same reason `readDischargeableDebts` is: a debt is
+ * cleared by a later edit re-running the checker, so a debt another session
+ * opened is undischargeable by anything THIS session does — blocking on one is
+ * a permanent stop with no action that resolves it. Observed live on landing:
+ * a parallel session in this repo had a TS2304 debt two strikes deep, which
+ * would have blocked an unrelated session's next edit. Omitting the session id
+ * keeps the unscoped view for reporting surfaces.
+ */
+export function readOpenTransientDebts(projectRoot: string, sessionId?: string): Obligation[] {
+	const all = openObligations(replayObligations(readDebtTxns(projectRoot)), "transient");
+	return sessionId ? all.filter((d) => !d.sessionId || d.sessionId === sessionId) : all;
 }
 
 /** Every filename a session may leave behind. A session writes `.live.json`

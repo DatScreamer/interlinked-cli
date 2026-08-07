@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import { createTsgoRunner, parseTsgoOutput, type TsgoRunner } from "./tsgo-runner.js";
+import { WatchProcess } from "./tsgo-runner-watch.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -371,4 +372,112 @@ describe("createTsgoRunner — warm watch: cache + dispose", () => {
 		expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
 		expect(process.listenerCount("SIGINT")).toBe(beforeInt);
 	});
+});
+
+describe("createTsgoRunner — available()", () => {
+	it("reports true when an executable is resolved", () => {
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		expect(runner.available()).toBe(true);
+		disposeRunner(runner);
+	});
+});
+
+describe("createTsgoRunner — cache FIFO eviction", () => {
+	it("evicts the oldest entry once the cache exceeds maxCacheEntries", async () => {
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200, maxCacheEntries: 1 });
+		const pathA = join(tmp, "a.ts");
+		const pathB = join(tmp, "b.ts");
+		writeFileSync(pathA, "export const a = 1;\n");
+		writeFileSync(pathB, "export const b = 2;\n");
+
+		await runner.checkFile(pathA);
+		expect(runner.stats().cache_size).toBe(1);
+		await runner.checkFile(pathB);
+		// The single-entry cap means adding b's entry evicted a's.
+		expect(runner.stats().cache_size).toBe(1);
+		// a is no longer cached — a fresh check reports cached:false again.
+		const again = await runner.checkFile(pathA);
+		expect(again.cached).toBe(false);
+		disposeRunner(runner);
+	});
+});
+
+describe("createTsgoRunner — simulateEdit edge paths", () => {
+	it("returns empty diagnostics when the target path is a directory (unreadable as a file)", async () => {
+		const dirPath = join(tmp, "a-directory");
+		mkdirSync(dirPath, { recursive: true });
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const out = await runner.simulateEdit(dirPath, "x", "y");
+		expect(out.new_diagnostics).toEqual([]);
+		disposeRunner(runner);
+	});
+
+	it("appends newString when oldString is empty (falsy) instead of doing a literal replace", async () => {
+		const path = join(tmp, "append.ts");
+		writeFileSync(path, "export const z = 1;\n");
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const out = await runner.simulateEdit(path, "", "export const appended = 2;\n");
+		// /bin/true is not a real tsgo, so the one-shot spawn yields no
+		// diagnostics either way — the assertion pins that the falsy-oldString
+		// (append) branch completes without throwing and without diagnostics.
+		expect(out.new_diagnostics).toEqual([]);
+		disposeRunner(runner);
+	});
+
+	it("runs the full patch pipeline for a file with no extension (suffix fallback to .ts)", async () => {
+		const path = join(tmp, "noext");
+		writeFileSync(path, "hello world");
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const out = await runner.simulateEdit(path, "hello", "goodbye");
+		expect(out.new_diagnostics).toEqual([]);
+		expect(out.elapsed_ms).toBeGreaterThanOrEqual(0);
+		disposeRunner(runner);
+	});
+
+	it("touches the warm watcher's idle timer when the edited file belongs to a tsgo project", async () => {
+		// tsconfig.json present ⇒ findTsconfigDir resolves a root ⇒ watcherFor()
+		// constructs a (non-null) WatchProcess even though /bin/true is not a
+		// real tsgo — exercising the truthy `if (w) w.touchIdle()` branch.
+		writeFileSync(join(tmp, "tsconfig.json"), "{}");
+		const path = join(tmp, "proj.ts");
+		writeFileSync(path, "export const p = 1;\n");
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const out = await runner.simulateEdit(path, "p = 1", "p = 2");
+		expect(out.new_diagnostics).toEqual([]);
+		disposeRunner(runner);
+	});
+
+	it("skips touchIdle when the .ts file has no tsconfig project (watcherFor returns null)", async () => {
+		const path = join(tmp, "standalone.ts");
+		writeFileSync(path, "export const s = 1;\n");
+		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const out = await runner.simulateEdit(path, "s = 1", "s = 2");
+		expect(out.new_diagnostics).toEqual([]);
+		disposeRunner(runner);
+	});
+});
+
+describe("createTsgoRunner — onExit cleanup handler", () => {
+	it("swallows a throwing watcher.kill() during process-exit cleanup without throwing", async () => {
+		const { "good.ts": good } = makeProject({ "good.ts": "export const a: number = 1;\n" });
+		const beforeExitCount = process.listenerCount("exit");
+		const runner = createTsgoRunner();
+		await runner.checkFile(nonNull(good));
+		await waitFor(() => runner.stats().watch_process === "running", 12000);
+
+		const killSpy = vi.spyOn(WatchProcess.prototype, "kill").mockImplementation(() => {
+			throw new Error("boom: kill failed");
+		});
+
+		const added = process.listeners("exit").slice(beforeExitCount);
+		expect(added.length).toBe(1);
+		const onExit = added[0] as () => void;
+
+		// The handler's try/catch must swallow the throw — process exit cleanup
+		// must never itself crash the process.
+		expect(() => onExit()).not.toThrow();
+
+		killSpy.mockRestore();
+		disposeRunner(runner);
+	}, 20000);
 });

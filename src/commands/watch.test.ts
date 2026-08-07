@@ -571,8 +571,11 @@ describe("watch — renderNormal branches", () => {
 
 		const out = loggedText();
 		expect(out).toContain("1 total, 0 working, 1 idle");
-		expect(out).toContain("idle-bot");
-		expect(out).toContain("idle");
+		// Exact glyph + name + no-role + idle-suffix, all in one substring: the
+		// idle dot (○), the role fallback (empty, no stray text), and the
+		// " idle" suffix must all render verbatim and adjacently.
+		expect(out).toContain("○ idle-bot idle");
+		expect(out).not.toContain("Stryker");
 	});
 
 	it("truncates over-length task titles to the 45-char budget", async () => {
@@ -676,6 +679,178 @@ describe("watch — taskBadge default arm", () => {
 		expect(out).toContain("#1 queued");
 		expect(out).toContain("#9 review me");
 		expect(out).not.toContain("No active tasks");
+		// Default badge is exactly "·" (dim middle-dot), not undefined/blank —
+		// kills the taskBadge BlockStatement-emptied and default-case mutants.
+		expect(out).toContain("· #9 review me");
+	});
+});
+
+// ===========================================
+// Targeted mutant kills (boundary / logic-flip cases)
+// ===========================================
+
+describe("watch — targeted mutant kills", () => {
+	it("computes unassigned strictly as pending AND no assignee (not OR, not always-true)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 1, title: "a", status: "pending", priority: "low", assignee_name: null }, // true unassigned
+					{ id: 2, title: "b", status: "pending", priority: "low", assignee_name: "bob" }, // pending but assigned
+					{ id: 3, title: "c", status: "blocked", priority: "low", assignee_name: null }, // unassigned but not pending
+					{ id: 4, title: "d", status: "in_progress", priority: "low", assignee_name: "x" },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({ json: true });
+
+		const p = lastLogJson<{ tasks: { unassigned: number } }>();
+		expect(p.tasks.unassigned).toBe(1);
+	});
+
+	it("computes agents.online strictly from non-null last_active_ts (not the inverse)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: {
+				agents: [
+					{ name: "a", role: null, status: "active", last_active_ts: "t" },
+					{ name: "b", role: null, status: "active", last_active_ts: null },
+					{ name: "c", role: null, status: "active", last_active_ts: null },
+				],
+			},
+		});
+
+		await watchCommand({ json: true });
+
+		const p = lastLogJson<{ agents: { online: number } }>();
+		expect(p.agents.online).toBe(1);
+	});
+
+	it("truncate does not cut a string exactly at the max-length boundary", async () => {
+		const exact45 = "a".repeat(45);
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 1, title: exact45, status: "pending", priority: "low", assignee_name: null },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).toContain(exact45);
+		expect(out).not.toContain(`${"a".repeat(42)}...`);
+	});
+
+	it("omits in-progress and blocked summary segments, and the unassigned callout, when each is zero", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 1, title: "only pending", status: "pending", priority: "low", assignee_name: "a" },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).toContain("1 pending");
+		expect(out).not.toContain("in progress");
+		expect(out).not.toContain("blocked");
+		expect(out).not.toContain("needs pickup");
+	});
+
+	it("shows exactly 12 items with no overflow line at exactly the 12-item boundary", async () => {
+		const tasks: RawTask[] = Array.from({ length: 12 }, (_, i) => ({
+			id: 300 + i,
+			title: `t${i}`,
+			status: "pending",
+			priority: "low",
+			assignee_name: "a",
+		}));
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).not.toContain("more");
+		for (const t of tasks) {
+			expect(out).toContain(`#${t.id}`);
+		}
+	});
+
+	it("renders the correct badge glyph per task status", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 1, title: "p", status: "pending", priority: "low", assignee_name: "a" },
+					{ id: 2, title: "ip", status: "in_progress", priority: "low", assignee_name: "a" },
+					{ id: 3, title: "bl", status: "blocked", priority: "low", assignee_name: "a" },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).toContain("○ #1 p");
+		expect(out).toContain("● #2 ip");
+		expect(out).toContain("✕ #3 bl");
+	});
+
+	it("omits the Notifications header block when there are no notifications (first poll)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		expect(loggedText()).not.toContain("Notifications");
+	});
+
+	it("prints section headers verbatim in normal mode", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).toContain("Messages");
+		expect(out).toContain("Work Queue");
+		expect(out).toContain("Agents");
+	});
+
+	it("reprints the refresh banner on every non-json tick, not just the initial render", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		const occurrences = loggedText().match(/Refreshing every 10s/g) ?? [];
+		expect(occurrences.length).toBeGreaterThanOrEqual(2);
 	});
 });
 
@@ -1027,6 +1202,282 @@ describe("watch — follow loop and interval parsing", () => {
 // ===========================================
 // runOnce catch path → outputError
 // ===========================================
+
+// ===========================================
+// Additional line-precise mutant kills (Stryker survivor sweep)
+// ===========================================
+
+describe("watch — additional mutant kills (survivor sweep)", () => {
+	it("fires the unassigned-growth notification only strictly above zero (0 -> 1 boundary)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: [
+				{
+					tasks: [
+						{ id: 1, title: "t1", status: "pending", priority: "low", assignee_name: "a" }, // unassigned=0
+					],
+				},
+				{
+					tasks: [
+						{ id: 1, title: "t1", status: "pending", priority: "low", assignee_name: "a" },
+						{ id: 2, title: "t2", status: "pending", priority: "low", assignee_name: null }, // unassigned=1
+					],
+				},
+			],
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({ json: true });
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		const notes = lastLogJson<{ notifications: string[] }>().notifications;
+		expect(notes).toContain("1 task waiting for assignment");
+	});
+
+	it("does not fire the unassigned-growth notification when unassigned holds steady", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: [
+				{
+					tasks: [
+						{ id: 1, title: "t1", status: "pending", priority: "low", assignee_name: null }, // unassigned=1
+					],
+				},
+				{
+					tasks: [
+						{ id: 1, title: "t1", status: "pending", priority: "low", assignee_name: null }, // still 1
+					],
+				},
+			],
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({ json: true });
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		const notes = lastLogJson<{ notifications: string[] }>().notifications;
+		expect(notes.some((n) => n.includes("waiting for assignment"))).toBe(false);
+	});
+
+	it("renderShort: idle segment fallback is exactly empty (no stray placeholder text) when nothing is idle", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({ short: true });
+
+		const out = loggedText();
+		expect(out).not.toContain("Stryker");
+		expect(out).toContain("0 agents");
+	});
+
+	it("renders no stray placeholder text when there are no notifications", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).not.toContain("Notifications");
+		expect(out).not.toContain("Stryker");
+	});
+
+	it("renders the exact Notifications header text and no stray placeholder text when changes occur", async () => {
+		programClient({
+			has_unread_messages: [
+				{ has_unread: true, unread_count: 0, oldest_unread_at: null },
+				{ has_unread: true, unread_count: 4, oldest_unread_at: "t" },
+			],
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		const out = loggedText();
+		expect(out).toContain("  Notifications");
+		expect(out).not.toContain("Stryker");
+		// Exact bullet-prefixed notification line: the ">" bullet char must
+		// precede the note text verbatim.
+		expect(out).toContain("> 4 new unread messages");
+	});
+
+	it("omits the oldest-unread line when oldest_unread_at is falsy but has_unread is true", async () => {
+		programClient({
+			has_unread_messages: { has_unread: true, unread_count: 2, oldest_unread_at: "" },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).toContain("2 unread messages");
+		expect(out).not.toContain("oldest:");
+	});
+
+	it("prints the actual timestamp text on the header line", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		expect(loggedText()).toContain("2026-06-06T12:00:00.000Z");
+	});
+
+	it("joins the dashboard with real newlines, not a flattened string (reachable path)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks: [] },
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const raw = vi.mocked(console.log).mock.calls[0]?.[0];
+		expect(typeof raw).toBe("string");
+		expect((raw as string).includes("\n")).toBe(true);
+		expect((raw as string).split("\n").length).toBeGreaterThan(5);
+	});
+
+	it("joins the dashboard with real newlines when the server is unreachable", async () => {
+		mockIsAuthenticated.mockReturnValue(false);
+		programClient({});
+
+		await watchCommand({});
+
+		const raw = vi.mocked(console.log).mock.calls[0]?.[0];
+		expect(typeof raw).toBe("string");
+		expect((raw as string).includes("\n")).toBe(true);
+	});
+
+	it("keeps two adjacent unassigned-pending tasks in their original relative order (stable sort)", async () => {
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 10, title: "first-U", status: "pending", priority: "low", assignee_name: null },
+					{ id: 11, title: "second-U", status: "pending", priority: "low", assignee_name: null },
+					{ id: 12, title: "assigned", status: "pending", priority: "low", assignee_name: "a" },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		const idxFirst = out.indexOf("#10 first-U");
+		const idxSecond = out.indexOf("#11 second-U");
+		const idxAssigned = out.indexOf("#12 assigned");
+		expect(idxFirst).toBeGreaterThanOrEqual(0);
+		expect(idxSecond).toBeGreaterThan(idxFirst);
+		expect(idxAssigned).toBeGreaterThan(idxSecond);
+	});
+
+	it("does not give assigned-pending tasks unassigned-priority treatment in the sort", async () => {
+		// Categories: A=assigned+pending, U=unassigned+pending, B=unassigned+non-pending,
+		// C=assigned+non-pending, laid out A,U,B,C. Correct behavior: only U hoists to
+		// the front; A/B/C keep their original relative order (stable sort). A comparator
+		// bug that ORs the assignee/status checks for the `a` side (instead of ANDing them)
+		// would incorrectly grant A the same front-of-queue priority as U.
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: {
+				tasks: [
+					{ id: 1, title: "cat-A", status: "pending", priority: "low", assignee_name: "x" },
+					{ id: 2, title: "cat-U", status: "pending", priority: "low", assignee_name: null },
+					{ id: 3, title: "cat-B", status: "blocked", priority: "low", assignee_name: null },
+					{ id: 4, title: "cat-C", status: "blocked", priority: "low", assignee_name: "x" },
+				],
+			},
+			list_agents: { agents: [] },
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		const idxA = out.indexOf("#1 cat-A");
+		const idxU = out.indexOf("#2 cat-U");
+		const idxB = out.indexOf("#3 cat-B");
+		const idxC = out.indexOf("#4 cat-C");
+		expect(idxU).toBeGreaterThanOrEqual(0);
+		// U is hoisted ahead of everything else.
+		expect(idxU).toBeLessThan(idxA);
+		expect(idxU).toBeLessThan(idxB);
+		expect(idxU).toBeLessThan(idxC);
+		// A, B, C keep their original relative order (only U jumps the queue).
+		expect(idxA).toBeLessThan(idxB);
+		expect(idxB).toBeLessThan(idxC);
+	});
+
+	it("renders exact work-queue summary text, per-agent dot glyphs, no placeholder text, and caps at 12 rows", async () => {
+		const tasks: RawTask[] = [];
+		tasks.push({
+			id: 100,
+			title: "assigned-in-progress",
+			status: "in_progress",
+			priority: "high",
+			assignee_name: "worker-1",
+		});
+		tasks.push({
+			id: 101,
+			title: "needs-pickup",
+			status: "pending",
+			priority: "high",
+			assignee_name: null,
+		});
+		tasks.push({
+			id: 102,
+			title: "blocked-one",
+			status: "blocked",
+			priority: "low",
+			assignee_name: "worker-2",
+		});
+		for (let i = 0; i < 11; i++) {
+			tasks.push({
+				id: 200 + i,
+				title: `filler ${i}`,
+				status: "in_progress",
+				priority: "low",
+				assignee_name: "worker-1",
+			});
+		}
+
+		programClient({
+			has_unread_messages: { has_unread: false, unread_count: 0, oldest_unread_at: null },
+			list_tasks: { tasks },
+			list_agents: {
+				agents: [
+					{ name: "worker-1", role: "builder", status: "active", last_active_ts: "t" },
+					{ name: "worker-2", role: null, status: "active", last_active_ts: "t" },
+				],
+			},
+		});
+
+		await watchCommand({});
+
+		const out = loggedText();
+		expect(out).not.toContain("Stryker");
+		// Exact summary line text (segment order + " | " separator).
+		expect(out).toContain("1 pending | 12 in progress | 1 blocked");
+		// Slice(0, 12): only the first 12 of 14 sorted items render; the last two
+		// (filler 9 / filler 10, ids 209/210) are pushed past the cap.
+		expect(out).not.toContain("#209");
+		expect(out).not.toContain("#210");
+		// Working agent's dot glyph is present (green ●), not stripped.
+		expect(out).toContain("● worker-1");
+	});
+});
 
 describe("watch — error handling (runOnce catch)", () => {
 	it("routes a thrown fetch error through outputError and sets process.exitCode (json)", async () => {

@@ -159,4 +159,193 @@ describe("assembleTrace", () => {
 		assembleTrace(dir, SESSION);
 		expect(loadTrace(dir, SESSION)).toHaveLength(2);
 	});
+
+	it("returns zero steps when collection.jsonl does not exist at all", () => {
+		const dir = fixture();
+		const summary = assembleTrace(dir, SESSION);
+		expect(summary).toEqual({ steps: 0, steps_with_envelope: 0 });
+		expect(loadTrace(dir, SESSION)).toEqual([]);
+	});
+
+	it("falls back to 'unknown-session' when the session id sanitizes to empty, and stamps '#seq=?' when an envelope's seq is null", () => {
+		const dir = fixture();
+		const emptyId = "";
+		writeCollection(dir, [
+			`${JSON.stringify({
+				schema: "collection.v1",
+				kind: "tool_event",
+				session_id: emptyId,
+				ts: "2026-07-24T12:00:01.000Z",
+				seq: null,
+				tool_use_id: "toolu_z",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "ls" },
+			})}\n`,
+		]);
+		appendEnvelope(join(dir, ".interlinked", "replay"), envelope("toolu_z"));
+
+		const summary = assembleTrace(dir, emptyId);
+		expect(summary).toEqual({ steps: 1, steps_with_envelope: 1 });
+
+		const step = loadTrace(dir, emptyId)[0];
+		expect(step?.observation_ref).toBe("inference/unknown-session.jsonl#seq=?");
+
+		const perSession = readFileSync(
+			join(dir, ".interlinked", "replay", "inference", "unknown-session.jsonl"),
+			"utf-8",
+		)
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as InferenceEnvelope);
+		expect(perSession).toHaveLength(1);
+		expect(perSession[0]?.seq).toBeNull();
+	});
+
+	it("skips unparseable and wrong-schema lines in both collection.jsonl and the trace file", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			"{not valid json at all\n",
+			`${JSON.stringify({ schema: "some-other.v1", kind: "tool_event", session_id: SESSION })}\n`,
+			collectionRow({
+				ts: "2026-07-24T12:00:01.000Z",
+				seq: 1,
+				tool_use_id: "toolu_ok",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "ls" },
+			}),
+		]);
+		const summary = assembleTrace(dir, SESSION);
+		expect(summary.steps).toBe(1);
+
+		// Now corrupt the freshly-written trace file by appending garbage and a
+		// foreign-schema row, and confirm loadTrace tolerates both.
+		appendFileSync(
+			join(dir, ".interlinked", "replay", "trace", `${SESSION}.jsonl`),
+			`{not valid json\n${JSON.stringify({ schema: "other.v1" })}\n`,
+		);
+		const steps = loadTrace(dir, SESSION);
+		expect(steps).toHaveLength(1);
+		expect(steps[0]?.key.tool_use_id).toBe("toolu_ok");
+	});
+
+	it("sorts pre-rows by seq first, falling back to timestamp for equal (or missing) seq", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			// Both rows omit `seq` entirely (typeof !== "number" on both sides) —
+			// order must fall back to ts comparison (earlier ts first).
+			collectionRow({
+				ts: "2026-07-24T12:00:05.000Z",
+				tool_use_id: "toolu_later",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "later" },
+			}),
+			collectionRow({
+				ts: "2026-07-24T12:00:01.000Z",
+				tool_use_id: "toolu_earlier",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "earlier" },
+			}),
+		]);
+		const summary = assembleTrace(dir, SESSION);
+		expect(summary.steps).toBe(2);
+		const steps = loadTrace(dir, SESSION);
+		expect(steps.map((s) => s.key.tool_use_id)).toEqual(["toolu_earlier", "toolu_later"]);
+		// Missing seq -> null in the emitted key (not coerced to Infinity).
+		expect(steps[0]?.key.seq).toBeNull();
+	});
+
+	it("a pre-row without a tool_use_id gets null refs, an 'ok' outcome default is unreachable without a post row, and a missing action/ts default cleanly", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			`${JSON.stringify({
+				schema: "collection.v1",
+				kind: "tool_event",
+				session_id: SESSION,
+				seq: 1,
+				phase: "pre",
+				provider_tool: 7, // non-string tool name -> null
+				// no `action`, no `ts`, no `tool_use_id`
+			})}\n`,
+		]);
+		const summary = assembleTrace(dir, SESSION);
+		expect(summary).toEqual({ steps: 1, steps_with_envelope: 0 });
+
+		const step = loadTrace(dir, SESSION)[0];
+		expect(step).toEqual({
+			schema: "replay-trace.v1",
+			key: { session_id: SESSION, seq: 1, tool_use_id: null, ts: "" },
+			observation_ref: null,
+			action: { tool: null, input: null },
+			result: null,
+			pre_tree: null,
+			post_tree: null,
+			state_ref: null,
+		});
+	});
+
+	it("defaults a post row's non-string outcome to 'ok'", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			collectionRow({
+				ts: "2026-07-24T12:00:01.000Z",
+				seq: 1,
+				tool_use_id: "toolu_a",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "ls" },
+			}),
+			collectionRow({
+				ts: "2026-07-24T12:00:02.000Z",
+				seq: 2,
+				tool_use_id: "toolu_a",
+				phase: "post",
+				// no `outcome` field at all -> falls back to "ok"
+				observation: { stdout: "x" },
+			}),
+		]);
+		assembleTrace(dir, SESSION);
+		const step = loadTrace(dir, SESSION)[0];
+		expect(step?.result).toEqual({ outcome: "ok", observation: { stdout: "x" } });
+	});
+
+	it("treats an array-shaped action as not an object (asObject rejects arrays)", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			collectionRow({
+				ts: "2026-07-24T12:00:01.000Z",
+				seq: 1,
+				tool_use_id: "toolu_arr",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: ["not", "an", "object"],
+			}),
+		]);
+		assembleTrace(dir, SESSION);
+		const step = loadTrace(dir, SESSION)[0];
+		expect(step?.action).toEqual({ tool: "Bash", input: null });
+	});
+
+	it("sets state_ref (with a real seq) once the per-session state file exists", () => {
+		const dir = fixture();
+		writeCollection(dir, [
+			collectionRow({
+				ts: "2026-07-24T12:00:01.000Z",
+				seq: 9,
+				tool_use_id: "toolu_state",
+				phase: "pre",
+				provider_tool: "Bash",
+				action: { command: "ls" },
+			}),
+		]);
+		mkdirSync(join(dir, ".interlinked", "replay", "state"), { recursive: true });
+		appendFileSync(join(dir, ".interlinked", "replay", "state", `${SESSION}.jsonl`), "");
+
+		assembleTrace(dir, SESSION);
+		const step = loadTrace(dir, SESSION)[0];
+		expect(step?.state_ref).toBe(`state/${SESSION}.jsonl#seq=9`);
+	});
 });

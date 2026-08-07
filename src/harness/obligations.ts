@@ -22,8 +22,12 @@
  *  designed-in (cloud-async discharge) and rides the same machine by
  *  descriptor — adding it is a registration, not an engine change.
  *  `red_suite` = the red-bar as a debt: the edited pair's overlay run left the
- *  suite RED; iterate that pair to green (the red→green loop), don't wander. */
-export type ObligationKind = "coverage" | "mutation" | "red_suite";
+ *  suite RED; iterate that pair to green (the red→green loop), don't wander.
+ *  `transient` = a deferrable artifact-correctness finding (an unused import, an
+ *  unresolved symbol) whose wrongness is a property of a not-yet-complete tree:
+ *  the coordinated edit's OTHER half resolves it. Warned at the edit that
+ *  introduces it, blocked at the first edit that walks away from it. */
+export type ObligationKind = "coverage" | "mutation" | "red_suite" | "transient";
 
 /** Where a discharge originated. `local` = an in-process overlay run;
  *  `observed` = harvested from the agent's own test run; `cloud` = an async
@@ -69,6 +73,18 @@ export type ObligationTxn =
 			/** Monotonic edit counter at open time — the staleness clock the
 			 *  trajectory gate compares against (window is configurable). */
 			editSeq?: number;
+			/** `transient` only: WHICH checker raised the deferrable finding — a
+			 *  diagnostic code (`TS6133`) or a registry check id. Part of the
+			 *  obligation's identity, so two independent deferrals on one file are
+			 *  two debts and discharging one cannot silently close the other. */
+			detector?: string;
+			/** `transient` only: how many edits to UNRELATED files have landed while
+			 *  this debt stayed open — the wander counter that gives a coordinated
+			 *  change its one free counterpart edit before the gate bites. Carried on
+			 *  the txn (not derived) so replay is deterministic, and AUTHORITATIVE on
+			 *  re-open: unlike `openedAtMs`/`editSeq`, the caller's value wins, because
+			 *  the whole point is that it advances. */
+			strikes?: number;
 			/** `red_suite` only: the failing test FILES the red run reported
 			 *  (repo-relative, best-effort parsed) — the episode's evidence.
 			 *  Debt relatedness widens to any file these tests exercise, so a
@@ -112,6 +128,10 @@ export interface Obligation {
 	witness?: string | undefined;
 	/** Surviving mutants from the last escalate (mutation only). */
 	survivors?: MutationSurvivor[] | undefined;
+	/** `transient` only: the checker that raised the deferred finding. */
+	detector?: string | undefined;
+	/** `transient` only: unrelated-edit wander count (see the open txn). */
+	strikes?: number | undefined;
 	/** `red_suite` only: failing test files from the opening/latest red run. */
 	failingTestFiles?: string[] | undefined;
 }
@@ -121,14 +141,23 @@ export interface Obligation {
 export type ObligationState = Map<string, Obligation>;
 
 /**
- * Stable identity for an obligation: `kind:file` (file-level, coverage) or
- * `kind:file:start-end` (region-level, mutation). The content hash is
- * deliberately NOT part of the id — a re-edit of the same region updates the
- * SAME obligation (new `contentHash` field) rather than orphaning the old id,
- * and the async reconcile is done by comparing content hashes at discharge.
+ * Stable identity for an obligation: `kind:file` (file-level, coverage),
+ * `kind:file:start-end` (region-level, mutation), optionally suffixed
+ * `#detector` (transient — one debt per checker, so an unused import and an
+ * unresolved symbol in the same file are independently dischargeable). The
+ * content hash is deliberately NOT part of the id — a re-edit of the same
+ * region updates the SAME obligation (new `contentHash` field) rather than
+ * orphaning the old id, and the async reconcile is done by comparing content
+ * hashes at discharge.
  */
-export function obligationId(kind: ObligationKind, file: string, region?: ObligationRegion): string {
-	return region ? `${kind}:${file}:${region.start}-${region.end}` : `${kind}:${file}`;
+export function obligationId(
+	kind: ObligationKind,
+	file: string,
+	region?: ObligationRegion,
+	detector?: string,
+): string {
+	const base = region ? `${kind}:${file}:${region.start}-${region.end}` : `${kind}:${file}`;
+	return detector ? `${base}#${detector}` : base;
 }
 
 /**
@@ -140,7 +169,7 @@ export function obligationId(kind: ObligationKind, file: string, region?: Obliga
 export function applyObligationTxn(state: ObligationState, txn: ObligationTxn): void {
 	switch (txn.op) {
 		case "open": {
-			const id = obligationId(txn.kind, txn.file, txn.region);
+			const id = obligationId(txn.kind, txn.file, txn.region, txn.detector);
 			const existing = state.get(id);
 			// Continuous open accrues staleness from the FIRST touch (so a churning
 			// re-edit can't perpetually reset the clock and dodge the gate); a
@@ -157,6 +186,8 @@ export function applyObligationTxn(state: ObligationState, txn: ObligationTxn): 
 				contentHash: txn.contentHash,
 				status: "open",
 				sessionId: txn.sessionId,
+				detector: txn.detector,
+				strikes: txn.strikes,
 				openedAtMs: anchor.openedAtMs,
 				editSeq: anchor.editSeq,
 				// A new open invalidates any prior measurement.
@@ -289,10 +320,31 @@ export const RED_SUITE_DESCRIPTOR: MetricDescriptor = {
 	staleAfterEdits: DEFAULT_STALE_AFTER_EDITS,
 };
 
+/**
+ * Transient: the deferrable-finding debt. Opens when a write introduces a
+ * net-new deferrable diagnostic, discharges when the SAME checker no longer
+ * reports it for that file (never a cheaper proxy), and its teeth are the
+ * WANDER rule, not edit-distance — `staleAfterEdits: null` is deliberate.
+ *
+ * Edit-distance would be actively wrong here. Reconciling a half-landed
+ * refactor legitimately takes several edits inside the same pair, and a
+ * countdown would block precisely the work that discharges the debt. What
+ * distinguishes "reconciling" from "forgot" is not how many edits passed but
+ * WHICH file the next one touches — so relatedness carries the whole decision
+ * (`transient-debt.ts`), exactly as it does for `red_suite`.
+ */
+export const TRANSIENT_DESCRIPTOR: MetricDescriptor = {
+	kind: "transient",
+	dischargeSources: ["local"],
+	enforcementCadence: "trajectory",
+	staleAfterEdits: null,
+};
+
 export const METRIC_DESCRIPTORS: Record<ObligationKind, MetricDescriptor> = {
 	coverage: COVERAGE_DESCRIPTOR,
 	mutation: MUTATION_DESCRIPTOR,
 	red_suite: RED_SUITE_DESCRIPTOR,
+	transient: TRANSIENT_DESCRIPTOR,
 };
 
 type OpenTxn = Extract<ObligationTxn, { op: "open" }>;
@@ -300,7 +352,7 @@ type DischargeTxn = Extract<ObligationTxn, { op: "discharge" }>;
 type EscalateTxn = Extract<ObligationTxn, { op: "escalate" }>;
 
 function isObligationKind(v: unknown): v is ObligationKind {
-	return v === "coverage" || v === "mutation" || v === "red_suite";
+	return v === "coverage" || v === "mutation" || v === "red_suite" || v === "transient";
 }
 
 function isDischargeSource(v: unknown): v is DischargeSource {
@@ -321,6 +373,8 @@ function isStringArray(v: unknown): v is string[] {
 function isOpenRow(row: Record<string, unknown>): row is OpenTxn {
 	if (row.op !== "open") return false;
 	if (row.region !== undefined && !isRegion(row.region)) return false;
+	if (row.detector !== undefined && typeof row.detector !== "string") return false;
+	if (row.strikes !== undefined && typeof row.strikes !== "number") return false;
 	if (row.failingTestFiles !== undefined && !isStringArray(row.failingTestFiles)) return false;
 	return (
 		isObligationKind(row.kind) &&

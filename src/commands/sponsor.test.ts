@@ -1,5 +1,13 @@
 import { sign as edSign, generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -176,5 +184,186 @@ describe("sponsor command actions", () => {
 		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
 		expect(printed).toContain("disabled");
 		expect(printed).not.toContain("showing:");
+	});
+
+	it("enable --json emits a machine-readable enabled payload", async () => {
+		const logSpy = vi.mocked(console.log);
+		logSpy.mockClear();
+		const code = await sponsorEnableAction(
+			{ json: true },
+			{ cwd, claudeSettingsPath: settingsPath },
+		);
+		expect(code).toBe(0);
+		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		const parsed = JSON.parse(printed) as { enabled: boolean; install_id: string };
+		expect(parsed.enabled).toBe(true);
+		expect(typeof parsed.install_id).toBe("string");
+	});
+
+	it("enable records a custom --feed-url override", async () => {
+		await sponsorEnableAction(
+			{ feedUrl: "https://feed.example/custom" },
+			{ cwd, claudeSettingsPath: settingsPath },
+		);
+		const sponsor = localConfig().sponsor as { feed_url?: string };
+		expect(sponsor.feed_url).toBe("https://feed.example/custom");
+	});
+
+	it("resolveDeps falls back to process.cwd()/homedir() when no overrides are given", async () => {
+		// Exercise the default-cwd / default-settings-path branches without
+		// touching the real repo: chdir into a bare tmp dir with no
+		// .interlinked/, so the action early-returns before any write.
+		const bareDefault = mkdtempSync(join(tmpdir(), "sponsor-default-cwd-"));
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins a worker-thread pool.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(realpathSync(bareDefault));
+		try {
+			const code = await sponsorEnableAction({}, {});
+			expect(code).toBe(1);
+		} finally {
+			cwdSpy.mockRestore();
+			rmSync(bareDefault, { recursive: true, force: true });
+		}
+	});
+
+	it("enable --spinner reports skipped when the feed fetch fails (wire is null)", async () => {
+		const fetchImpl = (async () => ({ ok: false })) as unknown as typeof fetch;
+		await sponsorEnableAction(
+			{ spinner: true },
+			{ cwd, claudeSettingsPath: settingsPath, fetchImpl },
+		);
+		const errSpy = vi.mocked(console.error);
+		const printed = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Spinner surface skipped: no verified feed/creative available yet.");
+		const sponsor = localConfig().sponsor as { spinner?: boolean };
+		expect(sponsor.spinner).toBeUndefined();
+	});
+
+	it("enable --spinner reports skipped when the wire signature does not verify (feed is null)", async () => {
+		const { wire } = makeSignedWire(FEED);
+		// No INTERLINKED_SPONSOR_PUBKEY set (or set to a mismatched key) → verifyWire fails.
+		delete process.env.INTERLINKED_SPONSOR_PUBKEY;
+		const fetchImpl = (async () => ({ ok: true, text: async () => wire })) as unknown as typeof fetch;
+		await sponsorEnableAction(
+			{ spinner: true },
+			{ cwd, claudeSettingsPath: settingsPath, fetchImpl },
+		);
+		const errSpy = vi.mocked(console.error);
+		const printed = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Spinner surface skipped: no verified feed/creative available yet.");
+	});
+
+	it("enable --spinner reports skipped when the feed has no live creative (creative is null)", async () => {
+		const expiredFeed: SponsorFeed = {
+			...FEED,
+			valid_until: "2000-01-01T00:00:00Z",
+		};
+		const { wire, pubB64 } = makeSignedWire(expiredFeed);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const fetchImpl = (async () => ({ ok: true, text: async () => wire })) as unknown as typeof fetch;
+		await sponsorEnableAction(
+			{ spinner: true },
+			{ cwd, claudeSettingsPath: settingsPath, fetchImpl },
+		);
+		const errSpy = vi.mocked(console.error);
+		const printed = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Spinner surface skipped: no verified feed/creative available yet.");
+	});
+
+	it("enable --spinner reports skipped when settings.json is not parseable (res.ok false)", async () => {
+		writeFileSync(settingsPath, "{ not valid json");
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const fetchImpl = (async () => ({ ok: true, text: async () => wire })) as unknown as typeof fetch;
+		await sponsorEnableAction(
+			{ spinner: true },
+			{ cwd, claudeSettingsPath: settingsPath, fetchImpl },
+		);
+		const errSpy = vi.mocked(console.error);
+		const printed = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Spinner surface skipped: settings.json not parseable — left untouched");
+		const sponsor = localConfig().sponsor as { spinner?: boolean };
+		expect(sponsor.spinner).toBeUndefined();
+	});
+
+	it("enable (non-json) reports telemetry off when a prior config already disabled it", async () => {
+		// Pre-seed a sponsor block with telemetry:false so `prior.telemetry ?? true`
+		// keeps it off, then re-enable and check the non-json summary line.
+		await sponsorEnableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const cfgBefore = localConfig();
+		writeFileSync(
+			join(cwd, ".interlinked", "config.local.json"),
+			JSON.stringify({ ...cfgBefore, sponsor: { ...(cfgBefore.sponsor as object), telemetry: false } }),
+		);
+		const logSpy = vi.mocked(console.log);
+		logSpy.mockClear();
+		await sponsorEnableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Telemetry: off");
+	});
+
+	it("disable on a fresh project (no prior sponsor config) is a safe no-op", async () => {
+		const code = await sponsorDisableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		expect(code).toBe(0);
+		const sponsor = localConfig().sponsor as Record<string, unknown>;
+		expect(sponsor.enabled).toBe(false);
+		expect(sponsor.spinner_verbs_written).toEqual([]);
+	});
+
+	it("status --json on a fresh project falls back to telemetry:true and install_id:null", async () => {
+		const logSpy = vi.mocked(console.log);
+		logSpy.mockClear();
+		await sponsorStatusAction({ json: true }, { cwd, claudeSettingsPath: settingsPath });
+		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		const parsed = JSON.parse(printed) as {
+			enabled: boolean;
+			telemetry: boolean;
+			install_id: string | null;
+		};
+		expect(parsed.enabled).toBe(false);
+		expect(parsed.telemetry).toBe(true);
+		expect(parsed.install_id).toBeNull();
+	});
+
+	it("status (non-json) reports telemetry off when disabled in config", async () => {
+		await sponsorEnableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const cfgBefore = localConfig();
+		writeFileSync(
+			join(cwd, ".interlinked", "config.local.json"),
+			JSON.stringify({ ...cfgBefore, sponsor: { ...(cfgBefore.sponsor as object), telemetry: false } }),
+		);
+		const logSpy = vi.mocked(console.log);
+		logSpy.mockClear();
+		await sponsorStatusAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("telemetry: off");
+	});
+
+	it("status (non-json) omits the creative text when the live status file has no text= line", async () => {
+		await sponsorEnableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		writeFileSync(join(cwd, ".interlinked", SPONSOR_STATUS_FILE), "enabled=1\ncreative=alpha\n");
+		const logSpy = vi.mocked(console.log);
+		logSpy.mockClear();
+		await sponsorStatusAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const printed = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("showing: alpha — ");
+	});
+
+	it("disable reports when settings.json is not parseable so verbs can't be removed", async () => {
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const fetchImpl = (async () => ({ ok: true, text: async () => wire })) as unknown as typeof fetch;
+		await sponsorEnableAction(
+			{ spinner: true },
+			{ cwd, claudeSettingsPath: settingsPath, fetchImpl },
+		);
+		// Corrupt settings.json AFTER the verb was written, then disable.
+		writeFileSync(settingsPath, "{ not valid json");
+		const errSpy = vi.mocked(console.error);
+		errSpy.mockClear();
+		await sponsorDisableAction({}, { cwd, claudeSettingsPath: settingsPath });
+		const printed = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(printed).toContain("Spinner verbs not removed: settings.json not parseable — left untouched");
 	});
 });

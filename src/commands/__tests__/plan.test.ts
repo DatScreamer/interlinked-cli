@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CapturedPlan } from "../../harness/types/plan.js";
 import { nonNull } from "../../lib/non-null.js";
 import { planListCommand, planShowCommand } from "../plan.js";
@@ -752,13 +752,18 @@ describe("interlinked plan list — created_at_iso sort comparator", () => {
 // ===========================================
 
 describe("interlinked plan — defaults cwd to process.cwd()", () => {
-	let originalCwd = "";
+	// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+	// is not supported in workers"), and Stryker's vitest runner pins its own
+	// pool, so a real chdir here fails the mutation dry run for any file whose
+	// graph-selected test scope includes this one. plan.ts reads `process.cwd()`
+	// explicitly via `opts.cwd ?? process.cwd()`, so the spy exercises the same
+	// path.
+	let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 	beforeEach(() => {
-		originalCwd = process.cwd();
-		process.chdir(tmp);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	});
 	afterEach(() => {
-		process.chdir(originalCwd);
+		cwdSpy?.mockRestore();
 	});
 
 	it("planListCommand resolves plans relative to process.cwd() when cwd is omitted", async () => {

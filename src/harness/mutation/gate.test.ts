@@ -336,4 +336,91 @@ describe("gate messaging — the reader can act on the difference", () => {
 		const d = await runPerEditMutationGate(nmGateCtx(pendingErr));
 		expect(d?.warnings?.join("\n")).toContain("still running past the budget");
 	});
+
+	it("falls back to 'unspecified' when the not-measurable reason is an empty string", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new MutationNotMeasurableError("")));
+		expect(d?.warnings?.join("\n")).toContain("mutation not measurable here (unspecified)");
+	});
+
+	it("falls back to 'unspecified' when the not-measurable reason is not a string at all", async () => {
+		const nonStringReasonErr = Object.assign(new Error("x"), {
+			name: "MutationNotMeasurableError",
+			reason: 42,
+		});
+		const d = await runPerEditMutationGate(nmGateCtx(nonStringReasonErr));
+		expect(d?.warnings?.join("\n")).toContain("mutation not measurable here (unspecified)");
+	});
+});
+
+describe("runPerEditMutationGate — local-dependency overlay walk (spec §7)", () => {
+	const TARGET = "src/y.ts";
+	const COMPANION = "src/y.test.ts";
+	const DEP = "src/shared.ts";
+	const GONE = "src/gone.ts";
+
+	it("carries a local dep imported by both the target and its companion exactly once, and drops one that vanishes before the second read", async () => {
+		const files: Record<string, string> = {
+			[TARGET]: 'import "./shared.js";\nimport "./gone.js";\nexport const y = 1;\n',
+			[COMPANION]: 'import "./shared.js";\nexport {};\n',
+			[DEP]: "export const shared = 1;\n",
+			[GONE]: "export const gone = 1;\n",
+		};
+		const counts: Record<string, number> = {};
+		const readDisk = (p: string): string | null => {
+			if (!(p in files)) return null;
+			counts[p] = (counts[p] ?? 0) + 1;
+			// GONE resolves fine the first two times collectLocalDeps reads it
+			// (once confirming the specifier, once when dequeued) but has vanished
+			// by the time addLocalDeps does its own re-read.
+			if (p === GONE && counts[p] > 2) return null;
+			return files[p] ?? null;
+		};
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: TARGET, content: files[TARGET] as string },
+				runner: capturing,
+				readDisk,
+			}),
+		);
+		const paths = captured?.map((o) => o.path) ?? [];
+		expect(paths.filter((p) => p === DEP)).toEqual([DEP]);
+		expect(paths).not.toContain(GONE);
+	});
+});
+
+describe("runPerEditMutationGate — cwd threading (spec: manifest key normalization)", () => {
+	it("accepts an explicit cwd for manifest-key resolution without throwing", async () => {
+		const d = await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: "/repo/src/z.ts", content: "export const z = 1;\n" },
+				readDisk: () => "export const z = 1;\n",
+				runner: fakeRunner([survivor("killed")]),
+				baseManifest: emptyManifest(META),
+				cwd: "/repo",
+			}),
+		);
+		expect(d?.decision).toBe("allow");
+	});
+});
+
+describe("persistIfCleanMeasured — non-Error persistence failure (via runPerEditMutationGate)", () => {
+	it("stringifies a thrown non-Error value in the persistence-failure warning", async () => {
+		const persist = () => {
+			// eslint-disable-next-line no-throw-literal
+			throw "disk full (string throw)";
+		};
+		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist }));
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.some((w) => w.includes("persistence failed") && w.includes("disk full (string throw)"))).toBe(
+			true,
+		);
+	});
 });

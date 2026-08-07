@@ -624,3 +624,313 @@ describe("runBehavioralChecks — persistent escalation attribution (detail-line
 		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
 	});
 });
+
+// ===========================================
+// 6. extractDetailLines — via runBehavioralChecks (not directly exported)
+// ===========================================
+//
+// Exercises the branch inside extractDetailLines that a `detail`-less finding
+// short-circuits to [] (line 163's true arm), plus the extreme-magnitude
+// digit string that makes Number.parseInt overflow to Infinity, tripping the
+// `Number.isFinite` guard's false arm (line 169).
+
+describe("extractDetailLines (via runBehavioralChecks) — detail-block edge cases", () => {
+	it("a finding with NO detail field contributes zero recovered lines (fails closed, no escalation)", () => {
+		const session = makeSession({
+			warnings_issued: new Map([
+				[
+					"src/foo.ts::export_surface",
+					{
+						check_name: "export_surface",
+						issue_count: 1,
+						first_issued_at: 1,
+						last_issued_at: 1,
+						resolved: false,
+					},
+				],
+			]),
+		});
+		const finding: CheckResultEntry = {
+			source: "structural",
+			name: "export_surface",
+			severity: "warning",
+			message: "exported a new symbol with no companions",
+			file: "src/foo.ts",
+			determinism: "fully_deterministic",
+			// no `detail` field at all
+		};
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[finding],
+			undefined,
+			undefined,
+			new Set([1, 2, 3]),
+		);
+		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
+	});
+
+	it("an astronomically large L<n> line number overflows to Infinity and is dropped, not escalated", () => {
+		const session = makeSession({
+			warnings_issued: new Map([
+				[
+					"src/foo.ts::nan_coercion_guard",
+					{
+						check_name: "nan_coercion_guard",
+						issue_count: 1,
+						first_issued_at: 1,
+						last_issued_at: 1,
+						resolved: false,
+					},
+				],
+			]),
+		});
+		// 400 nines — Number.parseInt of this digit string overflows past
+		// Number.MAX_VALUE to Infinity, which Number.isFinite must reject.
+		const hugeDigits = "9".repeat(400);
+		const finding: CheckResultEntry = {
+			source: "quality",
+			name: "nan_coercion_guard",
+			severity: "warning",
+			message: "nan_coercion_guard fired",
+			file: "src/foo.ts",
+			detail: `  L${hugeDigits}: something()`,
+			determinism: "fully_deterministic",
+		};
+		const out = runBehavioralChecks(
+			session,
+			"src/foo.ts",
+			[finding],
+			undefined,
+			undefined,
+			new Set([1, 2, 3]),
+		);
+		// No finite line was recovered, so the diff-aware gate has nothing to
+		// compare against an edited line — must fail closed (no escalation).
+		expect(out.filter((r) => r.name === "persistent_warning_escalation")).toEqual([]);
+	});
+});
+
+// ===========================================
+// 7. groupEscalationInputs — via checkPersistentWarningEscalation, duplicate
+// check names within one currentResults array (not exercised elsewhere).
+// ===========================================
+
+describe("checkPersistentWarningEscalation — duplicate finding names in one call", () => {
+	it("merges lines from two findings with the SAME check name into one group", () => {
+		// First entry establishes the group + its determinism; the second entry
+		// (same name) must NOT overwrite the already-set determinism, and its
+		// `lines[]` must merge into the same group's line list.
+		const session = makeSession({
+			warnings_issued: new Map([
+				[
+					"src/foo.ts::floating_promises",
+					{
+						check_name: "floating_promises",
+						issue_count: 1,
+						first_issued_at: 1,
+						last_issued_at: 1,
+						resolved: false,
+					},
+				],
+			]),
+		});
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[
+				{ name: "floating_promises", lines: [900], determinism: "fully_deterministic" },
+				// Second entry: no determinism (would be ignored since group already
+				// has one) and a line that IS near the edit.
+				{ name: "floating_promises", lines: [10] },
+			],
+			new Set([10]),
+		);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).name).toBe("persistent_warning_escalation");
+	});
+
+	it("filters non-finite/non-number entries out of a finding's lines[] array", () => {
+		const session = makeSession({
+			warnings_issued: new Map([
+				[
+					"src/foo.ts::floating_promises",
+					{
+						check_name: "floating_promises",
+						issue_count: 1,
+						first_issued_at: 1,
+						last_issued_at: 1,
+						resolved: false,
+					},
+				],
+			]),
+		});
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[
+				{
+					name: "floating_promises",
+					// SAFETY: deliberately malformed input to exercise the runtime
+					// typeof/isFinite guard in groupEscalationInputs — the cast fakes
+					// a caller that didn't respect the number[] type.
+					lines: [Number.NaN, "not-a-number" as unknown as number, 900],
+					determinism: "fully_deterministic",
+				},
+			],
+			new Set([10]),
+		);
+		// Only 900 survives the filter, and it's far from the edited line 10 —
+		// so no escalation (proves the bad entries were dropped, not counted).
+		expect(out).toEqual([]);
+	});
+});
+
+// ===========================================
+// 8. runBehavioralChecks orchestrator — branch coverage for each numbered
+// step's guard (steps 1, 2, 3, 5).
+// ===========================================
+
+describe("runBehavioralChecks — orchestrator step gating", () => {
+	it("step 1 is SKIPPED when a TDD cycle is active for the file (even with 3+ edits, no tests)", () => {
+		const edits = new Map([["src/foo.ts", 5]]);
+		const cycles = new Map([
+			[
+				"src/foo.ts",
+				{
+					source_file: "src/foo.ts",
+					test_file: null,
+					state: "no_test" as const,
+					impl_edits_before_test: 1,
+				},
+			],
+		]);
+		const session = makeSession({ file_edit_counts: edits, tdd_cycles: cycles });
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "repeated_edit_without_test")).toBe(false);
+	});
+
+	it("step 1 FIRES when no TDD cycle is active and the file was edited 3+ times with no tests", () => {
+		const edits = new Map([["src/foo.ts", 3]]);
+		const session = makeSession({ file_edit_counts: edits });
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "repeated_edit_without_test")).toBe(true);
+	});
+
+	it("step 2 FIRES a suppression finding when counts + failed_files line up", () => {
+		const failed = new Map([
+			[
+				"src/foo.ts",
+				{
+					failure_count: 1,
+					checks: ["typescript"],
+					recorded_at: FIXED_RECORDED_AT,
+					tool_call_count: 3,
+				},
+			],
+		]);
+		const session = makeSession({ failed_files: failed });
+		const out = runBehavioralChecks(session, "src/foo.ts", [], 0, 2);
+		expect(out.some((r) => r.name === "suppression_as_workaround")).toBe(true);
+	});
+
+	it("step 2 does NOT fire when suppression count did not increase", () => {
+		const failed = new Map([
+			[
+				"src/foo.ts",
+				{
+					failure_count: 1,
+					checks: ["typescript"],
+					recorded_at: FIXED_RECORDED_AT,
+					tool_call_count: 3,
+				},
+			],
+		]);
+		const session = makeSession({ failed_files: failed });
+		const out = runBehavioralChecks(session, "src/foo.ts", [], 2, 2);
+		expect(out.some((r) => r.name === "suppression_as_workaround")).toBe(false);
+	});
+
+	it("step 3 FIRES the domain-sensitive nudge for a security-domain path", () => {
+		const session = makeSession();
+		const out = runBehavioralChecks(session, "src/auth/login.ts", []);
+		expect(out.some((r) => r.name === "domain_sensitive_test_nudge")).toBe(true);
+	});
+
+	it("step 3 does NOT fire for a non-security path", () => {
+		const session = makeSession();
+		const out = runBehavioralChecks(session, "src/ui/button.ts", []);
+		expect(out.some((r) => r.name === "domain_sensitive_test_nudge")).toBe(false);
+	});
+
+	it("step 5a (checkTddCycleViolation) FIRES via the orchestrator when impl edits pile up with no test", () => {
+		const cycles = new Map([
+			[
+				"src/foo.ts",
+				{
+					source_file: "src/foo.ts",
+					test_file: null,
+					state: "no_test" as const,
+					impl_edits_before_test: 3,
+				},
+			],
+		]);
+		const session = makeSession({ tdd_cycles: cycles });
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_cycle_violation")).toBe(true);
+	});
+
+	it("step 5a does NOT fire when there is no active TDD cycle for the file", () => {
+		const session = makeSession();
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_cycle_violation")).toBe(false);
+	});
+
+	it("step 5b (checkTddRegression) FIRES via the orchestrator on a green→regression transition", () => {
+		const cycles = new Map([
+			[
+				"src/foo.ts",
+				{
+					source_file: "src/foo.ts",
+					test_file: "src/foo.test.ts",
+					state: "regression" as const,
+					previous_state: "green" as const,
+					impl_edits_before_test: 0,
+				},
+			],
+		]);
+		const session = makeSession({ tdd_cycles: cycles });
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_regression")).toBe(true);
+	});
+
+	it("step 5b does NOT fire when the cycle is not in a regression state", () => {
+		const session = makeSession();
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_regression")).toBe(false);
+	});
+
+	it("step 5c (checkTddGreenConfirmation) FIRES via the orchestrator on a red→green transition", () => {
+		const cycles = new Map([
+			[
+				"src/foo.ts",
+				{
+					source_file: "src/foo.ts",
+					test_file: "src/foo.test.ts",
+					state: "green" as const,
+					previous_state: "red" as const,
+					impl_edits_before_test: 0,
+				},
+			],
+		]);
+		const session = makeSession({ tdd_cycles: cycles });
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_green_confirmation")).toBe(true);
+	});
+
+	it("step 5c does NOT fire when the cycle is not transitioning from red to green", () => {
+		const session = makeSession();
+		const out = runBehavioralChecks(session, "src/foo.ts", []);
+		expect(out.some((r) => r.name === "tdd_green_confirmation")).toBe(false);
+	});
+});

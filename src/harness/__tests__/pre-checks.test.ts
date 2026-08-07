@@ -463,17 +463,22 @@ describe("checkSelfKill + getProtectedPids", () => {
 	// non-trivial and the ancestor-walk loop body executes.
 	const PLANTED_ANCESTOR = 424242;
 	let pidDir: string;
-	let prevCwd: string;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry run
+	// for any file whose graph-selected test scope includes this one.
+	// getProtectedPids resolves the pid file via `join(process.cwd(), ...)`, so
+	// the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		execSyncMock.mockReset();
 		execSyncMock.mockReturnValue("");
-		prevCwd = process.cwd();
 		pidDir = mkdtempSync(join(tmpdir(), "pre-checks-pid-"));
 		mkdirSync(join(pidDir, ".interlinked"), { recursive: true });
 		// A readable, numeric harness.pid → exercises the parse + add branch.
 		writeFileSync(join(pidDir, ".interlinked", "harness.pid"), "777777\n");
-		process.chdir(pidDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(pidDir);
 
 		// `ps -ax` listing: map process.ppid -> PLANTED_ANCESTOR -> 1 (init),
 		// so the ancestor walk adds ppid then PLANTED_ANCESTOR then stops at init.
@@ -492,7 +497,7 @@ describe("checkSelfKill + getProtectedPids", () => {
 	});
 
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy.mockRestore();
 		rmSync(pidDir, { recursive: true, force: true });
 	});
 
@@ -665,18 +670,23 @@ describe("checkSelfKill + getProtectedPids", () => {
 // a COLD module so getProtectedPids runs again with hostile execSync/fs state.
 
 describe("getProtectedPids fail-open paths (cold module)", () => {
-	let prevCwd: string;
 	let coldDir: string;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry run
+	// for any file whose graph-selected test scope includes this one.
+	// getProtectedPids resolves the pid file via `join(process.cwd(), ...)`, so
+	// the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
-		prevCwd = process.cwd();
 		coldDir = mkdtempSync(join(tmpdir(), "pre-checks-cold-"));
-		process.chdir(coldDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(coldDir);
 		vi.resetModules();
 	});
 
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy.mockRestore();
 		rmSync(coldDir, { recursive: true, force: true });
 	});
 
@@ -746,20 +756,25 @@ describe("getProtectedPids fail-open paths (cold module)", () => {
 // blocks above) and checks its effect via `checkSelfKill('kill <injected>')`.
 
 describe("getProtectedPids ancestor-listing regex precision (cold module)", () => {
-	let prevCwd: string;
 	let coldDir: string;
 	const ppid = process.ppid;
 	const PLANTED = 424242;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry run
+	// for any file whose graph-selected test scope includes this one.
+	// getProtectedPids resolves the pid file via `join(process.cwd(), ...)`, so
+	// the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
-		prevCwd = process.cwd();
 		coldDir = mkdtempSync(join(tmpdir(), "pre-checks-ancestor-regex-"));
-		process.chdir(coldDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(coldDir);
 		vi.resetModules();
 	});
 
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy.mockRestore();
 		rmSync(coldDir, { recursive: true, force: true });
 	});
 

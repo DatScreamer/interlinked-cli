@@ -373,7 +373,7 @@ describe("statusline snapshot rows", () => {
 		return undefined;
 	}
 
-	it("emits exactly the 22 documented keys, in order, terminated by a newline", () => {
+	it("emits exactly the 27 documented keys, in order, terminated by a newline", () => {
 		const text = write(emptyConfig());
 		const keys = text.replace(/\n$/, "").split("\n").map((l) => l.slice(0, l.indexOf("=")));
 		expect(keys).toEqual([
@@ -398,6 +398,14 @@ describe("statusline snapshot rows", () => {
 			"daemon_pid",
 			"spec_facts_total",
 			"review_findings_open",
+			// Work-done counters + caps. Appended AFTER the existing keys on
+			// purpose: a consumer that reads by position keeps working, and the
+			// statusline reads by name anyway.
+			"lifetime_blocked",
+			"lifetime_caught",
+			"lifetime_evaluated",
+			"cap_cyclomatic",
+			"cap_crap",
 			"generated_at",
 		]);
 		expect(text.endsWith("\n")).toBe(true);
@@ -1073,6 +1081,118 @@ describe("loaded-checks.md", () => {
 // is enforced. The live registry currently holds agent_safety entries only,
 // which makes the filter invisible against the real one — these tests supply a
 // mixed registry so the exclusion is actually observed.
+
+// ===========================================
+// Failure-swallowing branches (L85, L93, L101, L509)
+// ===========================================
+// Each of the three artifact writes is independently best-effort: an I/O
+// failure on one must not prevent the others, and must never throw out of
+// writeStatuslineArtifacts. Also covers readJsonSafely's malformed-JSON
+// catch (L509).
+
+describe("writeStatuslineArtifacts — failure swallowing", () => {
+	let cwd: string;
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("swallows the write failure for all three artifacts when interlinkedDir does not exist", () => {
+		cwd = mkdtempSync(join(tmpdir(), "statusline-missing-dir-"));
+		const interlinkedDir = join(cwd, ".interlinked"); // deliberately never created
+		expect(() =>
+			writeStatuslineArtifacts({
+				cwd,
+				interlinkedDir,
+				rules: emptyConfig(),
+				reservationsCount: 0,
+				indexStatus: "missing",
+				indexFiles: 0,
+				serverBridgeConnected: false,
+				daemonPid: 1,
+			}),
+		).not.toThrow();
+		expect(existsSync(join(interlinkedDir, "statusline.snapshot"))).toBe(false);
+		expect(existsSync(join(interlinkedDir, "loaded-rules.md"))).toBe(false);
+		expect(existsSync(join(interlinkedDir, "loaded-checks.md"))).toBe(false);
+	});
+
+	it("degrades to documented defaults when config.json holds malformed JSON", () => {
+		cwd = mkdtempSync(join(tmpdir(), "statusline-malformed-"));
+		const interlinkedDir = join(cwd, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+		writeFileSync(join(interlinkedDir, "config.json"), "{ not valid json");
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^harness_mode=quality$/m);
+	});
+});
+
+// ===========================================
+// byCategoryThenId — missing-category fallback (L485, L486)
+// ===========================================
+// A single rule never invokes the comparator (Array.prototype.sort skips
+// comparisons for a 1-element array), so the existing "labels rules with no
+// category as uncategorized" case never actually exercises the `a.category
+// || "uncategorized"` / `b.category || "uncategorized"` fallbacks. This needs
+// at least two category-less rules compared against each other (hitting both
+// sides in one comparator call) and against a categorized rule (hitting one
+// side).
+
+describe("loaded-rules.md — sorts rules missing `category` against each other and against categorized rules", () => {
+	let cwd: string;
+	let interlinkedDir: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "statusline-nocat-"));
+		interlinkedDir = join(cwd, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("buckets two category-less rules together, sorted by id, alongside a categorized one", () => {
+		const noCatZ = ruleFixture({ id: "z_one" });
+		delete noCatZ.category;
+		const noCatA = ruleFixture({ id: "a_two" });
+		delete noCatA.category;
+		const cfg = emptyConfig();
+		cfg.rules = [noCatZ, noCatA, ruleFixture({ id: "m_three", category: "process" })];
+
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: cfg,
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const lines = readFileSync(join(interlinkedDir, "loaded-rules.md"), "utf-8").split("\n");
+		const headings = lines.filter((l) => l.startsWith("## ")).filter((l) => !l.includes("Disabled"));
+		expect(headings).toEqual(["## Process (1)", "## Uncategorized (2)"]);
+		const uncatIdx = lines.indexOf("## Uncategorized (2)");
+		const uncatBullets = lines
+			.slice(uncatIdx + 1)
+			.filter((l) => l.startsWith("- `"));
+		expect(uncatBullets).toEqual([
+			"- `a_two` — block — high — custom — because",
+			"- `z_one` — block — high — custom — because",
+		]);
+	});
+});
 
 describe("registry pipeline filtering", () => {
 	let cwd: string;

@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { Command } from "commander";
+import { describe, expect, it, vi } from "vitest";
 import { computeEntryHash, GENESIS_HASH, verifyAuditChain } from "../../lib/audit-chain.js";
 import { nonNull } from "../../lib/non-null.js";
-import { compactCommand, loadArchiveManifest } from "../compact.js";
+import { compactCommand, loadArchiveManifest, registerCompactCommand } from "../compact.js";
 
 function writeLog(records: object[]): { tempDir: string; dataDir: string; content: string } {
 	const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-"));
@@ -127,5 +128,199 @@ describe("interlinked compact", () => {
 		expect(loadArchiveManifest(tempDir).segments.length).toBe(1);
 		// The last chained record still stays live (audit-tail-safe) even with --all.
 		expect(readFileSync(join(dataDir, "activity.jsonl"), "utf-8")).toContain('"last":true');
+	});
+
+	it("does nothing (with a message) when activity.jsonl does not exist at all", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-"));
+		mkdirSync(join(tempDir, ".interlinked"), { recursive: true });
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			await compactCommand({ cwd: tempDir, json: true });
+		} finally {
+			log.mockRestore();
+		}
+		expect(JSON.parse(nonNull(out[0]))).toEqual({ compacted: false, reason: "no activity.jsonl" });
+	});
+
+	it("prints human-readable output (not JSON) when --json is not passed", async () => {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		setSync(dataDir, Buffer.byteLength(content));
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			await compactCommand({ cwd: tempDir, keepRecentBytes: 20 });
+		} finally {
+			log.mockRestore();
+		}
+		expect(out).toHaveLength(1);
+		// Human output is not parseable JSON — it's the "✓ Compacted" narrative line.
+		expect(() => JSON.parse(nonNull(out[0]))).toThrow();
+		expect(out[0]).toContain("Compacted");
+	});
+
+	it("reports 'first record exceeds the archivable region' for a single-record file with nothing to cut before it", async () => {
+		const { tempDir, dataDir, content } = writeLog([{ type: "tool_use", i: 1 }]);
+		setSync(dataDir, Buffer.byteLength(content));
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 0 });
+		} finally {
+			log.mockRestore();
+		}
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.reason).toBe("first record exceeds the archivable region");
+		expect(loadArchiveManifest(tempDir).segments.length).toBe(0);
+	});
+
+	it("reports the recent-tail reason when keepRecentBytes exceeds the whole (synced) file", async () => {
+		const records = Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, content } = writeLog(records);
+		const fileBytes = Buffer.byteLength(content);
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			// --all so syncedBytes is irrelevant (ignoreSync=true); keepRecentBytes bigger
+			// than the whole file forces `fileSize - keepRecentBytes <= 0`.
+			await compactCommand({ cwd: tempDir, json: true, all: true, keepRecentBytes: fileBytes + 10_000 });
+		} finally {
+			log.mockRestore();
+		}
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.reason).toBe(
+			`log is within the ${((fileBytes + 10_000) / 1024 / 1024).toFixed(1)}MB recent-tail kept live`,
+		);
+	});
+
+	it("reports the pre-audit-tail-empty reason when the chained record is the very first line", async () => {
+		const records = [
+			{ type: "guard_allow", hash: "d".repeat(64), previousHash: "0".repeat(64), first: true },
+			...Array.from({ length: 10 }, (_, i) => ({ type: "tool_use", i })),
+		];
+		const { tempDir, dataDir, content } = writeLog(records);
+		const fileBytes = Buffer.byteLength(content);
+		setSync(dataDir, fileBytes); // everything synced (first cond of the reason ternary: false)
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			// Small keepRecentBytes so fileSize - keepRecentBytes > 0 (second cond: false too) —
+			// only the chained-record-at-offset-0 constraint drives limit to 0.
+			await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 });
+		} finally {
+			log.mockRestore();
+		}
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.reason).toBe("the pre-audit-tail region is empty");
+	});
+
+	it("treats a missing/non-numeric synced_through_bytes as nothing synced (fail safe)", async () => {
+		const { tempDir, dataDir } = writeLog(Array.from({ length: 10 }, (_, i) => ({ type: "tool_use", i })));
+		// sync-state.json exists but its field is the wrong type — not the number branch.
+		writeFileSync(join(dataDir, "sync-state.json"), JSON.stringify({ synced_through_bytes: "not-a-number" }));
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		try {
+			await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 });
+		} finally {
+			log.mockRestore();
+		}
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.synced_bytes).toBe(0);
+		expect(parsed.reason).toBe("no synced data yet — pass --all to compact a local-only log");
+	});
+});
+
+describe("loadArchiveManifest — malformed manifest handling", () => {
+	function withManifest(raw: string): string {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-manifest-"));
+		const archiveDir = join(tempDir, ".interlinked", "archive");
+		mkdirSync(archiveDir, { recursive: true });
+		writeFileSync(join(archiveDir, "manifest.json"), raw);
+		return tempDir;
+	}
+
+	it("falls back to an empty manifest when manifest.json is not valid JSON (parse error)", () => {
+		const tempDir = withManifest("{not valid json");
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("falls back to an empty manifest when manifest.json parses but has no segments array", () => {
+		const tempDir = withManifest(JSON.stringify({ version: 1 }));
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("falls back to an empty manifest when manifest.json is valid JSON `null`", () => {
+		const tempDir = withManifest("null");
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+});
+
+describe("registerCompactCommand — CLI wiring", () => {
+	it("parses --keep-recent-mb and --json and drives a real compaction through the commander action", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-cli-"));
+		const dataDir = join(tempDir, ".interlinked");
+		mkdirSync(dataDir, { recursive: true });
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const content = `${records.map((r) => JSON.stringify(r)).join("\n")}\n`;
+		writeFileSync(join(dataDir, "activity.jsonl"), content);
+		writeFileSync(
+			join(dataDir, "sync-state.json"),
+			JSON.stringify({ synced_through_bytes: Buffer.byteLength(content) }),
+		);
+
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins a worker-thread pool.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(realpathSync(tempDir));
+		try {
+			const program = new Command();
+			program.exitOverride();
+			registerCompactCommand(program);
+			// A tiny --keep-recent-mb (in MB) converts to a small byte count, so the
+			// 30-record fixture is comfortably archivable.
+			await program.parseAsync(["node", "interlinked", "compact", "--keep-recent-mb", "0.00001", "--json"]);
+		} finally {
+			cwdSpy.mockRestore();
+			log.mockRestore();
+		}
+
+		expect(out).toHaveLength(1);
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(true);
+		expect(loadArchiveManifest(tempDir).segments.length).toBe(1);
+	});
+
+	it("runs with the default 2MB keep-recent-mb and reports nothing-to-compact for a tiny file", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-cli-default-"));
+		const dataDir = join(tempDir, ".interlinked");
+		mkdirSync(dataDir, { recursive: true });
+		writeFileSync(join(dataDir, "activity.jsonl"), '{"type":"tool_use","i":1}\n');
+		writeFileSync(join(dataDir, "sync-state.json"), JSON.stringify({ synced_through_bytes: 27 }));
+
+		const out: string[] = [];
+		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(realpathSync(tempDir));
+		try {
+			const program = new Command();
+			program.exitOverride();
+			registerCompactCommand(program);
+			await program.parseAsync(["node", "interlinked", "compact", "--json"]);
+		} finally {
+			cwdSpy.mockRestore();
+			log.mockRestore();
+		}
+
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		// Default 2MB keep-recent-mb dwarfs this tiny fixture.
+		expect(parsed.reason).toBe("log is within the 2.0MB recent-tail kept live");
 	});
 });

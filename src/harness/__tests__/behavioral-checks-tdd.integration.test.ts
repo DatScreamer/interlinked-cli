@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
 	checkProdTestLocRatio,
 	checkTddCommitGate,
 	checkTddCycleViolation,
+	checkTddRegression,
 	checkTppLeapfrog,
 	countAssertions,
 	gitNumstatDelta,
@@ -319,6 +320,54 @@ export class Widget {
 		);
 		const session = makeSession({ files_written: new Set([abs]) });
 		expect(checkTppLeapfrog(session)).toEqual([]);
+	});
+
+	it("is silent on a file with no staged/unstaged diff at all", () => {
+		const file = "untouched.ts";
+		commitInitial(dir, file, "export const x = 1;\n");
+		// No stageUpdate — getStagedDiff returns "" for both diff attempts.
+		const abs = join(dir, file);
+		const session = makeSession({ files_written: new Set([abs]) });
+		expect(checkTppLeapfrog(session)).toEqual([]);
+	});
+
+	it("is silent when the diff exists but adds no lines (deletion-only change)", () => {
+		const file = "shrink.ts";
+		const abs = join(dir, file);
+		commitInitial(
+			dir,
+			file,
+			`export const x = 1;
+export function run(items: number[]) {
+	for (const i of items) { while (i > 0) { break; } }
+}
+`,
+		);
+		// Pure removal — no "+"-prefixed content lines, only "-" lines.
+		stageUpdate(dir, file, "export const x = 1;\n");
+		const session = makeSession({ files_written: new Set([abs]) });
+		expect(checkTppLeapfrog(session)).toEqual([]);
+	});
+
+	it("uses the multiplied label when the SAME heavy construct appears more than once", () => {
+		const file = "repeat.ts";
+		const abs = join(dir, file);
+		commitInitial(dir, file, "export const x = 1;\n");
+		stageUpdate(
+			dir,
+			file,
+			`export const x = 1;
+export function run(items: number[]) {
+	for (const i of items) { console.log(i); }
+	for (const j of items) { console.log(j); }
+	switch (items.length) { case 0: break; default: break; }
+}
+`,
+		);
+		const session = makeSession({ files_written: new Set([abs]) });
+		const results = checkTppLeapfrog(session);
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).message).toContain("2× for loop");
 	});
 });
 
@@ -892,6 +941,46 @@ describe("checkProdDeltaWithoutTestDelta — sibling-test detection", () => {
 		expect(out.length).toBe(1);
 		expect(nonNull(out[0]).name).toBe("prod_delta_no_test_delta");
 	});
+
+	it("still fires (does not throw) when the source file itself no longer exists on disk", () => {
+		// exportedSymbolsOf(sourceFile) tries to read the SOURCE file (not the
+		// test) — a source that vanished mid-session must fall through its
+		// catch to an empty symbol list rather than throwing, and the
+		// prod-delta finding still fires since nothing rescues it.
+		const ghostSource = join(dir, "ghost.ts");
+		const ghostTest = join(dir, "ghost.test.ts"); // exists, found by findTestFilePath
+		writeFileSync(ghostTest, "it('x', () => {});\n");
+		// ghostSource intentionally never written.
+		const session = makeSession({ files_written: new Set([ghostSource]) });
+		const out = checkProdDeltaWithoutTestDelta(session);
+		expect(out.length).toBe(1);
+		expect(nonNull(out[0]).name).toBe("prod_delta_no_test_delta");
+	});
+
+	it("rescues via an `export { a, b as c }` re-export list referenced by a barrel test", () => {
+		// Exercises exportedSymbolsOf's list-export loop (distinct from the
+		// `export function NAME` regex path): the source only re-exports
+		// names via a list, and the aliased name `renamedThing` is what the
+		// barrel test actually references.
+		const sourceFile = join(dir, "reexport.ts");
+		const siblingTest = join(dir, "reexport.test.ts");
+		const barrelTest = join(dir, "consumer.test.ts");
+		writeFileSync(
+			sourceFile,
+			// A trailing empty segment (double comma) and an invalid identifier
+			// specifier are both skipped by the list-export loop's `if (exported
+			// && /^[A-Za-z_$][\w$]*$/.test(exported))` guard — neither should
+			// throw or wrongly register, while the two valid specifiers still do.
+			"const internalThing = () => 1;\nexport { internalThing as renamedThing, , 123bad, internalThing };\n",
+		);
+		writeFileSync(siblingTest, "it('placeholder', () => {});\n");
+		writeFileSync(
+			barrelTest,
+			"import { renamedThing } from './barrel.js';\nit('covers it', () => {\n\trenamedThing();\n});\n",
+		);
+		const session = makeSession({ files_written: new Set([sourceFile, barrelTest]) });
+		expect(checkProdDeltaWithoutTestDelta(session)).toEqual([]);
+	});
 });
 
 // ===========================================
@@ -1030,5 +1119,126 @@ describe("checkTddCycleViolation — bare test.ts basename", () => {
 		const file = "src/contest.ts";
 		const result = checkTddCycleViolation(sessionWithNoTestCycle(file), file);
 		expect(result?.name).toBe("tdd_cycle_violation");
+	});
+
+	it("does NOT flag a file under an exempt path (.interlinked/)", () => {
+		const file = ".interlinked/scratch.ts";
+		expect(checkTddCycleViolation(sessionWithNoTestCycle(file), file)).toBeNull();
+	});
+});
+
+describe("checkTddRegression — extension and exemption gates", () => {
+	function sessionWithRegression(file: string): SessionTrajectory {
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "regression",
+			previous_state: "green",
+			impl_edits_before_test: 0,
+		};
+		return makeSession({ tdd_cycles: new Map([[file, cycle]]) });
+	}
+
+	it("is silent on a non-source extension (e.g. markdown)", () => {
+		const file = "docs/CHANGES.md";
+		expect(checkTddRegression(sessionWithRegression(file), file)).toBeNull();
+	});
+
+	it("is silent on a file under an exempt path even in regression", () => {
+		const file = ".interlinked/scratch.ts";
+		expect(checkTddRegression(sessionWithRegression(file), file)).toBeNull();
+	});
+
+	it("STILL flags a real source file in green→red regression", () => {
+		const file = "src/widgets/foo.ts";
+		const result = checkTddRegression(sessionWithRegression(file), file);
+		expect(result?.name).toBe("tdd_regression");
+		expect(result?.severity).toBe("error");
+	});
+});
+
+describe("isTypeOnlySourceFile — reached from checkTddCycleViolation and checkTddCommitGate", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "type-only-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("exempts a pure type-definition module from the in-edit no-test nudge", () => {
+		const file = join(dir, "types.ts");
+		writeFileSync(file, "export interface Foo {\n\tbar: string;\n}\nexport type Baz = number;\n");
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 3,
+		};
+		const session = makeSession({ tdd_cycles: new Map([[file, cycle]]) });
+		expect(checkTddCycleViolation(session, file)).toBeNull();
+	});
+
+	it("exempts a pure type-definition module from the commit gate's no-test finding", () => {
+		const file = join(dir, "types.ts");
+		writeFileSync(file, "export interface Foo {\n\tbar: string;\n}\n");
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({
+			files_written: new Set([file]),
+			tdd_cycles: new Map([[file, cycle]]),
+		});
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("falls through to false (does not exempt) when the 'file' is actually a directory (readFileSync throws)", () => {
+		// existsSync(dir) is true for a directory, so isTypeOnlySourceFile
+		// reaches readFileSync — which throws EISDIR on a directory — and
+		// must fall through the catch to `return false` rather than crashing
+		// or wrongly exempting.
+		const asDir = join(dir, "weird.ts");
+		mkdirSync(asDir);
+		const cycle: TddCycle = {
+			source_file: asDir,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 3,
+		};
+		const session = makeSession({ tdd_cycles: new Map([[asDir, cycle]]) });
+		const result = checkTddCycleViolation(session, asDir);
+		expect(result?.name).toBe("tdd_cycle_violation");
+	});
+});
+
+describe("checkTddCommitGate — findTestFilePath edge shapes", () => {
+	it("is silent (and does not throw) for a source file with no extension at all", () => {
+		// findTestFilePath's `!ext` early return fires BEFORE the commit
+		// gate's own extension filter runs, so an extension-less path must
+		// not throw or otherwise misbehave along the way.
+		const file = "Makefile";
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({ tdd_cycles: new Map([[file, cycle]]) });
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
+	});
+
+	it("is silent for a cycle keyed on a bare .test.ts basename (findTestFilePath rejects it)", () => {
+		const file = "foo.test.ts";
+		const cycle: TddCycle = {
+			source_file: file,
+			test_file: null,
+			state: "no_test",
+			impl_edits_before_test: 1,
+		};
+		const session = makeSession({ tdd_cycles: new Map([[file, cycle]]) });
+		expect(checkTddCommitGate(session, "warn")).toEqual([]);
 	});
 });

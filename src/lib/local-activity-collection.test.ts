@@ -9,7 +9,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEventRecord, CollectionRecord } from "./collection/types.js";
 import {
 	countJsonlLines,
@@ -544,16 +544,21 @@ describe("readCollectionActivity — filters and scan bounds", () => {
 describe("readCollectionActivity — process.cwd() default", () => {
 	let tmp: string;
 	let elsewhere: string;
-	let prevCwd: string;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry
+	// run for any file whose graph-selected test scope includes this one.
+	// readCollectionActivity resolves cwd via `opts?.cwd ?? process.cwd()`, so
+	// the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "lac-defaultcwd-"));
 		elsewhere = mkdtempSync(join(tmpdir(), "lac-elsewhere-"));
-		prevCwd = process.cwd();
-		process.chdir(tmp);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	});
 	afterEach(() => {
-		process.chdir(prevCwd);
+		cwdSpy.mockRestore();
 		rmSync(tmp, { recursive: true, force: true });
 		rmSync(elsewhere, { recursive: true, force: true });
 	});

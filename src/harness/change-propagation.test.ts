@@ -953,6 +953,467 @@ describe("findPropagationTargets — combined scenarios", () => {
 // formatPropagationWarnings
 // ===========================================
 
+// ===========================================
+// Mutation-hardening — exact-value + guard-bypass assertions
+// ===========================================
+// Targets the survivors from the 81.9% mutation sweep on this file. Each
+// group below is a guard-bypass fixture (name/rel deliberately does NOT
+// match the function's keyword gate, while the artifact the gated block
+// would have flagged is present on disk) or an exact-value assertion
+// (reason/category/confidence text, not just presence).
+
+describe("mutation hardening — genBarrelIndex", () => {
+	it("returns the exact barrel target object (reason text pinned)", () => {
+		const edited = file("src/lib/helper.ts");
+		const index = file("src/lib/index.ts", 'export * from "./helper";');
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === index);
+		expect(t).toStrictEqual({
+			file: index,
+			reason: "Barrel export in index.ts re-exports from src/lib/helper.ts — update if exports changed",
+			category: "generated",
+			confidence: "medium",
+		});
+	});
+});
+
+describe("mutation hardening — schemaCompanions", () => {
+	it("does not run the companion scan when the name has no types/schema/interface keyword", () => {
+		// Guard-bypass fixture: name matches none of the three keywords, but a
+		// file that WOULD satisfy the suffix loop sits right next to it. If the
+		// keyword guard (or its bypass-blocking early return) is neutralized,
+		// this companion gets flagged anyway.
+		const edited = file("src/plain.ts");
+		file("src/plain.schema.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Schema file may need to mirror"))).toBe(
+			false,
+		);
+	});
+
+	it("flags only the schema-companion suffixes that actually exist (exact set, exact reason)", () => {
+		const edited = file("src/order.types.ts");
+		const schema = file("src/order.types.schema.ts");
+		// .schema.json and .zod.ts are deliberately absent.
+		const targets = findPropagationTargets(edited, root);
+		const schemaTargets = targets.filter(
+			(t) => t.category === "schema" && t.reason.includes("mirror"),
+		);
+		expect(schemaTargets).toStrictEqual([
+			{
+				file: schema,
+				reason: "Schema file may need to mirror changes in src/order.types.ts",
+				category: "schema",
+				confidence: "high",
+			},
+		]);
+	});
+});
+
+describe("mutation hardening — schemaOpenApi", () => {
+	it("flags no spec file when none of the five variants exist", () => {
+		const edited = file("src/user-handler.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("API spec may need"))).toBe(false);
+	});
+});
+
+describe("mutation hardening — schemaOpenApi (exact spec filenames)", () => {
+	it("flags exactly openapi.json when only that variant exists (kills 161 string literal)", () => {
+		const edited = file("src/user-handler.ts");
+		const spec = file("openapi.json");
+		const targets = findPropagationTargets(edited, root);
+		const specTargets = targets.filter((t) => t.reason.includes("API spec may need"));
+		expect(specTargets).toStrictEqual([
+			{
+				file: spec,
+				reason: "API spec may need updating after changes to src/user-handler.ts",
+				category: "schema",
+				confidence: "medium",
+			},
+		]);
+	});
+
+	it("flags exactly swagger.yaml when only that variant exists (kills 162 string literal)", () => {
+		const edited = file("src/user-handler.ts");
+		const spec = file("swagger.yaml");
+		const targets = findPropagationTargets(edited, root);
+		const specTargets = targets.filter((t) => t.reason.includes("API spec may need"));
+		expect(specTargets).toStrictEqual([
+			{
+				file: spec,
+				reason: "API spec may need updating after changes to src/user-handler.ts",
+				category: "schema",
+				confidence: "medium",
+			},
+		]);
+	});
+
+	it("flags exactly swagger.json when only that variant exists (kills 163 string literal)", () => {
+		const edited = file("src/user-handler.ts");
+		const spec = file("swagger.json");
+		const targets = findPropagationTargets(edited, root);
+		const specTargets = targets.filter((t) => t.reason.includes("API spec may need"));
+		expect(specTargets).toStrictEqual([
+			{
+				file: spec,
+				reason: "API spec may need updating after changes to src/user-handler.ts",
+				category: "schema",
+				confidence: "medium",
+			},
+		]);
+	});
+
+	it("flags exactly api.yaml when only that variant exists (kills 164 string literal)", () => {
+		const edited = file("src/user-handler.ts");
+		const spec = file("api.yaml");
+		const targets = findPropagationTargets(edited, root);
+		const specTargets = targets.filter((t) => t.reason.includes("API spec may need"));
+		expect(specTargets).toStrictEqual([
+			{
+				file: spec,
+				reason: "API spec may need updating after changes to src/user-handler.ts",
+				category: "schema",
+				confidence: "medium",
+			},
+		]);
+	});
+});
+
+describe("mutation hardening — testFixturesSnapshots", () => {
+	it("skips fixtures/snapshots discovery for a name containing __test but keeps working for a plain name", () => {
+		// Sanity anchor: a plain module WITH a matching fixture does get flagged
+		// (already covered elsewhere); this block only needs the negative half
+		// above (isTestFile true) plus the exact reason text below.
+		const edited = file("src/reader.ts");
+		const fixture = file("src/__fixtures__/reader.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === fixture);
+		expect(t).toStrictEqual({
+			file: fixture,
+			reason: "Test fixture for src/reader.ts may need updating",
+			category: "test",
+			confidence: "medium",
+		});
+	});
+});
+
+describe("mutation hardening — configCliReadme", () => {
+	it("flags a lowercase readme.md when README.md is absent (loop entry, not just the first)", () => {
+		const edited = file("src/commands/run.ts");
+		const readme = file("readme.md", "## Commands\nlist");
+		const targets = findPropagationTargets(edited, root);
+		expect(
+			targets.some(
+				(t) => t.file === readme && t.reason.includes("README CLI documentation"),
+			),
+		).toBe(true);
+	});
+
+	it("matches a CLI heading with zero spaces after the hash", () => {
+		const edited = file("src/commands/run.ts");
+		const readme = file("README.md", "#Commands\nrun stuff");
+		const targets = findPropagationTargets(edited, root);
+		expect(
+			targets.some(
+				(t) => t.file === readme && t.reason.includes("README CLI documentation"),
+			),
+		).toBe(true);
+	});
+
+	it("matches a singular '# Command' heading (the 's' in commands? is optional)", () => {
+		const edited = file("src/commands/run.ts");
+		const readme = file("README.md", "# Command\nsingular heading, no trailing s");
+		const targets = findPropagationTargets(edited, root);
+		expect(
+			targets.some(
+				(t) => t.file === readme && t.reason.includes("README CLI documentation"),
+			),
+		).toBe(true);
+	});
+
+	it("returns the exact README CLI-doc target object", () => {
+		const edited = file("src/commands/run.ts");
+		const readme = file("README.md", "## Commands\nlist of commands");
+		const targets = findPropagationTargets(edited, root);
+		// docReadme (a separate helper) also flags README.md unconditionally —
+		// find the CLI-specific target by its distinct reason text.
+		const t = targets.find(
+			(x) => x.file === readme && x.reason.includes("README CLI documentation"),
+		);
+		expect(t).toStrictEqual({
+			file: readme,
+			reason:
+				"README CLI documentation may need updating after command changes in src/commands/run.ts",
+			category: "documentation",
+			confidence: "medium",
+		});
+	});
+});
+
+describe("mutation hardening — configCli", () => {
+	it("does not run the CLI-config block at all for a file unrelated to commands/index/cli", () => {
+		// Guard-bypass fixture: isCliEdit is false for this name/path, but every
+		// artifact the CLI block would flag if it ran anyway is present.
+		const edited = file("src/random-thing.ts");
+		file("src/completions.ts");
+		file("package.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets).toStrictEqual([]);
+	});
+
+	it("does not flag any shell-completions file when none of the four variants exist", () => {
+		const edited = file("src/commands/nought.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Shell completions"))).toBe(false);
+	});
+
+	it("does not self-reference when the edited file IS completions.ts itself", () => {
+		const edited = file("src/commands/completions.ts", "// completions");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Shell completions"))).toBe(false);
+	});
+
+	it("returns the exact completions target object (category/confidence pinned)", () => {
+		const edited = file("src/commands/cmd.ts");
+		const comp = file("src/commands/completions.sh");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === comp);
+		expect(t).toStrictEqual({
+			file: comp,
+			reason: "Shell completions may need updating after CLI changes in src/commands/cmd.ts",
+			category: "config",
+			confidence: "medium",
+		});
+	});
+
+	it("returns the exact completions.zsh target object (kills 254 string literal)", () => {
+		const edited = file("src/commands/cmd.ts");
+		const comp = file("src/commands/completions.zsh");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === comp);
+		expect(t).toStrictEqual({
+			file: comp,
+			reason: "Shell completions may need updating after CLI changes in src/commands/cmd.ts",
+			category: "config",
+			confidence: "medium",
+		});
+	});
+
+	it("returns the exact completions.fish target object (kills 255 string literal)", () => {
+		const edited = file("src/commands/cmd.ts");
+		const comp = file("src/commands/completions.fish");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === comp);
+		expect(t).toStrictEqual({
+			file: comp,
+			reason: "Shell completions may need updating after CLI changes in src/commands/cmd.ts",
+			category: "config",
+			confidence: "medium",
+		});
+	});
+
+	it("does not flag package.json when it does not exist on disk", () => {
+		const edited = file("src/commands/nopkg.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Check package.json"))).toBe(false);
+	});
+
+	it("returns the exact package.json target object (reason + low confidence pinned)", () => {
+		const edited = file("src/commands/run.ts");
+		const pkg = file("package.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === pkg);
+		expect(t).toStrictEqual({
+			file: pkg,
+			reason: "Check package.json bin/scripts after CLI changes in src/commands/run.ts",
+			category: "config",
+			confidence: "low",
+		});
+	});
+});
+
+describe("mutation hardening — configEnv", () => {
+	it("does not flag any env template when none of the three variants exist", () => {
+		const edited = file("src/config.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Environment template"))).toBe(false);
+	});
+});
+
+describe("mutation hardening — configEnv (exact filenames + existsSync guard)", () => {
+	it("flags exactly .env.sample when only that variant exists (kills 288 string literal)", () => {
+		const edited = file("src/config.ts");
+		const env = file(".env.sample");
+		const targets = findPropagationTargets(edited, root);
+		const envTargets = targets.filter((t) => t.reason.includes("Environment template"));
+		expect(envTargets).toStrictEqual([
+			{
+				file: env,
+				reason: "Environment template may need updating after config changes in src/config.ts",
+				category: "config",
+				confidence: "medium",
+			},
+		]);
+	});
+
+	it("flags exactly .env.template when only that variant exists (kills second 288 string literal)", () => {
+		const edited = file("src/config.ts");
+		const env = file(".env.template");
+		const targets = findPropagationTargets(edited, root);
+		const envTargets = targets.filter((t) => t.reason.includes("Environment template"));
+		expect(envTargets).toStrictEqual([
+			{
+				file: env,
+				reason: "Environment template may need updating after config changes in src/config.ts",
+				category: "config",
+				confidence: "medium",
+			},
+		]);
+	});
+
+	it("does not flag any env template when the name matches but none of the files exist (kills 290 existsSync guard)", () => {
+		// name.includes("config") is true (isCliEdit-analogous keyword guard passes)
+		// but no .env.* file exists on disk — existsSync(envFile) must gate the push.
+		const edited = file("src/config.ts");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("Environment template"))).toBe(false);
+	});
+});
+
+describe("mutation hardening — configGuardRules", () => {
+	it("does not run the guard-rules block for a name that is not guard-rules.json / rules-loader", () => {
+		// Guard-bypass fixture: name matches neither keyword, but CLAUDE.md
+		// (the artifact the block would flag) is present.
+		const edited = file("src/other-thing.ts");
+		file("CLAUDE.md", "guard rules doc");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("CLAUDE.md documents guard rules"))).toBe(
+			false,
+		);
+	});
+});
+
+describe("mutation hardening — contractToolRegistry", () => {
+	it("does not run the tool-registry block for a path outside handlers/entries", () => {
+		// Guard-bypass fixture: rel matches neither keyword, but the registry
+		// index (the artifact the block would flag) exists.
+		const edited = file("src/unrelated/thing.ts");
+		file("src/tool-registry/index.ts", "// registry");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets).toStrictEqual([]);
+	});
+
+	it("returns the exact tool-registry target object (reason text pinned)", () => {
+		const edited = file("src/tools/handlers/search.ts");
+		const registry = file("src/tool-registry/index.ts", "// registry");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === registry);
+		expect(t).toStrictEqual({
+			file: registry,
+			reason:
+				"Tool registry may need updating after handler changes in src/tools/handlers/search.ts",
+			category: "contract",
+			confidence: "medium",
+		});
+	});
+});
+
+describe("mutation hardening — contractEndpointDocs", () => {
+	it("does not run the endpoint-docs block for a name that is not worker/router/handler", () => {
+		// Guard-bypass fixture: name matches none of the three keywords, but
+		// CLAUDE.md mentions "API Endpoints" (what the block would flag).
+		const edited = file("src/plain-file.ts");
+		file("CLAUDE.md", "## API Endpoints\n- /foo");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.reason.includes("API endpoint table"))).toBe(false);
+	});
+});
+
+describe("mutation hardening — depLockFiles", () => {
+	it("does not run the lock-file scan for a file whose name is not package.json", () => {
+		// Guard-bypass fixture: name !== "package.json", but a lock file sits
+		// in the same directory (what the block would flag if it ran anyway).
+		const edited = file("src/other.ts");
+		file("src/package-lock.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		expect(targets.some((t) => t.category === "dependency")).toBe(false);
+	});
+
+	it("produces no garbage entries when editing package.json with zero lock files present", () => {
+		// Kills an ArrayDeclaration mutant that seeds `targets` with a bogus
+		// string literal instead of []: every real target must be a
+		// PropagationTarget object (string `.file` field), never a bare string.
+		const edited = file("package.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		for (const t of targets) {
+			expect(typeof t.file).toBe("string");
+		}
+		expect(targets.some((t) => t.category === "dependency")).toBe(false);
+	});
+
+	it("returns the exact lock-file target object (reason text pinned)", () => {
+		const edited = file("package.json", "{}");
+		const lock = file("package-lock.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === lock);
+		expect(t).toStrictEqual({
+			file: lock,
+			reason: "Lock file should be regenerated after package.json changes (run install)",
+			category: "dependency",
+			confidence: "high",
+		});
+	});
+});
+
+describe("mutation hardening — genDts", () => {
+	it("returns the exact .d.ts target object (confidence pinned)", () => {
+		const edited = file("src/types.ts");
+		const dts = file("src/types.d.ts", "export {};");
+		const targets = findPropagationTargets(edited, root);
+		const t = targets.find((x) => x.file === dts);
+		expect(t).toStrictEqual({
+			file: dts,
+			reason: "Type declaration file may be stale after changes to src/types.ts",
+			category: "generated",
+			confidence: "medium",
+		});
+	});
+});
+
+describe("mutation hardening — isTestFile (via barrel + fixtures gating)", () => {
+	it("does not treat a mid-name '.test.' occurrence as a test file when it is not the trailing suffix", () => {
+		// "foo.test.bar.ts" has ".test." in the middle, not immediately before
+		// the final extension — isTestFile must be false, so the fixtures scan
+		// still runs and finds the matching fixture.
+		const edited = file("src/foo.test.bar.ts");
+		const fixture = file("src/__fixtures__/foo.test.bar-sample.json", "{}");
+		const targets = findPropagationTargets(edited, root);
+		expect(fileNames(targets)).toContain(fixture);
+	});
+});
+
+describe("mutation hardening — formatPropagationWarnings", () => {
+	it("renders the exact 'Also check' line: comma-space separator, no stray suffix at <=4 items", () => {
+		const targets = [
+			{
+				file: join(root, "a.ts"),
+				reason: "r",
+				category: "documentation" as const,
+				confidence: "medium" as const,
+			},
+			{
+				file: join(root, "b.ts"),
+				reason: "r",
+				category: "schema" as const,
+				confidence: "medium" as const,
+			},
+		];
+		const warnings = formatPropagationWarnings(targets, root);
+		expect(warnings).toStrictEqual(["[interlinked:propagation] Also check: a.ts, b.ts"]);
+	});
+});
+
 describe("formatPropagationWarnings", () => {
 	it("returns an empty array when there are no targets", () => {
 		expect(formatPropagationWarnings([], root)).toEqual([]);
@@ -1021,6 +1482,19 @@ describe("formatPropagationWarnings", () => {
 		}));
 		const warnings = formatPropagationWarnings(targets, root);
 		expect(warnings[0]).not.toContain("more");
+	});
+
+	it("renders the exact line at exactly 4 medium targets, with no suffix junk appended (kills 415 string literal)", () => {
+		const targets = Array.from({ length: 4 }, (_, i) => ({
+			file: join(root, `m${i}.ts`),
+			reason: "r",
+			category: "test" as const,
+			confidence: "medium" as const,
+		}));
+		const warnings = formatPropagationWarnings(targets, root);
+		expect(warnings).toStrictEqual([
+			"[interlinked:propagation] Also check: m0.ts, m1.ts, m2.ts, m3.ts",
+		]);
 	});
 
 	it("drops low-confidence targets from the rendered output", () => {

@@ -15,6 +15,15 @@ export default defineConfig({
         // case count is capped so property tests fit the tight per-edit latency
         // budget. Normal / CI / coverage runs (env unset) keep full numRuns.
         setupFiles: ["./src/test-setup/property-budget.ts"],
+        // Live test feed for `interlinked viz` — OPT-IN via INTERLINKED_VIZ=1.
+        // Off by default so a normal `vitest run` keeps vitest's own reporter
+        // output byte-identical (the harness parses it) and writes nothing to
+        // `.interlinked/`. With the flag set, every finished case is appended to
+        // `.interlinked/test-events.jsonl` and the dashboard's TESTS lens plays
+        // the run back live. Same one-line opt-in any other repo uses.
+        ...(process.env.INTERLINKED_VIZ
+            ? { reporters: ["default", "./src/lib/viz/reporter-vitest.ts"] }
+            : {}),
         // Integration tests spawn real `npx biome` / `tsc` / CLI subprocesses.
         // Under the worker-capped full-suite run (see `maxWorkers` below) a
         // cold start can take tens of seconds, so vitest's 10s default

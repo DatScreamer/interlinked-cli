@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -222,6 +222,27 @@ describe("JsCoverageRunner", () => {
 		expect(res.error).toMatch(/spawn threw: boom/);
 	});
 
+	it("stringifies a non-Error spawn rejection", async () => {
+		const spawn: SpawnFn = async () => {
+			// Exercising the non-Error branch of the reason mapping.
+			throw "boom-string";
+		};
+		const runner = new JsCoverageRunner(spawn);
+		const res = await runner.run(baseOpts());
+
+		expect(res.ok).toBe(false);
+		expect(res.error).toBe("spawn threw: boom-string");
+	});
+
+	it("returns 'empty test command' when testCommand is []", async () => {
+		const runner = new JsCoverageRunner(async () => okSpawnResult());
+		const res = await runner.run({ ...baseOpts(), testCommand: [] });
+
+		expect(res.ok).toBe(false);
+		expect(res.error).toBe("empty test command");
+		expect(res.perFile.size).toBe(0);
+	});
+
 	it("uses the default vitest command when none is supplied", async () => {
 		const { spawn, calls } = makeStubSpawn({ coverageDir, writeReport: false });
 		const wrappingSpawn: SpawnFn = async (cmd, args, optsArg) => {
@@ -369,6 +390,64 @@ describe("defaultSpawn (real process) — async spawn contract", () => {
 			expect(res.failingTests).toEqual(["real child case"]);
 		},
 		15_000,
+	);
+
+	it(
+		"captures stderr output for failing-test parsing (real defaultSpawn stderr handler)",
+		async () => {
+			writeReportFor(absSrc);
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			const script =
+				"console.error(' FAIL  src/y.test.ts > suite > stderr case'); process.exit(1)";
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["node", "-e", script],
+				timeoutMs: 5_000,
+			});
+			expect(res.ok).toBe(true);
+			expect(res.testsPassed).toBe(false);
+			expect(res.failingTests).toEqual(["stderr case"]);
+		},
+		15_000,
+	);
+
+	it(
+		"merges perEditBudgetEnv into the real child's env for a scoped run",
+		async () => {
+			const envFile = join(coverageDir, "env-out.txt");
+			writeReportFor(absSrc);
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			const script = `require("node:fs").writeFileSync(${JSON.stringify(
+				envFile,
+			)}, process.env.INTERLINKED_PROPERTY_NUMRUNS || "unset")`;
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["node", "-e", script],
+				selectedTests: ["src/x.test.ts"],
+				timeoutMs: 5_000,
+			});
+			expect(res.ok).toBe(true);
+			expect(readFileSync(envFile, "utf-8")).toBe("25");
+		},
+		15_000,
+	);
+
+	it(
+		"SIGKILLs a child that ignores SIGTERM after the grace period",
+		async () => {
+			const runner = new JsCoverageRunner(); // real defaultSpawn
+			// Ignore SIGTERM so the outer kill timer's grace-period SIGKILL fires.
+			const script = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+			const res = await runner.run({
+				...baseOpts(),
+				testCommand: ["node", "-e", script],
+				timeoutMs: 200,
+			});
+			expect(res.ok).toBe(false);
+			expect(res.testsPassed).toBeNull();
+			expect(res.error).toMatch(/timed out/i);
+		},
+		12_000,
 	);
 });
 
@@ -647,6 +726,11 @@ describe("coverageRunnerFor", () => {
 		expect(runner).not.toBeNull();
 		await runner?.run(baseOpts());
 		expect(calls).toHaveLength(1);
+	});
+
+	it("returns null for an unsupported language (default branch)", () => {
+		// Exercising the runtime default branch past the CoverageLanguage union.
+		expect(coverageRunnerFor("go" as any)).toBeNull();
 	});
 });
 

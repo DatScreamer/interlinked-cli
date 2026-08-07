@@ -69,6 +69,31 @@ describe("checkNotImplementedStubs", () => {
 		const code = 'throw new Error("Not implemented");';
 		expect(checkNotImplementedStubs(code, "handler.py")).toEqual([]);
 	});
+
+	it("detects a bare `throw \"not implemented\"` (no `new Error`)", () => {
+		const code = 'throw "not implemented";';
+		const matches = checkNotImplementedStubs(code, "handler.ts");
+		expect(matches.length).toBe(1);
+	});
+
+	it("detects bare `throw 'todo'` and `throw 'stub'` string throws", () => {
+		expect(checkNotImplementedStubs("throw 'todo';", "a.ts").length).toBe(1);
+		expect(checkNotImplementedStubs("throw 'stub';", "a.ts").length).toBe(1);
+	});
+
+	it("skips a comment-only line (stripped content empty, original line non-blank) without erroring", () => {
+		const code = "// just an explanatory comment, no stub here\nconst x = 1;";
+		expect(checkNotImplementedStubs(code, "handler.ts")).toEqual([]);
+	});
+
+	it("caps findings at 10 even when more than 10 stubs are present", () => {
+		const lines = Array.from(
+			{ length: 15 },
+			(_, i) => `function f${i}() { throw new Error("Not implemented"); }`,
+		);
+		const matches = checkNotImplementedStubs(lines.join("\n"), "handler.ts");
+		expect(matches.length).toBe(10);
+	});
 });
 
 // ===========================================
@@ -119,6 +144,22 @@ describe("checkEmptyFunctionBody", () => {
 		const code = "export function foo(): void;";
 		expect(checkEmptyFunctionBody(code, "types.d.ts")).toEqual([]);
 	});
+
+	it("does NOT flag non-JS/TS extensions", () => {
+		const code = "def foo():\n    pass";
+		expect(checkEmptyFunctionBody(code, "handler.py")).toEqual([]);
+	});
+
+	it("does NOT flag an abstract method declaration", () => {
+		const code = "abstract foo() {}";
+		expect(checkEmptyFunctionBody(code, "service.ts")).toEqual([]);
+	});
+
+	it("caps findings at 10 even when more than 10 empty functions are present", () => {
+		const lines = Array.from({ length: 15 }, (_, i) => `function f${i}() {}`);
+		const matches = checkEmptyFunctionBody(lines.join("\n"), "processor.ts");
+		expect(matches.length).toBe(10);
+	});
 });
 
 // ===========================================
@@ -155,6 +196,38 @@ describe("checkDeprecationNotice", () => {
 	it("does NOT flag test files", () => {
 		const code = 'console.warn("deprecated");';
 		expect(checkDeprecationNotice(code, "api.test.ts")).toEqual([]);
+	});
+
+	it("does NOT flag non-JS/TS extensions", () => {
+		const code = 'console.warn("this is deprecated");';
+		expect(checkDeprecationNotice(code, "api.py")).toEqual([]);
+	});
+
+	it("caps findings at 10 even when more than 10 deprecation notices are present", () => {
+		const lines = Array.from(
+			{ length: 15 },
+			(_, i) => `console.warn("feature${i} is deprecated");`,
+		);
+		const matches = checkDeprecationNotice(lines.join("\n"), "api.ts");
+		expect(matches.length).toBe(10);
+	});
+
+	it("skips blank/JSDoc-comment lines after @deprecated before finding the function", () => {
+		const code = "/**\n * @deprecated\n * See migration guide\n */\nexport function oldApi() {}";
+		const matches = checkDeprecationNotice(code, "api.ts");
+		expect(matches.length).toBe(1);
+		expect(nonNull(matches[0]).text).toContain("@deprecated on empty/stub");
+	});
+
+	it("does NOT flag @deprecated immediately followed by non-function real code", () => {
+		const code = "/** @deprecated */\nconst x = 1;\nfunction realFn() { return 1; }";
+		expect(checkDeprecationNotice(code, "api.ts")).toEqual([]);
+	});
+
+	it("does NOT flag @deprecated whose scan window is exhausted by comments with no function found", () => {
+		const code =
+			"/** @deprecated */\n// note one\n// note two\n// note three\n// note four\nfunction unrelated() { return 1; }";
+		expect(checkDeprecationNotice(code, "api.ts")).toEqual([]);
 	});
 });
 
@@ -194,6 +267,20 @@ describe("checkOrphanedTestStub", () => {
 	it("only runs on test files", () => {
 		const code = 'it("should process", () => {});';
 		expect(checkOrphanedTestStub(code, "handler.ts")).toEqual([]);
+	});
+
+	it("does NOT flag a recognized test file (Python naming convention) whose extension isn't in the supported list", () => {
+		// "_test.py" satisfies isTestFile's Python filename convention, so this
+		// exercises the extension-allowlist branch specifically (not the
+		// earlier isTestFile gate).
+		const code = 'it("should process", () => {});';
+		expect(checkOrphanedTestStub(code, "handler_test.py")).toEqual([]);
+	});
+
+	it("caps findings at 10 even when more than 10 empty test bodies are present", () => {
+		const lines = Array.from({ length: 15 }, (_, i) => `it("case ${i}", () => {});`);
+		const matches = checkOrphanedTestStub(lines.join("\n"), "data.test.ts");
+		expect(matches.length).toBe(10);
 	});
 });
 
@@ -252,6 +339,20 @@ describe("checkDeletionComments", () => {
 		const code = "# Removed the old validation logic";
 		const matches = checkDeletionComments(code, "validate.py");
 		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("does NOT flag unsupported extensions", () => {
+		const code = "// Removed the old handler";
+		expect(checkDeletionComments(code, "notes.md")).toEqual([]);
+	});
+
+	it("caps findings at 10 even when more than 10 deletion comments are present", () => {
+		const lines = Array.from(
+			{ length: 15 },
+			(_, i) => `// Removed the old handler${i}`,
+		);
+		const matches = checkDeletionComments(lines.join("\n"), "handler.ts");
+		expect(matches.length).toBe(10);
 	});
 });
 

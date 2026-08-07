@@ -2,7 +2,7 @@
 // Pins the pure helpers (root discovery, build-identity hashing, restart
 // decision) and the orchestration's delta-only behavior via module mocks.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,18 +16,55 @@ import {
 
 // Mocks for the reloadCommand orchestration tests. The pure-helper describes
 // above don't touch these modules, so the mocks are inert for them.
-const { execFileSyncMock, harnessRestartMock, detectClientsMock, refreshClientSkillsMock } = vi.hoisted(() => ({
+const {
+	execFileSyncMock,
+	harnessRestartMock,
+	detectClientsMock,
+	refreshClientSkillsMock,
+	writeHookScriptMock,
+	fsControl,
+} = vi.hoisted(() => ({
 	execFileSyncMock: vi.fn(),
 	harnessRestartMock: vi.fn(),
 	detectClientsMock: vi.fn(),
 	refreshClientSkillsMock: vi.fn(),
+	writeHookScriptMock: vi.fn(),
+	// Shared mutable flags read by the node:fs mock factory below — a real
+	// `dist/` build artifact can't be safely mutated by a test (other agents
+	// may be reading/building it concurrently), so "the build changed content"
+	// and "the server artifact is unreadable" are simulated by intercepting
+	// reads/stats for those two exact suffixes instead of touching real files.
+	fsControl: { buildRan: false, forceStatThrow: false },
 }));
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return { ...actual, execFileSync: execFileSyncMock };
 });
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		statSync: (...args: Parameters<typeof actual.statSync>) => {
+			const p = String(args[0]);
+			if (fsControl.forceStatThrow && p.endsWith("dist/harness/server.js")) {
+				throw new Error("ENOENT: simulated missing server artifact");
+			}
+			return actual.statSync(...args);
+		},
+		readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+			const p = String(args[0]);
+			if (fsControl.buildRan && p.endsWith("dist/harness/server.js")) {
+				return Buffer.from("server-v2-simulated");
+			}
+			if (fsControl.buildRan && p.endsWith("dist/hook-entry.js")) {
+				return Buffer.from("hook-v2-simulated");
+			}
+			return actual.readFileSync(...args);
+		},
+	};
+});
 vi.mock("./harness.js", () => ({ harnessRestartCommand: harnessRestartMock }));
-vi.mock("../lib/hooks.js", () => ({ writeHookScript: vi.fn(), installAllHooks: vi.fn() }));
+vi.mock("../lib/hooks.js", () => ({ writeHookScript: writeHookScriptMock, installAllHooks: vi.fn() }));
 vi.mock("../lib/settings.js", () => ({ detectClients: detectClientsMock }));
 vi.mock("./skill-refresh.js", () => ({ refreshClientSkills: refreshClientSkillsMock }));
 
@@ -52,12 +89,17 @@ beforeEach(() => {
 		outputLines: [],
 		summary: { clients: [], installed: 0, changed: 0, warnings: [] },
 	});
+	writeHookScriptMock.mockReset();
+	fsControl.buildRan = false;
+	fsControl.forceStatThrow = false;
 });
 
 afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 	vi.restoreAllMocks();
 	process.exitCode = 0;
+	fsControl.buildRan = false;
+	fsControl.forceStatThrow = false;
 });
 
 describe("findCliRoot", () => {
@@ -81,6 +123,22 @@ describe("findCliRoot", () => {
 		const nested = join(dir, "x");
 		mkdirSync(nested);
 		expect(findCliRoot(nested)).toBeNull();
+	});
+
+	it("does not treat a package.json with no name field as the CLI root", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({}));
+		const nested = join(dir, "y");
+		mkdirSync(nested);
+		expect(findCliRoot(nested)).toBeNull();
+	});
+
+	it("returns null after exhausting the walk-up hop budget without a match", () => {
+		let deep = dir;
+		for (let i = 0; i < 13; i++) {
+			deep = join(deep, `lvl${i}`);
+		}
+		mkdirSync(deep, { recursive: true });
+		expect(findCliRoot(deep)).toBeNull();
 	});
 });
 
@@ -216,5 +274,158 @@ describe("reloadCommand — stdout integrity", () => {
 		expect(harnessRestartMock).not.toHaveBeenCalled();
 		// …and nothing (no half-built JSON) went to stdout.
 		expect(logSpy.mock.calls).toHaveLength(0);
+	});
+
+	it("falls back to the error's message when the build failure carries no stdout/stderr", () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		execFileSyncMock.mockImplementation(() => {
+			throw new Error("spawn npm ENOENT");
+		});
+
+		return reloadCommand({ json: true, cwd: dir }).then(() => {
+			expect(process.exitCode).toBe(1);
+			const stderr = joinCalls(errSpy);
+			expect(stderr).toContain("spawn npm ENOENT");
+		});
+	});
+
+	it("falls back to String(err) when the build failure has neither captured output nor a message", () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		execFileSyncMock.mockImplementation(() => {
+			// Deliberately a non-Error throw to exercise the String(err) fallback.
+			throw "raw-non-error-throw";
+		});
+
+		return reloadCommand({ json: true, cwd: dir }).then(() => {
+			expect(process.exitCode).toBe(1);
+			const stderr = joinCalls(errSpy);
+			expect(stderr).toContain("raw-non-error-throw");
+		});
+	});
+});
+
+describe("reloadCommand — running-daemon detection (pidfile + ps parsing)", () => {
+	function jsonFrom(spy: ReturnType<typeof vi.spyOn>): { daemon: { restarted: boolean } } {
+		const stdout = spy.mock.calls.map((args: unknown[]) => args.map(String).join(" ")).join("\n");
+		return JSON.parse(stdout) as { daemon: { restarted: boolean } };
+	}
+
+	it("treats a non-positive pid in the pidfile as no running daemon (restarts)", async () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(join(dir, ".interlinked", "harness.pid"), "0");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, build: false, cwd: dir });
+
+		expect(jsonFrom(logSpy).daemon.restarted).toBe(true);
+	});
+
+	it("treats an empty `ps -o lstart=` result as no running daemon (restarts)", async () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(join(dir, ".interlinked", "harness.pid"), "4242");
+		execFileSyncMock.mockImplementation(() => "");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, build: false, cwd: dir });
+
+		expect(jsonFrom(logSpy).daemon.restarted).toBe(true);
+	});
+
+	it("treats an unparseable `ps -o lstart=` date as no running daemon (restarts)", async () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(join(dir, ".interlinked", "harness.pid"), "4242");
+		execFileSyncMock.mockImplementation(() => "not-a-real-date");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, build: false, cwd: dir });
+
+		expect(jsonFrom(logSpy).daemon.restarted).toBe(true);
+	});
+
+	it("skips the restart when the running daemon postdates the build, and no --force", async () => {
+		const cliRoot = findCliRoot();
+		expect(cliRoot).not.toBeNull();
+		const serverMtimeMs = statSync(join(cliRoot as string, "dist", "harness", "server.js")).mtimeMs;
+		const future = new Date(serverMtimeMs + 60_000).toISOString();
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(join(dir, ".interlinked", "harness.pid"), "4242");
+		execFileSyncMock.mockImplementation(() => future);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, build: false, cwd: dir });
+
+		expect(jsonFrom(logSpy).daemon.restarted).toBe(false);
+		expect(harnessRestartMock).not.toHaveBeenCalled();
+	});
+
+	it("restarts due to a STALE daemon even without --force, and says so", async () => {
+		// No pidfile at all ⇒ unknowable daemon start time ⇒ treated as stale.
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ build: false, cwd: dir });
+
+		const stdout = logSpy.mock.calls.map((args: unknown[]) => args.map(String).join(" ")).join("\n");
+		expect(stdout).toContain("was STALE (started before the current build)");
+		expect(harnessRestartMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("treats an unreadable server build artifact as an unknown build time (still restarts, no crash)", async () => {
+		fsControl.forceStatThrow = true;
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, build: false, force: true, cwd: dir });
+
+		expect(jsonFrom(logSpy).daemon.restarted).toBe(true);
+	});
+});
+
+describe("reloadCommand — build + hook-script delta branches", () => {
+	it("reports the build as CHANGED when the rebuilt artifacts' content differs", async () => {
+		execFileSyncMock.mockImplementation((cmd: string) => {
+			if (cmd === "npm") {
+				fsControl.buildRan = true;
+				return "";
+			}
+			return "";
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, force: true, cwd: dir });
+
+		const stdout = logSpy.mock.calls.map((args: unknown[]) => args.map(String).join(" ")).join("\n");
+		const parsed = JSON.parse(stdout) as { build: { changed: boolean } };
+		expect(parsed.build.changed).toBe(true);
+	});
+
+	it("reports the hook script as CHANGED and lists wiring-refreshed clients", async () => {
+		writeHookScriptMock.mockImplementation((cwd: string) => {
+			mkdirSync(join(cwd, ".interlinked", "hooks"), { recursive: true });
+			writeFileSync(join(cwd, ".interlinked", "hooks", "interlinked-activity.mjs"), "content-v1");
+		});
+		detectClientsMock.mockReturnValue([{ name: "codex", exists: true }]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await reloadCommand({ json: true, force: true, cwd: dir });
+
+		const stdout = logSpy.mock.calls.map((args: unknown[]) => args.map(String).join(" ")).join("\n");
+		const parsed = JSON.parse(stdout) as { hook_script: { changed: boolean }; clients: string[] };
+		expect(parsed.hook_script.changed).toBe(true);
+		expect(parsed.clients).toEqual(["codex"]);
+	});
+});
+
+describe("reloadCommand — defaults", () => {
+	it("defaults to the current working directory when no cwd is given", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(
+			reloadCommand({ json: true, build: false, force: true }),
+		).resolves.toBeUndefined();
+
+		const stdout = logSpy.mock.calls.map((args: unknown[]) => args.map(String).join(" ")).join("\n");
+		const parsed = JSON.parse(stdout) as { cli_root: string };
+		expect(typeof parsed.cli_root).toBe("string");
 	});
 });

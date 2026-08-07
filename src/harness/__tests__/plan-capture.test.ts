@@ -113,6 +113,39 @@ describe("parseTaskCreate", () => {
 			),
 		).toBeNull();
 	});
+
+	it("skips entries with non-string or whitespace-only content, keeps valid ones", () => {
+		const session = makeSession();
+		const plan = parseTaskCreate(
+			preEvent({
+				tool_name: "TaskCreate",
+				tool_input: {
+					tasks: [
+						{ content: 5, activeForm: "" }, // non-string content → dropped
+						{ content: "   ", activeForm: "" }, // trims to empty → dropped
+						{ content: "keep this one", activeForm: "" },
+					],
+				},
+			}),
+			session,
+		);
+		expect(plan).not.toBeNull();
+		expect(plan?.steps.map((s) => s.intent)).toEqual(["keep this one"]);
+	});
+
+	it("caps parsed steps at MAX_STEPS_PER_PLAN", () => {
+		const session = makeSession();
+		const tasks = Array.from({ length: 205 }, (_, i) => ({
+			content: `step ${i}`,
+			activeForm: "",
+		}));
+		const plan = parseTaskCreate(
+			preEvent({ tool_name: "TaskCreate", tool_input: { tasks } }),
+			session,
+		);
+		expect(plan?.steps).toHaveLength(200);
+		expect(nonNull(plan?.steps[199]).intent).toBe("step 199");
+	});
 });
 
 describe("parseExitPlanMode", () => {
@@ -180,6 +213,19 @@ describe("parseExitPlanMode", () => {
 			),
 		).toBeNull();
 	});
+
+	it("returns null when the plan text has no markdown bullets at all", () => {
+		const session = makeSession();
+		expect(
+			parseExitPlanMode(
+				preEvent({
+					tool_name: "ExitPlanMode",
+					tool_input: { plan: "just prose, no bullets here\n" },
+				}),
+				session,
+			),
+		).toBeNull();
+	});
 });
 
 describe("parseMarkdownBullets / extractPlanSection", () => {
@@ -212,6 +258,32 @@ describe("parseMarkdownBullets / extractPlanSection", () => {
 		expect(extractPlanSection("just text\n- bullet\n")).toBeNull();
 	});
 
+	it("extractPlanSection ignores a heading before the `## Plan` section closes it", () => {
+		const body = "## Intro\nnot a plan\n\n## Plan\n- step a\n";
+		const section = extractPlanSection(body);
+		expect(section).not.toBeNull();
+		expect(section).toContain("step a");
+		expect(section).not.toContain("not a plan");
+	});
+
+	it("drops a bullet whose text is empty after trimming", () => {
+		const steps = parseMarkdownBullets("- \n- real step\n");
+		expect(steps.map((s) => s.intent)).toEqual(["real step"]);
+	});
+
+	it("ignores prose lines before the first bullet (no dangling continuation)", () => {
+		const steps = parseMarkdownBullets("just some prose\n- first bullet\n");
+		expect(steps.map((s) => s.intent)).toEqual(["first bullet"]);
+	});
+
+	it("caps captured steps at MAX_STEPS_PER_PLAN", () => {
+		const bullets = Array.from({ length: 205 }, (_, i) => `- step ${i}`).join("\n");
+		const steps = parseMarkdownBullets(bullets);
+		expect(steps).toHaveLength(200);
+		expect(nonNull(steps[0]).intent).toBe("step 0");
+		expect(nonNull(steps[199]).intent).toBe("step 199");
+	});
+
 	it("extractHints maps known imperatives, leaves undefined otherwise", () => {
 		expect(extractHints("Run npm test")).toEqual({ tool_hint: "Bash" });
 		expect(extractHints("Edit src/foo.ts")).toEqual({
@@ -238,6 +310,19 @@ describe("parseStructuredUserPrompt", () => {
 		expect(plan).not.toBeNull();
 		expect(plan?.source).toBe("structured_userprompt");
 		expect(plan?.steps).toHaveLength(2);
+	});
+
+	it("returns null when the `## Plan` section has no bullets", () => {
+		const session = makeSession();
+		const body = "## Plan\njust prose under the heading, no bullets\n";
+		const event: HarnessEvent = {
+			hook_event: "UserPromptSubmit",
+			session_id: "sess-1",
+			agent_source: "claude",
+			timestamp: TIMESTAMP,
+			prompt: body,
+		};
+		expect(parseStructuredUserPrompt(body, event, session)).toBeNull();
 	});
 
 	it("returns null when the prompt has no `## Plan` section", () => {
@@ -309,6 +394,49 @@ describe("appendCapturedPlan persistence", () => {
 		expect(JSON.parse(nonNull(lines[1])).steps).toHaveLength(2);
 	});
 
+	it("appendCapturedPlan returns false and logs when the target path can't be created", async () => {
+		const { writeFileSync } = await import("node:fs");
+		const blockerFile = join(tmp, "blocker");
+		writeFileSync(blockerFile, "not a directory");
+		const plan = parseTaskCreate(
+			preEvent({
+				tool_name: "TaskCreate",
+				tool_input: { tasks: [{ content: "step one", activeForm: "" }] },
+			}),
+			makeSession(),
+		);
+		expect(plan).not.toBeNull();
+		const logged: string[] = [];
+		const wrote = await appendCapturedPlan({
+			plan: plan!,
+			cwd: blockerFile, // a file, not a dir — mkdirSync(dirname(path)) fails ENOTDIR
+			log: (msg) => logged.push(msg),
+		});
+		expect(wrote).toBe(false);
+		expect(logged).toHaveLength(1);
+		expect(nonNull(logged[0])).toContain("failed to append");
+	});
+
+	it("appendCapturedPlan swallows the failure silently when no log callback is given", async () => {
+		const { writeFileSync } = await import("node:fs");
+		const blockerFile2 = join(tmp, "blocker2");
+		writeFileSync(blockerFile2, "not a directory");
+		const plan = parseTaskCreate(
+			preEvent({
+				tool_name: "TaskCreate",
+				tool_input: { tasks: [{ content: "step one", activeForm: "" }] },
+			}),
+			makeSession(),
+		);
+		expect(plan).not.toBeNull();
+		const wrote = await appendCapturedPlan({ plan: plan!, cwd: blockerFile2 });
+		expect(wrote).toBe(false);
+	});
+
+	it("planLogPath falls back to 'unknown' when the session id sanitizes to empty", () => {
+		expect(planLogPath(tmp, "")).toBe(join(tmp, ".interlinked", "plans", "unknown.jsonl"));
+	});
+
 	it("config-disabled UserPromptSubmit does NOT capture", async () => {
 		const session = makeSession();
 		const captured = await maybeCaptureFromUserPromptSubmit({
@@ -350,6 +478,61 @@ describe("appendCapturedPlan persistence", () => {
 		expect(session.declared_plan?.steps).toHaveLength(2);
 	});
 
+	it("falls back to tool_input.user_prompt when event.prompt is absent", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromUserPromptSubmit({
+			event: {
+				hook_event: "UserPromptSubmit",
+				session_id: "sess-1",
+				agent_source: "claude",
+				timestamp: TIMESTAMP,
+				tool_input: { user_prompt: "## Plan\n- from user_prompt field\n" },
+			},
+			session,
+			cwd: tmp,
+			enabled: true,
+			parseUserPrompt: true,
+		});
+		expect(captured).not.toBeNull();
+		expect(nonNull(captured?.steps[0]).intent).toBe("from user_prompt field");
+	});
+
+	it("falls back to tool_input.prompt when event.prompt and user_prompt are absent", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromUserPromptSubmit({
+			event: {
+				hook_event: "UserPromptSubmit",
+				session_id: "sess-1",
+				agent_source: "claude",
+				timestamp: TIMESTAMP,
+				tool_input: { prompt: "## Plan\n- from tool_input.prompt field\n" },
+			},
+			session,
+			cwd: tmp,
+			enabled: true,
+			parseUserPrompt: true,
+		});
+		expect(captured).not.toBeNull();
+		expect(nonNull(captured?.steps[0]).intent).toBe("from tool_input.prompt field");
+	});
+
+	it("returns null when no prompt body can be found anywhere on the event", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromUserPromptSubmit({
+			event: {
+				hook_event: "UserPromptSubmit",
+				session_id: "sess-1",
+				agent_source: "claude",
+				timestamp: TIMESTAMP,
+			},
+			session,
+			cwd: tmp,
+			enabled: true,
+			parseUserPrompt: true,
+		});
+		expect(captured).toBeNull();
+	});
+
 	it("maybeCaptureFromPreToolUse short-circuits when enabled=false", async () => {
 		const session = makeSession();
 		const captured = await maybeCaptureFromPreToolUse({
@@ -360,6 +543,65 @@ describe("appendCapturedPlan persistence", () => {
 			session,
 			cwd: tmp,
 			enabled: false,
+		});
+		expect(captured).toBeNull();
+		expect(session.declared_plan).toBeUndefined();
+	});
+
+	it("maybeCaptureFromPreToolUse returns null for a malformed TaskCreate payload", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromPreToolUse({
+			event: preEvent({ tool_name: "TaskCreate", tool_input: { tasks: [] } }),
+			session,
+			cwd: tmp,
+			enabled: true,
+		});
+		expect(captured).toBeNull();
+		expect(session.declared_plan).toBeUndefined();
+	});
+
+	it("maybeCaptureFromUserPromptSubmit returns null when the prompt body has no `## Plan`", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromUserPromptSubmit({
+			event: {
+				hook_event: "UserPromptSubmit",
+				session_id: "sess-1",
+				agent_source: "claude",
+				timestamp: TIMESTAMP,
+				prompt: "no plan section in here at all",
+			},
+			session,
+			cwd: tmp,
+			enabled: true,
+			parseUserPrompt: true,
+		});
+		expect(captured).toBeNull();
+		expect(session.declared_plan).toBeUndefined();
+	});
+
+	it("maybeCaptureFromPreToolUse captures an ExitPlanMode plan and mirrors it", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromPreToolUse({
+			event: preEvent({
+				tool_name: "ExitPlanMode",
+				tool_input: { plan: "- read src/foo.ts\n- edit src/foo.ts\n" },
+			}),
+			session,
+			cwd: tmp,
+			enabled: true,
+		});
+		expect(captured).not.toBeNull();
+		expect(captured?.source).toBe("ExitPlanMode");
+		expect(session.declared_plan?.source).toBe("ExitPlanMode");
+	});
+
+	it("maybeCaptureFromPreToolUse returns null for a malformed ExitPlanMode payload", async () => {
+		const session = makeSession();
+		const captured = await maybeCaptureFromPreToolUse({
+			event: preEvent({ tool_name: "ExitPlanMode", tool_input: {} }),
+			session,
+			cwd: tmp,
+			enabled: true,
 		});
 		expect(captured).toBeNull();
 		expect(session.declared_plan).toBeUndefined();

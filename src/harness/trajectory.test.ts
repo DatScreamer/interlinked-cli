@@ -82,6 +82,47 @@ describe("trajectory.tool_loop", () => {
 		expect(result.find((f) => f.pattern === "tool_loop")).toBeUndefined();
 	});
 
+	it("evidence uses file_path when the event carries no command", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [];
+		for (let i = 0; i < 6; i++) {
+			events.push(
+				ev({
+					ts_ms: T0 + i * 5_000,
+					tool_name: "Read",
+					tool_input: { file_path: "/a.ts" },
+				}),
+			);
+		}
+		const result = findings(detector, events);
+		const loop = result.find((f) => f.pattern === "tool_loop");
+		expect(loop).toBeDefined();
+		expect(loop?.evidence.some((e) => e.includes("/a.ts"))).toBe(true);
+	});
+
+	it("evidence falls back to bare tool_name when neither command nor file_path is present", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [];
+		for (let i = 0; i < 6; i++) {
+			events.push(ev({ ts_ms: T0 + i * 5_000, tool_name: "Glob", tool_input: {} }));
+		}
+		const result = findings(detector, events);
+		const loop = result.find((f) => f.pattern === "tool_loop");
+		expect(loop).toBeDefined();
+		expect(loop?.evidence.some((e) => e === '"Glob"')).toBe(true);
+	});
+
+	it("suppresses a repeat tool_loop fire for the same pattern within the cooldown window", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [];
+		for (let i = 0; i < 7; i++) {
+			events.push(ev({ ts_ms: T0 + i * 5_000, tool_input: { command: "ls /tmp" } }));
+		}
+		const perCallResults = events.map((e) => detector.observe(e));
+		expect(perCallResults[5]?.find((f) => f.pattern === "tool_loop")).toBeDefined();
+		expect(perCallResults[6]?.find((f) => f.pattern === "tool_loop")).toBeUndefined();
+	});
+
 	it("does not fire when an Edit (state change) occurs between Read calls", () => {
 		const detector = createTrajectoryDetector();
 		const events: TrajectoryEvent[] = [];
@@ -178,6 +219,37 @@ describe("trajectory.destructive_sequence", () => {
 		const events: TrajectoryEvent[] = [ev({ ts_ms: T0, tool_input: { command: "rm -rf build" } })];
 		const result = findings(detector, events);
 		expect(result.find((f) => f.pattern === "destructive_sequence")).toBeUndefined();
+	});
+
+	it("does not fire when the last rm-like event has no tool_input at all", () => {
+		const detector = createTrajectoryDetector();
+		const result = detector.observe(ev({ ts_ms: T0, tool_input: undefined }));
+		expect(result.find((f) => f.pattern === "destructive_sequence")).toBeUndefined();
+	});
+
+	it("does not fire when the rm command is verb-only with trailing whitespace (no path)", () => {
+		const detector = createTrajectoryDetector();
+		const result = detector.observe(ev({ ts_ms: T0, tool_input: { command: "rm   " } }));
+		expect(result.find((f) => f.pattern === "destructive_sequence")).toBeUndefined();
+	});
+
+	it("does not fire when the rm command has only flag tokens, no path", () => {
+		const detector = createTrajectoryDetector();
+		const result = detector.observe(ev({ ts_ms: T0, tool_input: { command: "rm -rf" } }));
+		expect(result.find((f) => f.pattern === "destructive_sequence")).toBeUndefined();
+	});
+
+	it("still fires when a non-Bash call and a command-less Bash call sit between the rm/mkdir/rm cycle", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [
+			ev({ ts_ms: T0, tool_input: { command: "rm -rf build" } }),
+			ev({ ts_ms: T0 + 3_000, tool_name: "Read", tool_input: { file_path: "/a.ts" } }),
+			ev({ ts_ms: T0 + 4_000, tool_input: {} }),
+			ev({ ts_ms: T0 + 5_000, tool_input: { command: "mkdir build" } }),
+			ev({ ts_ms: T0 + 10_000, tool_input: { command: "rm -rf build" } }),
+		];
+		const result = findings(detector, events);
+		expect(result.find((f) => f.pattern === "destructive_sequence")).toBeDefined();
 	});
 });
 
@@ -279,6 +351,136 @@ describe("trajectory.unbackedoff_retry", () => {
 		];
 		const result = findings(detector, events);
 		expect(result.find((f) => f.pattern === "unbackedoff_retry")).toBeUndefined();
+	});
+
+	it("does not fire when the last failure event is not a Bash tool", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [
+			ev({
+				ts_ms: T0,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 100,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 200,
+				hook_event: "PostToolUseFailure",
+				tool_name: "Read",
+				tool_input: { file_path: "/a.ts" },
+				succeeded: false,
+			}),
+		];
+		const result = findings(detector, events);
+		expect(result.find((f) => f.pattern === "unbackedoff_retry")).toBeUndefined();
+	});
+
+	it("does not fire when the last failure has no tool_input (no command)", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [
+			ev({
+				ts_ms: T0,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 100,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 200,
+				hook_event: "PostToolUseFailure",
+				tool_input: undefined,
+				succeeded: false,
+			}),
+		];
+		const result = findings(detector, events);
+		expect(result.find((f) => f.pattern === "unbackedoff_retry")).toBeUndefined();
+	});
+
+	it("still fires when a non-Bash event sits further back in the walk than the retry run", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [
+			ev({ ts_ms: T0, tool_name: "Read", tool_input: { file_path: "/a.ts" } }),
+			ev({
+				ts_ms: T0 + 100,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 200,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 300,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+		];
+		const result = findings(detector, events);
+		const retry = result.find((f) => f.pattern === "unbackedoff_retry");
+		expect(retry).toBeDefined();
+	});
+
+	it("still fires when a command-less Bash event sits further back in the walk", () => {
+		const detector = createTrajectoryDetector();
+		const events: TrajectoryEvent[] = [
+			ev({ ts_ms: T0, tool_input: {} }),
+			ev({
+				ts_ms: T0 + 100,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 200,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+			ev({
+				ts_ms: T0 + 300,
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+				succeeded: false,
+			}),
+		];
+		const result = findings(detector, events);
+		const retry = result.find((f) => f.pattern === "unbackedoff_retry");
+		expect(retry).toBeDefined();
+	});
+
+	it("truncates a long command in the finding message", () => {
+		const detector = createTrajectoryDetector();
+		const longCmd = `npm test -- ${"x".repeat(100)}`;
+		const events: TrajectoryEvent[] = [];
+		for (let i = 0; i < 3; i++) {
+			events.push(
+				ev({
+					ts_ms: T0 + i * 100,
+					hook_event: "PostToolUseFailure",
+					tool_input: { command: longCmd },
+					succeeded: false,
+				}),
+			);
+		}
+		const result = findings(detector, events);
+		const retry = result.find((f) => f.pattern === "unbackedoff_retry");
+		expect(retry).toBeDefined();
+		expect(retry?.message).toContain("…");
+		expect(retry?.message).not.toContain(longCmd);
 	});
 });
 

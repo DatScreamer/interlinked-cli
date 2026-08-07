@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isInterlinkedHookEntry } from "../../lib/hook-ownership.js";
 import { installAllHooks } from "../../lib/hooks.js";
 import { nonNull } from "../../lib/non-null.js";
@@ -19,8 +19,8 @@ import type { RunnerId } from "../unified-event.js";
 let base = "";
 let projectDir = "";
 let homeDir = "";
-let originalCwd = "";
 let originalHome: string | undefined;
+let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	base = mkdtempSync(join(tmpdir(), "interlinked-idem-"));
@@ -28,16 +28,22 @@ beforeEach(() => {
 	homeDir = join(base, "home");
 	mkdirSync(projectDir, { recursive: true });
 	mkdirSync(homeDir, { recursive: true });
-	originalCwd = process.cwd();
 	originalHome = process.env.HOME;
-	process.chdir(projectDir);
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry run
+	// for any file whose graph-selected test scope includes this one. Every
+	// call site in this file passes `cwd`/`projectDir` explicitly rather than
+	// relying on the real OS cwd, so the spy (harmless here) just keeps
+	// `process.cwd()` itself from drifting for any other code that reads it.
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(projectDir);
 	// User-scope installs resolve `~/` via os.homedir(), which honours $HOME on
 	// POSIX — point it at a temp dir so a test never touches the real ~/.claude.
 	process.env.HOME = homeDir;
 });
 
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy.mockRestore();
 	if (originalHome === undefined) {
 		delete process.env.HOME;
 	} else {

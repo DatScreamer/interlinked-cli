@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { COVERAGE_FINAL_FILENAME, type SpawnFn } from "../coverage-runner.js";
 import {
 	captureProviderSource,
 	captureVitestShards,
@@ -205,6 +206,34 @@ describe("parseShardRecord", () => {
 		expect(parseShardRecord({ ...good, istanbul: "nope" })).toBeNull();
 	});
 
+	it("rejects a testFiles array containing a non-string entry", () => {
+		expect(
+			parseShardRecord({
+				version: 1,
+				testFiles: ["tests/a.test.ts", 42],
+				environment: "ssr",
+				project: null,
+				durationMs: null,
+				passed: null,
+				istanbul: {},
+			}),
+		).toBeNull();
+	});
+
+	it("rejects a non-string environment even when testFiles is well-formed", () => {
+		expect(
+			parseShardRecord({
+				version: 1,
+				testFiles: ["tests/a.test.ts"],
+				environment: 7,
+				project: null,
+				durationMs: null,
+				passed: null,
+				istanbul: {},
+			}),
+		).toBeNull();
+	});
+
 	it("treats absent duration/passed as null (runtime-checked capture may degrade)", () => {
 		const parsed = parseShardRecord({
 			version: 1,
@@ -230,6 +259,114 @@ describe("shardIdForTestFile", () => {
 // ==================================================================
 // captureVitestShards — real end-to-end capture (productionized spike)
 // ==================================================================
+
+// ==================================================================
+// captureVitestShards — readCapturedShards branch paths, via an injected
+// fake spawn (no real vitest process; a real vitest run cannot easily
+// produce a missing shards dir, a degraded-marker file, or a malformed
+// shard record, so these construct that state directly around the spawn).
+// ==================================================================
+
+describe("captureVitestShards — readCapturedShards branch paths (fake spawn)", () => {
+	function okSpawn(coverageDir: string): SpawnFn {
+		return async () => {
+			mkdirSync(coverageDir, { recursive: true });
+			writeFileSync(join(coverageDir, COVERAGE_FINAL_FILENAME), "{}", "utf-8");
+			return { stdout: "", stderr: "", status: 0 };
+		};
+	}
+
+	it("reports 'capture directory missing' when the shards dir vanishes between mkdir and read", async () => {
+		const captureDir = join(scratch, ".capture");
+		const shardsDir = join(captureDir, "shards");
+		const coverageDir = join(captureDir, "coverage");
+		const spawn: SpawnFn = async () => {
+			// Simulate an external process wiping the shards dir mid-run.
+			rmSync(shardsDir, { recursive: true, force: true });
+			return okSpawn(coverageDir)("vitest", [], { cwd: scratch, timeout: 1000, encoding: "utf-8" });
+		};
+		const result = await captureVitestShards({ projectRoot: scratch, captureDir, spawn });
+		expect(result.shards).toEqual([]);
+		expect(result.degraded).toBe("capture directory missing — no shard records were written");
+	});
+
+	it("reports 'run succeeded but no shard records were captured' for an empty (but present) shards dir", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.shards).toEqual([]);
+		expect(result.degraded).toBe("run succeeded but no shard records were captured");
+		expect(result.runResult.ok).toBe(true);
+	});
+
+	it("omitting timeoutMs runs without a per-run timeout override", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		// No `timeoutMs` field at all — exercises the ternary's `{}` arm.
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.runResult.ok).toBe(true);
+	});
+
+	it("reads a valid degraded-marker reason from the shards dir", async () => {
+		const captureDir = join(scratch, ".capture");
+		const shardsDir = join(captureDir, "shards");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/capture-degraded.json", JSON.stringify({ reason: "custom reason" }));
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.degraded).toBe("custom reason");
+		void shardsDir;
+	});
+
+	it("falls back to a default reason when the marker JSON has no string `reason`", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/capture-degraded.json", JSON.stringify({ notReason: 1 }));
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.degraded).toBe("capture degraded");
+	});
+
+	it("reports an unreadable-marker reason when the marker file is not valid JSON", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/capture-degraded.json", "not-json{{{");
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.degraded).toBe("capture degraded (unreadable marker)");
+	});
+
+	it("flags a malformed (unparseable) shard record file and skips non-.json entries", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/bad.json", "not-json");
+		write(".capture/shards/readme.txt", "not a shard record at all");
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.shards).toEqual([]);
+		expect(result.degraded).toBe("malformed shard record bad.json");
+	});
+});
 
 describe("captureVitestShards — real vitest run", () => {
 	it(

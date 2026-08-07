@@ -2,8 +2,8 @@ import { sign as edSign, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BEACON_FILE, DEFAULT_FEED_URL, SPONSOR_STATUS_FILE } from "./feed-client.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BEACON_FILE, DEFAULT_FEED_URL, FEED_CACHE_FILE, SPONSOR_STATUS_FILE } from "./feed-client.js";
 import {
 	readSponsorSettingsFromConfig,
 	type SponsorRuntimeSettings,
@@ -231,6 +231,228 @@ describe("startSponsorRuntime", () => {
 		await rt.tick();
 		rt.dispose();
 		expect(readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8")).toContain("creative=alpha");
+	});
+
+	it("does not render and does not throw when the feed fails signature verification and no cache exists", async () => {
+		// Signed with a DIFFERENT key than the one advertised via env, so
+		// verifyWire fails — exercises the "verified" falsy branch (log +
+		// no feed assignment) and, since there's no disk cache either, the
+		// tick falls through to the feed===null / !current path.
+		const { wire } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = Buffer.from("not-a-real-key").toString("base64");
+		const calls: Call[] = [];
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings(),
+			hasRecentActivity: () => true,
+			fetchImpl: makeFetchStub(wire, calls),
+			now: () => T0,
+		});
+		await rt.tick();
+		rt.dispose();
+		const status = readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8");
+		expect(status).toContain("enabled=0");
+	});
+
+	it("does not render when the disk cache exists but fails verification (corrupted cache)", async () => {
+		process.env.INTERLINKED_SPONSOR_PUBKEY = Buffer.from(
+			generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }),
+		).toString("base64");
+		// A syntactically-valid cached wire signed by a DIFFERENT key than the
+		// one configured above, so `loadCachedWire` finds it but `verifyWire`
+		// rejects it.
+		const { wire: badWire } = makeSignedWire(FEED);
+		writeFileSync(join(dir, FEED_CACHE_FILE), badWire);
+		const dead = (async () => {
+			throw new Error("offline");
+		}) as unknown as typeof fetch;
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings(),
+			hasRecentActivity: () => true,
+			fetchImpl: dead,
+			now: () => T0,
+		});
+		await rt.tick();
+		rt.dispose();
+		const status = readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8");
+		expect(status).toContain("enabled=0");
+	});
+
+	it("evicts the oldest dedup key once the counted-keys bound is exceeded", async () => {
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const calls: Call[] = [];
+		let now = T0;
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings(),
+			hasRecentActivity: () => true,
+			fetchImpl: makeFetchStub(wire, calls),
+			now: () => now,
+		});
+		// MAX_COUNTED_KEYS is 500 — push past it with one new rotation window
+		// per tick so every impression is a genuinely new dedup key, forcing
+		// the `countedKeys.size > MAX_COUNTED_KEYS` eviction branch to run.
+		for (let i = 0; i < 505; i++) {
+			now = T0 + i * ROTATION_WINDOW_MS;
+			await rt.tick();
+		}
+		rt.dispose();
+		const status = readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8");
+		expect(status).toContain("enabled=1");
+	}, 20000);
+
+	it("skips the beacon flush when the configured feed URL cannot be parsed (beaconUrlFromFeedUrl → null)", async () => {
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const calls: Call[] = [];
+		let tickCount = 0;
+		let now = T0;
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => {
+				tickCount += 1;
+				// First tick: valid feed URL so a feed loads and caches.
+				// Second tick onward: an unparseable feed URL — refreshFeed
+				// isn't due yet (within FEED_REFRESH_MS) so the cached feed
+				// is still used, but maybeFlush's beaconUrlFromFeedUrl(url)
+				// now fails and returns null.
+				return settings(tickCount === 1 ? {} : { feedUrl: "   " });
+			},
+			hasRecentActivity: () => true,
+			fetchImpl: makeFetchStub(wire, calls),
+			now: () => now,
+		});
+		await rt.tick();
+		now = T0 + 6 * 60 * 1000; // past the 5-minute flush interval
+		await rt.tick();
+		rt.dispose();
+		const beaconPosts = calls.filter((c) => c.url.endsWith("/v1/beacon"));
+		expect(beaconPosts).toHaveLength(0);
+	});
+
+	it("uses the default fetch/now implementations when none are injected", async () => {
+		const fetchSpy = vi.fn(async () => ({ ok: false, text: async () => "" }) as Response);
+		vi.stubGlobal("fetch", fetchSpy);
+		try {
+			const rt = startSponsorRuntime({
+				interlinkedDir: dir,
+				readSettings: () => settings({ enabled: false }),
+				hasRecentActivity: () => true,
+			});
+			await expect(rt.tick()).resolves.toBeUndefined();
+			rt.dispose();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("no-ops re-entrantly when a tick is already in flight", async () => {
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const calls: Call[] = [];
+		let resolveFetch: (() => void) | undefined;
+		const gate = new Promise<void>((resolve) => {
+			resolveFetch = resolve;
+		});
+		const slowFetch: typeof fetch = (async (url: unknown, init?: { body?: unknown }) => {
+			await gate;
+			return makeFetchStub(wire, calls)(url as never, init as never);
+		}) as typeof fetch;
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings(),
+			hasRecentActivity: () => true,
+			fetchImpl: slowFetch,
+			now: () => T0,
+		});
+		const firstTick = rt.tick();
+		// Second tick fires while the first is still awaiting the fetch —
+		// hits the `if (inFlight) return;` guard and resolves immediately.
+		await rt.tick();
+		resolveFetch?.();
+		await firstTick;
+		rt.dispose();
+		expect(readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8")).toContain("enabled=1");
+	});
+
+	it("does not rewrite the disabled marker on a second consecutive disabled tick", async () => {
+		const calls: Call[] = [];
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings({ enabled: false }),
+			hasRecentActivity: () => true,
+			fetchImpl: makeFetchStub("{}", calls),
+			now: () => T0,
+		});
+		await rt.tick();
+		await rt.tick(); // wasEnabled already false — skip the rewrite branch
+		rt.dispose();
+		expect(readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8")).toContain("enabled=0");
+		expect(calls).toHaveLength(0);
+	});
+
+	it("swallows an exception thrown mid-tick without disturbing the daemon (outer catch)", async () => {
+		const calls: Call[] = [];
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => {
+				throw new Error("readSettings blew up");
+			},
+			hasRecentActivity: () => true,
+			fetchImpl: makeFetchStub("{}", calls),
+			now: () => T0,
+		});
+		await expect(rt.tick()).resolves.toBeUndefined();
+		rt.dispose();
+	});
+
+	it("keeps the stale feed when a due refresh fetch fails (feed already non-null, cache skipped)", async () => {
+		const { wire, pubB64 } = makeSignedWire(FEED);
+		process.env.INTERLINKED_SPONSOR_PUBKEY = pubB64;
+		const calls: Call[] = [];
+		let now = T0;
+		let fail = false;
+		const flakyFetch: typeof fetch = (async (url: unknown, init?: { body?: unknown }) => {
+			if (fail && String(url).endsWith("/v1/feed")) {
+				return { ok: false, text: async () => "" } as Response;
+			}
+			return makeFetchStub(wire, calls)(url as never, init as never);
+		}) as typeof fetch;
+		const rt = startSponsorRuntime({
+			interlinkedDir: dir,
+			readSettings: () => settings(),
+			hasRecentActivity: () => true,
+			fetchImpl: flakyFetch,
+			now: () => now,
+		});
+		await rt.tick(); // feed loads successfully — feed !== null from here on
+		fail = true;
+		now = T0 + 16 * 60 * 1000; // past FEED_REFRESH_MS — refresh is due again
+		await rt.tick(); // fetch fails; feed is already non-null, so cache lookup is skipped
+		rt.dispose();
+		const status = readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8");
+		expect(status).toContain("creative=alpha"); // stale feed still renders
+	});
+
+	it("fires a real tick on its own interval timer", async () => {
+		vi.useFakeTimers();
+		try {
+			const calls: Call[] = [];
+			const rt = startSponsorRuntime({
+				interlinkedDir: dir,
+				readSettings: () => settings({ enabled: false }),
+				hasRecentActivity: () => true,
+				fetchImpl: makeFetchStub("{}", calls),
+				now: () => Date.now(),
+			});
+			await vi.advanceTimersByTimeAsync(60_000);
+			rt.dispose();
+			expect(readFileSync(join(dir, SPONSOR_STATUS_FILE), "utf8")).toContain("enabled=0");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("flushes buffered beacons once the flush interval elapses", async () => {

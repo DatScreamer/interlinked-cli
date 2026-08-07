@@ -9,8 +9,27 @@
 
 import { describe, expect, it } from "vitest";
 import { getDefaultConfig } from "../rules-loader.js";
-import type { HarnessEvent } from "../types.js";
+import type { GuardRule, GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
 import { evaluateDestructiveRules } from "./pre-tool-rules.js";
+
+function withCustomRule(rule: GuardRule): GuardRulesConfig {
+	const base = getDefaultConfig();
+	return { ...base, rules: [rule, ...base.rules] };
+}
+
+function baseRule(overrides: Partial<GuardRule>): GuardRule {
+	return {
+		id: "custom-test-rule",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash"],
+		action: "warn",
+		patterns: [],
+		reason: "custom test rule",
+		severity: "low",
+		...overrides,
+	};
+}
 
 function bashEvent(command: string): HarnessEvent {
 	return {
@@ -33,9 +52,32 @@ describe("evaluateDestructiveRules — bash-code-file-write-bypass", () => {
 		);
 		expect(decision?.decision).toBe("block");
 		expect(decision?.rule_id).toBe("bash-code-file-write-bypass");
-		// The remediation must name the available primitive, NOT the removed
+		// The remediation must name an AVAILABLE primitive, never the removed
 		// MultiEdit tool (finding 2026-06; MultiEdit is gone from Claude Code).
-		expect(decision?.reason).toContain("interlinked write --batch");
+		expect(decision?.reason).toContain("Write or Edit tool");
+	});
+
+	// Rewritten 2026-08-05. The old message answered a coordinated multi-site
+	// edit with `interlinked write --batch <manifest.json>` — a FILE path. That
+	// is what taught agents to stage manifests in the session scratchpad: ~40
+	// recorded multi-edit invocations, every one via a scratchpad manifest, for
+	// a capability stdin already had. Two obligations on this message now:
+	it("points at ordinary sequential edits, since transient debt defers the intermediate", () => {
+		const decision = evaluateDestructiveRules(
+			bashEvent("echo x > src/foo.ts"),
+			getDefaultConfig(),
+			undefined,
+			[],
+		);
+		expect(decision?.reason).toContain("transient debt");
+	});
+
+	it("never steers toward staging a manifest FILE — stdin only", () => {
+		const reason =
+			evaluateDestructiveRules(bashEvent("echo x > src/foo.ts"), getDefaultConfig(), undefined, [])
+				?.reason ?? "";
+		expect(reason).toContain("--stdin");
+		expect(reason).not.toContain("<manifest.json>");
 	});
 
 	it("does not block a redirect to a non-code file", () => {
@@ -162,5 +204,179 @@ describe("evaluateDestructiveRules — scratchpad code-write block (2026-07-09)"
 		} finally {
 			delete process.env.INTERLINKED_DISABLE_SCRATCH_GUARD;
 		}
+	});
+});
+
+describe("evaluateDestructiveRules — rewrite action", () => {
+	it("rewrites the command and returns allow with updated_input when the rewrite changes it", () => {
+		const rule = baseRule({
+			id: "custom-rewrite",
+			action: "rewrite",
+			patterns: [{ field: "command", regex: "foo" }],
+			rewrite: { field: "command", match: "foo", replace: "bar" },
+		});
+		const decision = evaluateDestructiveRules(
+			bashEvent("run foo now"),
+			withCustomRule(rule),
+			undefined,
+			[],
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.rule_id).toBe("custom-rewrite");
+		expect(decision?.updated_input).toEqual({ command: "run bar now" });
+	});
+
+	it("falls through to the generic warning when the rewrite produces no change", () => {
+		const rule = baseRule({
+			id: "custom-rewrite-noop",
+			action: "rewrite",
+			patterns: [{ field: "command", regex: "foo" }],
+			rewrite: { field: "command", match: "zzz-nomatch", replace: "bar" },
+		});
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEvent("run foo now"),
+			withCustomRule(rule),
+			undefined,
+			warnings,
+		);
+		expect(decision).toBeNull();
+		expect(warnings).toContain("[interlinked] Warning: custom test rule");
+	});
+
+	it("falls through to the generic warning when action is rewrite but rule.rewrite is missing", () => {
+		const rule = baseRule({
+			id: "custom-rewrite-no-spec",
+			action: "rewrite",
+			patterns: [{ field: "command", regex: "foo" }],
+		});
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEvent("run foo now"),
+			withCustomRule(rule),
+			undefined,
+			warnings,
+		);
+		expect(decision).toBeNull();
+		expect(warnings).toContain("[interlinked] Warning: custom test rule");
+	});
+});
+
+describe("evaluateDestructiveRules — soft_block action", () => {
+	function softBlockRule(): GuardRule {
+		return baseRule({
+			id: "custom-soft-block",
+			action: "soft_block",
+			patterns: [{ field: "command", regex: "danger-op" }],
+		});
+	}
+
+	function emptySession(): SessionTrajectory {
+		return {
+			session_id: "soft-block-session",
+			tool_sequence: [],
+			commands_run: [],
+			files_read: [],
+			files_written: [],
+			verification_observed: [],
+			soft_blocks: new Set<string>(),
+		} as unknown as SessionTrajectory;
+	}
+
+	it("blocks on the first attempt and records the soft-block key on the session", () => {
+		const session = emptySession();
+		const decision = evaluateDestructiveRules(
+			bashEvent("danger-op now"),
+			withCustomRule(softBlockRule()),
+			session,
+			[],
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("custom-soft-block");
+		expect(session.soft_blocks.has("custom-soft-block::danger-op now")).toBe(true);
+	});
+
+	it("allows retry (warn instead of block) once the same key is already soft-blocked", () => {
+		const session = emptySession();
+		session.soft_blocks.add("custom-soft-block::danger-op now");
+		const warnings: string[] = [];
+		const decision = evaluateDestructiveRules(
+			bashEvent("danger-op now"),
+			withCustomRule(softBlockRule()),
+			session,
+			warnings,
+		);
+		expect(decision).toBeNull();
+		expect(warnings.some((w) => w.includes("Warning (retry allowed)"))).toBe(true);
+		expect(warnings).toContain("[interlinked] Warning: custom test rule");
+	});
+});
+
+describe("evaluateDestructiveRules — applies_to_roles gating", () => {
+	it("skips a rule scoped to a role the event does not carry", () => {
+		const rule = baseRule({
+			id: "custom-role-scoped",
+			action: "block",
+			patterns: [{ field: "command", regex: "role-only-op" }],
+			applies_to_roles: ["lead"],
+		});
+		const event = { ...bashEvent("role-only-op"), agent_role: "worker" } as HarnessEvent;
+		const decision = evaluateDestructiveRules(event, withCustomRule(rule), undefined, []);
+		expect(decision?.rule_id).not.toBe("custom-role-scoped");
+	});
+});
+
+describe("evaluateDestructiveRules — scratchpad_guard.code_write_mode 'off'", () => {
+	it("emits no scratch warning at all when the mode is off", () => {
+		const base = getDefaultConfig();
+		const rules: GuardRulesConfig = { ...base, scratchpad_guard: { code_write_mode: "off" } };
+		const warnings: string[] = [];
+		const event = { ...bashEvent("echo x > /tmp/probe.mts"), cwd: "/Users/dev/project" } as HarnessEvent;
+		const decision = evaluateDestructiveRules(event, rules, undefined, warnings);
+		expect(decision).toBeNull();
+		expect(warnings.some((w) => w.includes("[interlinked:scratch]"))).toBe(false);
+	});
+});
+
+describe("evaluateDestructiveRules — compound command block/rewrite (anchored per-subcommand match)", () => {
+	it("blocks on a subcommand whose anchored pattern only matches once isolated", () => {
+		const rule = baseRule({
+			id: "custom-anchored-block",
+			action: "block",
+			patterns: [{ field: "command", regex: "^rm -rf" }],
+		});
+		const decision = evaluateDestructiveRules(
+			bashEvent("echo hi && rm -rf /tmp/x"),
+			withCustomRule(rule),
+			undefined,
+			[],
+		);
+		expect(decision?.decision).toBe("block");
+		expect(decision?.rule_id).toBe("custom-anchored-block");
+	});
+
+	it("rewrites a subcommand and returns allow with the joined updated command", () => {
+		const rule = baseRule({
+			id: "custom-anchored-rewrite",
+			action: "rewrite",
+			patterns: [{ field: "command", regex: "^foo" }],
+			rewrite: { field: "command", match: "^foo", replace: "bar" },
+		});
+		const decision = evaluateDestructiveRules(
+			bashEvent("echo hi && foo test"),
+			withCustomRule(rule),
+			undefined,
+			[],
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.updated_input).toEqual({ command: "echo hi && bar test" });
+	});
+});
+
+describe("evaluateDestructiveRules — missing tool_name", () => {
+	it("does not crash and evaluates cleanly when tool_name is absent", () => {
+		const event = { ...bashEvent("echo hi"), tool_name: undefined } as unknown as HarnessEvent;
+		const decision = evaluateDestructiveRules(event, getDefaultConfig(), undefined, []);
+		expect(decision).toBeNull();
 	});
 });

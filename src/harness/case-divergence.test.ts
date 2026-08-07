@@ -16,6 +16,10 @@ import {
 	type SymbolLoc,
 } from "./case-divergence.js";
 
+afterEach(() => {
+	__setTsRequirerForTesting(null);
+});
+
 const sym = (name: string, kind: SymbolLoc["kind"], file = "a.ts"): SymbolLoc => ({
 	name,
 	kind,
@@ -196,6 +200,198 @@ describe("runCaseDivergenceCheck (integration over real files)", () => {
 			"/repo/ghost.ts",
 		];
 		expect(runCaseDivergenceCheck(cwd, files)).toEqual([]);
+	});
+});
+
+describe("loadTs caching (via caseDivergenceAvailable)", () => {
+	afterEach(() => {
+		__setTsRequirerForTesting(null);
+		__resetTsCacheForTesting();
+	});
+
+	it("resolves the requirer only once across repeated calls (cache hit)", () => {
+		let calls = 0;
+		__setTsRequirerForTesting(() => {
+			calls++;
+			return ts;
+		});
+		expect(caseDivergenceAvailable()).toBe(true);
+		expect(caseDivergenceAvailable()).toBe(true);
+		expect(caseDivergenceAvailable()).toBe(true);
+		expect(calls).toBe(1);
+	});
+
+	it("__resetTsCacheForTesting actually clears the cache, forcing re-resolution", () => {
+		let calls = 0;
+		__setTsRequirerForTesting(() => {
+			calls++;
+			return ts;
+		});
+		expect(caseDivergenceAvailable()).toBe(true);
+		expect(calls).toBe(1);
+		__resetTsCacheForTesting();
+		expect(caseDivergenceAvailable()).toBe(true);
+		expect(calls).toBe(2);
+	});
+});
+
+describe("classifyStyle — regex/logic boundary cases", () => {
+	it("does not misclassify an all-digit/underscore segment lacking any letter as SCREAMING_SNAKE", () => {
+		// No uppercase letter present, so the SCREAMING_SNAKE branch must not fire;
+		// falls through to the snake_case check instead.
+		expect(classifyStyle("123_456")).toBe("snake_case");
+	});
+	it("requires the WHOLE string to be uppercase/digits/underscore, not just a trailing run", () => {
+		expect(classifyStyle("MAX.LINES")).toBe("PascalCase");
+	});
+	it("requires the WHOLE string to be uppercase/digits/underscore, not just a leading run", () => {
+		expect(classifyStyle("MAX!")).toBe("PascalCase");
+	});
+	it("rejects a snake_case segment that only partially matches (anchored on both ends)", () => {
+		expect(classifyStyle("abc_de!f")).toBe("other");
+	});
+});
+
+describe("extractTopLevelSymbols — line numbers and non-declaration statements", () => {
+	it("reports the correct 1-based source line for each declaration", () => {
+		const src = ["", "export const first = 1;", "", "export function second() {}"].join("\n");
+		const syms = extractTopLevelSymbols(ts, src, "x.ts");
+		expect(syms.find((s) => s.name === "first")?.line).toBe(2);
+		expect(syms.find((s) => s.name === "second")?.line).toBe(4);
+	});
+	it("does not crash on and silently skips non-declaration top-level statements (import/expression)", () => {
+		const src = ['import Foo from "foo";', "Foo();", "export const bar = 1;"].join("\n");
+		const syms = extractTopLevelSymbols(ts, src, "x.ts");
+		expect(syms.map((s) => s.name)).toEqual(["bar"]);
+	});
+	it("ignores destructured variable declarations (name is not a plain identifier)", () => {
+		const src = "const [a, b] = [1, 2];\nconst { c } = { c: 3 };\nconst d = 4;";
+		const syms = extractTopLevelSymbols(ts, src, "x.ts");
+		expect(syms.map((s) => s.name)).toEqual(["d"]);
+	});
+});
+
+describe("analyzeSymbols — message text, location ordering, and file list (exact-value)", () => {
+	it("builds the exact divergence message for a two-way spelling split", () => {
+		const f = analyzeSymbols([sym("userId", "const", "a.ts"), sym("user_id", "function", "b.ts")]);
+		expect(f[0]?.message).toBe(
+			'"userId" / "user_id" — same value name in 2 case spellings; reconcile to one',
+		);
+	});
+	it("orders each spelling's locations by file then by line", () => {
+		const f = analyzeSymbols([
+			sym("userId", "const", "b.ts"),
+			{ name: "userId", kind: "const", file: "a.ts", line: 9 },
+			{ name: "userId", kind: "const", file: "a.ts", line: 2 },
+			sym("user_id", "function", "c.ts"),
+		]);
+		const locs = f[0]?.spellings.find((s) => s.name === "userId")?.locs;
+		expect(locs).toEqual([
+			{ file: "a.ts", line: 2, kind: "const" },
+			{ file: "a.ts", line: 9, kind: "const" },
+			{ file: "b.ts", line: 1, kind: "const" },
+		]);
+	});
+	it("records the exact kind on each location entry", () => {
+		const f = analyzeSymbols([sym("userId", "const", "a.ts"), sym("user_id", "function", "b.ts")]);
+		const locs = f[0]?.spellings.find((s) => s.name === "user_id")?.locs;
+		expect(locs).toEqual([{ file: "b.ts", line: 1, kind: "function" }]);
+	});
+	it("dedupes the files list and returns it sorted, unaffected by insertion/duplicate order", () => {
+		const f = analyzeSymbols([
+			sym("userId", "const", "z.ts"),
+			sym("userId", "const", "z.ts"),
+			sym("user_id", "function", "a.ts"),
+		]);
+		expect(f[0]?.files).toEqual(["a.ts", "z.ts"]);
+	});
+	it("flags only the regular-case pair, excluding a lone SCREAMING sibling of the same core", () => {
+		const f = analyzeSymbols([
+			sym("fooBar", "function", "a.ts"),
+			sym("foo_bar", "function", "b.ts"),
+			sym("FOO_BAR", "function", "c.ts"),
+		]);
+		expect(f).toHaveLength(1);
+		expect(f[0]?.spellings.map((s) => s.name).sort()).toEqual(["fooBar", "foo_bar"]);
+	});
+	it("flags only the SCREAMING pair, excluding a lone regular sibling of the same core", () => {
+		const f = analyzeSymbols([
+			sym("FOOBAR", "const", "a.ts"),
+			sym("FOO_BAR", "const", "b.ts"),
+			sym("fooBar", "const", "c.ts"),
+		]);
+		expect(f).toHaveLength(1);
+		expect(f[0]?.spellings.map((s) => s.name).sort()).toEqual(["FOOBAR", "FOO_BAR"]);
+	});
+});
+
+describe("analyzeSymbols — ROLE mapping covers every SymbolKind", () => {
+	it("groups let and var together with the 'value' role (not just const/function)", () => {
+		const f = analyzeSymbols([sym("userId", "let", "a.ts"), sym("user_id", "var", "b.ts")]);
+		expect(f).toHaveLength(1);
+		expect(f[0]?.role).toBe("value");
+	});
+	it("groups class and enum together with the 'type' role (not just type/interface)", () => {
+		const f = analyzeSymbols([sym("UserId", "class", "a.ts"), sym("User_Id", "enum", "b.ts")]);
+		expect(f).toHaveLength(1);
+		expect(f[0]?.role).toBe("type");
+	});
+});
+
+describe("runCaseDivergenceCheck — every JS/TS extension in JS_TS_EXTS is recognized", () => {
+	let dir = "";
+	afterEach(() => {
+		if (dir) rmSync(dir, { recursive: true, force: true });
+		dir = "";
+	});
+	it("scans .mjs and .cts files (not just .ts/.js)", () => {
+		dir = mkdtempSync(join(tmpdir(), "casediv-"));
+		writeFileSync(join(dir, "a.mjs"), "export const userAge = 1;\n");
+		writeFileSync(join(dir, "b.cts"), "export const user_age = 2;\n");
+		const findings = runCaseDivergenceCheck(dir, [join(dir, "a.mjs"), join(dir, "b.cts")]);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.core).toBe("userage");
+	});
+});
+
+describe("analyzeSymbols — MIN_CORE_LEN boundary (exact)", () => {
+	it("does NOT flag a same-family divergence whose core is 1 below MIN_CORE_LEN", () => {
+		// core "ab" has length 2 (MIN_CORE_LEN - 1); both spellings are 'regular' family.
+		expect(analyzeSymbols([sym("ab", "const", "a.ts"), sym("aB", "const", "b.ts")])).toEqual([]);
+	});
+	it("DOES flag a same-family divergence whose core is exactly MIN_CORE_LEN", () => {
+		// core "abc" has length 3 === MIN_CORE_LEN; must not be skipped.
+		const f = analyzeSymbols([sym("abc", "const", "a.ts"), sym("aBc", "const", "b.ts")]);
+		expect(f).toHaveLength(1);
+		expect(f[0]?.core).toBe("abc");
+	});
+});
+
+describe("runCaseDivergenceCheck — path exclusion edge cases (real files)", () => {
+	let dir = "";
+	afterEach(() => {
+		if (dir) rmSync(dir, { recursive: true, force: true });
+		dir = "";
+	});
+
+	it("excludes .test.cts files (regex must match the cm-optional infix, not negate it)", () => {
+		dir = mkdtempSync(join(tmpdir(), "casediv-"));
+		writeFileSync(join(dir, "a.ts"), "export const userAge = 1;\n");
+		writeFileSync(join(dir, "a.test.cts"), "export const user_age = 2;\n");
+		const findings = runCaseDivergenceCheck(dir, [join(dir, "a.ts"), join(dir, "a.test.cts")]);
+		expect(findings).toEqual([]);
+	});
+
+	it("excludes a path whose separators are backslashes once normalized to forward slashes", () => {
+		dir = mkdtempSync(join(tmpdir(), "casediv-"));
+		writeFileSync(join(dir, "a.ts"), "export const userAge = 1;\n");
+		// A single filename component containing literal backslashes — valid on POSIX
+		// filesystems — that only reads as an excluded __tests__ path after the
+		// backslash-to-forward-slash normalization runs.
+		const weirdName = "weird\\__tests__\\user_age.ts";
+		writeFileSync(join(dir, weirdName), "export const user_age = 2;\n");
+		const findings = runCaseDivergenceCheck(dir, [join(dir, "a.ts"), join(dir, weirdName)]);
+		expect(findings).toEqual([]);
 	});
 });
 

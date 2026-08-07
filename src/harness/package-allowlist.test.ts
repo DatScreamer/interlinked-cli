@@ -7,6 +7,7 @@ import {
 	type Allowlist,
 	addToAllowlist,
 	allowlistPath,
+	effectiveLicenseAllowlist,
 	hashLockfile,
 	isPackageAllowed,
 	loadAllowlist,
@@ -52,6 +53,15 @@ describe("loadAllowlist", () => {
 		const al = loadAllowlist(workspace);
 		expect(al.version).toBe(1);
 		expect(al.packages.npm).toEqual({});
+	});
+
+	it("keeps the default empty lockfile_snapshots when the field is absent from valid JSON", () => {
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(target, JSON.stringify({ version: 1, packages: { npm: { lodash: { approved_at: "x", approved_by: "y" } } } }));
+		const al = loadAllowlist(workspace);
+		expect(al.lockfile_snapshots).toEqual({});
+		expect(al.packages.npm.lodash).toBeDefined();
 	});
 });
 
@@ -228,6 +238,68 @@ describe("isPackageAllowed", () => {
 		expect(r.reason).toMatch(/version|range/i);
 	});
 
+	it("matches a prefixed exact version (v-prefix vs bare) after stripping the prefix", () => {
+		const al: Allowlist = {
+			...empty,
+			packages: {
+				...empty.packages,
+				npm: {
+					lodash: { approved_at: "2026-05-19", approved_by: "x", version_range: "=4.17.21" },
+				},
+			},
+		};
+		const r = isPackageAllowed(al, "npm", { kind: "registry", name: "lodash", version: "4.17.21" });
+		expect(r.allowed).toBe(true);
+	});
+
+	it("caret range (^4.0.0) allows a same-major version", () => {
+		const al: Allowlist = {
+			...empty,
+			packages: {
+				...empty.packages,
+				npm: { pkg: { approved_at: "2026-05-19", approved_by: "x", version_range: "^4.0.0" } },
+			},
+		};
+		const r = isPackageAllowed(al, "npm", { kind: "registry", name: "pkg", version: "4.5.2" });
+		expect(r.allowed).toBe(true);
+	});
+
+	it("caret range (^4.0.0) rejects a different-major version", () => {
+		const al: Allowlist = {
+			...empty,
+			packages: {
+				...empty.packages,
+				npm: { pkg: { approved_at: "2026-05-19", approved_by: "x", version_range: "^4.0.0" } },
+			},
+		};
+		const r = isPackageAllowed(al, "npm", { kind: "registry", name: "pkg", version: "5.0.0" });
+		expect(r.allowed).toBe(false);
+	});
+
+	it("tilde range (~4.2.0) allows a same major.minor version", () => {
+		const al: Allowlist = {
+			...empty,
+			packages: {
+				...empty.packages,
+				npm: { pkg: { approved_at: "2026-05-19", approved_by: "x", version_range: "~4.2.0" } },
+			},
+		};
+		const r = isPackageAllowed(al, "npm", { kind: "registry", name: "pkg", version: "4.2.9" });
+		expect(r.allowed).toBe(true);
+	});
+
+	it("tilde range (~4.2.0) rejects a different minor version", () => {
+		const al: Allowlist = {
+			...empty,
+			packages: {
+				...empty.packages,
+				npm: { pkg: { approved_at: "2026-05-19", approved_by: "x", version_range: "~4.2.0" } },
+			},
+		};
+		const r = isPackageAllowed(al, "npm", { kind: "registry", name: "pkg", version: "4.3.0" });
+		expect(r.allowed).toBe(false);
+	});
+
 	it("is case-sensitive on package name (npm rejects 'LoDash' when 'lodash' is allowed)", () => {
 		const al: Allowlist = {
 			...empty,
@@ -295,5 +367,24 @@ describe("hashLockfile + matchSnapshot", () => {
 		expect(
 			matchSnapshot(al, "package-lock.json", join(workspace, "package-lock.json")),
 		).toBe(false);
+	});
+
+	it("matchSnapshot returns false when a snapshot is recorded but the lockfile no longer exists", () => {
+		const al: Allowlist = {
+			version: 1,
+			packages: { npm: {}, pypi: {}, cargo: {}, rubygems: {}, go: {}, composer: {}, maven: {}, gradle: {}, nuget: {} },
+			lockfile_snapshots: {
+				"package-lock.json": { sha256: "0".repeat(64), approved_at: "2026-05-19", approved_by: "x" },
+			},
+		};
+		expect(
+			matchSnapshot(al, "package-lock.json", join(workspace, "does-not-exist.json")),
+		).toBe(false);
+	});
+
+	it("hashLockfile returns null (fails soft) when the path is a directory, not a file", () => {
+		const dirPath = join(workspace, "a-directory");
+		mkdirSync(dirPath, { recursive: true });
+		expect(hashLockfile(dirPath)).toBeNull();
 	});
 });

@@ -6,7 +6,7 @@
 //   - http_handler (RouteMap stub returns two endpoints)
 // Plus the `includeTests` opt-in path and the dedupe contract.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,7 @@ import { nonNull } from "../../lib/non-null.js";
 import type { EntryPoint } from "../entry-points.js";
 import { collectEntryPoints } from "../entry-points.js";
 import { RouteMap } from "../route-map.js";
+import type { Endpoint } from "../types/session-endpoint.js";
 
 let workdir: string;
 
@@ -250,5 +251,139 @@ describe("collectEntryPoints — opt-in tests and dedupe", () => {
 		// No package.json, no route map, no tests requested → entirely empty.
 		const eps = collectEntryPoints(workdir);
 		expect(eps).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Additional branch coverage: bin map skips, exports arrays, missing/malformed
+// package.json, test-scan skip rules, and true-duplicate dedupe collapsing.
+// ---------------------------------------------------------------------------
+
+describe("collectEntryPoints — extra branch coverage", () => {
+	it("skips a map-shape bin entry whose target is not a string", () => {
+		writePkg({ bin: { good: "./good.js", bad: 42 } });
+		writeFileSync(join(workdir, "good.js"), "// good");
+
+		const eps = collectEntryPoints(workdir);
+		const bin = eps.filter((e) => e.kind === "bin");
+		expect(bin).toHaveLength(1);
+		expect(nonNull(bin[0]).reason).toBe("package.json:bin[good]");
+	});
+
+	it("skips a map-shape bin entry whose target file does not exist", () => {
+		writePkg({ bin: { missing: "./nope.js" } });
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "bin")).toHaveLength(0);
+	});
+
+	it("skips package.json:main when the target file does not exist", () => {
+		writePkg({ main: "./missing-main.js" });
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "lib_export" && e.reason === "package.json:main")).toEqual(
+			[],
+		);
+	});
+
+	it("walks an array-shape exports node, resolving each element", () => {
+		writePkg({
+			exports: ["./dist/a.js", "./dist/b.js"],
+		});
+		mkdirSync(join(workdir, "dist"), { recursive: true });
+		writeFileSync(join(workdir, "dist", "a.js"), "// a");
+		writeFileSync(join(workdir, "dist", "b.js"), "// b");
+
+		const eps = collectEntryPoints(workdir);
+		const lib = eps.filter((e) => e.kind === "lib_export");
+		const reasons = lib.map((e) => e.reason).sort();
+		expect(reasons).toEqual(["package.json:exports[0]", "package.json:exports[1]"]);
+		const files = lib.map((e) => e.file).sort();
+		expect(files).toEqual([join(workdir, "dist", "a.js"), join(workdir, "dist", "b.js")].sort());
+	});
+
+	it("skips exports array elements whose target file does not exist", () => {
+		writePkg({ exports: ["./missing-a.js", "./missing-b.js"] });
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "lib_export")).toEqual([]);
+	});
+
+	it("returns null (no entries) when package.json content is not a JSON object", () => {
+		writeFileSync(join(workdir, "package.json"), JSON.stringify(["not", "an", "object"]));
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "bin" || e.kind === "lib_export")).toEqual([]);
+	});
+
+	it("returns null (no entries) when package.json is malformed JSON", () => {
+		writeFileSync(join(workdir, "package.json"), "{ not valid json");
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "bin" || e.kind === "lib_export")).toEqual([]);
+	});
+
+	it("returns null (no entries) when package.json cannot be read", () => {
+		// A directory named package.json passes existsSync but readFileSync
+		// throws EISDIR — exercises the readFileSync catch branch.
+		mkdirSync(join(workdir, "package.json"));
+		const eps = collectEntryPoints(workdir);
+		expect(eps.filter((e) => e.kind === "bin" || e.kind === "lib_export")).toEqual([]);
+		chmodSync(join(workdir, "package.json"), 0o755);
+	});
+
+	it("skips hidden and skip-listed directories while scanning for tests", () => {
+		writePkg({});
+		mkdirSync(join(workdir, ".hidden"), { recursive: true });
+		writeFileSync(join(workdir, ".hidden", "sneaky.test.ts"), "// hidden");
+		mkdirSync(join(workdir, "node_modules", "pkg"), { recursive: true });
+		writeFileSync(join(workdir, "node_modules", "pkg", "buried.test.ts"), "// buried");
+		mkdirSync(join(workdir, "src"), { recursive: true });
+		writeFileSync(join(workdir, "src", "visible.test.ts"), "// visible");
+
+		const eps = collectEntryPoints(workdir, { includeTests: true });
+		const tests = eps.filter((e) => e.kind === "test");
+		expect(tests).toHaveLength(1);
+		expect(nonNull(tests[0]).file).toBe(join(workdir, "src", "visible.test.ts"));
+	});
+
+	it("continues past an unreadable directory during the test scan", () => {
+		writePkg({});
+		const blocked = join(workdir, "blocked");
+		mkdirSync(blocked, { recursive: true });
+		writeFileSync(join(blocked, "hidden.test.ts"), "// unreadable");
+		mkdirSync(join(workdir, "src"), { recursive: true });
+		writeFileSync(join(workdir, "src", "ok.test.ts"), "// ok");
+		chmodSync(blocked, 0o000);
+
+		try {
+			const eps = collectEntryPoints(workdir, { includeTests: true });
+			const tests = eps.filter((e) => e.kind === "test");
+			// The unreadable dir yields no entries (readdirSync throws, caught,
+			// loop continues) but the sibling `src` dir still scans fine.
+			expect(tests).toHaveLength(1);
+			expect(nonNull(tests[0]).file).toBe(join(workdir, "src", "ok.test.ts"));
+		} finally {
+			chmodSync(blocked, 0o755);
+		}
+	});
+
+	it("dedupes two fully-identical http_handler records (same kind/file/reason)", () => {
+		const apiFile = join(workdir, "api.ts");
+		writeFileSync(apiFile, "// route file");
+		const endpoint: Endpoint = {
+			framework: "express",
+			method: "GET",
+			path: "/dup",
+			file: apiFile,
+			line: undefined,
+			auth_chain: [],
+			declared_params: [],
+		};
+		const fakeRouteMap = {
+			extractAllEndpoints: () => [endpoint, { ...endpoint }],
+		} as unknown as RouteMap;
+
+		const eps = collectEntryPoints(workdir, { routeMap: fakeRouteMap });
+		const http = eps.filter((e) => e.kind === "http_handler");
+		// Two identical source records collapse to one via dedupe(); the
+		// reason has no `:<line>` suffix since `line` is undefined.
+		expect(http).toHaveLength(1);
+		expect(nonNull(http[0]).reason).toBe("express GET /dup");
 	});
 });

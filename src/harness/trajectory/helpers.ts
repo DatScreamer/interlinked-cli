@@ -225,13 +225,26 @@ export function extractHosts(cmd: string): string[] {
 	for (const m of cmd.matchAll(/\bhttps?:\/\/([^/\s:'"]+)/gi)) {
 		if (m[1]) hosts.push(m[1]);
 	}
-	for (const m of cmd.matchAll(/\b[\w.-]+@([a-zA-Z0-9.-]+)/g)) {
+	// Bounded for the same reason as the domain pattern below, and this one was
+	// the worse of the two: an unbounded `[\w.-]+` before a MANDATORY `@` makes
+	// every start offset scan to end-of-input when no `@` follows — measured at
+	// 16x per 4x of input, 1.67s on a 32KB command. Bounds are RFC 5321's own
+	// limits (64-char local part, 255-char domain), so no real address that
+	// matched before stops matching.
+	for (const m of cmd.matchAll(/\b[\w.-]{1,64}@([a-zA-Z0-9.-]{1,255})/g)) {
 		if (m[1]) hosts.push(m[1]);
 	}
 	for (const m of cmd.matchAll(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g)) {
 		if (m[0]) hosts.push(m[0]);
 	}
-	for (const m of cmd.matchAll(/\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b/g)) {
+	// Both repetitions are BOUNDED. The unbounded form `(?:[a-zA-Z0-9-]+\.)+`
+	// was quadratic — measured at exactly 4x per doubling, 1.35s on 32KB of
+	// "a-a." — and this runs on every PreToolUse Bash command, so the cost lands
+	// on the guard path. The bounds are DNS's own limits (63 chars per label)
+	// plus a label depth well past any real hostname, so no host that matched
+	// before stops matching; a tighter depth (12) was rejected because it
+	// silently matched a SHIFTED window of a deep name rather than the name.
+	for (const m of cmd.matchAll(/\b(?:[a-zA-Z0-9-]{1,63}\.){1,32}[a-zA-Z]{2,}\b/g)) {
 		if (m[0]) hosts.push(m[0]);
 	}
 	return hosts;

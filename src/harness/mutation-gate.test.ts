@@ -71,6 +71,24 @@ describe("loadMutationBaseline / saveMutationBaseline round trip", () => {
 		writeFileSync(mutationBaselinePath(tmp), "{ not json", "utf-8");
 		expect(loadMutationBaseline(tmp).files).toEqual({});
 	});
+
+	it("returns empty baseline when the version field is wrong", () => {
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({ version: 2, updated_at: "x", files: { a: { score: 1, killed: 1 } } }),
+			"utf-8",
+		);
+		expect(loadMutationBaseline(tmp)).toEqual(emptyMutationBaseline());
+	});
+
+	it("returns empty baseline when the files field is missing", () => {
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({ version: 1, updated_at: "x" }),
+			"utf-8",
+		);
+		expect(loadMutationBaseline(tmp)).toEqual(emptyMutationBaseline());
+	});
 });
 
 describe("loadMutationReport — Stryker shape normalization", () => {
@@ -128,6 +146,56 @@ describe("loadMutationReport — Stryker shape normalization", () => {
 		const p = join(tmp, "bad.json");
 		writeFileSync(p, "nope", "utf-8");
 		expect(loadMutationReport(p)).toBeNull();
+	});
+
+	it("aggregates no_coverage/compile_error/runtime_error mutant statuses", () => {
+		const p = join(tmp, "extra-statuses.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				files: {
+					"src/foo.ts": {
+						mutants: [
+							{ status: "Killed" },
+							{ status: "NoCoverage" },
+							{ status: "no_coverage" },
+							{ status: "CompileError" },
+							{ status: "compile_error" },
+							{ status: "RuntimeError" },
+							{ status: "runtime_error" },
+							{ status: "SomethingUnknown" },
+						],
+					},
+				},
+			}),
+		);
+		const report = loadMutationReport(p);
+		expect(report?.files["src/foo.ts"]).toEqual({
+			killed: 1,
+			survived: 0,
+			timeout: 0,
+			no_coverage: 2,
+			compile_error: 2,
+			runtime_error: 2,
+		});
+	});
+
+	it("returns an empty report when the top-level JSON has no `files` key", () => {
+		const p = join(tmp, "no-files.json");
+		writeFileSync(p, JSON.stringify({ other: 1 }), "utf-8");
+		expect(loadMutationReport(p)).toEqual({ files: {} });
+	});
+
+	it("returns an empty report when `files` is not an object", () => {
+		const p = join(tmp, "files-not-object.json");
+		writeFileSync(p, JSON.stringify({ files: "nope" }), "utf-8");
+		expect(loadMutationReport(p)).toEqual({ files: {} });
+	});
+
+	it("skips a null file entry in the report", () => {
+		const p = join(tmp, "null-entry.json");
+		writeFileSync(p, JSON.stringify({ files: { "src/foo.ts": null } }), "utf-8");
+		expect(loadMutationReport(p)).toEqual({ files: {} });
 	});
 });
 
@@ -260,6 +328,47 @@ describe("compareMutation — path normalization", () => {
 			repoRoot: "/repo",
 		});
 		expect(res.stats.files_checked).toBe(0);
+	});
+
+	it("drops an empty-string path", () => {
+		const report: MutationReport = {
+			files: { "": { killed: 9, survived: 1 } },
+		};
+		const res = compareMutation(report, emptyMutationBaseline(), {
+			config: DEFAULT_CONFIG,
+			repoRoot: "/repo",
+		});
+		expect(res.stats.files_checked).toBe(0);
+	});
+
+	it("skips a null/undefined file entry in the report", () => {
+		const report: MutationReport = {
+			files: { "src/foo.ts": undefined },
+		};
+		const res = compareMutation(report, emptyMutationBaseline(), {
+			config: DEFAULT_CONFIG,
+			repoRoot: "/repo",
+		});
+		expect(res.stats.files_checked).toBe(0);
+	});
+
+	it("neither flags nor counts an improvement when the score is unchanged", () => {
+		const baseline: MutationBaseline = {
+			version: 1,
+			updated_at: "2026-01-01",
+			files: { "src/foo.ts": { score: 0.8, killed: 8 } },
+		};
+		const report: MutationReport = {
+			files: { "src/foo.ts": { killed: 8, survived: 2 } }, // 0.8, unchanged
+		};
+		const res = compareMutation(report, baseline, {
+			config: DEFAULT_CONFIG,
+			repoRoot: "/repo",
+		});
+		expect(res.findings).toEqual([]);
+		expect(res.stats.files_improved).toBe(0);
+		expect(res.stats.files_decreased).toBe(0);
+		expect(res.nextBaseline.files["src/foo.ts"]).toEqual({ score: 0.8, killed: 8 });
 	});
 });
 

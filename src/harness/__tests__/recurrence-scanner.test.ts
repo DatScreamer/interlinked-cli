@@ -3,6 +3,7 @@
 // codebase_existing recurrence events for repeated patterns.
 
 import {
+	type Stats,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
@@ -11,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import type { DetectorFinding } from "../checks/endpoint-security.js";
 import { loadRecurrenceEvents } from "../recurrence.js";
@@ -21,6 +22,83 @@ import {
 	scanCodebaseForRecurrences,
 	scanFilesForDetector,
 } from "../recurrence-scanner.js";
+
+// Partial node:fs mock: every function is the REAL implementation except
+// `lstatSync` / `readFileSync`, which can be steered (per-test, via the
+// module-level control vars below) to throw or to report a "neither file
+// nor directory" entry — exercising `walk()`'s two hard-to-reach branches
+// (a TOCTOU-style lstat failure, and a socket/FIFO-shaped entry) and the
+// unreadable-file skip path, without disturbing any other test's real
+// filesystem usage.
+let lstatThrowPath: string | null = null;
+let lstatWeirdPath: string | null = null;
+let readFileSyncThrowPath: string | null = null;
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		lstatSync: (path: Parameters<typeof actual.lstatSync>[0], opts?: unknown) => {
+			if (lstatThrowPath && path === lstatThrowPath) {
+				throw new Error("simulated lstat failure (TOCTOU race)");
+			}
+			if (lstatWeirdPath && path === lstatWeirdPath) {
+				return {
+					isSymbolicLink: () => false,
+					isDirectory: () => false,
+					isFile: () => false,
+				} as Stats;
+			}
+			// Passthrough to the real overload set.
+			return (actual.lstatSync as any)(path, opts);
+		},
+		readFileSync: (path: Parameters<typeof actual.readFileSync>[0], opts?: unknown) => {
+			if (readFileSyncThrowPath && path === readFileSyncThrowPath) {
+				throw new Error("EACCES: permission denied (simulated)");
+			}
+			// Passthrough to the real overload set.
+			return (actual.readFileSync as any)(path, opts);
+		},
+	};
+});
+
+afterEach(() => {
+	lstatThrowPath = null;
+	lstatWeirdPath = null;
+	readFileSyncThrowPath = null;
+});
+
+// Every real detector is preserved; content containing the sentinel marker
+// gets one EXTRA synthetic check appended whose `fn()` throws — exercising
+// "a single buggy detector must not break the whole scan" without needing
+// to find (or fabricate) a real detector bug.
+const THROWING_DETECTOR_MARKER = "__RECURRENCE_SCANNER_TEST_THROWING_DETECTOR__";
+vi.mock("../check-registry/index.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../check-registry/index.js")>();
+	return {
+		...actual,
+		buildAgentSafetyChecks: (
+			content: string,
+			filePath: string,
+			...rest: unknown[]
+		) => {
+			// Passthrough to the real overload set.
+			const real = (actual.buildAgentSafetyChecks as any)(content, filePath, ...rest);
+			if (content.includes(THROWING_DETECTOR_MARKER)) {
+				return [
+					...real,
+					{
+						name: "test_throwing_detector",
+						severity: "warning" as const,
+						fn: () => {
+							throw new Error("simulated buggy detector");
+						},
+					},
+				];
+			}
+			return real;
+		},
+	};
+});
 
 describe("scanCodebaseForRecurrences", () => {
 	let dir: string;
@@ -121,6 +199,62 @@ describe("scanCodebaseForRecurrences", () => {
 		} finally {
 			rmSync(externalDir, { recursive: true, force: true });
 		}
+	});
+
+	it("skips a file whose content is unreadable (permission error / race) rather than throwing", () => {
+		fixture("src/keeper.ts", "export const x = eval('1+1');\n");
+		fixture("src/cursed.ts", "export const y = eval('2+2');\n");
+		readFileSyncThrowPath = join(dir, "src", "cursed.ts");
+		const findings = scanCodebaseForRecurrences({ cwd: dir });
+		const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
+		expect(files.has("src/keeper.ts")).toBe(true);
+		expect(files.has("src/cursed.ts")).toBe(false);
+	});
+
+	it("skips a directory entry that vanishes between readdir and lstat (TOCTOU) without crashing", () => {
+		fixture("src/keeper.ts", "export const x = eval('1+1');\n");
+		fixture("src/gone.ts", "export const y = eval('2+2');\n");
+		lstatThrowPath = join(dir, "src", "gone.ts");
+		const findings = scanCodebaseForRecurrences({ cwd: dir });
+		const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
+		expect(files.has("src/keeper.ts")).toBe(true);
+		expect(files.has("src/gone.ts")).toBe(false);
+	});
+
+	it("skips a directory entry that is neither a file nor a directory (socket/FIFO-shaped)", () => {
+		fixture("src/keeper.ts", "export const x = eval('1+1');\n");
+		fixture("src/weird.ts", "export const y = eval('2+2');\n");
+		lstatWeirdPath = join(dir, "src", "weird.ts");
+		const findings = scanCodebaseForRecurrences({ cwd: dir });
+		const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
+		expect(files.has("src/keeper.ts")).toBe(true);
+		expect(files.has("src/weird.ts")).toBe(false);
+	});
+
+	it("defaults to process.cwd() when no cwd option is given", () => {
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
+		fixture("src/keeper.ts", "export const x = eval('1+1');\n");
+		try {
+			const findings = scanCodebaseForRecurrences();
+			const files = new Set(findings.map((f: ScanCodebaseFinding) => f.file));
+			expect(files.has("src/keeper.ts")).toBe(true);
+		} finally {
+			cwdSpy.mockRestore();
+		}
+	});
+
+	it("isolates a misbehaving inline detector — its throw doesn't drop other findings for the file", () => {
+		fixture(
+			"src/mixed.ts",
+			`export const x = eval('1+1'); // ${THROWING_DETECTOR_MARKER}\n`,
+		);
+		const findings = scanCodebaseForRecurrences({ cwd: dir });
+		// The real eval_usage detector still ran and reported; the synthetic
+		// throwing detector was skipped rather than aborting the whole file.
+		expect(findings.some((f: ScanCodebaseFinding) => f.check_id === "eval_usage")).toBe(true);
+		expect(
+			findings.some((f: ScanCodebaseFinding) => f.check_id === "test_throwing_detector"),
+		).toBe(false);
 	});
 });
 
@@ -248,6 +382,66 @@ describe("scanFilesForDetector", () => {
 			process.stderr.write = origWrite;
 		}
 	});
+
+	it("uses the real fs.readFileSync as the default reader when readFile is omitted", () => {
+		const dir = mkdtempSync(join(tmpdir(), "interlinked-scan-detector-default-"));
+		try {
+			const filePath = join(dir, "dirty.ts");
+			writeFileSync(filePath, "ok\nBAD here\n");
+			const out = scanFilesForDetector({ detector: badLineDetector, files: [filePath] });
+			expect(out).toHaveLength(1);
+			expect(nonNull(out[0]).file).toBe(filePath);
+			expect(nonNull(out[0]).line).toBe(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("logs a String(err) message when the read failure throws a non-Error value", () => {
+		const stderrWrites: string[] = [];
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = ((chunk: unknown) => {
+			stderrWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const out = scanFilesForDetector({
+				detector: badLineDetector,
+				files: ["/abs/weird-throw.ts"],
+				readFile: () => {
+					// Exercising the non-Error catch branch on purpose.
+					throw "plain string failure";
+				},
+			});
+			expect(out).toEqual([]);
+			expect(stderrWrites.some((s) => s.includes("plain string failure"))).toBe(true);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+	});
+
+	it("logs a String(err) message when a detector throws a non-Error value", () => {
+		const stderrWrites: string[] = [];
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = ((chunk: unknown) => {
+			stderrWrites.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const out = scanFilesForDetector({
+				detector: () => {
+					// Exercising the non-Error catch branch on purpose.
+					throw { code: "WEIRD" };
+				},
+				files: ["/abs/weird-detector-throw.ts"],
+				readFile: () => "content\n",
+			});
+			expect(out).toEqual([]);
+			expect(stderrWrites.some((s) => s.includes("[object Object]"))).toBe(true);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+	});
 });
 
 describe("scanCIFilesForRecurrences", () => {
@@ -306,5 +500,52 @@ describe("scanCIFilesForRecurrences", () => {
 		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
 		const findings = scanCodebaseForRecurrences({ cwd: dir, includeCI: false });
 		expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(false);
+	});
+
+	it("skips a CI file that cannot be read (permission error / race) rather than throwing", () => {
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
+		fixture("Dockerfile", ["FROM node:20", "RUN rm -rf /etc"].join("\n"));
+		readFileSyncThrowPath = join(dir, "Dockerfile");
+		const findings = scanCIFilesForRecurrences(dir);
+		expect(findings.some((f) => f.file === ".github/workflows/ci.yml")).toBe(true);
+		expect(findings.some((f) => f.file === "Dockerfile")).toBe(false);
+	});
+
+	it("defaults to process.cwd() when called with no argument", () => {
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
+		fixture(".github/workflows/ci.yml", ["steps:", "  - run: rm -rf /"].join("\n"));
+		try {
+			const findings = scanCIFilesForRecurrences();
+			expect(findings.some((f) => f.check_id === "builtin-rm-rf-root")).toBe(true);
+		} finally {
+			cwdSpy.mockRestore();
+		}
+	});
+
+	it("only evaluates rules whose trigger fires PreToolUse/both — a PostToolUse-only rule is excluded", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(dir, ".interlinked", "guard-rules.json"),
+			JSON.stringify({
+				rules: [
+					{
+						id: "custom-post-only-rule",
+						enabled: true,
+						trigger: "PostToolUse",
+						tool_match: ["Bash"],
+						action: "block",
+						patterns: [{ field: "command", regex: "custom-post-only-marker" }],
+						reason: "test rule scoped to PostToolUse only",
+						severity: "high",
+					},
+				],
+			}),
+		);
+		fixture(
+			".github/workflows/ci.yml",
+			["steps:", "  - run: custom-post-only-marker"].join("\n"),
+		);
+		const findings = scanCIFilesForRecurrences(dir);
+		expect(findings.some((f) => f.check_id === "custom-post-only-rule")).toBe(false);
 	});
 });

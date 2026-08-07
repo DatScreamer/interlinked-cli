@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,12 @@ import { nonNull } from "../lib/non-null.js";
 import { daemonsCommand } from "./daemons.js";
 
 let tmp = "";
-let originalCwd = "";
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. daemonsCommand reads
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 let server: Server | null = null;
 // Track accepted connections so teardown can destroy them: `server.close()`
 // resolves only after every open socket ends, and a client that timed out
@@ -49,22 +54,23 @@ async function bindServer(
 }
 
 beforeEach(() => {
-	originalCwd = process.cwd();
 	connections = [];
 	// Root under /tmp (not os.tmpdir()): on macOS os.tmpdir() lives under a deep
 	// /private/var/folders/... path that pushes the bound Unix-socket path past
 	// the ~104-char sun_path limit. /tmp keeps `.interlinked/harness-<id>.sock`
 	// comfortably short.
-	process.chdir(mkdtempSync("/tmp/ildm-"));
 	// `daemonsCommand` resolves `.interlinked/` from `process.cwd()`. Bind the
-	// test's sockets against the canonical cwd (process.cwd() resolves the
-	// /tmp -> /private/tmp symlink) so they live exactly where the command dials.
-	tmp = process.cwd();
+	// test's sockets against the canonical, symlink-resolved path (realpathSync,
+	// matching what a real chdir would have given via process.cwd()'s own
+	// /tmp -> /private/tmp resolution) so they live exactly where the command
+	// dials.
+	tmp = realpathSync(mkdtempSync("/tmp/ildm-"));
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 	mkdirSync(join(tmp, ".interlinked"), { recursive: true });
 });
 afterEach(async () => {
 	await closeServer();
-	process.chdir(originalCwd);
+	cwdSpy?.mockRestore();
 	rmSync(tmp, { recursive: true, force: true });
 });
 

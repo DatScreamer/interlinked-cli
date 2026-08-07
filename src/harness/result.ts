@@ -178,9 +178,17 @@ export class Err<T = never, E = unknown> {
 
 	// Generator protocol: Err yields itself, then panics if continued
 	[Symbol.iterator](): Generator<Err<never, E>, never, undefined> {
-		// `T` is phantom on `Err`; the yielded value is only ever read for its
-		// `error`, so narrowing `T` to `never` via reconstruction is sound.
-		const self = new Err<never, E>(this.error);
+		// `T` is phantom on `Err` (no success value is stored), so reusing `this`
+		// under a narrowed `Err<never, E>` view is sound — it is NOT a fresh
+		// allocation. That matters beyond allocation cost: a fresh `new Err(...)`
+		// here would make `[Symbol.iterator]` produce a brand-new Err on every
+		// call, and since that new Err is itself iterable, iterable-aware deep
+		// equality (e.g. vitest/chai's `toEqual`) walking it would recurse into
+		// an ever-growing chain of distinct Err instances instead of hitting a
+		// cycle — Maximum call stack size exceeded. Yielding `this` back makes
+		// the chain self-referential, which cycle-detecting deep-equal
+		// implementations correctly short-circuit.
+		const self = this as unknown as Err<never, E>;
 		return (function* (): Generator<Err<never, E>, never, undefined> {
 			yield self;
 			throw new Panic(

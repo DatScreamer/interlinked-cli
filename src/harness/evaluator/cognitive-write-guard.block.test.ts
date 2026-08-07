@@ -120,6 +120,30 @@ describe("checkCognitiveComplexityWrite — over-cap end state", () => {
 		const out = checkCognitiveComplexityWrite({ file_path: file, content: after }, tmp);
 		expect(out).toBeNull();
 	});
+
+	// --- collision-named (ambiguous) functions: pooled-rank comparison path ---
+	// Two functions sharing the SAME name have no reliable per-name identity
+	// (isAmbiguousName's `counts > 1` branch), so they fall back to the
+	// cyclomatic gate's pooled sorted-multiset comparison (cognitiveViolations
+	// (1b)) — exercised here with 2 elements on each side so the sort
+	// comparator and the beforeAmbiguousVals filter/map/sort are all actually
+	// invoked (they never run on a length-0/1 array).
+	it("BLOCKS collision-named (same-name) functions that RISE via the pooled-rank path", () => {
+		const file = join(tmp, "dup-rise.ts");
+		writeFileSync(file, `${flat("dup", 32)}${flat("dup", 33)}`); // both over cap 30
+		const after = `${flat("dup", 45)}${flat("dup", 50)}`; // both over cap, both risen
+		const out = checkCognitiveComplexityWrite({ file_path: file, content: after }, tmp);
+		expect(out?.block).toContain("dup");
+		expect(out?.block).toContain("new over-cap function");
+	});
+
+	it("ALLOWS collision-named functions that hold/shrink via the pooled-rank path", () => {
+		const file = join(tmp, "dup-shrink.ts");
+		writeFileSync(file, `${flat("dup", 35)}${flat("dup", 36)}`); // both over cap
+		const after = `${flat("dup", 33)}${flat("dup", 34)}`; // still over cap, but reduced
+		const out = checkCognitiveComplexityWrite({ file_path: file, content: after }, tmp);
+		expect(out).toBeNull();
+	});
 });
 
 describe("checkCognitiveComplexityWrite — sub-cap per-edit slew ratchet", () => {
@@ -191,6 +215,16 @@ describe("checkCognitiveComplexityWrite — dispatch / exemptions", () => {
 		const out = checkCognitiveComplexityWrite({ file_path: join(tmp, "ok.ts"), content: flat("ok", 3) }, tmp);
 		expect(out).toBeNull();
 	});
+
+	it("resolves a RELATIVE file_path against cwd (isAbsolute false branch)", () => {
+		const out = checkCognitiveComplexityWrite({ file_path: "rel-big.ts", content: flat("relbig", 40) }, tmp);
+		expect(out?.block).toContain("relbig");
+	});
+
+	it("returns null when the write shape is unrecognized (no content/old_string+new_string/edits)", () => {
+		const out = checkCognitiveComplexityWrite({ file_path: join(tmp, "unknown-shape.ts") }, tmp);
+		expect(out).toBeNull();
+	});
 });
 
 // ===========================================================================
@@ -228,5 +262,45 @@ describe("checkCognitiveComplexityWrite — apply_patch", () => {
 			"+bar\n" +
 			"*** End Patch";
 		expect(checkCognitiveComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+
+	it("returns null when there is no file_path AND no apply_patch-shaped payload", () => {
+		expect(checkCognitiveComplexityWrite({}, tmp)).toBeNull();
+	});
+
+	it("skips a non-JS/TS section in an apply_patch (README.md)", () => {
+		const body = "huge unrelated markdown content\n".repeat(50);
+		const patch = `*** Begin Patch\n*** Add File: README.md\n${body
+			.split("\n")
+			.filter((l) => l.length > 0)
+			.map((l) => `+${l}`)
+			.join("\n")}\n*** End Patch`;
+		expect(checkCognitiveComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+
+	it("skips a non-cappable section (test file) in an apply_patch even when over cap", () => {
+		const out = checkCognitiveComplexityWrite(
+			applyPatchAdd(join(tmp, "gen.test.ts"), flat("gennedtest", 40)),
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("reads the pre-existing on-disk content for an Update File section (existsSync true branch)", () => {
+		const file = join(tmp, "grow.ts");
+		writeFileSync(file, flat("grow", 5)); // under cap on disk
+		let added = "";
+		for (let i = 0; i < 40; i++) added += `+\tif (a === ${100 + i}) r += ${i};\n`;
+		const patch =
+			"*** Begin Patch\n" +
+			`*** Update File: ${file}\n` +
+			"@@\n" +
+			" \tif (a === 4) r += 4;\n" + // context (space + original tab-indented line)
+			added +
+			" \treturn r;\n" +
+			"*** End Patch";
+		const out = checkCognitiveComplexityWrite({ command: patch }, tmp);
+		expect(out?.block).toContain("grow");
+		expect(out?.block).toContain("raised from");
 	});
 });

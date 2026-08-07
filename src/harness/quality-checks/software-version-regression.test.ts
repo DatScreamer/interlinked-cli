@@ -10,7 +10,11 @@ import {
 	collectSoftwareVersionReferences,
 	detectSoftwareVersionFreshnessConcerns,
 	detectSoftwareVersionRegressions,
+	formatSoftwareVersionFreshnessDetail,
+	formatSoftwareVersionRegressionDetail,
+	type SoftwareVersionFreshnessConcern,
 	type SoftwareVersionReference,
+	type SoftwareVersionRegression,
 } from "./software-version-regression.js";
 
 const SOFTWARE_VERSION_CHECKS: Record<string, QualityCheckConfig> = {
@@ -530,5 +534,169 @@ describe("runQualityChecks software_version_regression", () => {
 		const warning = formatQualityWarnings(results).join("\n");
 		expect(warning).toContain("[interlinked:freshness_sensitive_reference] [heuristic]");
 		expect(warning).toContain("Verify the newly introduced reference against official current sources");
+	});
+});
+
+/**
+ * GO_REQUIRE_RE was EXPONENTIAL until 2026-08-04: its inner `[^\s]+` matched
+ * the `/` that the outer group repeats on, so a slash-heavy go.mod line with no
+ * following space partitioned exponentially — a 66-BYTE input took 51 SECONDS.
+ * This parser runs daemon-side, so that is a hang of the guard path. Found by
+ * an adversarial input probe over the redos_catastrophic corpus hits.
+ */
+describe("go.mod parsing cost", () => {
+	it("parses a slash-heavy non-matching line in bounded time", () => {
+		// 16x the input that took 51s before the fix. A ratio guard is pointless
+		// here — the pre-fix form cannot finish this call at all, so completing
+		// inside a generous absolute budget IS the signal.
+		const hostile = `a${"/1/2/3/4/5/6/7/8".repeat(64)}9`;
+		const start = performance.now();
+		collectSoftwareVersionReferences(hostile, "go.mod");
+		expect(performance.now() - start).toBeLessThan(1000);
+	});
+
+	it("still extracts a real go.mod require line", () => {
+		const refs = collectSoftwareVersionReferences("\tgithub.com/foo/bar v1.2.3\n", "go.mod");
+		expect(refs.some((r) => r.anchor.includes("github.com/foo/bar"))).toBe(true);
+	});
+
+	it("still extracts a deep module path", () => {
+		const refs = collectSoftwareVersionReferences("\texample.com/a/b/c/d v2.0.1\n", "go.mod");
+		expect(refs.some((r) => r.anchor.includes("example.com/a/b/c/d"))).toBe(true);
+	});
+});
+
+describe("Cargo.toml dependency parsing", () => {
+	it("extracts a comparable Cargo dependency version from a .toml file", () => {
+		const refs = collectSoftwareVersionReferences('serde = "1.2.3"\n', "Cargo.toml");
+		expect(refs).toContainEqual(
+			expect.objectContaining({
+				anchor: "package:serde",
+				label: "Cargo package serde",
+				kind: "package",
+				version: "1.2.3",
+				line: 1,
+			}),
+		);
+	});
+
+	it("still parses a non-Cargo.toml file that merely ends in .toml", () => {
+		const refs = collectSoftwareVersionReferences('tokio = "0.9.0"\n', "config/other.toml");
+		expect(refs.some((r) => r.anchor === "package:tokio")).toBe(true);
+	});
+
+	it("ignores a Cargo dependency whose quoted value is not a comparable version", () => {
+		// Note: `serde = "workspace"` ALSO matches the unconditional
+		// requirement-style collector (REQUIREMENT_RE has no file-type gate),
+		// which produces its OWN `package:serde` ref regardless of
+		// comparability — so the assertion targets the Cargo-specific label,
+		// not the shared anchor.
+		const refs = collectSoftwareVersionReferences('serde = "workspace"\n', "Cargo.toml");
+		expect(refs.some((r) => r.label === "Cargo package serde")).toBe(false);
+	});
+
+	it("does not run the Cargo-dependency parser for non-.toml files", () => {
+		// Same caveat as above: the line still produces a requirement-style
+		// `package:serde` ref via REQUIREMENT_RE, which has no file-type gate.
+		// What the .toml gate (base === "cargo.toml" || filePath.endsWith(".toml"))
+		// actually controls is the Cargo-labeled ref specifically.
+		const refs = collectSoftwareVersionReferences('serde = "1.2.3"\n', "notes.md");
+		expect(refs.some((r) => r.label === "Cargo package serde")).toBe(false);
+	});
+});
+
+describe("formatSoftwareVersionRegressionDetail / formatSoftwareVersionFreshnessDetail", () => {
+	function fakeRef(overrides: Partial<SoftwareVersionReference> = {}): SoftwareVersionReference {
+		return {
+			anchor: "package:x",
+			label: "x",
+			kind: "package",
+			version: "1.0.0",
+			line: 1,
+			text: "x",
+			...overrides,
+		};
+	}
+
+	it("returns an empty string and adds no header for zero regressions", () => {
+		expect(formatSoftwareVersionRegressionDetail([])).toBe("");
+	});
+
+	it("lists every regression with no '... and N more' line at or under the 8-item cap", () => {
+		const regressions: SoftwareVersionRegression[] = Array.from({ length: 8 }, (_, i) => ({
+			before: fakeRef({ version: "1.0.0", line: i + 1 }),
+			after: fakeRef({ version: "0.9.0", line: i + 1, label: `pkg-${i}` }),
+		}));
+		const out = formatSoftwareVersionRegressionDetail(regressions);
+		expect(out).toContain("Likely regressions:");
+		expect(out).not.toContain("more");
+		expect(out.split("\n")).toHaveLength(9); // header + 8 entries
+	});
+
+	it("truncates past 8 regressions and appends a '... and N more' summary line", () => {
+		const regressions: SoftwareVersionRegression[] = Array.from({ length: 11 }, (_, i) => ({
+			before: fakeRef({ version: "1.0.0", line: i + 1 }),
+			after: fakeRef({ version: "0.9.0", line: i + 1, label: `pkg-${i}` }),
+		}));
+		const out = formatSoftwareVersionRegressionDetail(regressions);
+		expect(out).toContain("  ... and 3 more");
+	});
+
+	it("returns an empty string and adds no header for zero freshness concerns", () => {
+		expect(formatSoftwareVersionFreshnessDetail([])).toBe("");
+	});
+
+	it("truncates past 8 freshness concerns and appends a '... and N more' summary line", () => {
+		const concerns: SoftwareVersionFreshnessConcern[] = Array.from({ length: 10 }, (_, i) => ({
+			ref: fakeRef({ line: i + 1, label: `model-${i}` }),
+			reason: "unverified",
+			verifyHint: { source: "docs", instruction: "check the docs" },
+		}));
+		const out = formatSoftwareVersionFreshnessDetail(concerns);
+		expect(out).toContain("Freshness-sensitive new references:");
+		expect(out).toContain("  ... and 2 more");
+	});
+});
+
+describe("collectPackageJsonRefs edge cases", () => {
+	it("returns no refs for malformed JSON in a package.json file rather than throwing", () => {
+		expect(() => collectSoftwareVersionReferences("{not valid json", "package.json")).not.toThrow();
+		expect(collectSoftwareVersionReferences("{not valid json", "package.json")).toEqual([]);
+	});
+
+	it("returns no refs when package.json parses to a non-object (array)", () => {
+		expect(collectSoftwareVersionReferences("[]", "package.json")).toEqual([]);
+	});
+
+	it("returns no refs when package.json parses to a non-object (primitive)", () => {
+		expect(collectSoftwareVersionReferences("42", "package.json")).toEqual([]);
+	});
+
+	it("falls back to line 1 when the version text cannot be located verbatim in the source", () => {
+		// `o` is a JSON-escaped "o" — JSON.parse resolves the key to
+		// "version" but the literal substring "version" never appears in the
+		// source text, so findJsonPropLine's line-by-line regex search never
+		// matches and falls back to its line-1 default.
+		const content = '{"versi\\u006fn": "9.9.9"}';
+		const refs = collectSoftwareVersionReferences(content, "package.json");
+		const versionRef = refs.find((r) => r.anchor === "package:self-version");
+		expect(versionRef?.version).toBe("9.9.9");
+		expect(versionRef?.line).toBe(1);
+	});
+
+	it("skips a dependencies section whose value is not an object", () => {
+		const content = JSON.stringify({ version: "1.0.0", dependencies: "not-an-object" });
+		const refs = collectSoftwareVersionReferences(content, "package.json");
+		// The malformed `dependencies` section itself contributes NO package
+		// refs (the `typeof deps !== "object"` guard skips it) — the JSON's
+		// own `version` field still produces the self-version ref via the
+		// structured collector, and separately via the line-level generic
+		// scanner (SOFTWARE_KEY_RE matches the bare "version" key too).
+		expect(refs.some((r) => r.anchor === "package:self-version" && r.version === "1.0.0")).toBe(
+			true,
+		);
+		expect(refs.some((r) => r.anchor.startsWith("package:") && r.label.includes("dependencies"))).toBe(
+			false,
+		);
 	});
 });

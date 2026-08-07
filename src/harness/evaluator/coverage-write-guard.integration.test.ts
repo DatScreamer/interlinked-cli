@@ -1793,4 +1793,175 @@ describe("checkCoverageWrite — cross-ecosystem sections run their own suite", 
 		expect(decision?.decision).toBe("block");
 		expect(decision?.reason).toMatch(/RED/);
 	});
+
+	it("propagates the residual language's loud-degrade warning alongside the target's own (both allow-with-warning)", async () => {
+		// createOverlay throws for EVERY overlay build (the target's own run AND the
+		// residual python run), so both legs loud-degrade and BOTH warnings must
+		// survive into the single merged allow decision.
+		const throwingDeps: CoverageWriteDeps = {
+			runnerFor: (language) => (language === "python" ? countingRunner("pytest", coverageResult("pkg/other.py", [])).runner : countingRunner("vitest", greenTs()).runner),
+			createOverlay: () => {
+				throw new Error("mirror boom");
+			},
+			clock: () => 0,
+			cyclomaticFor: () => () => [],
+		};
+		const ev = applyPatch(...TS_UPDATE, "*** Delete File: pkg/gone.py");
+		const decision = await checkCoverageWrite(ev, rules(POLYGLOT), throwingDeps);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/mirror boom/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Additional gap coverage (2026-08): entry-gating branches, DEFAULT_DEPS,
+// runner-unavailable fallback text, and the coverage-report-absence path.
+// ---------------------------------------------------------------------------
+
+describe("checkCoverageWrite — additional gating + fallback branches", () => {
+	it("is a no-op for a non-write tool (Read) — isFileWrite's false branch", async () => {
+		const { runner, ran } = stubRunner(coverageResult("src/a.ts", []));
+		const decision = await checkCoverageWrite(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-1",
+				agent_source: "claude",
+				tool_name: "Read",
+				tool_input: { file_path: join(root, "src/a.ts") },
+				timestamp: "2026-06-07T00:00:00.000Z",
+				cwd: root,
+			},
+			rules(),
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+		expect(ran()).toBe(false);
+	});
+
+	it("falls back to process.cwd() when the event carries no cwd (non-code target ⇒ safe no-op)", async () => {
+		const { runner } = stubRunner(coverageResult("README.md", []));
+		// No `cwd` field at all: `event.cwd || process.cwd()` must take the
+		// right-hand side. A non-code file_path keeps the rest of the gate a
+		// trivial no-op regardless of which projectRoot is resolved.
+		const decision = await checkCoverageWrite(
+			{
+				hook_event: "PreToolUse",
+				session_id: "sess-1",
+				agent_source: "claude",
+				tool_name: "Write",
+				tool_input: { file_path: "/nonexistent-cov-guard-fixture-root/README.md", content: "# hi\n" },
+				timestamp: "2026-06-07T00:00:00.000Z",
+			},
+			rules(),
+			deps(runner),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("the repo-profile fast-path fires (returns non-undefined) when no runner is detected for the gated language", async () => {
+		// A sibling root with NO vitest/jest signal at all (bare package.json, no
+		// pytest.ini either) — detectJsRunner returns false, so
+		// profileRunnerFastPath's early-return-with-warning path is taken instead
+		// of falling through to the overlay/runner machinery.
+		const bareRoot = mkdtempSync(join(tmpdir(), "interlinked-cov-guard-bare-"));
+		try {
+			writeFileSync(join(bareRoot, "package.json"), JSON.stringify({ name: "bare" }), "utf-8");
+			resetRepoProfileCache();
+			const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+			const { runner, ran } = stubRunner(coverageResult("src/a.ts", []));
+			const decision = await checkCoverageWrite(
+				{
+					hook_event: "PreToolUse",
+					session_id: "sess-1",
+					agent_source: "claude",
+					tool_name: "Write",
+					tool_input: { file_path: join(bareRoot, "src/a.ts"), content: "export const a = 1;\n" },
+					timestamp: "2026-06-07T00:00:00.000Z",
+					cwd: bareRoot,
+				},
+				rules(),
+				deps(runner),
+			);
+			// The fast-path decision is returned directly — the real runner is never invoked.
+			expect(decision?.decision).toBe("allow");
+			const warning = (decision?.warnings ?? []).join("\n");
+			expect(warning).toMatch(/no supported test runner/);
+			expect(ran()).toBe(false);
+			errSpy.mockRestore();
+		} finally {
+			rmSync(bareRoot, { recursive: true, force: true });
+			resetRepoProfileCache();
+		}
+	});
+
+	it("ALLOWS with a generic fallback reason when a failed run carries no `error` string", async () => {
+		const failing: CoverageRunner = {
+			run: async () => ({ suiteMs: 10, perFile: new Map(), ok: false, testsPassed: null }),
+		};
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules(),
+			deps(failing),
+		);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/could not run/);
+		errSpy.mockRestore();
+	});
+
+	it("loud-degrades when the edited file is absent from an otherwise-ok coverage report", async () => {
+		// `ok: true` but the perFile map has NO entry for the edited relPath.
+		const result = coverageResult("src/other-file.ts", []);
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules(),
+			deps(stubRunner(result).runner),
+		);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/\[interlinked:coverage\]/);
+		expect(warning).toMatch(/edited file absent from coverage report/);
+		errSpy.mockRestore();
+	});
+
+	it("loud-degrades with the non-Error branch when the overlay factory throws a non-Error value", async () => {
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const throwingDeps: CoverageWriteDeps = {
+			runnerFor: () => stubRunner(coverageResult("src/a.ts", [])).runner,
+			createOverlay: () => {
+				// Exercising the `err instanceof Error` false branch.
+				throw "overlay-failed-non-error";
+			},
+			clock: () => 0,
+			cyclomaticFor: () => () => [],
+		};
+		const decision = await checkCoverageWrite(
+			writeEvent("src/a.ts", "export const a = 1;\n"),
+			rules(),
+			throwingDeps,
+		);
+		expect(decision?.decision).toBe("allow");
+		const warning = (decision?.warnings ?? []).join("\n");
+		expect(warning).toMatch(/overlay-failed-non-error/);
+		errSpy.mockRestore();
+	});
+
+	it("exercises DEFAULT_DEPS (no deps arg): the real runner factory is reached and fails loud (ENOENT/spawn), never crashing", async () => {
+		writeFileSync(join(root, "src.ts.placeholder"), "", "utf-8");
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const decision = await checkCoverageWrite(
+			writeEvent("src/default-deps.ts", "export const a = 1;\n"),
+			rules({ budget_ms: 2_000 }),
+			// No third argument ⇒ DEFAULT_DEPS (the real runnerFor/createOverlay/clock).
+		);
+		// Whatever the real environment does (no vitest binary on PATH in the
+		// tmp fixture ⇒ ok:false, or a report that omits the file), the gate must
+		// stay fail-open: either null (measured clean) or an allow decision, but
+		// never a block and never a throw.
+		expect(decision === null || decision?.decision === "allow").toBe(true);
+		errSpy.mockRestore();
+	}, 15_000);
 });

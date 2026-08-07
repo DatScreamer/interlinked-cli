@@ -245,12 +245,13 @@ function evaluateBashRoutedWrite(
 					`BLOCKED: This Bash command writes to a tracked source file (${redirectHit.target}) ` +
 					`via ${redirectHit.mechanism}, which bypasses the content-quality gates that run on ` +
 					"the Write and Edit tools (pre_block registry, biome diff-overlay, tsc diff-overlay). " +
-					"For single-site edits, use the Write or Edit tool so the content is checked before " +
-					"it lands. For coordinated multi-site atomic edits (e.g. adding an import AND using " +
-					"it in the same landing — which would trip the diff-overlay if staged as two Edit " +
-					"calls), route through `interlinked write` (single-file) or `interlinked write " +
-					"--batch <manifest.json>` (multi-file atomic) — both apply the same content-quality " +
-					"gate but treat your whole change as one transactional unit.",
+					"Use the Write or Edit tool so the content is checked before it lands — including for " +
+					"a coordinated multi-site change (adding an import AND its use site). A transiently " +
+					"non-compiling intermediate no longer blocks: it opens a transient debt that the " +
+					"counterpart edit discharges, so land the halves as ordinary sequential edits. If you " +
+					"genuinely need one atomic multi-file write, PIPE the manifest on stdin " +
+					"(`… | interlinked multi-edit --stdin`) — do not stage it as a file first; a manifest " +
+					"written to a temp path is an ungated artifact that outlives the edit it served.",
 				warnings,
 				rule_id: "bash-code-file-write-bypass",
 				severity: "high",

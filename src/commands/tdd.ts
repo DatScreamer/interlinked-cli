@@ -121,7 +121,11 @@ export async function tddStatusCommand(opts: TddCommandOpts = {}): Promise<void>
 	const mode = getOutputMode(opts);
 
 	output(mode, { total: rows.length, blocking: blocking.length, cycles: rows }, {
-		json: () => JSON.stringify({ total: rows.length, blocking: blocking.length, cycles: rows }, null, 2),
+		// Return the OBJECT: `output()` stringifies the json renderer's result
+		// itself. Returning a pre-stringified string made `--json` emit a JSON
+		// *string containing JSON*, so `JSON.parse(out).total` was undefined for
+		// every consumer (found 2026-08-05 while covering this file).
+		json: () => ({ total: rows.length, blocking: blocking.length, cycles: rows }),
 		short: () => `${rows.length} cycle(s), ${blocking.length} blocking`,
 		normal: () =>
 			rows.length === 0
@@ -166,7 +170,8 @@ export async function tddClearCommand(file: string | undefined, opts: TddCommand
 	}
 	const mode = getOutputMode(opts);
 	output(mode, { removed }, {
-		json: () => JSON.stringify({ removed }, null, 2),
+		// Object, not a string — see the sibling renderer above.
+		json: () => ({ removed }),
 		short: () => `cleared ${removed}`,
 		normal: () =>
 			`Cleared ${removed} TDD cycle(s).\n\nA running daemon holds this state in memory — run \`interlinked harness restart\` for it to take effect.\nThe commit gate re-measures on the next test run, so a genuinely failing file will red again.`,

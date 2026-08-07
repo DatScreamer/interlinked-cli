@@ -24,7 +24,9 @@ import {
 	isTscFindingBlocking,
 } from "../diff-overlay.js";
 import { resolveProposedContent } from "../overlay-content.js";
+import { applyTransientDebt, deferrableFromTsc } from "./transient-debt-guard.js";
 import {
+	type PreBlockCheckOutcome,
 	preBlockIntroducedBlock,
 	preexistingPreBlockWarnings,
 	resolveDiskBaseline,
@@ -340,10 +342,47 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 			projectRoot:
 				findProjectRoot(filePath, event.cwd || process.cwd()) || event.cwd || process.cwd(),
 		});
-		const blocking = outcomes.find((o) => o.introduced.length > 0);
+		// A deferrable check's introduced finding is real but not yet DUE: it goes
+		// to the transient ledger, the edit lands, and the deadline (the first edit
+		// that walks away from it) does the enforcing. Non-deferrable checks keep
+		// the hard rail — `pre_block` is reserved for zero-FP errors, and most of
+		// them describe something no later edit undoes.
+		const blocking = outcomes.find((o) => o.introduced.length > 0 && !o.deferrable);
 		if (blocking) return preBlockIntroducedBlock(blocking, filePath, warnings);
+		const deferrableOutcomes = outcomes.filter((o) => o.deferrable);
+		if (deferrableOutcomes.length > 0) {
+			const deferred = deferrableTransientGuard(deferrableOutcomes);
+			if (deferred) return deferred;
+		}
 		warnings.push(...preexistingPreBlockWarnings(outcomes, filePath));
 		return null;
+	}
+
+	/** Fold this edit's deferrable registry findings into the transient ledger.
+	 *  Passes introduced AND pre-existing findings — the ledger discharges on the
+	 *  checker's ABSOLUTE answer, and "introduced" alone would read a still-
+	 *  present finding as reconciled. */
+	function deferrableTransientGuard(
+		deferrableOutcomes: PreBlockCheckOutcome[],
+	): HarnessDecision | null {
+		const debt = applyTransientDebt({
+			filePath,
+			projectRoot:
+				findProjectRoot(filePath, event.cwd || process.cwd()) || event.cwd || process.cwd(),
+			sessionId: event.session_id,
+			dryRun: !!event.dry_run,
+			findings: deferrableOutcomes.flatMap((o) =>
+				[...o.introduced, ...o.preexisting].map((m) => ({
+					detector: o.checkId,
+					line: m.line,
+					message: m.text,
+				})),
+			),
+			content,
+			config: rules.quality_checks?.transient_debt,
+		});
+		warnings.push(...debt.warnings);
+		return debt.decision ? { ...debt.decision, warnings } : null;
 	}
 	const preBlockDecision = preBlockRegistryGuard();
 	if (preBlockDecision) return { kind: "block", decision: preBlockDecision };
@@ -393,10 +432,26 @@ export function evaluateWriteContentGuards(args: WriteContentGuardsArgs): WriteC
 		const warnOnly = tscOverlay.newFindings.filter((f) => !isTscFindingBlocking(f));
 		for (const f of warnOnly) {
 			warnings.push(
-				`[interlinked:tsc-overlay] ${filePath}:${f.line} — ${f.ruleId} ${f.message}. New in this edit (warn-only code).`,
+				`[interlinked:tsc-overlay] ${filePath}:${f.line} — ${f.ruleId} ${f.message}. New in this edit (deferred, not dismissed).`,
 			);
 		}
-		if (blocking.length === 0) return null;
+		// The deferred half of the verdict. A warn-only code is not a code nobody
+		// owes work on — it is one whose DEADLINE is later, because the coordinated
+		// change's other half resolves it. Record it as debt; block only once the
+		// agent has walked away from it (see `transient-debt.ts`).
+		const debt = applyTransientDebt({
+			filePath,
+			projectRoot: cwdForTsc,
+			sessionId: event.session_id,
+			dryRun: !!event.dry_run,
+			findings: deferrableFromTsc(tscOverlay.proposedFindings),
+			content,
+			config: rules.quality_checks?.transient_debt,
+		});
+		warnings.push(...debt.warnings);
+		// A genuinely-new hard type error outranks a stale deferral: report the
+		// thing this edit broke, not the thing the last one left open.
+		if (blocking.length === 0) return debt.decision ? { ...debt.decision, warnings } : null;
 		return {
 			decision: "block",
 			reason: buildTscDiffOverlayBlockReason(toolName, blocking, filePath),

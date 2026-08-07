@@ -113,4 +113,104 @@ describe("runCommitLaunderingGate — does NOT block (zero-FP guarantees)", () =
 		const git = fakeGit({}); // every read → null
 		expect(runCommitLaunderingGate(commitEvent(), sessionArmedWith("eval_usage"), deps(git))).toBeNull();
 	});
+
+	it("treats a null staged-blob read (file listed in diff but unreadable) as no hit", () => {
+		// `diff --cached --name-only` lists the file but `show :file` is unmapped
+		// (returns null) — exercises the staged===null early-return in
+		// launderingHitInFile without short-circuiting at the nameList check.
+		const git = fakeGit({ "diff --cached --name-only": "src/danger.ts" });
+		expect(runCommitLaunderingGate(commitEvent(), sessionArmedWith("eval_usage"), deps(git))).toBeNull();
+	});
+
+	it("defaults nowMs to 0 when deps.nowMs is not provided (fingerprint from the past stays armed)", () => {
+		const git = fakeGit({
+			"diff --cached --name-only": "src/danger.ts",
+			"show :src/danger.ts": STAGED_WITH_EVAL,
+			"show HEAD:src/danger.ts": HEAD_NO_EVAL,
+		});
+		const d = runCommitLaunderingGate(commitEvent(), sessionArmedWith("eval_usage"), {
+			git,
+			resolveRepoRoot: () => "/repo",
+			// nowMs intentionally omitted
+		});
+		expect(d?.decision).toBe("block");
+	});
+});
+
+describe("runCommitLaunderingGate — default deps (real git, real repo root)", () => {
+	it("reaches the real git/repoRoot path and returns null in a clean repo with no matching armed rule", () => {
+		const s = sessionArmedWith("rule_that_never_matches_anything");
+		const event = commitEvent();
+		event.cwd = process.cwd(); // a REAL git repo — realRepoRoot must resolve truthily
+		const result = runCommitLaunderingGate(event, s, { nowMs: NOW });
+		expect(result).toBeNull();
+	});
+
+	it("fails open (null) when the cwd cannot be resolved to a git repo (realGit throws, realRepoRoot returns null)", () => {
+		const s = sessionArmedWith("eval_usage");
+		const event = commitEvent();
+		event.cwd = "/interlinked-cli-nonexistent-dir-for-testing-xyz";
+		const result = runCommitLaunderingGate(event, s, { nowMs: NOW });
+		expect(result).toBeNull();
+	});
+});
+
+describe("runCommitLaunderingGate — cwd resolution", () => {
+	it("resolves the commit cwd via a `git -C <dir>` flag against event.cwd", () => {
+		const seen: string[] = [];
+		const git = fakeGit({ "diff --cached --name-only": "" });
+		const result = runCommitLaunderingGate(commitEvent('git -C sub commit -m "wip"'), sessionArmedWith("eval_usage"), {
+			git,
+			resolveRepoRoot: (dir) => {
+				seen.push(dir);
+				return "/repo/sub";
+			},
+			nowMs: NOW,
+		});
+		expect(result).toBeNull();
+		expect(seen).toEqual(["/repo/sub"]);
+	});
+
+	it("falls back to process.cwd() when event.cwd is empty", () => {
+		const seen: string[] = [];
+		const git = fakeGit({ "diff --cached --name-only": "" });
+		const event = commitEvent();
+		event.cwd = "";
+		const result = runCommitLaunderingGate(event, sessionArmedWith("eval_usage"), {
+			git,
+			resolveRepoRoot: (dir) => {
+				seen.push(dir);
+				return "/repo";
+			},
+			nowMs: NOW,
+		});
+		expect(result).toBeNull();
+		expect(seen).toEqual([process.cwd()]);
+	});
+});
+
+describe("runCommitLaunderingGate — non-string command and unexpected throws", () => {
+	it("treats a non-string tool_input.command as empty (not a commit) rather than throwing", () => {
+		const event: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "s",
+			agent_source: "claude",
+			tool_name: "Bash",
+			tool_input: { command: 12345 },
+			cwd: "/repo",
+			timestamp: "t",
+		};
+		expect(
+			runCommitLaunderingGate(event, sessionArmedWith("eval_usage"), deps(fakeGit({}))),
+		).toBeNull();
+	});
+
+	it("fails open when the injected git reader throws instead of returning null", () => {
+		const throwingGit: GitReader = () => {
+			throw new Error("boom");
+		};
+		expect(
+			runCommitLaunderingGate(commitEvent(), sessionArmedWith("eval_usage"), deps(throwingGit)),
+		).toBeNull();
+	});
 });

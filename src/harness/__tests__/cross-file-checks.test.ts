@@ -6,6 +6,7 @@ import { nonNull } from "../../lib/non-null.js";
 import {
 	checkCrossFileSwitchDiscriminant,
 	checkSingleImplementationInterface,
+	lineOfOffset,
 } from "../cross-file-checks.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol } from "../types.js";
@@ -71,6 +72,60 @@ describe("checkCrossFileSwitchDiscriminant", () => {
 			checkCrossFileSwitchDiscriminant(a, "a.ts", graph as unknown as ProjectGraph),
 		).toEqual([]);
 	});
+
+	it("returns [] when the edited file itself cannot be read (safeRead catch)", () => {
+		const missing = join(dir, "nope.ts");
+		const graph = makeGraph([missing]);
+		expect(
+			checkCrossFileSwitchDiscriminant(missing, "nope.ts", graph as unknown as ProjectGraph),
+		).toEqual([]);
+	});
+
+	it("skips other files that cannot be read without throwing", () => {
+		const a = join(dir, "a.ts");
+		const missingOther = join(dir, "gone.ts"); // listed in the graph but never written
+		writeFileSync(a, "function f(x) { switch (x.kind) { case 'A': return 1; } }");
+		const graph = makeGraph([a, missingOther]);
+		expect(
+			checkCrossFileSwitchDiscriminant(a, "a.ts", graph as unknown as ProjectGraph),
+		).toEqual([]);
+	});
+
+	it("caps at 5 other files and lists only the first 3 with an ellipsis", () => {
+		const a = join(dir, "a.ts");
+		writeFileSync(a, "function f(x) { switch (x.kind) { case 'A': return 1; } }");
+		const others: string[] = [];
+		for (let i = 0; i < 6; i++) {
+			const p = join(dir, `other${i}.ts`);
+			writeFileSync(p, `function g${i}(x) { switch (x.kind) { case 'X': return ${i}; } }`);
+			others.push(p);
+		}
+		const graph = makeGraph([a, ...others]);
+		const results = checkCrossFileSwitchDiscriminant(
+			a,
+			"a.ts",
+			graph as unknown as ProjectGraph,
+		);
+		expect(results.length).toBe(1);
+		const result = nonNull(results[0]);
+		// otherFiles.length >= 5 breaks the scan early, so only 5 of the 6 are recorded.
+		expect(result.affectedFiles).toHaveLength(5);
+		expect(result.message).toContain(", …");
+	});
+});
+
+describe("lineOfOffset", () => {
+	it("returns 1 for an offset on the first line", () => {
+		expect(lineOfOffset("abcdef", 3)).toBe(1);
+	});
+
+	it("returns the 1-based line number after N newlines", () => {
+		expect(lineOfOffset("one\ntwo\nthree", 5)).toBe(2);
+	});
+
+	it("counts every newline strictly before the offset", () => {
+		expect(lineOfOffset("one\ntwo\nthree", 9)).toBe(3);
+	});
 });
 
 describe("checkSingleImplementationInterface", () => {
@@ -126,5 +181,62 @@ describe("checkSingleImplementationInterface", () => {
 		expect(
 			checkSingleImplementationInterface(iface, "shape.ts", graph as unknown as ProjectGraph),
 		).toEqual([]);
+	});
+
+	it("returns [] when the file's exports contain no interfaces at all", () => {
+		const mod = join(dir, "util.ts");
+		writeFileSync(mod, "export function helper() { return 1; }");
+		const graph = makeGraph([mod], {
+			[mod]: [{ name: "helper", kind: "function", isTypeOnly: false, line: 1 }],
+		});
+		expect(
+			checkSingleImplementationInterface(mod, "util.ts", graph as unknown as ProjectGraph),
+		).toEqual([]);
+	});
+
+	it("ignores a file whose implements/extends clause names an unrelated symbol", () => {
+		const iface = join(dir, "shape.ts");
+		const impl = join(dir, "square.ts");
+		const unrelated = join(dir, "widget.ts");
+		writeFileSync(iface, "export interface Shape { area(): number; }");
+		writeFileSync(
+			impl,
+			"import type { Shape } from './shape'; class Square implements Shape { area() { return 4; } }",
+		);
+		// Implements a DIFFERENT interface — mentionsAsImpl(oc, "Shape") must be
+		// false here (names.includes("Shape") false-branch), so this file is not
+		// counted as a Shape implementor and the single-implementor verdict holds.
+		writeFileSync(unrelated, "class Widget implements Gadget { render() {} }");
+		const graph = makeGraph([iface, impl, unrelated], {
+			[iface]: [{ name: "Shape", kind: "interface", isTypeOnly: false, line: 1 }],
+		});
+		const results = checkSingleImplementationInterface(
+			iface,
+			"shape.ts",
+			graph as unknown as ProjectGraph,
+		);
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).affectedFiles).toEqual([impl]);
+	});
+
+	it("skips other files that cannot be read while still finding the real implementor", () => {
+		const iface = join(dir, "shape.ts");
+		const impl = join(dir, "square.ts");
+		const missingOther = join(dir, "ghost.ts"); // in the graph but never written
+		writeFileSync(iface, "export interface Shape { area(): number; }");
+		writeFileSync(
+			impl,
+			"import type { Shape } from './shape'; class Square implements Shape { area() { return 4; } }",
+		);
+		const graph = makeGraph([iface, impl, missingOther], {
+			[iface]: [{ name: "Shape", kind: "interface", isTypeOnly: false, line: 1 }],
+		});
+		const results = checkSingleImplementationInterface(
+			iface,
+			"shape.ts",
+			graph as unknown as ProjectGraph,
+		);
+		expect(results.length).toBe(1);
+		expect(nonNull(results[0]).affectedFiles).toEqual([impl]);
 	});
 });

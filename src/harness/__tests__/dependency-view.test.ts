@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	buildPredictionOracle,
@@ -480,5 +480,126 @@ describe("buildPredictionOracle — backend selection + unavailable sections", (
 		const { cwd, hubPath } = makeInternalRepo(1);
 		// No graph arg → internal backend unavailable → null (shard-only).
 		expect(buildPredictionOracle(hubPath, cwd)).toBeNull();
+	});
+
+	it("maps an 'internal' role (1-4 dependents, importing another file) to MEDIUM risk", () => {
+		// `mid.ts` imports `hub.ts` (hasProjectImports = true) and has exactly
+		// 2 dependents of its own → ProjectGraph.classifyModule returns
+		// "internal", not "root" (which needs !hasProjectImports).
+		const cwd = makeInternalRepo(0).cwd;
+		const srcDir = join(cwd, "src");
+		const midPath = join(srcDir, "mid.ts");
+		writeFileSync(midPath, `import { shared } from "./hub.js";\nexport const m = shared;\n`);
+		for (let i = 0; i < 2; i++) {
+			writeFileSync(
+				join(srcDir, `mdep${i}.ts`),
+				`import { m } from "./mid.js";\nexport const v${i} = m;\n`,
+			);
+		}
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		expect(graph.classifyModule(midPath)).toBe("internal");
+		const resolved = buildPredictionOracle(midPath, cwd, graph);
+		expect(resolved?.oracle.impact?.risk).toBe("MEDIUM");
+	});
+
+	it("maps a 'leaf' role (0 dependents) to LOW risk", () => {
+		const cwd = makeTmpDir();
+		mkdirSync(join(cwd, "src"));
+		const leafPath = join(cwd, "src", "lonely.ts");
+		writeFileSync(leafPath, "export const z = 1;\n");
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		expect(graph.classifyModule(leafPath)).toBe("leaf");
+		const resolved = buildPredictionOracle(leafPath, cwd, graph);
+		expect(resolved?.oracle.impact?.risk).toBe("LOW");
+	});
+
+	it("falls back to internal when a fresh shard fails to load (buildPredictionOracle)", () => {
+		const { cwd, sourcePath } = makeSupermodelRepo({
+			freshness: "fresh",
+			shardLines: ["this is not a shard", "no comment prefix at all"],
+		});
+		const graph = new ProjectGraph(cwd);
+		graph.initialize();
+		const resolved = buildPredictionOracle(sourcePath, cwd, graph);
+		expect(resolved?.source).toBe("internal");
+	});
+});
+
+// -------------------------------------------
+// classifyCase failure → catch-block fallbacks
+// -------------------------------------------
+
+describe("resolveDependencyView / buildPredictionOracle — classifyCase throws", () => {
+	it("resolveDependencyView falls back to InternalDependencyView", async () => {
+		vi.resetModules();
+		vi.doMock("../graph-prediction-classifier.js", () => ({
+			classifyCase: () => {
+				throw new Error("fs blew up");
+			},
+		}));
+		const { resolveDependencyView: resolveThrowing, InternalDependencyView: InternalThrowing } =
+			await import("../dependency-view.js");
+		const { ProjectGraph: PG } = await import("../project-graph.js");
+		const cwd = makeTmpDir();
+		const graph = new PG(cwd);
+		const view = resolveThrowing("x.ts", cwd, graph);
+		expect(view.source).toBe("internal");
+		expect(view).toBeInstanceOf(InternalThrowing);
+		vi.doUnmock("../graph-prediction-classifier.js");
+		vi.resetModules();
+	});
+
+	it("buildPredictionOracle returns null", async () => {
+		vi.resetModules();
+		vi.doMock("../graph-prediction-classifier.js", () => ({
+			classifyCase: () => {
+				throw new Error("fs blew up");
+			},
+		}));
+		const { buildPredictionOracle: buildThrowing } = await import("../dependency-view.js");
+		const { ProjectGraph: PG } = await import("../project-graph.js");
+		const cwd = makeTmpDir();
+		const graph = new PG(cwd);
+		expect(buildThrowing("x.ts", cwd, graph)).toBeNull();
+		vi.doUnmock("../graph-prediction-classifier.js");
+		vi.resetModules();
+	});
+});
+
+// -------------------------------------------
+// SupermodelDependencyView.getDependents — dedupe within the SAME section
+// -------------------------------------------
+
+describe("SupermodelDependencyView — getDependents with no [deps] section", () => {
+	it("falls back to [] for imported-by when the shard has no [deps] section", () => {
+		const shard = shardFrom([
+			"// @generated supermodel-shard — do not edit",
+			"// [impact]",
+			"// risk        LOW",
+			"// direct      1",
+			"// transitive  1",
+			"// affects     src/api/only.ts",
+		]);
+		expect(shard.deps).toBeNull();
+		const view = new SupermodelDependencyView(shard);
+		expect(view.getDependents("src/mod.ts")).toEqual(["src/api/only.ts"]);
+	});
+});
+
+describe("SupermodelDependencyView — getDependents dedupe within imported-by", () => {
+	it("dedupes a repeated imported-by entry (not just across sections)", () => {
+		const shard = shardFrom([
+			"// @generated supermodel-shard — do not edit",
+			"// [deps]",
+			"// imported-by src/api/users.ts",
+			"// imported-by src/api/users.ts",
+			"// imported-by src/api/posts.ts",
+		]);
+		const view = new SupermodelDependencyView(shard);
+		const deps = view.getDependents("src/mod.ts");
+		expect(deps.filter((f) => f === "src/api/users.ts")).toHaveLength(1);
+		expect(new Set(deps).size).toBe(deps.length);
 	});
 });

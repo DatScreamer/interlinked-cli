@@ -6,7 +6,16 @@
 // exempted, coverage snapshotting, metric-caps seeding, idempotent re-runs,
 // the never-loosen direction rules, --dry-run, and the doctor row.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -272,5 +281,120 @@ describe("adoptionArtifactChecks (doctor row)", () => {
 		await runAdopt();
 		const rows = adoptionArtifactChecks(cwd);
 		expect(rows[0]?.status).toBe("pass");
+	});
+});
+
+describe("interlinked adopt — human (non-JSON) output path", () => {
+	it("renders the human summary and 'armed' footer on a real run", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: false });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(joined).toContain("Adopting interlinked ratchets");
+		expect(joined).toContain("Adoption summary");
+		// coverage step always leaves a note in the report-less fixture —
+		// exercises the "note !== undefined" branch of renderSummary.
+		expect(joined).toContain("coverage");
+		expect(joined).toContain("Ratchets armed");
+		expect(joined).not.toContain("Dry run");
+	});
+
+	it("renders the '[dry-run]' prefix and dry-run footer in dry-run mode", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: true });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(joined).toContain("[dry-run] Adopting");
+		expect(joined).toContain("Dry run — nothing was written");
+		expect(joined).not.toContain("Ratchets armed");
+	});
+});
+
+describe("interlinked adopt — default cwd (opts.cwd omitted)", () => {
+	it("falls back to process.cwd() when no cwd option is given", async () => {
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins a worker-thread pool.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(realpathSync(cwd));
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let raw: string;
+		try {
+			await adoptCommand({ json: true, dryRun: true });
+			raw = spy.mock.calls.at(-1)?.[0] as string;
+		} finally {
+			spy.mockRestore();
+			cwdSpy.mockRestore();
+		}
+		// dry-run: nothing written, but the JSON payload should report cwd
+		// as the fixture directory we chdir'd into. process.cwd() resolves
+		// macOS's /tmp -> /private/tmp symlink, so compare resolved forms.
+		const parsed = JSON.parse(raw) as { cwd: string };
+		expect(parsed.cwd).toBe(realpathSync(cwd));
+	});
+});
+
+describe("interlinked adopt — suiteBaseline opt-in step", () => {
+	it("adds a 6th step when suiteBaseline is requested", async () => {
+		const steps = await runAdopt({ dryRun: true, suiteBaseline: true } as {
+			dryRun?: boolean;
+			suiteBaseline?: boolean;
+		});
+		expect(steps).toHaveLength(6);
+		expect(steps[5]?.step).toBe("suite_baseline");
+		// The synthetic fixture has no package.json / test runner config, so
+		// detectRepoProfile finds nothing to run — "unchanged", not
+		// "would-write". Either way this exercises the withSuiteBaseline=true
+		// branch (step 6 gets appended at all).
+		expect(steps[5]?.action).toBe("unchanged");
+		expect(steps[5]?.detail).toContain("no supported test runner detected");
+	});
+});
+
+describe("interlinked adopt — unreadable file during the offender scan", () => {
+	it("skips a file it cannot read instead of crashing the scan", async () => {
+		const target = join(cwd, "src/unreadable.ts");
+		writeFileSync(target, "export function big(): number { return 1; }\n", "utf-8");
+		chmodSync(target, 0o000);
+		try {
+			const steps = await runAdopt();
+			expect(steps.map((s) => s.step)).toEqual([
+				"index",
+				"large_files",
+				"untested_files",
+				"coverage",
+				"metric_caps",
+			]);
+			const large = readJson(".interlinked/large-files-baseline.json");
+			expect(Object.keys(large.files as Record<string, number>)).not.toContain(
+				"src/unreadable.ts",
+			);
+		} finally {
+			chmodSync(target, 0o644);
+		}
+	});
+});
+
+describe("interlinked adopt — a failed step sets a non-zero exit code", () => {
+	it("propagates 'failed' through actionWord and sets process.exitCode = 1", async () => {
+		// A malformed coverage report makes coverageStep return action:"failed".
+		put("coverage/coverage-summary.json", "{ not valid json");
+		const prevExitCode = process.exitCode;
+		try {
+			const steps = await runAdopt();
+			const covStep = steps[3];
+			expect(covStep?.action).toBe("failed");
+			expect(covStep?.detail).toContain("could not parse coverage report");
+			expect(process.exitCode).toBe(1);
+		} finally {
+			process.exitCode = prevExitCode;
+		}
 	});
 });

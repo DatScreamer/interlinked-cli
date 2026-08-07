@@ -246,35 +246,36 @@ function complexityViolations(
 
 	const violations: string[] = [];
 
-	// (1) Over-cap multiset comparison (identity-free) — blocks a new over-cap
-	// function or a worsening of the over-cap profile at any rank. Owns the
-	// `> cap` band (anonymous + collision-named functions included).
-	const afterOver = afterFns
-		.filter((f) => f.cyclomatic > cap)
-		.sort((a, b) => b.cyclomatic - a.cyclomatic);
+	// (1) Over-cap band — a HYBRID of identity-based and identity-free comparison,
+	// ported from cognitive-write-guard.ts (2026-08-04). A pure rank comparison
+	// MISSES the relocation case: shrink an over-cap function's body but move the
+	// excess into a newly-named, still-over-cap helper, and the sorted profile's
+	// top entry strictly IMPROVES, so every rank holds and the edit is allowed.
+	// Complexity relocated is not complexity removed. Measured before the port:
+	// of three over-cap positives, only relocation escaped — the pooled path
+	// already caught a new over-cap fn alongside a worse existing one, and a
+	// same-rank raise. Uniquely-named entries now compare against their own prior
+	// value (a brand-new name's baseline is the cap, so it always violates);
+	// ambiguous entries keep the pooled comparison, since the shuffle-test
+	// rationale for distrusting names still holds for them.
+	const afterOver = afterFns.filter((f) => f.cyclomatic > cap);
 	if (afterOver.length > 0) {
-		const beforeOverVals = beforeFns
-			.filter((f) => f.cyclomatic > cap)
-			.map((f) => f.cyclomatic)
-			.sort((a, b) => b - a);
+		const afterNameCounts = countByName(afterFns);
 		const beforeByName = new Map<string, number>();
 		for (const f of beforeFns) {
 			if (f.name === ANON_FN) continue;
 			beforeByName.set(f.name, Math.max(beforeByName.get(f.name) ?? 0, f.cyclomatic));
 		}
-		for (let i = 0; i < afterOver.length; i++) {
-			const post = afterOver[i];
-			const baseline = beforeOverVals[i] ?? cap;
-			if (nonNull(post).cyclomatic <= baseline) continue; // this rank held or reduced
-			const prior = nonNull(post).name === ANON_FN ? undefined : beforeByName.get(nonNull(post).name);
-			const how =
-				prior !== undefined && prior < nonNull(post).cyclomatic
-					? `raised from ${prior}`
-					: nonNull(post).name === ANON_FN
-						? "new anonymous function over cap"
-						: "new over-cap function";
-			violations.push(`${nonNull(post).name} (cyclomatic ${nonNull(post).cyclomatic}, ${how})`);
-		}
+		violations.push(...identityOverCapViolations(afterOver, afterNameCounts, beforeByName));
+		violations.push(
+			...pooledAmbiguousOverCapViolations(
+				afterOver,
+				beforeFns,
+				afterNameCounts,
+				countByName(beforeFns),
+				cap,
+			),
+		);
 	}
 
 	// (2) Sub-cap per-edit SLEW ratchet (identity-based) — an UNIQUELY-named
@@ -289,6 +290,71 @@ function complexityViolations(
 	// cross-edit identity — left to the cap path; documented limitation.
 	violations.push(...subCapRatchetViolations(beforeFns, afterFns, cap));
 	return violations;
+}
+
+/** Count of entries per name within ONE state, used to tell a uniquely-named
+ *  function from a same-file name collision. Mirrors `countByName` in
+ *  cognitive-write-guard.ts. */
+function countByName(fns: readonly FunctionComplexityEntry[]): Map<string, number> {
+	const m = new Map<string, number>();
+	for (const f of fns) m.set(f.name, (m.get(f.name) ?? 0) + 1);
+	return m;
+}
+
+/** True when `name` has no reliable cross-edit identity in that state:
+ *  anonymous, or colliding with another same-named function. */
+function isAmbiguousName(name: string, counts: Map<string, number>): boolean {
+	return name === ANON_FN || (counts.get(name) ?? 0) > 1;
+}
+
+/** (1a) Identity-based over-cap violations: a uniquely-named over-cap function
+ *  is compared against ITS OWN prior value, or against the cap when the name is
+ *  brand new. Never against another function's rank. */
+function identityOverCapViolations(
+	afterOver: readonly FunctionComplexityEntry[],
+	afterNameCounts: Map<string, number>,
+	beforeByName: Map<string, number>,
+): string[] {
+	const out: string[] = [];
+	for (const f of afterOver) {
+		if (isAmbiguousName(f.name, afterNameCounts)) continue;
+		const prior = beforeByName.get(f.name);
+		if (prior !== undefined && f.cyclomatic <= prior) continue; // held or reduced
+		const how = prior !== undefined ? `raised from ${prior}` : "new over-cap function";
+		out.push(`${f.name} (cyclomatic ${f.cyclomatic}, ${how})`);
+	}
+	return out;
+}
+
+/** (1b) Pooled sorted-multiset comparison, scoped to AMBIGUOUS (anonymous /
+ *  collision-named) entries only — names genuinely cannot be trusted there, so
+ *  the original identity-free rank comparison still owns that subset. */
+function pooledAmbiguousOverCapViolations(
+	afterOver: readonly FunctionComplexityEntry[],
+	beforeFns: readonly FunctionComplexityEntry[],
+	afterNameCounts: Map<string, number>,
+	beforeNameCounts: Map<string, number>,
+	cap: number,
+): string[] {
+	const afterAmbiguous = afterOver
+		.filter((f) => isAmbiguousName(f.name, afterNameCounts))
+		.sort((a, b) => b.cyclomatic - a.cyclomatic);
+	if (afterAmbiguous.length === 0) return [];
+
+	const beforeVals = beforeFns
+		.filter((f) => f.cyclomatic > cap && isAmbiguousName(f.name, beforeNameCounts))
+		.map((f) => f.cyclomatic)
+		.sort((a, b) => b - a);
+
+	const out: string[] = [];
+	for (let i = 0; i < afterAmbiguous.length; i++) {
+		const post = nonNull(afterAmbiguous[i]);
+		const baseline = beforeVals[i] ?? cap;
+		if (post.cyclomatic <= baseline) continue; // this rank held or reduced
+		const how = post.name === ANON_FN ? "new anonymous function over cap" : "new over-cap function";
+		out.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
+	}
+	return out;
 }
 
 /** Map of UNIQUELY-named functions (name appears exactly once) -> cyclomatic.

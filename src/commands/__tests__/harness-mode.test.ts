@@ -10,12 +10,17 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { harnessModeCommand } from "../harness-mode.js";
 
 let workDir: string;
 let previousInterlinkedHome: string | undefined;
-let previousCwd: string;
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. harnessModeCommand reads
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 beforeEach(() => {
 	workDir = join(
@@ -26,12 +31,11 @@ beforeEach(() => {
 	mkdirSync(join(workDir, ".interlinked"), { recursive: true });
 	previousInterlinkedHome = process.env.INTERLINKED_HOME;
 	process.env.INTERLINKED_HOME = join(workDir, ".interlinked");
-	previousCwd = process.cwd();
-	process.chdir(workDir);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(workDir);
 });
 
 afterEach(() => {
-	process.chdir(previousCwd);
+	cwdSpy?.mockRestore();
 	if (previousInterlinkedHome === undefined) {
 		delete process.env.INTERLINKED_HOME;
 	} else {

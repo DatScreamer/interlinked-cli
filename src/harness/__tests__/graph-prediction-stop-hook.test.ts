@@ -13,7 +13,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import { findPredictionRow } from "../graph-prediction-cache.js";
 import { resetWorkspaceActiveCache } from "../graph-prediction-classifier.js";
-import { harvestPredictionsFromTranscript } from "../graph-prediction-stop-hook.js";
+import {
+	harvestPredictionsFromTranscript,
+	readRecentAssistantTexts,
+} from "../graph-prediction-stop-hook.js";
+
+/** A flow-list with 51 entries — one past MAX_LIST_ENTRIES — trips the
+ *  parser's format_violation path (`graph-prediction-parser-scalars.ts`). */
+function overLongFlowList(): string {
+	const items = Array.from({ length: 51 }, (_, i) => `"f${i}"`);
+	return `[${items.join(", ")}]`;
+}
 
 let dir: string;
 
@@ -149,6 +159,77 @@ describe("harvestPredictionsFromTranscript — non-E-fresh skip", () => {
 		expect(harvested.persisted).toHaveLength(0);
 		expect(nonNull(harvested.skipped[0]).case).toBe("E-stale");
 	});
+
+	it("tags a non-E-fresh skip with reason format_violation when the prediction itself is malformed", () => {
+		writeFileSync(join(dir, "src", "no-shard2.ts"), "export {}");
+		const transcriptPath = join(dir, "transcripts", "session.jsonl");
+		writeTranscript(transcriptPath, [
+			assistantMessage(
+				[
+					"```yaml",
+					"graph_prediction:",
+					`  file: ${join(dir, "src", "no-shard2.ts")}`,
+					"  deps:",
+					`    imports: ${overLongFlowList()}`,
+					"    imported_by: []",
+					"```",
+				].join("\n"),
+			),
+		]);
+
+		const harvested = harvestPredictionsFromTranscript({
+			cwd: dir,
+			sessionId: "sess-fv-case-d",
+			transcriptPath,
+		});
+		expect(harvested.persisted).toHaveLength(0);
+		expect(harvested.skipped).toEqual([
+			{
+				file_path: join(dir, "src", "no-shard2.ts"),
+				case: "D",
+				reason: "format_violation",
+			},
+		]);
+	});
+});
+
+describe("harvestPredictionsFromTranscript — E-fresh + format_violation", () => {
+	it("skips persistence for an E-fresh prediction that itself violates the list-entry cap", () => {
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(join(dir, "src", "fv.ts"), "export {}");
+		writeFileSync(join(dir, "src", "fv.graph.ts"), "// @generated");
+		setMtime(join(dir, "src", "fv.ts"), t);
+		setMtime(join(dir, "src", "fv.graph.ts"), t + 30_000);
+
+		const transcriptPath = join(dir, "transcripts", "session.jsonl");
+		writeTranscript(transcriptPath, [
+			assistantMessage(
+				[
+					"```yaml",
+					"graph_prediction:",
+					`  file: ${join(dir, "src", "fv.ts")}`,
+					"  deps:",
+					`    imports: ${overLongFlowList()}`,
+					"    imported_by: []",
+					"```",
+				].join("\n"),
+			),
+		]);
+
+		const harvested = harvestPredictionsFromTranscript({
+			cwd: dir,
+			sessionId: "sess-fv-efresh",
+			transcriptPath,
+		});
+		expect(harvested.persisted).toEqual([]);
+		expect(harvested.skipped).toEqual([
+			{
+				file_path: join(dir, "src", "fv.ts"),
+				case: "E-fresh",
+				reason: "format_violation",
+			},
+		]);
+	});
 });
 
 describe("harvestPredictionsFromTranscript — multi-file", () => {
@@ -246,5 +327,46 @@ describe("harvestPredictionsFromTranscript — degenerate inputs", () => {
 			transcriptPath,
 		});
 		expect(r.persisted).toEqual([]);
+	});
+});
+
+describe("readRecentAssistantTexts", () => {
+	it("returns [] when the path exists but cannot be read as a file (EISDIR)", () => {
+		// `dir` is a directory, not a file — readFileSync throws.
+		expect(readRecentAssistantTexts(dir)).toEqual([]);
+	});
+
+	it("caps at RECENT_ASSISTANT_MESSAGE_LIMIT (10) even with more messages available", () => {
+		const transcriptPath = join(dir, "transcripts", "session.jsonl");
+		const lines = Array.from({ length: 12 }, (_, i) => assistantMessage(`msg-${i}`));
+		writeTranscript(transcriptPath, lines);
+		const texts = readRecentAssistantTexts(transcriptPath);
+		expect(texts).toHaveLength(10);
+		// Walked backwards then reversed: the 10 most recent, oldest-first.
+		expect(texts).toEqual(["msg-2", "msg-3", "msg-4", "msg-5", "msg-6", "msg-7", "msg-8", "msg-9", "msg-10", "msg-11"]);
+	});
+
+	it("skips non-object and non-assistant JSON lines, and blocks that carry no usable text", () => {
+		const transcriptPath = join(dir, "transcripts", "session.jsonl");
+		writeTranscript(transcriptPath, [
+			"42", // valid JSON, not an object
+			"null", // valid JSON, null
+			JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "ignored" }] } }),
+			JSON.stringify({ type: "assistant", message: { content: "not-an-array" } }),
+			JSON.stringify({ type: "assistant", message: { content: [{ type: "other" }] } }),
+			JSON.stringify({
+				type: "assistant",
+				message: {
+					content: [
+						null,
+						"a-bare-string",
+						{ type: "other" },
+						{ type: "text", text: 123 },
+						{ type: "text", text: "kept" },
+					],
+				},
+			}),
+		]);
+		expect(readRecentAssistantTexts(transcriptPath)).toEqual(["kept"]);
 	});
 });

@@ -18,6 +18,14 @@ export interface VizEvent {
 	rule_id?: string;
 	severity?: string;
 	summary?: string;
+	/** Who did this: the per-session agent name, e.g. `session-claude-5a6ba76e`. */
+	agent?: string;
+	/** The session id the agent name is derived from. */
+	session?: string;
+	/** Set when the actor was a SUBAGENT spawned by that session, not the session itself. */
+	subagent_id?: string;
+	/** Model behind the actor, when the runner reports it. */
+	model?: string;
 }
 
 export interface ActivityTailer {
@@ -74,7 +82,26 @@ export function mapActivityLine(line: string): VizEvent | null {
 	if (severity) ev.severity = severity;
 	const summary = str(r, "summary");
 	if (summary) ev.summary = summary;
+	copyActorFields(ev, r);
 	return ev;
+}
+
+/**
+ * Copy the actor identity onto the event: WHO produced this tool call. The v5
+ * activity row names the agent (`agent`, derived per session as
+ * `session-<runner>-<id8>`), the session it belongs to, the subagent id when a
+ * spawned agent did the work, and the model behind it. All optional — foreign or
+ * older rows simply carry no actor and render as `unattributed`.
+ */
+function copyActorFields(ev: VizEvent, r: Record<string, unknown>): void {
+	const agent = str(r, "agent");
+	if (agent) ev.agent = agent;
+	const session = str(r, "session") ?? str(r, "session_id");
+	if (session) ev.session = session;
+	const subagent = str(r, "subagent_id");
+	if (subagent) ev.subagent_id = subagent;
+	const model = str(r, "model");
+	if (model) ev.model = model;
 }
 
 /** Frame an event as an SSE `data:` line. Serializes either stream's event shape. */
@@ -131,13 +158,28 @@ export function createActivityTailer(
 	onEvent: (ev: VizEvent) => void,
 	intervalMs = 1000,
 ): ActivityTailer {
+	return createJsonlTailer(path, mapActivityLine, onEvent, intervalMs);
+}
+
+/**
+ * Generic append-only JSONL tailer: polls `path` for appended lines, projects
+ * each through `map`, and delivers the non-null results. Every viz feed
+ * (activity, check-results, test events, mutants) is this same shape — one
+ * implementation so a fix to the offset/rotation handling reaches all of them.
+ */
+export function createJsonlTailer<T>(
+	path: string,
+	map: (line: string) => T | null,
+	onEvent: (ev: T) => void,
+	intervalMs: number,
+): { stop: () => void } {
 	let offset = existsSync(path) ? statSync(path).size : 0;
 	const iv = setInterval(() => {
 		const result = readAppendedLines(path, offset);
 		offset = result.offset;
 		for (const line of result.lines) {
-			const ev = mapActivityLine(line);
-			if (ev) onEvent(ev);
+			const ev = map(line);
+			if (ev !== null) onEvent(ev);
 		}
 	}, intervalMs);
 	if (typeof iv.unref === "function") iv.unref();
@@ -264,15 +306,5 @@ export function createChecksTailer(
 	onEvent: (ev: CheckEvent) => void,
 	intervalMs = 1000,
 ): ChecksTailer {
-	let offset = existsSync(path) ? statSync(path).size : 0;
-	const iv = setInterval(() => {
-		const result = readAppendedLines(path, offset);
-		offset = result.offset;
-		for (const line of result.lines) {
-			const ev = mapCheckLine(line);
-			if (ev) onEvent(ev);
-		}
-	}, intervalMs);
-	if (typeof iv.unref === "function") iv.unref();
-	return { stop: () => clearInterval(iv) };
+	return createJsonlTailer(path, mapCheckLine, onEvent, intervalMs);
 }

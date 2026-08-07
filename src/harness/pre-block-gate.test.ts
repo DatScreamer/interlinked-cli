@@ -162,6 +162,7 @@ describe("message helpers", () => {
 		introduced: introduced.map((line) => ({ line, text: `eval @ ${line}` })),
 		preexisting: preexisting.map((line) => ({ line, text: `eval @ ${line}` })),
 		instruction: "Do not eval.",
+		deferrable: false,
 	});
 
 	it("preBlockIntroducedBlock names introduced lines, notes pre-existing, and carries the escape", () => {

@@ -1,7 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	deleteConfigDir,
 	deleteHookScript,
@@ -9,6 +17,9 @@ import {
 	findProjectRoot,
 	getHookScriptPath,
 	HOOK_SCRIPT_VERSION,
+	installAllHooks,
+	installStatusLine,
+	resolveHookBinaryPath,
 	writeHookScript,
 } from "../hooks.js";
 
@@ -16,6 +27,54 @@ describe("HOOK_SCRIPT_VERSION", () => {
 	it("is a non-empty string", () => {
 		expect(typeof HOOK_SCRIPT_VERSION).toBe("string");
 		expect(HOOK_SCRIPT_VERSION.length).toBeGreaterThan(0);
+	});
+});
+
+// `hooks.ts` computes its own `HOOK_SCRIPT_VERSION` at module load via a
+// private `readPackageVersion(parsed)` helper. It isn't exported, so the
+// only way to exercise its "parsed value isn't usable" branches is to feed
+// a fake `package.json` body through a mocked `node:fs` and re-import the
+// module fresh.
+describe("HOOK_SCRIPT_VERSION — readPackageVersion fallback branches", () => {
+	afterEach(() => {
+		vi.doUnmock("node:fs");
+		vi.resetModules();
+	});
+
+	it("falls back to 0.0.0 when the resolved package.json does not parse to a plain object", async () => {
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				readFileSync: vi.fn((path: unknown, ...rest: unknown[]) => {
+					if (String(path).endsWith("package.json")) {
+						return JSON.stringify(["not", "an", "object"]);
+					}
+					return (actual.readFileSync as (...a: unknown[]) => unknown)(path, ...rest);
+				}),
+			};
+		});
+		const mod = await import("../hooks.js");
+		expect(mod.HOOK_SCRIPT_VERSION).toBe("0.0.0");
+	});
+
+	it("falls back to 0.0.0 when package.json is a plain object but `version` is not a string", async () => {
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				readFileSync: vi.fn((path: unknown, ...rest: unknown[]) => {
+					if (String(path).endsWith("package.json")) {
+						return JSON.stringify({ name: "interlinked-cli", version: 42 });
+					}
+					return (actual.readFileSync as (...a: unknown[]) => unknown)(path, ...rest);
+				}),
+			};
+		});
+		const mod = await import("../hooks.js");
+		expect(mod.HOOK_SCRIPT_VERSION).toBe("0.0.0");
 	});
 });
 
@@ -69,6 +128,38 @@ describe("getHookScriptPath / writeHookScript / deleteHookScript", () => {
 		expect(content).toContain(HOOK_SCRIPT_VERSION);
 	});
 
+	it("writeHookScript is safe to call twice (hookDir already exists on the second call)", () => {
+		const first = writeHookScript(tmp);
+		expect(existsSync(first)).toBe(true);
+		const second = writeHookScript(tmp);
+		expect(second).toBe(first);
+		expect(existsSync(second)).toBe(true);
+	});
+
+	it("resolves the mode preset from an installed manifest + config.json `mode` field", () => {
+		// Sets up an installer-manifest.json (via a real install) so
+		// resolveHarnessModePreset's `existsSync(mfPath)` branch is true and it
+		// reads a non-empty entries list, and writes config.json's `mode` as a
+		// string so the `typeof shared?.mode === "string"` branch is true too.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(join(tmp, ".interlinked", "config.json"), JSON.stringify({ mode: "quality" }));
+		installAllHooks(tmp, ["gemini"]);
+		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(true);
+
+		const p = writeHookScript(tmp);
+		expect(existsSync(p)).toBe(true);
+	});
+
+	it("resolves the mode preset when the manifest exists but has zero entries", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "installer-manifest.json"),
+			JSON.stringify({ schema_version: "1", entries: [] }),
+		);
+		const p = writeHookScript(tmp);
+		expect(existsSync(p)).toBe(true);
+	});
+
 	it("deleteHookScript removes a previously-written script", () => {
 		const p = writeHookScript(tmp);
 		expect(existsSync(p)).toBe(true);
@@ -78,6 +169,97 @@ describe("getHookScriptPath / writeHookScript / deleteHookScript", () => {
 
 	it("deleteHookScript is a no-op when no script exists", () => {
 		expect(deleteHookScript(tmp)).toBe(false);
+	});
+});
+
+describe("installStatusLine", () => {
+	const ORIGINAL_HOME = process.env.HOME;
+	const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
+
+	afterEach(() => {
+		if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+		else process.env.HOME = ORIGINAL_HOME;
+		if (ORIGINAL_USERPROFILE === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = ORIGINAL_USERPROFILE;
+	});
+
+	it("is a thin pass-through to the hook-installers implementation (returns null with no home dir)", () => {
+		delete process.env.HOME;
+		delete process.env.USERPROFILE;
+		expect(installStatusLine(["claude"])).toBeNull();
+	});
+});
+
+describe("resolveHookBinaryPath — packagedHookEntryPath catch branch", () => {
+	let tmp: string;
+	const ORIGINAL_ARGV1 = process.argv[1];
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "hooks-test-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+		process.argv[1] = ORIGINAL_ARGV1;
+	});
+
+	it("falls through to the generated .mjs when process.argv[1] does not resolve to a real path", () => {
+		// No `.interlinked/hooks/interlinked-hook` compiled override exists in a
+		// fresh tmp dir, so resolution proceeds to `packagedHookEntryPath()`.
+		// Pointing argv[1] at a nonexistent path makes `realpathSync` throw,
+		// exercising the catch branch (returns null), which then falls through
+		// to the generated `.mjs` fallback.
+		process.argv[1] = join(tmp, "does-not-exist", "cli.js");
+		const result = resolveHookBinaryPath(tmp);
+		expect(result).toBe(getHookScriptPath(tmp));
+		expect(existsSync(result)).toBe(true);
+	});
+});
+
+describe("resolveHookBinaryPath — resolution order", () => {
+	let tmp: string;
+	const ORIGINAL_ARGV1 = process.argv[1];
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "hooks-resolve-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+		process.argv[1] = ORIGINAL_ARGV1;
+	});
+
+	it("prefers a project-local compiled override when present", () => {
+		const hooksDir = join(tmp, ".interlinked", "hooks");
+		mkdirSync(hooksDir, { recursive: true });
+		const compiled = join(hooksDir, "interlinked-hook");
+		writeFileSync(compiled, "#!/usr/bin/env node\n");
+		expect(resolveHookBinaryPath(tmp)).toBe(compiled);
+	});
+
+	it("prefers the packaged hook-entry.js next to the invoked binary when no compiled override exists", () => {
+		const scriptFile = join(tmp, "some-bin.js");
+		writeFileSync(scriptFile, "// dummy invoked script\n");
+		// `packagedHookEntryPath` resolves via `realpathSync`, which on macOS
+		// canonicalizes `/tmp` to `/private/tmp` — compare against the same
+		// realpath-derived location rather than the raw `tmp` join.
+		const hookEntry = join(dirname(realpathSync(scriptFile)), "hook-entry.js");
+		writeFileSync(hookEntry, "// dummy packaged hook entry\n");
+		process.argv[1] = scriptFile;
+		expect(resolveHookBinaryPath(tmp)).toBe(hookEntry);
+	});
+
+	it("falls back to an already-written legacy .mjs when no compiled/packaged binary exists", () => {
+		const legacy = writeHookScript(tmp);
+		process.argv[1] = "";
+		expect(resolveHookBinaryPath(tmp)).toBe(legacy);
+	});
+
+	it("returns the unwritten legacy path without writing it when writeFallback is false", () => {
+		process.argv[1] = "";
+		const result = resolveHookBinaryPath(tmp, { writeFallback: false });
+		expect(result).toBe(getHookScriptPath(tmp));
+		expect(existsSync(result)).toBe(false);
 	});
 });
 

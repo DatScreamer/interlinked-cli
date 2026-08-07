@@ -134,13 +134,17 @@ describe("interlinked debt list", () => {
 });
 
 describe("interlinked debt — defaults cwd to process.cwd()", () => {
-	let originalCwd = "";
+	// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+	// is not supported in workers"), and Stryker's vitest runner pins its own
+	// pool, so a real chdir here fails the mutation dry run for any file whose
+	// graph-selected test scope includes this one. debtListCommand reads
+	// `process.cwd()` explicitly, so the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 	beforeEach(() => {
-		originalCwd = process.cwd();
-		process.chdir(root);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(root);
 	});
 	afterEach(() => {
-		process.chdir(originalCwd);
+		cwdSpy?.mockRestore();
 	});
 
 	it("debtListCommand resolves the ledger relative to process.cwd() when cwd is omitted", async () => {

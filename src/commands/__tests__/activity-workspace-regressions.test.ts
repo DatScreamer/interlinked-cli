@@ -168,12 +168,18 @@ describe("Activity feed response contract regressions", () => {
 });
 
 describe("Workspace switch regressions", () => {
-	const originalCwd = process.cwd();
 	let tempDirCounter = 0;
 	const tempDirSuffix = (): string => `${process.pid}-${++tempDirCounter}`;
+	// SPY, not process.chdir(): chdir THROWS in a worker thread
+	// ("process.chdir() is not supported in workers"), and Stryker's vitest
+	// runner pins its own pool, so a real chdir here fails the mutation dry
+	// run for any file whose graph-selected test scope includes this one.
+	// config.ts resolves paths via `cwd: string = process.cwd()` default
+	// params, so the spy exercises the same path.
+	let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 	afterEach(() => {
-		process.chdir(originalCwd);
+		cwdSpy?.mockRestore();
 		vi.restoreAllMocks();
 	});
 
@@ -201,7 +207,7 @@ describe("Workspace switch regressions", () => {
 				4,
 			)}\n`,
 		);
-		process.chdir(tempDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempDir);
 		mockFetchWorkspaces.mockResolvedValue([{ id: "ws_new" }, { id: "ws_local" }]);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -229,7 +235,7 @@ describe("Workspace switch regressions", () => {
 			join(tempDir, ".interlinked", "config.local.json"),
 			`${JSON.stringify({ workspace_id: "ws_old" }, null, 4)}\n`,
 		);
-		process.chdir(tempDir);
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempDir);
 		mockFetchWorkspaces.mockResolvedValue([{ id: "ws_newtop" }]);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

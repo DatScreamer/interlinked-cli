@@ -6,7 +6,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { clearTscOverlayCache } from "../check-engine/tool-runners/tsc-overlay.js";
-import { evaluateTscDiffOverlay, isTscFindingBlocking } from "../diff-overlay.js";
+import {
+	evaluateTscDiffOverlay,
+	isTscFindingBlocking,
+	isTscFindingDeferrable,
+} from "../diff-overlay.js";
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
 // `src/harness/__tests__`), and that is exactly the `projectRoot` the overlay is
@@ -146,5 +150,56 @@ describe("evaluateTscDiffOverlay", () => {
 		// Then clean — should report no findings
 		const clean = evaluateTscDiffOverlay(FIXTURE_FILE, onDisk, CLI_ROOT);
 		expect(clean.newFindings).toEqual([]);
+	});
+
+	// TDD red-step tolerance: a relative import to a sibling module that
+	// doesn't exist yet (the test-before-impl step) cascades into spurious
+	// implicit-any diagnostics — suppress the introduced findings entirely
+	// rather than punishing the test-first workflow.
+	it("suppresses all findings when the proposal imports an unresolved sibling module", () => {
+		const onDisk = readFileSync(FIXTURE_FILE, "utf-8");
+		const proposed = `${onDisk}\nimport { helper } from "./not-yet-written.js";\nexport const _y = helper();\n`;
+		const result = evaluateTscDiffOverlay(FIXTURE_FILE, proposed, CLI_ROOT);
+		expect(result.newFindings).toEqual([]);
+		expect(
+			result.proposedFindings?.some((f) => (f.message ?? "").includes("Cannot find module")),
+		).toBe(true);
+	});
+});
+
+describe("isTscFindingDeferrable", () => {
+	it("is true for a warn-only code (TS6133)", () => {
+		const fake = {
+			tool: "tsc" as const,
+			severity: "error" as const,
+			file: "x.ts",
+			line: 1,
+			message: "'foo' is declared but its value is never read.",
+			ruleId: "TS6133",
+		};
+		expect(isTscFindingDeferrable(fake)).toBe(true);
+	});
+
+	it("is false for a blocking code (TS2322)", () => {
+		const fake = {
+			tool: "tsc" as const,
+			severity: "error" as const,
+			file: "x.ts",
+			line: 1,
+			message: "Type 'string' is not assignable to type 'number'.",
+			ruleId: "TS2322",
+		};
+		expect(isTscFindingDeferrable(fake)).toBe(false);
+	});
+
+	it("is false when ruleId is absent (nullish-coalesce fallback)", () => {
+		const fake = {
+			tool: "tsc" as const,
+			severity: "error" as const,
+			file: "x.ts",
+			line: 1,
+			message: "some diagnostic with no code",
+		};
+		expect(isTscFindingDeferrable(fake)).toBe(false);
 	});
 });

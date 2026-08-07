@@ -95,6 +95,36 @@ describe("applyEvent — churn substrate folding", () => {
 		expect(s.recentEvents.length).toBe(1);
 	});
 
+	it("counts a PostToolUse Grep event toward searchCount", () => {
+		const s = createState("s");
+		const grep: ToolEvent = {
+			ts: "2026-01-01T00:00:00Z",
+			session: "s",
+			agent: "a",
+			tool: "Grep",
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input: {},
+		};
+		applyEvent(s, grep);
+		expect(s.searchCount).toBe(1);
+	});
+
+	it("counts a PostToolUse Glob event toward searchCount", () => {
+		const s = createState("s");
+		const glob: ToolEvent = {
+			ts: "2026-01-01T00:00:00Z",
+			session: "s",
+			agent: "a",
+			tool: "Glob",
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input: {},
+		};
+		applyEvent(s, glob);
+		expect(s.searchCount).toBe(1);
+	});
+
 	it("freezes the first 3 distinct edited files as seeds", () => {
 		const s = feed([
 			...editEvents("src/a.ts", "", "1"),
@@ -120,6 +150,32 @@ describe("applyEvent — churn substrate folding", () => {
 		const s = feed([...editEvents("src/a.ts", "", "1"), ...editEvents("src/b.ts", "", "2")]);
 		expect(s.worktreeSnapshots.length).toBe(2);
 		expect(s.worktreeSnapshots[0]).not.toBe(s.worktreeSnapshots[1]);
+	});
+
+	it("does NOT increment successfulEditCount when the tool outcome is fail", () => {
+		const s = feed(editEvents("src/a.ts", "", "1", { outcome: "fail" }));
+		expect(s.successfulEditCount).toBe(0);
+		expect(s.editsSinceGreen.get("src/a.ts")).toBe(1);
+	});
+
+	it("worktree snapshot hash is independent of file insertion order", () => {
+		const s1 = feed([
+			...editEvents("src/e.ts", "", "5"),
+			...editEvents("src/d.ts", "", "4"),
+			...editEvents("src/c.ts", "", "3"),
+			...editEvents("src/b.ts", "", "2"),
+			...editEvents("src/a.ts", "", "1"),
+		]);
+		const s2 = feed([
+			...editEvents("src/a.ts", "", "1"),
+			...editEvents("src/b.ts", "", "2"),
+			...editEvents("src/c.ts", "", "3"),
+			...editEvents("src/d.ts", "", "4"),
+			...editEvents("src/e.ts", "", "5"),
+		]);
+		const last1 = s1.worktreeSnapshots[s1.worktreeSnapshots.length - 1];
+		const last2 = s2.worktreeSnapshots[s2.worktreeSnapshots.length - 1];
+		expect(last1).toBe(last2);
 	});
 });
 
@@ -174,6 +230,25 @@ describe("applyEvent — command substrate folding", () => {
 		expect(s.secretsRead.has(".env")).toBe(true);
 		expect(s.lastSecretReadStep).toBeGreaterThan(0);
 	});
+
+	it("does nothing when a Bash event carries an empty command", () => {
+		const s = feed(bashEvents(""));
+		expect(s.verifyRunCount).toBe(0);
+		expect(s.commandFailures.size).toBe(0);
+		expect(s.downloadedScripts.size).toBe(0);
+	});
+
+	it("tracks a build-family verify run separately from test", () => {
+		const s = feed([...bashEvents("npm run build", "fail"), ...bashEvents("npm run build", "fail")]);
+		expect(s.familyReruns.get("build")?.failingNoEditCount).toBe(2);
+		expect(s.familyReruns.has("test")).toBe(false);
+	});
+
+	it("counts a lint verify run without tracking a family-rerun entry", () => {
+		const s = feed(bashEvents("npx eslint .", "fail"));
+		expect(s.verifyRunCount).toBe(1);
+		expect(s.familyReruns.size).toBe(0);
+	});
 });
 
 describe("applyEvent — security edit folding", () => {
@@ -199,6 +274,46 @@ describe("applyEvent — security edit folding", () => {
 		expect(withSink.gitHookWrites.get("pre-commit")?.hasSink).toBe(true);
 		const noSink = feed(editEvents(".git/hooks/pre-commit", "", "echo hi", { tool: "Write" }));
 		expect(noSink.gitHookWrites.get("pre-commit")?.hasSink).toBe(false);
+	});
+});
+
+describe("applyEvent — read folding + read/edit-balance substrate", () => {
+	it("does nothing on a Read event with no file_path", () => {
+		const s = createState("s");
+		const read: ToolEvent = {
+			ts: "2026-01-01T00:00:00Z",
+			session: "s",
+			agent: "a",
+			tool: "Read",
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input: {},
+		};
+		applyEvent(s, read);
+		expect(s.readCount).toBe(0);
+		expect(s.fileReadSteps.size).toBe(0);
+	});
+
+	it("counts a grep segment toward searchCount and records a slashed path but not a bare word", () => {
+		const s = feed(bashEvents("grep foo src/file.ts"));
+		expect(s.searchCount).toBe(1);
+		expect(s.fileReadSteps.has("src/file.ts")).toBe(true);
+		expect(s.fileReadSteps.has("foo")).toBe(false);
+	});
+
+	it("skips a flag token and records a dotted-extension token with no path separator", () => {
+		const s = feed(bashEvents("cat -n file.txt"));
+		expect(s.fileReadSteps.has("-n")).toBe(false);
+		expect(s.fileReadSteps.has("file.txt")).toBe(true);
+	});
+
+	it("evicts the oldest read once fileReadSteps exceeds its cap", () => {
+		const events: ToolEvent[] = [];
+		for (let i = 0; i < 513; i++) events.push(...readEvents(`f${i}.ts`));
+		const s = feed(events);
+		expect(s.fileReadSteps.size).toBe(512);
+		expect(s.fileReadSteps.has("f0.ts")).toBe(false);
+		expect(s.fileReadSteps.has("f512.ts")).toBe(true);
 	});
 });
 

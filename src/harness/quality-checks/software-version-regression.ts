@@ -74,7 +74,15 @@ const DOCKER_FROM_RE = /^\s*FROM\s+(?:--platform=\S+\s+)?(?<image>[^\s:@]+(?:\/[
 const REQUIREMENT_RE =
 	/^\s*(?<name>[A-Za-z0-9_.-]+)\s*(?:==|~=|>=|<=|=)\s*(?<version>[^\s;#]+)/;
 
-const GO_REQUIRE_RE = /^\s*(?<module>[A-Za-z0-9_.-]+(?:\/[^\s]+)+)\s+v?(?<version>\d+\.\d+\.\d+[^\s]*)/;
+// The inner class EXCLUDES `/`. With `[^\s]+` it swallowed the very delimiter
+// the outer group repeats on, so a slash-heavy line with no following space
+// partitioned exponentially: a 66-BYTE input took 51 SECONDS (measured
+// 2026-08-04). This regex reads go.mod content inside a daemon-side check, so
+// that is a hang of the guard, not a slow lint. Excluding the delimiter makes
+// each segment unambiguous; matching is unchanged (a path segment never
+// contains a slash).
+const GO_REQUIRE_RE =
+	/^\s*(?<module>[A-Za-z0-9_.-]+(?:\/[^\s/]+)+)\s+v?(?<version>\d+\.\d+\.\d+[^\s]*)/;
 
 const CARGO_DEP_RE = /^\s*(?<name>[A-Za-z0-9_-]+)\s*=\s*["'](?<version>[^"']+)["']/;
 

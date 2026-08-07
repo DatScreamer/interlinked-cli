@@ -55,6 +55,142 @@ afterEach(() => {
 	rmSync(tmp, { recursive: true, force: true });
 });
 
+describe("checkFunctionComplexityWrite — file-path resolution and edit-projection edge cases", () => {
+	it("resolves the target file from `path` when `file_path` is absent", () => {
+		const file = join(tmp, "viaPath.ts");
+		const out = checkFunctionComplexityWrite(
+			{ path: file, content: fnWith("f", 40) },
+			tmp,
+		);
+		expect(out?.block).toContain("f (cyclomatic");
+	});
+
+	it("fails open (null) when neither file_path/path is set and the payload isn't an apply_patch", () => {
+		const out = checkFunctionComplexityWrite({ content: fnWith("f", 40) }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("fails open when the target path is a directory (unreadable as a file)", () => {
+		const dirPath = join(tmp, "a-directory.ts");
+		mkdirSync(dirPath);
+		const out = checkFunctionComplexityWrite({ file_path: dirPath, content: fnWith("f", 40) }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("replace_all rewrites every occurrence of old_string", () => {
+		const file = join(tmp, "replaceall.ts");
+		writeFileSync(file, `${fnWith("a", 1)}${fnWith("a2", 1)}`);
+		// old_string "r += 0;" appears once per fnWith body (branches=1 → one `if`).
+		const out = checkFunctionComplexityWrite(
+			{
+				file_path: file,
+				old_string: "let r = 0;",
+				new_string: "let r = 1;",
+				replace_all: true,
+			},
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("Edit is a no-op (before===after) when old_string is not found in the file", () => {
+		const file = join(tmp, "nomatch-edit.ts");
+		writeFileSync(file, fnWith("f", 3));
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, old_string: "NOT_PRESENT_ANYWHERE", new_string: "x" },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("returns null (unknown shape) when old_string is present but new_string is missing", () => {
+		const file = join(tmp, "malformed-edit.ts");
+		writeFileSync(file, fnWith("f", 3));
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, old_string: "let r = 0;" },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("MultiEdit (edits array): blocks when the combined edits push a function over cap", () => {
+		const file = join(tmp, "multiedit.ts");
+		writeFileSync(file, fnWith("f", 3));
+		let added = "";
+		for (let i = 0; i < 40; i++) added += `\tif (a === ${100 + i}) r += ${i};\n`;
+		const out = checkFunctionComplexityWrite(
+			{
+				file_path: file,
+				edits: [
+					{ old_string: "let r = 0;", new_string: "let r = 1;" },
+					{ old_string: "\treturn r;", new_string: `${added}\treturn r;` },
+				],
+			},
+			tmp,
+		);
+		expect(out?.block).toContain("f (cyclomatic");
+	});
+
+	it("MultiEdit: an entry missing new_string is skipped, other entries still apply", () => {
+		const file = join(tmp, "multiedit-skip.ts");
+		writeFileSync(file, fnWith("f", 3));
+		const out = checkFunctionComplexityWrite(
+			{
+				file_path: file,
+				edits: [
+					{ old_string: "let r = 0;" }, // missing new_string — skipped
+					{ old_string: "let r = 0;", new_string: "let r = 2;" },
+				],
+			},
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("MultiEdit: a non-object entry in `edits` is skipped without throwing", () => {
+		const file = join(tmp, "multiedit-nonobj.ts");
+		writeFileSync(file, fnWith("f", 3));
+		expect(() =>
+			checkFunctionComplexityWrite(
+				{
+					file_path: file,
+					edits: [null, "not-an-object", { old_string: "let r = 0;", new_string: "let r = 2;" }],
+				},
+				tmp,
+			),
+		).not.toThrow();
+	});
+
+	it("MultiEdit: returns null when the target file does not exist yet (before === '')", () => {
+		const file = join(tmp, "multiedit-missing.ts");
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, edits: [{ old_string: "x", new_string: "y" }] },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("plain old_string/new_string Edit against a non-existent file returns null (before === '')", () => {
+		const file = join(tmp, "single-edit-missing.ts");
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, old_string: "x", new_string: "y" },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+
+	it("resolves a RELATIVE file_path against cwd", () => {
+		writeFileSync(join(tmp, "rel.ts"), fnWith("f", 3));
+		let added = "";
+		for (let i = 0; i < 40; i++) added += `\tif (a === ${100 + i}) r += ${i};\n`;
+		const out = checkFunctionComplexityWrite(
+			{ file_path: "rel.ts", old_string: "\treturn r;", new_string: `${added}\treturn r;` },
+			tmp,
+		);
+		expect(out?.block).toContain("f (cyclomatic");
+	});
+});
+
 describe("checkFunctionComplexityWrite", () => {
 	it("exposes the cap as 25", () => {
 		expect(DEFAULT_MAX_CYCLOMATIC).toBe(25);
@@ -504,5 +640,218 @@ describe("sub-cap per-edit slew ratchet (bounded rise, cap is the backstop)", ()
 		writeFileSync(file, before);
 		const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
 		expect(out).toBeNull();
+	});
+});
+
+// The hole the cognitive gate already closed, ported here (2026-08-04). A pure
+// rank comparison sees "one over-cap entry traded for one over-cap entry" and
+// reads the profile as held; identity-based comparison sees a name that never
+// existed before, whose baseline is therefore the cap.
+describe("over-cap relocation — identity beats rank", () => {
+	const OVER = DEFAULT_MAX_CYCLOMATIC + 8;
+
+	describe("— positive (must fire)", () => {
+		it("P1: blocks shrinking an over-cap function by relocating the excess into a NEW over-cap helper", () => {
+			const file = join(tmp, "relocate.ts");
+			writeFileSync(file, fnWith("target", OVER + 6)); // one over-cap fn
+			// target drops but stays over cap; the excess moves into a brand-new
+			// helper that is ALSO over cap. Over-cap COUNT is unchanged (1 -> 2 is
+			// caught by rank, so make it 1 -> 2 with the top rank IMPROVED), and the
+			// sorted profile's top entry strictly improves — rank alone allows this.
+			const after = fnWith("target", OVER) + fnWith("relocatedHelper", OVER + 1);
+			const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+			expect(out?.block).toContain("relocatedHelper");
+		});
+
+		it("P2: blocks a NEW over-cap helper even when the pre-edit state had a worse offender", () => {
+			const file = join(tmp, "worse-existed.ts");
+			writeFileSync(file, fnWith("huge", OVER + 20));
+			const after = fnWith("huge", OVER + 20) + fnWith("freshOverCap", OVER);
+			const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+			expect(out?.block).toContain("freshOverCap");
+		});
+
+		it("P3: blocks raising a uniquely-named over-cap function past its own prior value", () => {
+			const file = join(tmp, "raise.ts");
+			writeFileSync(file, fnWith("a", OVER) + fnWith("b", OVER + 10));
+			// `a` rises; the sorted profile is unchanged at rank 0 (b still worst).
+			const after = fnWith("a", OVER + 4) + fnWith("b", OVER + 10);
+			const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+			expect(out?.block).toContain("a (cyclomatic");
+		});
+	});
+
+	describe("— negative (must not fire)", () => {
+		it("N1: allows a genuine decompose — over-cap function split into all-sub-cap parts", () => {
+			const file = join(tmp, "decompose.ts");
+			writeFileSync(file, fnWith("target", OVER + 6));
+			const after = fnWith("target", 4) + fnWith("partOne", 4) + fnWith("partTwo", 4);
+			expect(checkFunctionComplexityWrite({ file_path: file, content: after }, tmp)).toBeNull();
+		});
+
+		it("N2: allows an over-cap function to SHRINK while staying over cap (the refactor-down path)", () => {
+			const file = join(tmp, "shrink.ts");
+			writeFileSync(file, fnWith("target", OVER + 10));
+			const after = fnWith("target", OVER + 2);
+			expect(checkFunctionComplexityWrite({ file_path: file, content: after }, tmp)).toBeNull();
+		});
+
+		it("N3: allows an unrelated edit that leaves an over-cap function untouched", () => {
+			const file = join(tmp, "untouched.ts");
+			writeFileSync(file, fnWith("legacy", OVER + 3));
+			const after = `${fnWith("legacy", OVER + 3)}export const NOTE = "unrelated";\n`;
+			expect(checkFunctionComplexityWrite({ file_path: file, content: after }, tmp)).toBeNull();
+		});
+
+		it("N4: still allows an anonymous over-cap callback to hold its rank (pooled fallback intact)", () => {
+			const file = join(tmp, "anon-hold.ts");
+			writeFileSync(file, anonFnWith(OVER + 4));
+			expect(
+				checkFunctionComplexityWrite({ file_path: file, content: anonFnWith(OVER + 1) }, tmp),
+			).toBeNull();
+		});
+
+		// P4 exercises the pooled comparator with >=2 before-side ambiguous over-cap
+		// entries, so the `.sort((a, b) => b - a)` comparator on `beforeVals` is
+		// actually invoked (a 0/1-element array never calls its comparator).
+		it("P4: pooled comparison with two before-side anonymous over-cap callbacks still blocks a worsened one", () => {
+			const file = join(tmp, "anon-pair.ts");
+			/** A second, differently-named anonymous over-cap callback (still AST-named
+			 *  "(callback)", so it pools with `anonFnWith`'s entries). */
+			function anon2With(branches: number): string {
+				let body = "\tlet r = 0;\n";
+				for (let i = 0; i < branches; i++) body += `\tif (a === ${i}) r += ${i};\n`;
+				return `export const w2 = register((a: number): number => {\n${body}\treturn r;\n});\n`;
+			}
+			// Before: two ambiguous (anonymous) over-cap entries → beforeVals has 2
+			// elements → the `.sort((a, b) => b - a)` comparator actually runs (a
+			// 0/1-element array never invokes its comparator).
+			writeFileSync(file, anonFnWith(OVER) + anon2With(OVER + 3));
+			// After: the worst-ranked anonymous entry (rank 0, the w2 one) rises past
+			// its before-rank baseline (OVER+3 -> OVER+20).
+			const after = anonFnWith(OVER) + anon2With(OVER + 20);
+			const out = checkFunctionComplexityWrite({ file_path: file, content: after }, tmp);
+			expect(out?.block).toContain("cyclomatic");
+		});
+	});
+});
+
+describe("checkFunctionComplexityWrite — unreadable file (existsSync true, read throws)", () => {
+	it("fails open when the target path exists as a directory (EISDIR on read)", () => {
+		const dirPath = join(tmp, "unreadable-dir.ts");
+		mkdirSync(dirPath);
+		const out = checkFunctionComplexityWrite(
+			{ file_path: dirPath, old_string: "a", new_string: "b" },
+			tmp,
+		);
+		expect(out).toBeNull();
+	});
+});
+
+describe("warnAnalyzerUnavailable — once-per-process latch (Python)", () => {
+	it("writes the degrade warning only once across two consecutive unavailable edits", () => {
+		__resetPythonDegradeWarningForTesting();
+		pythonMock.mockReturnValue(null);
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			checkFunctionComplexityWrite(
+				{ file_path: join(tmp, "first.py"), content: "def f():\n    ...\n" },
+				tmp,
+			);
+			const afterFirst = stderrSpy.mock.calls.filter(
+				(c) => typeof c[0] === "string" && c[0].includes("radon"),
+			).length;
+			expect(afterFirst).toBe(1);
+
+			checkFunctionComplexityWrite(
+				{ file_path: join(tmp, "second.py"), content: "def g():\n    ...\n" },
+				tmp,
+			);
+			const afterSecond = stderrSpy.mock.calls.filter(
+				(c) => typeof c[0] === "string" && c[0].includes("radon"),
+			).length;
+			expect(afterSecond).toBe(1); // still 1 — latch suppressed the second warning
+		} finally {
+			stderrSpy.mockRestore();
+			pythonMock.mockReset();
+		}
+	});
+});
+
+describe("checkFunctionComplexityWrite — apply_patch: non-code section + unavailable analyzer", () => {
+	it("skips a non-code Add File section within an apply_patch (no analyzer selected)", () => {
+		const patch =
+			"*** Begin Patch\n" +
+			`*** Add File: ${join(tmp, "notes.md")}\n` +
+			"+# just notes\n" +
+			"*** End Patch";
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+
+	it("fails open entirely when a .py section's analyzer is unavailable inside an apply_patch", () => {
+		pythonMock.mockReturnValue(null);
+		const patch =
+			"*** Begin Patch\n" +
+			`*** Add File: ${join(tmp, "gen.py")}\n` +
+			"+def f():\n" +
+			"+    pass\n" +
+			"*** End Patch";
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+		pythonMock.mockReset();
+	});
+
+	it("skips a section whose destination is exempt (test file) even with an over-cap function", () => {
+		const body = fnWith("t", 40)
+			.split("\n")
+			.map((l) => `+${l}`)
+			.join("\n");
+		const patch = `*** Begin Patch\n*** Add File: ${join(tmp, "skip.test.ts")}\n${body}\n*** End Patch`;
+		const out = checkFunctionComplexityWrite({ command: patch }, tmp);
+		expect(out).toBeNull();
+	});
+
+	it("falls back to '' when the move's SOURCE path exists but is unreadable (a directory)", () => {
+		const dirPath = join(tmp, "old-as-dir.ts");
+		mkdirSync(dirPath);
+		const patch = [
+			"*** Begin Patch",
+			"*** Update File: old-as-dir.ts",
+			"*** Move to: moved-from-dir.ts",
+			"@@",
+			" some context that will not match",
+			"-foo",
+			"+bar",
+			"*** End Patch",
+		].join("\n");
+		// existsSync(abs) is true (it's a directory) but safeRead throws → falls
+		// back to "" via `safeRead(abs) ?? ""`, then the hunk fails to match
+		// against empty content → reconstructAfterContent returns null → skipped.
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});
+
+describe("checkFunctionComplexityWrite — beforeFns null fallback (analyzer available for after, not before)", () => {
+	let pyTmp2: string;
+	beforeEach(() => {
+		pyTmp2 = mkdtempSync(join(tmpdir(), "cyc-guard-py2-"));
+		pythonMock.mockReset();
+	});
+	afterEach(() => {
+		rmSync(pyTmp2, { recursive: true, force: true });
+	});
+
+	it("treats a null beforeFns compute() result as an empty before-state (?? [])", () => {
+		// The mock returns null only for the BEFORE content (empty string), and a
+		// real entry for the AFTER content — exercising `analyzer.compute(before,
+		// filePath) ?? []` independently of the earlier afterFns-null early return.
+		pythonMock.mockImplementation((content: string) =>
+			content === "" ? null : [pyEntry("f", 3)],
+		);
+		const file = join(pyTmp2, "newfile.py");
+		const out = checkFunctionComplexityWrite(
+			{ file_path: file, content: "def f():\n    pass\n" },
+			pyTmp2,
+		);
+		expect(out).toBeNull(); // f (cyc 3) is well under cap either way
 	});
 });

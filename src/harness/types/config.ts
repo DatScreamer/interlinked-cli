@@ -76,6 +76,20 @@ export interface QualityCheckConfig {
 	 */
 	use_osv_scanner?: boolean;
 	/**
+	 * `transient_debt` only: enforcement strength for the deferred-finding
+	 * ledger. `block` (default) refuses a write that walks away from an open
+	 * deferred finding once its slack is spent; `warn` runs the whole lifecycle
+	 * but never refuses; `off` disables it. Note `warn` reproduces the old
+	 * permanent-demotion behaviour — a finding nobody ever comes back for.
+	 */
+	mode?: "block" | "warn" | "off";
+	/**
+	 * `transient_debt` only: how many edits to UNRELATED files a deferred
+	 * finding tolerates before the gate blocks. Default 1 — see
+	 * `DEFAULT_TRANSIENT_SLACK` for why zero is wrong.
+	 */
+	slack?: number;
+	/**
 	 * `dependency_audit` only: when osv-scanner is used, pass `--offline`
 	 * (requires `osv-scanner scan --download-offline-databases` to have run
 	 * at least once). Avoids osv.dev network round-trips on every edit.

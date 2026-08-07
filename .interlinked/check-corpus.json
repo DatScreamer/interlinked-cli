@@ -1,0 +1,1036 @@
+{
+	"version": 1,
+	"checks": {
+		"halstead_difficulty": {
+			"files_scanned": 1044,
+			"hits": [
+				"0bc87d372dd3bc8a",
+				"0cbc87f9e3b40bf4",
+				"278449dea48425d0",
+				"416c4b393bbadb8d",
+				"55c121310cb40336",
+				"6c4f48c560bfb65a",
+				"6ebf7c329a9bda18",
+				"8e5ca78f15e066f4",
+				"aa1076f021bb8ef9",
+				"af515ce4713e04bc",
+				"b7c7e15afbaa5eed",
+				"b8ce33380b2f8e9b",
+				"c2178445fcf2ccd0",
+				"c6eb867f155974d2",
+				"d558219976751af0",
+				"db12da1e5002fd21",
+				"e809fb6422ac44e9"
+			],
+			"adjudications": {}
+		},
+		"property_test_candidate": {
+			"files_scanned": 1045,
+			"hits": [
+				"024b332172c5647a",
+				"036531025de0785c",
+				"03bc0cfa1edfcc72",
+				"06e2a27d47f122ba",
+				"08cf58542d5e0f39",
+				"08e7c6a33ee42c18",
+				"094a2ae7c3873197",
+				"0a4d327a7bd429d5",
+				"0cef0bca5acca28e",
+				"0d1ed23de616e895",
+				"0f74c42f7f6c301e",
+				"1286fb14185bb3b5",
+				"16dd6b63b2da937f",
+				"1731ce1d80764f30",
+				"17b52a686505970f",
+				"185557bdf6dce340",
+				"18e9e16976649d9a",
+				"1f82c5aa82476e25",
+				"247f2cfb575942a8",
+				"2533528da94cc83e",
+				"263a298a60a0507c",
+				"2a5c8f9ff6a3fd6d",
+				"2c33f33c66b7bfd6",
+				"2d83c6b0aa2a472c",
+				"2f5956cc91f0535e",
+				"2ffd77b2412417cf",
+				"303be22aea813739",
+				"335c5c29cb5174ac",
+				"33d4793cd4c058ca",
+				"34590bd799e18450",
+				"3b95ce1dfe8a97b6",
+				"3bc7d45a07e3d71e",
+				"3dc8e1a08987b7d1",
+				"4482eb32aace607e",
+				"4658ccf70678f0a6",
+				"4731f429ff76dacc",
+				"491d795175d4cbcd",
+				"4a3119745f93500b",
+				"4dabc7d59b07cc83",
+				"4f9d952da850c536",
+				"4f9f600cd2b8e1bf",
+				"515c3ecd9ae44a82",
+				"51ef6660cbbfbbb1",
+				"525c41beda31c21c",
+				"52afebda6775209f",
+				"5565383f399f788f",
+				"5592ed42766c5447",
+				"559f0f95876a9d0f",
+				"56c459048389016f",
+				"57bcfd636b6dc8e0",
+				"5898350f112500fa",
+				"5a0bd8f248d02361",
+				"5d659f963466930e",
+				"5d7acbf8bcb451ff",
+				"60b190e77c91ff06",
+				"62f067829b5a962b",
+				"653d5ae0535589fa",
+				"65b9d53c769c38e2",
+				"668167c9cae6e88e",
+				"6c8468c6e1f1e31d",
+				"6d4118f4dc991140",
+				"6e3aae1e8c158e6f",
+				"6f75bc12aad86575",
+				"710b9e0b17879baa",
+				"759f57fdbf2d809c",
+				"7c5f6b41b2db6b8c",
+				"7e2dd3acc8a25edd",
+				"81f92e0a3c6b9574",
+				"81fd954ed9e9d4c0",
+				"825b08f7d30e6151",
+				"82cf57a5096005eb",
+				"84e2274a99215ef2",
+				"84e3def2a388c647",
+				"86aa9f8fca167638",
+				"872b821793b67e3e",
+				"88aa66e32ecc6a33",
+				"8b87c5c9e0ed431d",
+				"8bade9b258aaea38",
+				"8c2832e7bfbcdf7f",
+				"8dd3cf988cab31f7",
+				"8e2df56b5cb2c5d9",
+				"8fc6e954d6db5fab",
+				"91d3a8b8a93a2224",
+				"91e75fc32d4698b8",
+				"937986e1fb92e76f",
+				"94315cfb5f9b608a",
+				"9568e599f63a8541",
+				"96fb835cd6fcfcc4",
+				"972bf71ba479b039",
+				"9d3fe8b6e69fb757",
+				"a04feede04572d68",
+				"a09dbaf9b2af6d18",
+				"a4fab204452a37e8",
+				"a62ec82385539549",
+				"a6a72cbc217453be",
+				"aa0115a5c94ef659",
+				"ad17d7f44ec524ef",
+				"afa91a64d2954f1e",
+				"afead6be9a2aa0d6",
+				"b35ce79ff74d2dc1",
+				"b422321aa77cacc0",
+				"b78420feaee16ca9",
+				"b8836eb9e09d22a7",
+				"b8fda818dc86547e",
+				"b98d4153870291a0",
+				"b9e459319cc68047",
+				"ba0376d52ed550df",
+				"baf3ab0e20919e31",
+				"bb484f75cfdb9b04",
+				"bcb9551bfa7915bb",
+				"bce4b9170b022f7b",
+				"c334c0852a6bd761",
+				"c53a2f1b39b82d26",
+				"c7f4a48cd966e5e1",
+				"c8a928172733fd37",
+				"c8e4e3929ab9db5c",
+				"ca6e692f065b82ae",
+				"cedff129aa64ecd4",
+				"cfe5d181346a24e5",
+				"d06ad60abe0a1b57",
+				"d20ace4ec828b4d1",
+				"d43f19ef47f4a818",
+				"d4588bd6b08b6560",
+				"d624c1a2776b025e",
+				"d766603f3a2a3e65",
+				"d8a74e676b481822",
+				"d92f5e3294466ef5",
+				"ddbef68a0081dc12",
+				"dde5d542659d87f2",
+				"df5e42e3c34a1ec6",
+				"df7a85b83ace9d73",
+				"e596f47541e6c51a",
+				"e71775d27efa3610",
+				"e74ff757f546b53c",
+				"e9ea18a60a8a95a6",
+				"eafa2de4208de16a",
+				"ebcbe3b2c8a75c45",
+				"ec68de172b334219",
+				"ec6cef1f65174da1",
+				"eec1d84fee7571b8",
+				"f091ade6b3a39d55",
+				"f41d882129e49bd9",
+				"f7dbbf59a63d8044",
+				"f8512de85ec7fb9c",
+				"fdc01c0ad35eb0a0"
+			],
+			"adjudications": {}
+		},
+		"misused_promises": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"async_promise_executor": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"self_import": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"eval_usage": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"inner_html": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"nan_comparison": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"throw_literal": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"promise_reject_non_error": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"raw_control_bytes": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"unsafe_optional_chaining": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"dangerously_set_inner_html": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"package_json_publish_invariants": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_mutex_lock_unwrap": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_subprocess_shell_true": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_tls_verify_disabled": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_py_none_equality": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_weak_hash": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"child_process_exec_user_input": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"mixed_sync_async_file_api": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"cookie_missing_security_flags": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"logger_format_user_input": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_marshal_load": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_shelve_open": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_yaml_unsafe_load": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_python_assert_tautology": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"unawaited_async_assertion": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"cjs_in_esm_module": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"circular_imports": {
+			"files_scanned": 1089,
+			"hits": [
+				"8c2926594bcfbb0f",
+				"9961fadbef618c6a",
+				"ab7c9812892aa6ad",
+				"e389292ea9205852"
+			],
+			"adjudications": {}
+		},
+		"nan_coercion_guard": {
+			"files_scanned": 1089,
+			"hits": [
+				"3f8a0303914d2aac",
+				"83cd0c7c4d0d201d",
+				"89e257991e95d285",
+				"8c35bab0e555a461",
+				"a51eec8376bc0d45",
+				"c4a08bf68d36d301",
+				"c96a473f482cdae4",
+				"cf0b5177f5ff6ef5",
+				"efef732f7b947333"
+			],
+			"adjudications": {}
+		},
+		"iterator_invalidation": {
+			"files_scanned": 1089,
+			"hits": [
+				"06ca9ee351c703ab",
+				"85d47b2dcc3ed844",
+				"a1eb1128efbda5b2"
+			],
+			"adjudications": {}
+		},
+		"fresh_collection_key_lookup": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"discriminated_union_exhaustiveness": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"index_bounds_unchecked": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"broad_object_types": {
+			"files_scanned": 1089,
+			"hits": [
+				"4cf5c9d7e78e3a1e",
+				"a0b3a52bd8d3feed"
+			],
+			"adjudications": {}
+		},
+		"floating_promises": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"extraneous_deps": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"constant_condition": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"number_precision_loss": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"accumulating_spread": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"excessive_use_state": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"direct_dom_access": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"inline_object_props": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"async_event_handler": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"lossy_error_rethrow": {
+			"files_scanned": 1089,
+			"hits": [
+				"0916b2015c9a4ac6",
+				"740fd17cee59a8cb",
+				"83b6d6ecf1b02113"
+			],
+			"adjudications": {}
+		},
+		"import_from_own_barrel": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"silent_promise_catch": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"placeholder_markdown_link": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"json_parse_unsafe": {
+			"files_scanned": 1089,
+			"hits": [
+				"850db4feeaad05af",
+				"d1755d44ad46bfbe"
+			],
+			"adjudications": {}
+		},
+		"hardcoded_timeout": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"disabled_tests": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"target_blank_no_rel": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"snapshot_overuse": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"test_importing_test": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"excessive_use_effect": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"index_as_key": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"missing_effect_cleanup": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"focused_tests": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"test_platform_conditional": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"test_silent_dependency_skip": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"migration_ordering": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"sql_schema_consistency": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"visibility_filter_missing": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"array_push_return_used": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"array_iteratee_variadic_builtin": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_js_loose_equality": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_float_equality": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_java_optional_get": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_eval_input_tainted": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_sql_string_concat": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"sql_escape_hatch_non_literal": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_python_mutable_default_arg": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_tempfile_mktemp_race": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_pickle_untrusted_load": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_xml_external_entity": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_os_system_tainted": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_unsafe_format_string": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_unchecked_redirect": {
+			"files_scanned": 1089,
+			"hits": [
+				"d4f24c588d633a12"
+			],
+			"adjudications": {}
+		},
+		"package_json_script_paths": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"tsconfig_strictness": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"identical_conditional_branches": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"rust_test_nondeterminism": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_naive_datetime": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"redos_catastrophic": {
+			"files_scanned": 1089,
+			"hits": [
+				"11123b93db72f6c8",
+				"11fb0606fc38389f",
+				"19b2a23551e2f7f9",
+				"2ce324222d1d734c",
+				"34b29454ac7d8457",
+				"3757c36b51afc28c",
+				"40ce5e3da87c2517",
+				"44fc5e4b1f22a428",
+				"456c23719128cfa5",
+				"60c49535848898ec",
+				"68b1f7db0d7dbf37",
+				"6f18ef190e137aed",
+				"79eca1d623a3beb0",
+				"7f74aa7931711889",
+				"84650c321e397a2a",
+				"8826eb856236df39",
+				"9388e026eca66c32",
+				"9cef43baceb6d546",
+				"a90779e6394de7cd",
+				"b93071c68236f199",
+				"c2d7ee01f3ea12a2",
+				"c8755e60f25a0718",
+				"d2b2f33df70ea273",
+				"d42189423d3a5349",
+				"dd0a127c11f439a7",
+				"dd203f2fc3865d8c",
+				"e447a1b16f08b05c",
+				"f4dc74f1be3b1e82",
+				"f766b74a83eaa458",
+				"ff428bd1e48cc518"
+			],
+			"adjudications": {}
+		},
+		"ubs_archive_extract_traversal": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_aes_ecb_mode": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_weak_random_security": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_torch_unsafe_load": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_pickle_wrapper_load": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_node_create_cipher": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_script_without_sri": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_go_shell_injection": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_github_actions_injection": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_document_write": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_outer_html_assignment": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"ubs_insert_adjacent_html": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"stub_not_implemented_throw": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"dead_branch_literal": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"file_level_suppression": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"double_cast_unknown": {
+			"files_scanned": 1089,
+			"hits": [
+				"34dc4c7e81f99669",
+				"37ff79feb5d89691",
+				"7df358decb2f4495"
+			],
+			"adjudications": {}
+		},
+		"type_smuggling": {
+			"files_scanned": 1089,
+			"hits": [
+				"32df69d4a5ec0880",
+				"346c5849aa8e8dd7",
+				"45faf49d4667fdd7",
+				"dd553294ce78b3c1"
+			],
+			"adjudications": {}
+		},
+		"nodeenv_branch_in_prod": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"fetch_without_timeout": {
+			"files_scanned": 1089,
+			"hits": [
+				"06b7506b15e040de",
+				"0dfbdbc07e44d691",
+				"50f39da36f731ebb",
+				"dac81190c6a73a57"
+			],
+			"adjudications": {}
+		},
+		"real_io_in_tests": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"hardcoded_timeout_in_tests": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"mocking_the_sut_self": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"migration_parity": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"silent_demo_fallback": {
+			"files_scanned": 1089,
+			"hits": [
+				"c8477b7da7419e4f"
+			],
+			"adjudications": {}
+		},
+		"demo_runtime_missing_banner": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"placeholder_data_in_ui": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"endpoint_auth_missing": {
+			"files_scanned": 1089,
+			"hits": [
+				"5f1e3d65488f1f0b",
+				"8964dcf68a797730"
+			],
+			"adjudications": {}
+		},
+		"endpoint_idor_shape": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"endpoint_missing_tenant_filter": {
+			"files_scanned": 1089,
+			"hits": [
+				"b50c34c4de363452"
+			],
+			"adjudications": {}
+		},
+		"endpoint_ssrf_shape": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"endpoint_mass_assignment": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"timeout_unit_mismatch": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"numeric_sort_without_comparator": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"implicit_switch_fallthrough": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"json_stringify_error": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"catch_rewrap_loses_cause": {
+			"files_scanned": 1089,
+			"hits": [
+				"368b58a808afc068",
+				"c18a72618b0a84c5"
+			],
+			"adjudications": {}
+		},
+		"jsdoc_param_drift": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_dangling_anchor": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_numbering": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_count_claim": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_pitfall": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_claim_untagged": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_capacity_claim": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_table_sum": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"spec_stage_order": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"assertion_free_test": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"tautological_assertion": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"mocking_the_sut": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"private_member_test_access": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"duplicate_switch_discriminant": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"law_of_demeter": {
+			"files_scanned": 1089,
+			"hits": [
+				"7f433aeb19e91ee3"
+			],
+			"adjudications": {}
+		},
+		"commented_out_code": {
+			"files_scanned": 1089,
+			"hits": [
+				"58d32775af287fee"
+			],
+			"adjudications": {}
+		},
+		"non_deterministic_test": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"empty_catch": {
+			"files_scanned": 1089,
+			"hits": [
+				"3e6fd2270f7d19a8"
+			],
+			"adjudications": {}
+		},
+		"test_without_description": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"duplicate_describe": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"c_unsafe_functions": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"c_include_guard": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"c_sprintf_usage": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_task_detached": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_dispatch_main_sync": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_task_sleep_legacy": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_weak_crypto": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_http_url_literal": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_userdefaults_for_secret": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_ats_arbitrary_loads": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_empty_catch": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_nsurl_legacy_bridge": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_filter_count": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		},
+		"swift_file_id_over_file_path": {
+			"files_scanned": 1089,
+			"hits": [],
+			"adjudications": {}
+		}
+	}
+}

@@ -16,18 +16,22 @@ import type { ScanFinding } from "../../harness/content-scanner/types.js";
 import { scannerReviewCommand } from "../scanner.js";
 
 let cwd: string;
-let originalCwd: string;
 let logSpy: ReturnType<typeof vi.spyOn>;
+// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+// is not supported in workers"), and Stryker's vitest runner pins its own
+// pool, so a real chdir here fails the mutation dry run for any file whose
+// graph-selected test scope includes this one. scannerReviewCommand reads
+// `process.cwd()` explicitly, so the spy exercises the same path.
+let cwdSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-	originalCwd = process.cwd();
 	cwd = mkdtempSync(join(tmpdir(), "scanner-review-"));
-	process.chdir(cwd);
+	cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
-	process.chdir(originalCwd);
+	cwdSpy.mockRestore();
 	rmSync(cwd, { recursive: true, force: true });
 	logSpy.mockRestore();
 	vi.restoreAllMocks();

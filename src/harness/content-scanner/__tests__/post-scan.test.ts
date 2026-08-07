@@ -365,6 +365,28 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 		expect(nonNull(scanSpy.mock.calls[0])[0].text.length).toBe(50_000);
 	});
 
+	it("falls back to a synthesized <tool-response> label when tool_input has no file_path", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([
+			{ label: "secret", start: 0, end: 3, text: "sk_", source: "" },
+		]);
+		const r = await runPostToolScan({
+			event: makeEvent({
+				tool_name: "Grep",
+				tool_input: { pattern: "sk_" },
+				tool_response: "line 1: sk_live_abc",
+			}),
+			session,
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toHaveLength(1);
+		// The ratchet must have been keyed off the synthesized label, not a
+		// missing file_path — session state changed, proving the fallback ran.
+		expect(session.sensitivity_level).toBe("HighlyConfidential");
+	});
+
 	it("scans Grep tool results (not just Read)", async () => {
 		const session = makeSession();
 		const scanner = makeScanner([
@@ -378,6 +400,149 @@ describe("runPostToolScan — taint ratchet + warnings", () => {
 			compiledAllowlist: NO_ALLOWLIST,
 		});
 		expect(r.findings).toHaveLength(1);
+	});
+});
+
+describe("runPostToolScan — response shape + fallback branches", () => {
+	it("returns empty when tool_response is null", async () => {
+		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: null }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toEqual([]);
+	});
+
+	it("returns empty when tool_response is undefined", async () => {
+		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: undefined }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toEqual([]);
+	});
+
+	it("serializes a structured (non-string) tool_response via JSON.stringify", async () => {
+		const scanner = makeScanner([
+			{ label: "private_email", start: 0, end: 7, text: "a@b.com", source: "" },
+		]);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: { matches: ["a@b.com"] } }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toHaveLength(1);
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(nonNull(scanSpy.mock.calls[0])[0].text).toBe(JSON.stringify({ matches: ["a@b.com"] }));
+	});
+
+	it("returns empty when a serialized structured response is too short to scan", async () => {
+		// `null` serializes to "null" (4 chars) which clears MIN_SERIALIZED_LENGTH,
+		// but a structured value with a shorter serialization (e.g. `{}` → 2 chars)
+		// must not be scanned.
+		const scanner = makeScanner([]);
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: {} }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toEqual([]);
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(scanSpy).not.toHaveBeenCalled();
+	});
+
+	it("returns empty when tool_response cannot be JSON.stringified (circular reference)", async () => {
+		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: circular }),
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toEqual([]);
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(scanSpy).not.toHaveBeenCalled();
+	});
+
+	it("defaults tool_name to empty string and skips applicability when absent", async () => {
+		const scanner = makeScanner([{ label: "secret", start: 0, end: 1, text: "x", source: "" }]);
+		const event = makeEvent({ tool_response: "secret" });
+		event.tool_name = undefined;
+		const r = await runPostToolScan({
+			event,
+			session: makeSession(),
+			rules: makeRules(makeScannerConfig()),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		expect(r.findings).toEqual([]);
+	});
+
+	it("falls back to output_scanning.max_scan_bytes when content_scanner.max_scan_bytes is unset", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([]);
+		const cfg = makeScannerConfig({ max_scan_bytes: 0 });
+		const rules = makeRules(cfg);
+		rules.output_scanning = { ...rules.output_scanning, max_scan_bytes: 30_000 };
+		const big = "x".repeat(50_000);
+		await runPostToolScan({
+			event: makeEvent({ tool_response: big }),
+			session,
+			rules,
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(nonNull(scanSpy.mock.calls[0])[0].text.length).toBe(30_000);
+	});
+
+	it("falls back to DEFAULT_MAX_SCAN_BYTES when neither config specifies a limit", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([]);
+		const cfg = makeScannerConfig({ max_scan_bytes: 0 });
+		const rules = makeRules(cfg);
+		rules.output_scanning = { ...rules.output_scanning, max_scan_bytes: 0 };
+		const big = "x".repeat(200_000);
+		await runPostToolScan({
+			event: makeEvent({ tool_response: big }),
+			session,
+			rules,
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(nonNull(scanSpy.mock.calls[0])[0].text.length).toBe(100_000);
+	});
+
+	it("falls back to DEFAULT_SCAN_TIMEOUT_MS when scan_timeout_ms is unset (0)", async () => {
+		const session = makeSession();
+		const scanner = makeScanner([]);
+		const cfg = makeScannerConfig();
+		cfg.local = { ...cfg.local, scan_timeout_ms: 0 };
+		const r = await runPostToolScan({
+			event: makeEvent({ tool_response: "hello" }),
+			session,
+			rules: makeRules(cfg),
+			scanner,
+			compiledAllowlist: NO_ALLOWLIST,
+		});
+		// No throw, and the call still went through with the default timeout.
+		expect(r.findings).toEqual([]);
+		const scanSpy = scanner.scan as unknown as ReturnType<typeof vi.fn>;
+		expect(scanSpy).toHaveBeenCalledTimes(1);
 	});
 });
 

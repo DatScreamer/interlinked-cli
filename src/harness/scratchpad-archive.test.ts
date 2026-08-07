@@ -3,14 +3,48 @@
 // bounded work (dir/extension/binary excludes, per-file + total + count caps)
 // and manifest-recorded skips (no silent truncation).
 
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import {
-	archiveScratchpadDir,
-	deriveScratchpadCandidates,
-} from "./scratchpad-archive.js";
+import { describe, expect, it, vi } from "vitest";
+import type { GuardRulesConfig } from "./types.js";
+
+// realpathSync is forced to always fail so `deriveScratchpadCandidates`'s
+// catch-fallback (base path used as-is) is exercised — on this dev host
+// tmpdir()/"/tmp"/"/private/tmp" all resolve cleanly, so the fallback is
+// otherwise unreachable without mocking. statSync is trapped ONLY for an
+// exact path a test opts into (`statTrapPath`), simulating a stat that fails
+// after the file was already listed (a listing/archiving race) without
+// disturbing any other statSync call in this file (the top-of-function
+// sourceDir check, or any other fixture file).
+let statTrapPath: string | null = null;
+vi.mock("node:fs", async () => {
+	const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+	return {
+		...actual,
+		realpathSync: () => {
+			throw new Error("no realpath");
+		},
+		statSync: (...args: Parameters<typeof actual.statSync>) => {
+			if (statTrapPath !== null && args[0] === statTrapPath) {
+				throw new Error("stat trap for coverage");
+			}
+			return actual.statSync(...args);
+		},
+	};
+});
+
+const { archiveScratchpadDir, deriveScratchpadCandidates, runSessionEndScratchpadArchive } =
+	await import("./scratchpad-archive.js");
 
 function makeFixture(): { source: string; destRoot: string } {
 	const base = mkdtempSync(join(tmpdir(), "scratch-arch-"));
@@ -112,6 +146,65 @@ describe("archiveScratchpadDir", () => {
 			archiveScratchpadDir({ sourceDir: "/nonexistent/nowhere", destRoot, sessionId: "s7" }),
 		).toBeNull();
 	});
+
+	it("returns null when sourceDir exists but is not a directory", () => {
+		const { source, destRoot } = makeFixture();
+		const filePath = join(source, "probe.mts"); // an existing regular file
+		expect(archiveScratchpadDir({ sourceDir: filePath, destRoot, sessionId: "s8" })).toBeNull();
+	});
+
+	it("skips directory entries that are neither files, dirs, nor symlinks (e.g. a FIFO)", () => {
+		const { source, destRoot } = makeFixture();
+		const fifoPath = join(source, "a.fifo");
+		execSync(`mkfifo "${fifoPath}"`);
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "s9" });
+		expect(summary?.fileCount).toBe(2); // the FIFO is silently skipped, not archived
+	});
+
+	it("skips a file that disappears between listing and archiving (stat race)", () => {
+		const { source, destRoot } = makeFixture();
+		const racedPath = join(source, "raced.txt");
+		writeFileSync(racedPath, "x");
+		statTrapPath = racedPath;
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "s10" });
+		statTrapPath = null;
+		expect(
+			summary?.skipped.some((s) => s.path === "raced.txt" && s.reason === "unreadable"),
+		).toBe(true);
+		expect(summary?.fileCount).toBe(2); // the two fixture files; raced.txt skipped
+	});
+
+	it("skips a file it cannot read due to permissions (statSync ok, readFileSync fails)", () => {
+		const { source, destRoot } = makeFixture();
+		const noReadPath = join(source, "secret.txt");
+		writeFileSync(noReadPath, "shh");
+		chmodSync(noReadPath, 0o000);
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "s11" });
+		chmodSync(noReadPath, 0o644);
+		expect(
+			summary?.skipped.some((s) => s.path === "secret.txt" && s.reason === "unreadable"),
+		).toBe(true);
+	});
+
+	it("stops after max_files and marks the archive truncated with file-cap skips", () => {
+		const { source, destRoot } = makeFixture(); // 2 fixture files already
+		writeFileSync(join(source, "extra.txt"), "z");
+		const summary = archiveScratchpadDir({
+			sourceDir: source,
+			destRoot,
+			sessionId: "s12",
+			config: { max_files: 1 },
+		});
+		expect(summary?.fileCount).toBe(1);
+		expect(summary?.truncated).toBe(true);
+		expect(summary?.skipped.some((s) => s.reason === "file-cap")).toBe(true);
+	});
+
+	it("falls back to 'unknown-session' for a sessionId that sanitizes to empty", () => {
+		const { source, destRoot } = makeFixture();
+		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "" });
+		expect(summary?.manifestPath).toBe(join(destRoot, "unknown-session.manifest.json"));
+	});
 });
 
 describe("deriveScratchpadCandidates", () => {
@@ -133,6 +226,15 @@ describe("deriveScratchpadCandidates", () => {
 		expect(
 			deriveScratchpadCandidates({ cwd: "/Users/x/repo", sessionId: "sess-123", uid: undefined }),
 		).toEqual([]);
+	});
+
+	it("falls back to the raw base path when realpathSync fails", () => {
+		// This file's module-level mock makes realpathSync always throw.
+		const candidates = deriveScratchpadCandidates({ cwd: "/a/b", sessionId: "s1", uid: 42 });
+		expect(candidates.length).toBeGreaterThan(0);
+		for (const c of candidates) {
+			expect(c.endsWith(join("claude-42", "-a-b", "s1", "scratchpad"))).toBe(true);
+		}
 	});
 });
 
@@ -206,5 +308,106 @@ describe("archiveScratchpadDir — archive_excludes globs", () => {
 		writeFileSync(join(source, "bulk", "one.txt"), "a\n");
 		const summary = archiveScratchpadDir({ sourceDir: source, destRoot, sessionId: "g2" });
 		expect(summary?.fileCount).toBe(3);
+	});
+});
+
+describe("runSessionEndScratchpadArchive", () => {
+	/** Creates a real scratchpad directory at the exact host-layout path
+	 *  `deriveScratchpadCandidates` would derive for (cwd, sessionId), so the
+	 *  private `archiveSessionScratchpad` lookup succeeds end-to-end. */
+	function setupRealScratchpad(cwd: string, sessionId: string): void {
+		const uid = process.getuid?.();
+		if (uid === undefined) throw new Error("test requires a POSIX host (process.getuid)");
+		const candidates = deriveScratchpadCandidates({ cwd, sessionId, uid });
+		const dir = candidates[0];
+		if (!dir) throw new Error("no candidate scratchpad path derived");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "note.txt"), "hello\n");
+	}
+
+	it("does nothing when scratchpad_archive.enabled is false", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const log = vi.fn();
+		runSessionEndScratchpadArchive({
+			cwd,
+			sessionId: "disabled-1",
+			rules: { scratchpad_archive: { enabled: false } } as GuardRulesConfig,
+			log,
+		});
+		expect(log).not.toHaveBeenCalled();
+	});
+
+	it("logs nothing when no scratchpad exists for the session", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const log = vi.fn();
+		runSessionEndScratchpadArchive({
+			cwd,
+			sessionId: `no-scratch-${Date.now()}`,
+			rules: {} as GuardRulesConfig,
+			log,
+		});
+		expect(log).not.toHaveBeenCalled();
+	});
+
+	it("archives a real scratchpad and logs the summary", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const sessionId = `real-${Date.now()}`;
+		setupRealScratchpad(cwd, sessionId);
+		const log = vi.fn();
+		runSessionEndScratchpadArchive({ cwd, sessionId, rules: {} as GuardRulesConfig, log });
+		expect(log).toHaveBeenCalledTimes(1);
+		const message = (log.mock.calls[0] as [string])[0];
+		expect(message).toContain("Scratchpad archived:");
+		expect(message).not.toContain("(truncated)");
+	});
+
+	it("logs '(truncated)' when the archived scratchpad hit its file cap", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const sessionId = `truncated-${Date.now()}`;
+		setupRealScratchpad(cwd, sessionId); // writes one file (note.txt)
+		const log = vi.fn();
+		runSessionEndScratchpadArchive({
+			cwd,
+			sessionId,
+			rules: { scratchpad_archive: { max_files: 0 } } as GuardRulesConfig,
+			log,
+		});
+		expect(log).toHaveBeenCalledTimes(1);
+		const message = (log.mock.calls[0] as [string])[0];
+		expect(message).toContain("(truncated)");
+	});
+
+	it("logs a non-fatal failure message when the log callback throws an Error", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const sessionId = `err-${Date.now()}`;
+		setupRealScratchpad(cwd, sessionId);
+		let calls = 0;
+		const log = vi.fn((_msg: string) => {
+			calls++;
+			if (calls === 1) throw new Error("log boom");
+		});
+		expect(() =>
+			runSessionEndScratchpadArchive({ cwd, sessionId, rules: {} as GuardRulesConfig, log }),
+		).not.toThrow();
+		expect(log).toHaveBeenCalledTimes(2);
+		expect((log.mock.calls[1] as [string])[0]).toBe(
+			"Scratchpad archive failed (non-fatal): log boom",
+		);
+	});
+
+	it("logs a non-fatal failure message when the log callback throws a non-Error", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sess-end-cwd-"));
+		const sessionId = `errstr-${Date.now()}`;
+		setupRealScratchpad(cwd, sessionId);
+		let calls = 0;
+		const log = vi.fn((_msg: string) => {
+			calls++;
+			if (calls === 1) throw "log boom string";
+		});
+		runSessionEndScratchpadArchive({ cwd, sessionId, rules: {} as GuardRulesConfig, log });
+		expect(log).toHaveBeenCalledTimes(2);
+		expect((log.mock.calls[1] as [string])[0]).toBe(
+			"Scratchpad archive failed (non-fatal): log boom string",
+		);
 	});
 });

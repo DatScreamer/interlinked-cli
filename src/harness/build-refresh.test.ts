@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	resolveOwnArtifact,
 	shouldHandOver,
+	spawnRestartViaCli,
 	startBuildRefreshWatcher,
 } from "./build-refresh.js";
 
@@ -417,5 +418,116 @@ describe("startBuildRefreshWatcher", () => {
 				rmSync(dir, { recursive: true, force: true });
 			}
 		});
+	});
+
+	describe("real statMtimeMs (no deps override — hits defaultStatMtimeMs)", () => {
+		it("polls a real on-disk artifact and spawns once it is newer and settled", () => {
+			const dir = mkdtempSync(join(tmpdir(), "build-refresh-realstat-"));
+			try {
+				const distDir = join(dir, "dist", "harness");
+				mkdirSync(distDir, { recursive: true });
+				const artifactPath = join(distDir, "server.js");
+				const old = new Date(Date.now() - 3_600_000);
+				writeFileSync(artifactPath, "");
+				utimesSync(artifactPath, old, old);
+
+				const spawn = vi.fn(() => ({ unref: vi.fn() }));
+				const log = vi.fn();
+				const dispose = startBuildRefreshWatcher({
+					moduleUrl: pathToFileURL(artifactPath).href,
+					cwd: dir,
+					lastActivityMs: () => 0,
+					log,
+					env: {},
+					deps: { spawn: spawn as never },
+				});
+
+				// Bump the artifact's mtime forward — the watcher must observe
+				// this via the REAL statSync (defaultStatMtimeMs), not a mock.
+				const fresh = new Date();
+				utimesSync(artifactPath, fresh, fresh);
+				vi.advanceTimersByTime(61_000);
+
+				expect(spawn).toHaveBeenCalledTimes(1);
+				dispose();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not throw and simply stops polling when the artifact disappears mid-run", () => {
+			const dir = mkdtempSync(join(tmpdir(), "build-refresh-realstat-missing-"));
+			try {
+				const distDir = join(dir, "dist", "harness");
+				mkdirSync(distDir, { recursive: true });
+				const artifactPath = join(distDir, "server.js");
+				writeFileSync(artifactPath, "");
+
+				const spawn = vi.fn(() => ({ unref: vi.fn() }));
+				const dispose = startBuildRefreshWatcher({
+					moduleUrl: pathToFileURL(artifactPath).href,
+					cwd: dir,
+					lastActivityMs: () => 0,
+					log: vi.fn(),
+					env: {},
+					deps: { spawn: spawn as never },
+				});
+
+				// Removing the artifact makes the next defaultStatMtimeMs() poll
+				// hit its catch branch (statSync throws ENOENT) and return null.
+				rmSync(artifactPath, { force: true });
+				vi.advanceTimersByTime(61_000);
+
+				expect(spawn).not.toHaveBeenCalled();
+				dispose();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+});
+
+describe("spawnRestartViaCli", () => {
+	it("returns false for a src-run module URL (nothing to spawn)", () => {
+		const spawn = vi.fn();
+		expect(
+			spawnRestartViaCli("file:///repo/src/harness/server.ts", "/repo", spawn as never),
+		).toBe(false);
+		expect(spawn).not.toHaveBeenCalled();
+	});
+
+	it("spawns the detached restart via the CLI entry and returns true", () => {
+		const unref = vi.fn();
+		const spawn = vi.fn(() => ({ unref }));
+		const result = spawnRestartViaCli(
+			"file:///repo/dist/harness/server.js",
+			"/repo",
+			spawn as never,
+		);
+		expect(result).toBe(true);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		const [cmd, argv, opts] = spawn.mock.calls[0] as unknown as [
+			string,
+			string[],
+			{ cwd: string; detached: boolean; stdio: string },
+		];
+		expect(cmd).toBe(process.execPath);
+		expect(argv).toEqual(["/repo/dist/index.js", "harness", "restart"]);
+		expect(opts.cwd).toBe("/repo");
+		expect(opts.detached).toBe(true);
+		expect(opts.stdio).toBe("ignore");
+		expect(unref).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns false when spawn throws", () => {
+		const spawn = vi.fn(() => {
+			throw new Error("spawn failed");
+		});
+		const result = spawnRestartViaCli(
+			"file:///repo/dist/harness/server.js",
+			"/repo",
+			spawn as never,
+		);
+		expect(result).toBe(false);
 	});
 });

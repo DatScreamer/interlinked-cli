@@ -2,6 +2,9 @@
 // Impact Analysis — Unit Tests
 // ===========================================
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { InternalDependencyView } from "../dependency-view.js";
@@ -427,5 +430,221 @@ describe("formatImpactWarning", () => {
 		expect(warnings.length).toBeGreaterThanOrEqual(3);
 		expect(warnings.some((w) => w.includes("Breaking imports"))).toBe(true);
 		expect(warnings.some((w) => w.includes("Test files"))).toBe(true);
+	});
+
+	it("omits the test-files line for medium severity with no test files", () => {
+		const result: ImpactAnalysisResult = {
+			file: "/project/src/utils.ts",
+			severity: "medium",
+			moduleRole: "internal",
+			dependentCount: 2,
+			breakingFiles: ["/project/src/a.ts"],
+			testFiles: [],
+			followUpFiles: ["/project/src/a.ts"],
+			exportSurfaceChanged: true,
+			summary: "MEDIUM: utils.ts export surface changed.",
+		};
+
+		expect(formatImpactWarning(result, graph)).toEqual([
+			"[interlinked:impact_analysis] MEDIUM: utils.ts export surface changed.",
+		]);
+	});
+
+	it("adds a (+N more) suffix past 5 breaking files for critical severity", () => {
+		const breakingFiles = Array.from({ length: 6 }, (_, i) => `/project/src/b${i}.ts`);
+		const result: ImpactAnalysisResult = {
+			file: "/project/src/hub.ts",
+			severity: "critical",
+			moduleRole: "hub",
+			dependentCount: 10,
+			breakingFiles,
+			testFiles: ["src/hub.test.ts"],
+			followUpFiles: ["/project/src/a.ts"],
+			exportSurfaceChanged: true,
+			summary: "CRITICAL: hub.ts is a hub module with 10 dependents.",
+		};
+
+		const warnings = formatImpactWarning(result, graph);
+		const breakingLine = warnings.find((w) => w.includes("Breaking imports"));
+		expect(breakingLine).toContain("(+1 more)");
+	});
+
+	it("omits breaking/test/follow-up lines for high severity when all are empty", () => {
+		const result: ImpactAnalysisResult = {
+			file: "/project/src/core.ts",
+			severity: "high",
+			moduleRole: "internal",
+			dependentCount: 5,
+			breakingFiles: [],
+			testFiles: [],
+			followUpFiles: [],
+			exportSurfaceChanged: true,
+			summary: "HIGH: core.ts export surface changed.",
+		};
+
+		expect(formatImpactWarning(result, graph)).toEqual([
+			"[interlinked:impact_analysis] HIGH: core.ts export surface changed.",
+		]);
+	});
+});
+
+// -------------------------------------------
+// Breaking/follow-up file dedup
+// -------------------------------------------
+
+describe("runImpactAnalysis — dedup and no-breaking-file medium path", () => {
+	const config = { highThreshold: 4 };
+
+	it("dedups duplicate affectedFiles from export_surface results", () => {
+		const graph = makeGraph({ dependents: [], moduleRole: "internal" });
+		const oldExports = makeExports("foo", "bar");
+		const newExports = makeExports("foo");
+		const structural: StructuralCheckResult[] = [
+			{
+				check: "export_surface",
+				severity: "warning",
+				message: "Removed export: bar",
+				file: "/project/src/utils.ts",
+				affectedFiles: ["/project/src/a.ts", "/project/src/a.ts"],
+			},
+		];
+
+		const result = runImpactAnalysis(
+			"/project/src/utils.ts",
+			makeView(graph),
+			graph,
+			oldExports,
+			newExports,
+			structural,
+			config,
+		);
+
+		expect(result.breakingFiles).toEqual(["/project/src/a.ts"]);
+	});
+
+	it("dedups interface_change_impact follow-ups against breaking files and each other", () => {
+		const graph = makeGraph({ dependents: [], moduleRole: "internal" });
+		const oldExports = makeExports("foo", "bar");
+		const newExports = makeExports("foo");
+		const structural: StructuralCheckResult[] = [
+			{
+				check: "export_surface",
+				severity: "warning",
+				message: "Removed export: bar",
+				file: "/project/src/utils.ts",
+				affectedFiles: ["/project/src/a.ts"],
+			},
+			{
+				check: "interface_change_impact",
+				severity: "warning",
+				message: "Interface changed",
+				file: "/project/src/utils.ts",
+				affectedFiles: ["/project/src/a.ts", "/project/src/b.ts", "/project/src/b.ts"],
+			},
+		];
+
+		const result = runImpactAnalysis(
+			"/project/src/utils.ts",
+			makeView(graph),
+			graph,
+			oldExports,
+			newExports,
+			structural,
+			config,
+		);
+
+		expect(result.followUpFiles).toEqual(["/project/src/a.ts", "/project/src/b.ts"]);
+	});
+
+	it("classifies medium via export change + dependents with zero breaking files", () => {
+		const graph = makeGraph({
+			dependents: ["/project/src/a.ts", "/project/src/b.ts"],
+			moduleRole: "internal",
+		});
+		const oldExports = makeExports("foo", "bar");
+		const newExports = makeExports("foo");
+
+		const result = runImpactAnalysis(
+			"/project/src/utils.ts",
+			makeView(graph),
+			graph,
+			oldExports,
+			newExports,
+			[],
+			config,
+		);
+
+		expect(result.severity).toBe("medium");
+		expect(result.breakingFiles).toEqual([]);
+		expect(result.summary).toBe(
+			"MEDIUM: src/utils.ts (internal) export surface changed. 2 dependent(s).",
+		);
+	});
+});
+
+// -------------------------------------------
+// Test file discovery (real fs)
+// -------------------------------------------
+
+describe("runImpactAnalysis — test file discovery", () => {
+	it("discovers colocated, __tests__, and dependent test files", () => {
+		const dir = mkdtempSync(join(tmpdir(), "impact-analysis-"));
+		try {
+			const srcFile = join(dir, "utils.ts");
+			writeFileSync(srcFile, "export const x = 1;\n");
+			writeFileSync(join(dir, "utils.test.ts"), "");
+			mkdirSync(join(dir, "__tests__"));
+			writeFileSync(join(dir, "__tests__", "utils.test.ts"), "");
+
+			const graph = makeGraph({
+				dependents: ["/project/x.test.ts", "/project/x.test.ts", "/project/normal.ts"],
+				moduleRole: "leaf",
+				toRelative: (f: string) => f,
+			});
+			const exports = makeExports("foo");
+
+			const result = runImpactAnalysis(
+				srcFile,
+				makeView(graph),
+				graph,
+				exports,
+				exports,
+				[],
+				{ highThreshold: 4 },
+			);
+
+			expect(result.testFiles).toEqual([
+				join(dir, "utils.test.ts"),
+				join(dir, "__tests__", "utils.test.ts"),
+				"/project/x.test.ts",
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// -------------------------------------------
+// checkFollowUpViolation — (+N more) suffix
+// -------------------------------------------
+
+describe("checkFollowUpViolation — remaining-file overflow", () => {
+	it("adds a (+N more) suffix when more than 3 files remain", () => {
+		const session = makeSession();
+		session.pending_completions.set("/project/src/utils.ts", {
+			source_file: "/project/src/utils.ts",
+			affected_files: [
+				"/project/src/a.ts",
+				"/project/src/b.ts",
+				"/project/src/c.ts",
+				"/project/src/d.ts",
+			],
+			resolved_files: new Set(),
+			recorded_at_tool_call: 5,
+			description: "Export changed",
+		});
+
+		const result = checkFollowUpViolation("/project/src/unrelated.ts", session);
+		expect(result).toContain("(+1 more)");
 	});
 });

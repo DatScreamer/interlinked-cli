@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	configuredCeilingBytes,
 	DEFAULT_DAEMON_HEAP_MB,
 	DEFAULT_RSS_CEILING_BYTES,
 	shouldRecycle,
@@ -60,5 +61,56 @@ describe("shouldRecycle", () => {
 		expect(heapBytes).toBeLessThan(DEFAULT_RSS_CEILING_BYTES);
 		// Headroom for external memory + code + stacks before the backstop.
 		expect(DEFAULT_RSS_CEILING_BYTES - heapBytes).toBeGreaterThan(150 * 1024 * 1024);
+	});
+});
+
+describe("configuredCeilingBytes", () => {
+	it("falls back to the default when the env var is undefined", () => {
+		expect(configuredCeilingBytes({})).toBe(DEFAULT_RSS_CEILING_BYTES);
+	});
+
+	it("falls back to the default when the env var is an empty string", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "" })).toBe(
+			DEFAULT_RSS_CEILING_BYTES,
+		);
+	});
+
+	it("converts a valid MB override to bytes", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "500" })).toBe(
+			500 * 1024 * 1024,
+		);
+	});
+
+	it("floors a fractional MB override rather than rounding", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "10.7" })).toBe(
+			10 * 1024 * 1024,
+		);
+	});
+
+	it("treats 0 as a valid explicit override (the documented 'off' value), not malformed", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "0" })).toBe(0);
+	});
+
+	it("falls back to the default (not 0) when the override is non-numeric", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "not-a-number" })).toBe(
+			DEFAULT_RSS_CEILING_BYTES,
+		);
+	});
+
+	it("falls back to the default (not 0) when the override is negative", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "-5" })).toBe(
+			DEFAULT_RSS_CEILING_BYTES,
+		);
+	});
+
+	it("defaults to process.env when no env argument is passed", () => {
+		const prior = process.env.INTERLINKED_HARNESS_RSS_CEILING_MB;
+		process.env.INTERLINKED_HARNESS_RSS_CEILING_MB = "42";
+		try {
+			expect(configuredCeilingBytes()).toBe(42 * 1024 * 1024);
+		} finally {
+			if (prior === undefined) delete process.env.INTERLINKED_HARNESS_RSS_CEILING_MB;
+			else process.env.INTERLINKED_HARNESS_RSS_CEILING_MB = prior;
+		}
 	});
 });

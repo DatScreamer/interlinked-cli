@@ -329,15 +329,20 @@ describe("coverageCheckCommand", () => {
 	});
 
 	it("defaults cwd to process.cwd() when no cwd option is given", async () => {
-		const orig = process.cwd();
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins its own pool, so a real chdir here fails the mutation dry
+		// run for any file whose graph-selected test scope includes this one.
+		// coverageCheckCommand reads `process.cwd()` explicitly via
+		// `opts.cwd || process.cwd()`, so the spy exercises the same path.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 		try {
-			process.chdir(tmp);
 			// Empty dir → no report; exercises `opts.cwd || process.cwd()`.
 			await coverageCheckCommand({});
 			expect(io.mocks().exitCode).toBe(1);
 			expect(io.mocks().stderr).toContain("No coverage report found");
 		} finally {
-			process.chdir(orig);
+			cwdSpy.mockRestore();
 		}
 	});
 });
@@ -641,13 +646,18 @@ describe("coverageBaselineCommand", () => {
 	});
 
 	it("defaults cwd to process.cwd() when no cwd option is given", () => {
-		const orig = process.cwd();
+		// SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
+		// is not supported in workers"), and Stryker's vitest runner pins its own
+		// pool, so a real chdir here fails the mutation dry run for any file whose
+		// graph-selected test scope includes this one. coverageBaselineCommand reads
+		// `process.cwd()` explicitly via `opts.cwd || process.cwd()`, so the spy
+		// exercises the same path.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
 		try {
-			process.chdir(tmp);
 			coverageBaselineCommand({});
 			expect(io.mocks().stdout).toContain("no baseline yet");
 		} finally {
-			process.chdir(orig);
+			cwdSpy.mockRestore();
 		}
 	});
 });
