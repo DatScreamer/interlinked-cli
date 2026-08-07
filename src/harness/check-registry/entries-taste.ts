@@ -24,6 +24,7 @@ import {
 	checkTautologicalAssertion,
 	checkTestWithoutDescription,
 } from "../taste-checks.js";
+import { checkTimingFlake } from "../checks/timing-flake.js";
 import type { CheckRegistration } from "./types.js";
 
 export const TASTE_ENTRIES: CheckRegistration[] = [
@@ -222,6 +223,25 @@ export const TASTE_ENTRIES: CheckRegistration[] = [
 			"This test uses a non-deterministic API without fake timers/mocks. Tests become flaky and fail unpredictably. Use vi.useFakeTimers() / vi.setSystemTime(), or pass deterministic inputs.",
 		fn: checkNonDeterministicTest,
 		resultsPropName: "nonDeterministicTest",
+	},
+	{
+		// Sibling of non_deterministic_test, which covers Date.now()/Math.random()
+		// but NOT the commoner shape: a hardcoded wait standing in for a condition.
+		// Both instances found in this repo (2026-08-05/06) passed in isolation and
+		// failed only under a loaded full-suite run — and because vitest emits NO
+		// coverage report when any test fails, each one cost an entire measurement.
+		id: "timing_flake",
+		phase: "post",
+		name: "Fixed-Wait Timing Flake",
+		description: "Test waits a hardcoded duration, then asserts — flaky under load",
+		tier: 2,
+		determinism: "partially_deterministic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This test waits a fixed duration and then asserts, which encodes a guess about how long async work takes — it passes on an idle machine and fails under parallel load, then passes again on re-run so it survives triage. Poll for the condition with a generous ceiling (`while (Date.now() < deadline && !ready()) await sleep(25)`) so the timeout bounds only failure, or use fake timers when the elapsed time itself is the behavior under test. For timing comparisons take a best-of-N sample rather than one.",
+		fn: checkTimingFlake,
+		resultsPropName: "timingFlake",
 	},
 	{
 		id: "empty_catch",

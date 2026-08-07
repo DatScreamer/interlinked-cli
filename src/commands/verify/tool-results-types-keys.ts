@@ -133,6 +133,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"commentedOutCode",
 	"conditionalInTest",
 	"nonDeterministicTest",
+	"timingFlake",
 	"emptyCatch",
 	"testWithoutDescription",
 	"assertionRoulette",

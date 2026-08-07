@@ -10,14 +10,24 @@ describe("batchSections", () => {
 		expect(batchSections.length).toBeGreaterThan(0);
 	});
 
-	it("each entry has well-formed fields", () => {
+	it("each entry has well-formed, non-empty fields", () => {
 		for (const spec of batchSections) {
 			expect(typeof spec.label).toBe("string");
+			expect(spec.label.length).toBeGreaterThan(0);
 			expect(typeof spec.key).toBe("string");
+			expect(spec.key.length).toBeGreaterThan(0);
 			expect(typeof spec.noun).toBe("string");
+			expect(spec.noun.length).toBeGreaterThan(0);
 			expect(typeof spec.passLabel).toBe("string");
+			expect(spec.passLabel.length).toBeGreaterThan(0);
 			expect(["31", "33"].includes(spec.color)).toBe(true);
 		}
+	});
+
+	it("pins skip ids for every section that declares one", () => {
+		const byKey = new Map(batchSections.map((spec) => [spec.key, spec]));
+		expect(byKey.get("introvertedTest")?.skipId).toBe("introverted_test");
+		expect(byKey.get("procfsProbeInTest")?.skipId).toBe("procfs_probe_in_test");
 	});
 
 	it("opens with the Batch 1 agent-laziness checks", () => {

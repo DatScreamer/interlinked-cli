@@ -179,6 +179,8 @@ export interface CodeQualityResults {
 	// AI test-smell checks
 	conditionalInTest: CodeQualityIssue[];
 	nonDeterministicTest: CodeQualityIssue[];
+	/** Fixed `await sleep(N)` before an assertion — passes idle, fails under load. */
+	timingFlake: CodeQualityIssue[];
 	emptyCatch: CodeQualityIssue[];
 	testWithoutDescription: CodeQualityIssue[];
 	assertionRoulette: CodeQualityIssue[];

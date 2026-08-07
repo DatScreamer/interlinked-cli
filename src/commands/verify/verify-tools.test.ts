@@ -82,14 +82,20 @@ function runnerKey(cmd: string[]): string {
 // parallel spinner interval gets to fire at least once while work is pending
 // (exercises the spinner-body branch). Default: resolve synchronously.
 let deferRunners = false;
+// Per-key override (keyed the same way as runnerScript, e.g. "tsc"/"dep audit"'s
+// npm-audit key "audit") for tests that need staggered completion times to
+// observe an intermediate spinner frame (partial completed/total, partial
+// "waiting:" set) rather than just "eventually resolves".
+let perKeyDelayMs: Record<string, number> = {};
 function fakeRun(args: RunArgs): Promise<{ items: unknown[]; elapsedMs: string }> {
 	const key = runnerKey(args.cmd);
 	const scripted = runnerScript[key] ?? { output: "", status: 0 };
 	const items = args.parseOutput(scripted.output, scripted.status);
 	const value = { items, elapsedMs: "0.0s" };
-	if (deferRunners) {
+	const delay = perKeyDelayMs[key] ?? (deferRunners ? 200 : 0);
+	if (delay > 0) {
 		return new Promise((resolve) => {
-			setTimeout(() => resolve(value), 200);
+			setTimeout(() => resolve(value), delay);
 		});
 	}
 	return Promise.resolve(value);
@@ -115,6 +121,7 @@ beforeEach(() => {
 	npmAuditReturn = null;
 	runnerScript = {};
 	deferRunners = false;
+	perKeyDelayMs = {};
 	loadFileSuppressions.mockImplementation(() => new Set<string>());
 	stderr = [];
 	origErr = process.stderr.write;
@@ -676,5 +683,380 @@ describe("streamExternalTools — parallel multi-tool path", () => {
 		});
 		expect(summary).toEqual([]);
 		expect(flagged.size).toBe(0);
+	});
+});
+
+// =========================================================================
+// 7. TOOLS_TO_RUN — exact command vectors (hand-transcribed, not derived
+//    from the source's own constants — kills every StringLiteral mutant in
+//    the table in one shot).
+// =========================================================================
+
+describe("TOOLS_TO_RUN — exact command vectors", () => {
+	it("matches the hand-transcribed expected id -> cmd table exactly", () => {
+		const expected: Record<string, string[]> = {
+			oxlint: ["npx", "oxlint", "--format=json", "."],
+			gitleaks: [
+				"gitleaks",
+				"detect",
+				"--no-git",
+				"--no-banner",
+				"--report-format",
+				"json",
+				"--report-path",
+				"/dev/stdout",
+				"--source",
+				".",
+			],
+			biome: [
+				"npx",
+				"--yes",
+				"--package",
+				"@biomejs/biome",
+				"biome",
+				"check",
+				"--no-errors-on-unmatched",
+				".",
+			],
+			eslint: ["npx", "eslint", "--no-error-on-unmatched-pattern", "--format", "unix", "."],
+			tsc: ["npx", "tsc", "--noEmit", "--pretty", "false"],
+			semgrep: [
+				"semgrep",
+				"scan",
+				"--quiet",
+				"--no-git-ignore",
+				"--metrics",
+				"off",
+				"--config",
+				"p/default",
+				"--json",
+				".",
+			],
+			knip: ["npx", "knip", "--no-progress", "--reporter", "json"],
+			"docs-check": ["node", "scripts/check-docs.mjs"],
+		};
+		const actual: Record<string, string[]> = {};
+		for (const t of TOOLS_TO_RUN) actual[t.id] = t.cmd;
+		expect(actual).toEqual(expected);
+	});
+});
+
+// =========================================================================
+// 8. Tool-availability lookup (line 196: `avail?.available`)
+// =========================================================================
+
+describe("streamExternalTools — availability lookup", () => {
+	it("filters out every tool when discoverTools() reports no entries at all (avail undefined, no throw)", async () => {
+		// discoverTools() returns [] -> Array#find yields undefined for every
+		// tool id, not `{ available: false }`. If `avail?.available` regresses to
+		// `avail.available` this throws a TypeError inside the filter callback
+		// and the whole streamExternalTools() promise rejects instead of
+		// resolving to an empty, no-op run.
+		const engine = { discoverTools: () => [] } as unknown as CheckEngine;
+		const summary: Array<{ label: string; count: number; color: string }> = [];
+		const flagged = new Set<string>();
+		const p = streamExternalTools({
+			engine,
+			cwd: "/proj",
+			opts: {},
+			skipChecks: new Set(["sca", "dep-audit"]),
+			summary,
+			allFlaggedFiles: flagged,
+			details: false,
+		});
+		await vi.runAllTimersAsync();
+		await expect(p).resolves.toBeUndefined();
+		expect(runToolWithSpinner).not.toHaveBeenCalled();
+		expect(runToolSilent).not.toHaveBeenCalled();
+	});
+});
+
+// =========================================================================
+// 9. File-list ordering, truncation, and per-file detail isolation
+//    (lines 233, 236, 237, 245)
+// =========================================================================
+
+describe("streamExternalTools — file list rendering", () => {
+	it("lists flagged files in sorted (not discovery) order", async () => {
+		runnerScript.tsc = { output: "x", status: 2 };
+		// Insertion order is zeta, alpha, mid — sorted order is alpha, mid, zeta.
+		parserReturn = [
+			result({ file: "zeta.ts", message: "z" }),
+			result({ file: "alpha.ts", message: "a" }),
+			result({ file: "mid.ts", message: "m" }),
+		];
+		const { out } = await run({ available: ["tsc"], skip: ["sca", "dep-audit"] });
+		const ia = out.indexOf("alpha.ts");
+		const im = out.indexOf("mid.ts");
+		const iz = out.indexOf("zeta.ts");
+		expect(ia).toBeGreaterThan(-1);
+		expect(ia).toBeLessThan(im);
+		expect(im).toBeLessThan(iz);
+	});
+
+	it("prints at most MAX_LISTED_FILES (20) file lines even when more are flagged", async () => {
+		runnerScript.tsc = { output: "x", status: 2 };
+		parserReturn = Array.from({ length: 23 }, (_v, i) =>
+			result({ file: `f${String(i).padStart(2, "0")}.ts`, message: "e" }),
+		);
+		const { out } = await run({ available: ["tsc"], skip: ["sca", "dep-audit"] });
+		const fileLineMatches = out.match(/f\d\d\.ts/g) ?? [];
+		expect(fileLineMatches.length).toBe(20);
+	});
+
+	it("does not show the overflow line at exactly MAX_LISTED_FILES (20) files", async () => {
+		runnerScript.tsc = { output: "x", status: 2 };
+		parserReturn = Array.from({ length: 20 }, (_v, i) =>
+			result({ file: `g${String(i).padStart(2, "0")}.ts`, message: "e" }),
+		);
+		const { out, summary } = await run({ available: ["tsc"], skip: ["sca", "dep-audit"] });
+		expect(out).not.toContain("more files");
+		expect(summary[0]).toMatchObject({ count: 20 });
+	});
+
+	it("with details=true, per-file detail lines are isolated to their own file's block", async () => {
+		runnerScript.tsc = { output: "x", status: 2 };
+		parserReturn = [
+			result({ file: "a.ts", line: 1, message: "MSGA1" }),
+			result({ file: "a.ts", line: 2, message: "MSGA2" }),
+			result({ file: "a.ts", line: 3, message: "MSGA3" }),
+			result({ file: "b.ts", line: 1, message: "MSGB1" }),
+			result({ file: "b.ts", line: 2, message: "MSGB2" }),
+		];
+		const { out } = await run({
+			available: ["tsc"],
+			skip: ["sca", "dep-audit"],
+			details: true,
+		});
+		// If the per-file `.filter((r) => r.file === file)` collapses to
+		// unfiltered `filteredItems`, EVERY file's block prints ALL 5 findings
+		// (sliced to MAX_FILE_DETAIL_LINES=5), so "MSGB1" would appear once
+		// under a.ts's block AND once under b.ts's block -> count 2 instead of 1.
+		const countB1 = (out.match(/MSGB1/g) ?? []).length;
+		const countA1 = (out.match(/MSGA1/g) ?? []).length;
+		expect(countB1).toBe(1);
+		expect(countA1).toBe(1);
+	});
+});
+
+// =========================================================================
+// 10. Dependency-audit severity + header text (lines 255, 257)
+// =========================================================================
+
+describe("streamExternalTools — dep-audit rendering detail", () => {
+	it("prints the 'dependency audit (SCA)' header on the vulnerabilities-found branch", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		npmAuditReturn = {
+			tool: "npm",
+			total: 1,
+			critical: 1,
+			high: 0,
+			moderate: 0,
+			low: 0,
+			detail: "1 critical",
+		};
+		const { out } = await run({ available: ["tsc"] });
+		expect(out).toContain("dependency audit (SCA)");
+	});
+
+	it("uses red severity when only `high` (not `critical`) vulnerabilities exist", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		npmAuditReturn = {
+			tool: "npm",
+			total: 2,
+			critical: 0,
+			high: 2,
+			moderate: 0,
+			low: 0,
+			detail: "2 high",
+		};
+		const { summary } = await run({ available: ["tsc"] });
+		expect(summary).toContainEqual({ label: "2 dep vulnerabilities", count: 2, color: "31" });
+	});
+});
+
+// =========================================================================
+// 11. gitleaks status/output short-circuit logical structure (lines 277-279)
+// =========================================================================
+
+describe("streamExternalTools — gitleaks short-circuit is scoped to gitleaks only", () => {
+	it("a non-gitleaks tool at status 1 with 'FTL' output is NOT treated as clean (rules out tool.id||status short-circuit)", async () => {
+		runnerScript.oxlint = { output: "FTL something unrelated", status: 1 };
+		parserReturn = [result({ tool: "oxlint", file: "o.ts", message: "lint issue" })];
+		const { out } = await run({ available: ["oxlint"], skip: ["sca", "dep-audit"] });
+		expect(parseOxlintJson).toHaveBeenCalled();
+		expect(out).toContain("issues");
+		expect(out).not.toContain("no issues");
+	});
+
+	it("gitleaks at status 2 (not 1) still runs the parser (rules out status===1 forced true)", async () => {
+		runnerScript.gitleaks = { output: "FTL banner but status 2", status: 2 };
+		parserReturn = [result({ tool: "gitleaks", file: "leak.ts", message: "AWS key" })];
+		const { out } = await run({ available: ["gitleaks"], skip: ["sca", "dep-audit"] });
+		expect(parseGitleaksJson).toHaveBeenCalled();
+		expect(out).toContain("secrets");
+		expect(out).not.toContain("no secrets detected");
+	});
+
+	it("gitleaks status 1 with only 'FTL' (no 'no such file') is still treated as clean (rules out && for the FTL/no-such-file OR)", async () => {
+		runnerScript.gitleaks = { output: "FTL", status: 1 };
+		parserReturn = [result({ tool: "gitleaks", file: "leak.ts", message: "AWS key" })];
+		const { out } = await run({ available: ["gitleaks"], skip: ["sca", "dep-audit"] });
+		expect(parseGitleaksJson).not.toHaveBeenCalled();
+		expect(out).toContain("no secrets detected");
+	});
+});
+
+// =========================================================================
+// 12. Single-tool fast-path routing boundary (line 289)
+// =========================================================================
+
+describe("streamExternalTools — fast-path routing does not misfire on empty tool sets", () => {
+	it("dep-audit-only run (0 TOOLS_TO_RUN entries, toolCount 1) resolves via the parallel runner, not the fast path", async () => {
+		// availableTools.length === 0, so the fast-path guard
+		// (toolCount<=1 && availableTools.length===1 && !runDepAudit) must be
+		// false. If forced to `true`, `nonNull(availableTools[0])` throws on the
+		// empty array and the returned promise rejects instead of resolving.
+		npmAuditReturn = null;
+		const p = (async () => {
+			const summary: Array<{ label: string; count: number; color: string }> = [];
+			const flagged = new Set<string>();
+			const inner = streamExternalTools({
+				engine: fakeEngine([]),
+				cwd: "/proj",
+				opts: { only: "sca" },
+				skipChecks: new Set(),
+				summary,
+				allFlaggedFiles: flagged,
+				details: false,
+			});
+			await vi.runAllTimersAsync();
+			await inner;
+			return { summary };
+		})();
+		await expect(p).resolves.toMatchObject({ summary: [] });
+		expect(runToolSilent).toHaveBeenCalledTimes(1);
+		expect(runToolWithSpinner).not.toHaveBeenCalled();
+	});
+});
+
+// =========================================================================
+// 13. Spinner "waiting:" label list (lines 305, 306, 311)
+// =========================================================================
+
+describe("streamExternalTools — spinner waiting-list text", () => {
+	it("includes both queued tool labels and 'dep audit', comma-joined, when dep-audit is enabled", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		npmAuditReturn = null;
+		perKeyDelayMs = { tsc: 100, audit: 100 };
+		const { out } = await run({ available: ["tsc"] });
+		expect(out).toContain("waiting: typescript, dep audit");
+	});
+
+	it("never mentions 'dep audit' in the waiting list when dep-audit is disabled", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		runnerScript.biome = { output: "", status: 0 };
+		perKeyDelayMs = { tsc: 100, biome: 100 };
+		const { out } = await run({ available: ["tsc", "biome"], skip: ["sca", "dep-audit"] });
+		// TOOLS_TO_RUN order (not the `available:` array order) determines
+		// iteration order -> biome precedes tsc in the table.
+		expect(out).toContain("waiting: biome, typescript");
+		expect(out).not.toContain("dep audit");
+	});
+});
+
+// =========================================================================
+// 14. Spinner frame indexing + elapsed-time arithmetic (lines 309, 310, 315, 359)
+// =========================================================================
+
+describe("streamExternalTools — spinner frame + elapsed-time arithmetic", () => {
+	it("cycles frames via modulo (never indexes out of bounds) and reports correct elapsed seconds", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		runnerScript.biome = { output: "", status: 0 };
+		// 300ms delay -> spinner ticks at 80/160/240ms (frame 0,1,2 -> 'a','b','a'
+		// via SPINNER_FRAMES=["a","b"]) before both resolve at 300ms.
+		perKeyDelayMs = { tsc: 300, biome: 300 };
+		const { out } = await run({ available: ["tsc", "biome"], skip: ["sca", "dep-audit"] });
+		// frame%length must select 'b' at the second tick; frame*length or
+		// frame-- both eventually index out of SPINNER_FRAMES bounds ->
+		// `${f}` interpolates the literal string "undefined".
+		expect(out).not.toContain("undefined");
+		expect(out).toContain("\x1b[36mb\x1b[0m");
+		// Elapsed-seconds arithmetic: at an 80ms tick, (Date.now()-parallelStart)
+		// / 1000 rounds to "0"; `* 1000` or `Date.now() + parallelStart` instead
+		// of `-` produce a huge, wrong number.
+		expect(out).toContain("0s — waiting:");
+		// Final aggregate elapsed line uses the same arithmetic shape at 1 d.p.
+		expect(out).toContain("all tools completed in 0.3s (parallel)");
+	});
+});
+
+// =========================================================================
+// 15. `completed` counter increments (lines 330, 349 — tool loop vs dep-audit)
+// =========================================================================
+
+describe("streamExternalTools — completed counter", () => {
+	it("increments (not decrements) when a TOOLS_TO_RUN entry finishes first (line 330)", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		runnerScript.biome = { output: "", status: 0 };
+		perKeyDelayMs = { tsc: 0, biome: 150 };
+		const { out } = await run({ available: ["tsc", "biome"], skip: ["sca", "dep-audit"] });
+		expect(out).toContain("\x1b[1m1/2\x1b[0m");
+		expect(out).not.toContain("\x1b[1m-1/2\x1b[0m");
+	});
+
+	it("increments (not decrements) when dep-audit finishes first (line 349)", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		npmAuditReturn = null;
+		perKeyDelayMs = { tsc: 150, audit: 0 };
+		const { out } = await run({ available: ["tsc"] });
+		expect(out).toContain("\x1b[1m1/2\x1b[0m");
+		expect(out).not.toContain("\x1b[1m-1/2\x1b[0m");
+	});
+});
+
+// =========================================================================
+// 15b. `remaining.delete("dep audit")` actually removes the right key
+//      (line 350) — if the string literal regresses to "", dep-audit never
+//      leaves `remaining`, so a still-pending tool's spinner tick keeps
+//      showing "dep audit" as waiting even after it completed.
+// =========================================================================
+
+describe("streamExternalTools — dep-audit is removed from the waiting set on completion", () => {
+	it("stops listing 'dep audit' as waiting once it resolves, while another tool is still pending", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		npmAuditReturn = null;
+		// dep-audit finishes well before the first 80ms spinner tick; tsc lingers.
+		perKeyDelayMs = { tsc: 300, audit: 10 };
+		const { out } = await run({ available: ["tsc"] });
+		const waitingLines = out.split("\r\x1b[K").filter((s) => s.includes("waiting:"));
+		expect(waitingLines.length).toBeGreaterThan(0);
+		for (const line of waitingLines) {
+			expect(line).not.toContain("dep audit");
+		}
+	});
+});
+
+// =========================================================================
+// 16. Cursor clear-line escape sequences (lines 328, 347, 357)
+// =========================================================================
+
+describe("streamExternalTools — clear-line escape sequence counts", () => {
+	it("emits one clear per completed TOOLS_TO_RUN entry plus one final clear (no dep-audit)", async () => {
+		runnerScript.tsc = { output: "", status: 0 };
+		runnerScript.biome = { output: "", status: 0 };
+		const { out } = await run({ available: ["tsc", "biome"], skip: ["sca", "dep-audit"] });
+		// 2 per-tool clears (line 328, once per tool) + 1 final clear (line 357).
+		// If either is blanked to "", this count drops.
+		const clears = (out.match(/\r\x1b\[K/g) ?? []).length;
+		expect(clears).toBe(3);
+	});
+
+	it("emits one clear for dep-audit plus one final clear (dep-audit only)", async () => {
+		npmAuditReturn = null;
+		const { out } = await run({ available: [], only: "sca" });
+		// 1 dep-audit clear (line 347) + 1 final clear (line 357).
+		const clears = (out.match(/\r\x1b\[K/g) ?? []).length;
+		expect(clears).toBe(2);
 	});
 });

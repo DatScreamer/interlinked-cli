@@ -213,6 +213,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		commented_out_code: summarizeWithDetails(cq.commentedOutCode),
 		conditional_in_test: summarizeWithDetails(cq.conditionalInTest),
 		non_deterministic_test: summarizeWithDetails(cq.nonDeterministicTest),
+		timing_flake: summarizeWithDetails(cq.timingFlake),
 		empty_catch: summarizeWithDetails(cq.emptyCatch),
 		test_without_description: summarizeWithDetails(cq.testWithoutDescription),
 		assertion_roulette: summarizeWithDetails(cq.assertionRoulette),

@@ -47,6 +47,23 @@ export interface CheckRegistration {
 	pipeline: "agent_safety" | "suggestion";
 	/** When this check fires — see CheckPhase for semantics */
 	phase: CheckPhase;
+	/**
+	 * DEFERRABLE: the finding is real, but its wrongness is a property of a
+	 * not-yet-complete tree — an unused import, a reference to a symbol the next
+	 * edit declares — so the coordinated change's other half resolves it.
+	 *
+	 * Orthogonal to `phase`, which says WHETHER a finding blocks. This says
+	 * BY WHEN. A deferrable `pre_block` check does not refuse the edit that
+	 * introduces the finding; it records a transient debt (`transient-debt.ts`)
+	 * and refuses the edit that walks away from it with the debt still open.
+	 *
+	 * The decision rule (from `docs/design/open-obligation-ledger.md`): if the
+	 * action's blast radius is realized at EXECUTION time and no later edit can
+	 * undo it — a destructive command, a secret leaving the machine, an install
+	 * — it is never deferrable. If the wrongness is static text in a
+	 * half-written tree, it is.
+	 */
+	deferrable?: true;
 	/** Fix instruction shown to agent */
 	fix_instruction: string;
 	/** Check function — takes (content, filePath), returns InlineMatch[] */

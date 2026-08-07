@@ -138,6 +138,7 @@ const EXPECTED_KEY_ORDER = [
 	"commentedOutCode",
 	"conditionalInTest",
 	"nonDeterministicTest",
+	"timingFlake",
 	"emptyCatch",
 	"testWithoutDescription",
 	"assertionRoulette",

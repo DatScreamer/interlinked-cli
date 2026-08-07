@@ -622,6 +622,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "fixed-wait timing flakes",
+		key: "timingFlake",
+		noun: "tests waiting a hardcoded duration before asserting",
+		passLabel: "no fixed-wait timing flakes",
+		color: "33",
+	},
+	{
 		label: "empty catch blocks",
 		key: "emptyCatch",
 		noun: "empty-body catch blocks with no error handling",

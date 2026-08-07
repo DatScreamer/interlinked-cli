@@ -56,6 +56,7 @@ import {
 	checkTautologicalAssertion,
 	checkTestWithoutDescription,
 } from "../../harness/taste-checks.js";
+import { checkTimingFlake } from "../../harness/checks/timing-flake.js";
 import type { FileCheckContext } from "./file-checks-shared.js";
 import { toIssues } from "./file-checks-shared.js";
 
@@ -199,6 +200,7 @@ export function runReactAndTasteChecks(ctx: FileCheckContext): void {
 	r.nonDeterministicTest.push(
 		...toIssues("non_deterministic_test", relPath, checkNonDeterministicTest(content, file)),
 	);
+	r.timingFlake.push(...toIssues("timing_flake", relPath, checkTimingFlake(content, file)));
 	r.emptyCatch.push(...toIssues("empty_catch", relPath, checkEmptyCatch(content, file)));
 	r.testWithoutDescription.push(
 		...toIssues(

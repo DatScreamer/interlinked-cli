@@ -17,8 +17,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
+import { RouteMap } from "../route-map.js";
 import {
 	adaptEndpointAuthMissing,
 	adaptEndpointIdorShape,
@@ -102,5 +103,92 @@ describe("endpoint-security-adapters: detector fires (positive case)", () => {
 		writeFileSync(file, content);
 		const matches = adaptEndpointIdorShape(content, file);
 		expect(matches.length).toBeGreaterThan(0);
+	});
+
+	it("missing_tenant_filter fires when a DB query omits every tenant column", () => {
+		const file = join(tmpRoot, "projects.ts");
+		const content = [
+			"app.get('/api/projects', async (req, res) => {",
+			"  const projects = await prisma.project.findMany({ where: { status: 'active' } });",
+			"  res.json(projects);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		const matches = adaptEndpointMissingTenantFilter(content, file);
+		expect(matches.length).toBeGreaterThan(0);
+		const m = matches[0];
+		expect(typeof nonNull(m).line).toBe("number");
+		expect(nonNull(m).text.toLowerCase()).toContain("tenant");
+	});
+
+	it("ssrf_shape fires when a request-supplied URL flows into fetch() unchecked", () => {
+		const file = join(tmpRoot, "proxy.ts");
+		const content = [
+			"app.post('/api/proxy', async (req, res) => {",
+			"  const url = req.body.url;",
+			"  const r = await fetch(url);",
+			"  res.json(await r.json());",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		const matches = adaptEndpointSsrfShape(content, file);
+		expect(matches.length).toBeGreaterThan(0);
+		const m = matches[0];
+		expect(typeof nonNull(m).line).toBe("number");
+		expect(nonNull(m).text.toLowerCase()).toContain("allow-list");
+	});
+
+	it("mass_assignment fires when req.body is spread into a create() call", () => {
+		const file = join(tmpRoot, "users.ts");
+		const content = [
+			"app.post('/api/users', async (req, res) => {",
+			"  const user = await prisma.user.create({ data: req.body });",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		const matches = adaptEndpointMassAssignment(content, file);
+		expect(matches.length).toBeGreaterThan(0);
+		const m = matches[0];
+		expect(typeof nonNull(m).line).toBe("number");
+		expect(nonNull(m).text.toLowerCase()).toContain("allowlist");
+	});
+});
+
+describe("endpoint-security-adapters: endpoints exist but the detector reports nothing", () => {
+	it("returns [] and skips annotation when endpoints are detected but no finding fires", () => {
+		// Endpoint exists (GET /api/ping) but its handler makes no DB call, so
+		// tenant-filter has nothing to flag -- exercises applyAnnotations'
+		// `findings.length === 0` early-return branch.
+		const file = join(tmpRoot, "ping.ts");
+		const content = [
+			"app.get('/api/ping', (req, res) => {",
+			"  res.json({ ok: true });",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointMissingTenantFilter(content, file)).toEqual([]);
+	});
+});
+
+describe("endpoint-security-adapters: catch-all fail-open on adapter-level throw", () => {
+	it("returns [] when RouteMap.extractEndpointsForFile throws mid-pipeline", () => {
+		const file = join(tmpRoot, "routes.ts");
+		const content = [
+			'app.get("/admin/users", (req, res) => {',
+			"  res.json({ ok: true });",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		const spy = vi
+			.spyOn(RouteMap.prototype, "extractEndpointsForFile")
+			.mockImplementation(() => {
+				throw new Error("route-map extraction blew up");
+			});
+		try {
+			expect(adaptEndpointAuthMissing(content, file)).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });
