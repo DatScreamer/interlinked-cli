@@ -296,7 +296,18 @@ describe("evaluateActiveWhen — predicate axis (active_agent_count_at_least)", 
 		active_when: { predicate: { name: "active_agent_count_at_least", args: { count: 2 } } },
 	});
 
+	// The cohort's active count is now TIME-AWARE: an agent whose last event is
+	// older than the lost-timeout does not count, so a phantom agent that died
+	// without a SubagentStop can no longer block a solo session. These agents
+	// join with `FIXED_TIMESTAMP`, so the clock has to sit at `FIXED_NOW` or they
+	// read as long-stale and the predicate correctly returns false.
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(FIXED_NOW);
+	});
+
 	afterEach(() => {
+		vi.useRealTimers();
 		setActiveCohort(null);
 	});
 
