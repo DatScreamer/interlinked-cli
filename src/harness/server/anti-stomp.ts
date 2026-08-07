@@ -56,3 +56,34 @@ export function loseAntiStompRace(args: AntiStompLossArgs): void {
 	deps.recordExit();
 	deps.exit();
 }
+
+// ===========================================
+// Zombie incumbent reap — the "live PID, dead socket" case
+// ===========================================
+// `liveForeignDaemonPid` proves a PID exists; `isDaemonSocketServing`
+// (session-paths.ts) proves it actually answers. When the PID is alive but
+// the socket is not serving, the incumbent is a zombie kept resident by
+// `installCrashResilience()`'s survive-on-error design — exactly the process
+// this module's loser contract does NOT apply to, because THIS process is
+// the one taking over, not losing. Reap it (best effort) instead of
+// deferring to it forever.
+
+/**
+ * Best-effort SIGTERM of a live-but-not-serving incumbent. Never throws:
+ * `ESRCH` (already gone by the time we signal it) is expected and silent;
+ * any other failure is logged but non-fatal — the caller is about to bind
+ * the socket and take over regardless of whether this signal lands.
+ * Deliberately SIGTERM-only (not SIGKILL): the zombie's own shutdown path,
+ * if its event loop is merely slow rather than fully wedged, still gets a
+ * chance to exit cleanly and release its pid file.
+ */
+export function reapZombieIncumbent(pid: number, logAlways: (msg: string) => void): void {
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "ESRCH") {
+			logAlways(`[interlinked] Could not signal zombie incumbent PID ${pid}: ${String(err)}`);
+		}
+	}
+}

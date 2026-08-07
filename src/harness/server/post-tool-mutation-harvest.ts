@@ -108,7 +108,17 @@ export async function appendMutationHarvestWarning(
 		return;
 	}
 
-	const fetchImpl = deps.fetchImpl ?? ((url: string) => fetch(url) as never);
+	// The signal is load-bearing, not decoration. `claimOne` awaits this call and
+	// treats a THROW as "gone", so a runner that refuses the connection settles
+	// instantly — but one that ACCEPTS and then never answers leaves the await
+	// pending forever, and the poll loop's deadline check never runs. The budget
+	// below would then bound nothing and a PostToolUse hook would hang on a
+	// half-open socket. Cap each request at the whole harvest budget: no single
+	// claim may outlive the window it is being spent on.
+	const claimTimeoutMs = cfg.harvest_budget_ms ?? DEFAULT_HARVEST_BUDGET_MS;
+	const fetchImpl =
+		deps.fetchImpl ??
+		((url: string) => fetch(url, { signal: AbortSignal.timeout(claimTimeoutMs) }) as never);
 	// harvestPending is contractually non-throwing; this phase depends on that
 	// rather than re-wrapping it, so a regression there surfaces in its own tests.
 	//

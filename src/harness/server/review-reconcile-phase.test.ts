@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingestReviewReport } from "../../commands/findings.js";
 import {
 	loadReconciliation,
@@ -149,8 +149,13 @@ describe("review reconciliation hooks", () => {
 
 	it("the read scanner warns via the PostToolUse evaluator shape", () => {
 		const cwd = repoWithFindings();
-		const prevCwd = process.cwd();
-		process.chdir(cwd);
+		// SPY, not process.chdir(): chdir THROWS in a worker thread
+		// ("process.chdir() is not supported in workers"), and Stryker's vitest
+		// runner pins its own pool, so a real chdir here fails the mutation dry
+		// run for any file whose graph-selected test scope includes this one.
+		// scanDisputedGroundRead falls back to `process.cwd()` when the event
+		// carries no `cwd`, so the spy exercises the same path.
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
 		try {
 			// SAFETY: the scanner reads only tool_name/tool_input/session_id.
 			const warnings = scanDisputedGroundRead({
@@ -169,7 +174,7 @@ describe("review reconciliation hooks", () => {
 				} as never),
 			).toEqual([]);
 		} finally {
-			process.chdir(prevCwd);
+			cwdSpy.mockRestore();
 		}
 	});
 

@@ -32,6 +32,12 @@ describe("benchPointsFrom", () => {
 		const r = { files: [{ groups: [{ benchmarks: [{ name: "hot", mean: 1.5 }] }] }] };
 		expect(benchPointsFrom(r).get("hot")).toBe(1.5);
 	});
+
+	it("returns the (empty) accumulator unchanged for a non-object, non-array report", () => {
+		expect(benchPointsFrom("not an object").size).toBe(0);
+		expect(benchPointsFrom(42).size).toBe(0);
+		expect(benchPointsFrom(null).size).toBe(0);
+	});
 });
 
 describe("benchRegressions", () => {
@@ -91,5 +97,84 @@ describe("readHeavyReports", () => {
 
 	it("returns [] and never throws when there are no reports", () => {
 		expect(readHeavyReports(cwd)).toEqual([]);
+	});
+
+	it("falls back to '(see .interlinked/fuzz-reports)' when no failed test names were captured", () => {
+		writeReport("fuzz", "s.json", { numFailedTests: 3, testResults: [] });
+		const warnings = readHeavyReports(cwd);
+		expect(warnings.some((w) => w.includes("(see .interlinked/fuzz-reports)"))).toBe(true);
+	});
+
+	it("skips an unreadable/undeleteable report entry (a directory named *.json) without crashing", () => {
+		const fuzzDir = join(cwd, ".interlinked", "fuzz-reports");
+		mkdirSync(join(fuzzDir, "weird.json"), { recursive: true });
+		expect(() => readHeavyReports(cwd)).not.toThrow();
+		expect(readHeavyReports(cwd)).toEqual([]);
+	});
+
+	it("treats the reports dir being unreadable (a file, not a directory) as empty rather than throwing", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		// `fuzz-reports` exists but is a plain file, so readdirSync on it throws ENOTDIR.
+		writeFileSync(join(cwd, ".interlinked", "fuzz-reports"), "not a directory");
+		expect(readHeavyReports(cwd)).toEqual([]);
+	});
+
+	it("treats a missing bench baseline as empty and still surfaces first-run points without a regression warning", () => {
+		writeReport("bench", "s.json", { benchmarks: [{ name: "hot", mean: 1.5 }] });
+		const warnings = readHeavyReports(cwd);
+		expect(warnings.some((w) => w.includes("[interlinked:bench]"))).toBe(false);
+		// First observation becomes the new baseline.
+		expect(JSON.parse(readFileSync(join(cwd, ".interlinked", "bench-baseline.json"), "utf-8")).hot).toBe(1.5);
+	});
+
+	it("treats a non-object baseline file as an empty baseline rather than throwing", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(join(cwd, ".interlinked", "bench-baseline.json"), JSON.stringify(42));
+		writeReport("bench", "s.json", { benchmarks: [{ name: "hot", mean: 1.5 }] });
+		const warnings = readHeavyReports(cwd);
+		expect(warnings.some((w) => w.includes("[interlinked:bench]"))).toBe(false);
+	});
+
+	it("skips loading/saving the bench baseline when the report yields zero benchmark points", () => {
+		writeReport("bench", "s.json", { irrelevant: "shape" });
+		const warnings = readHeavyReports(cwd);
+		expect(warnings).toEqual([]);
+		expect(existsSync(join(cwd, ".interlinked", "bench-baseline.json"))).toBe(false);
+	});
+
+	it("saves the baseline even when the run is within threshold (no regression warning)", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(join(cwd, ".interlinked", "bench-baseline.json"), JSON.stringify({ hot: 1.0 }));
+		writeReport("bench", "s.json", { benchmarks: [{ name: "hot", mean: 1.05 }] });
+		const warnings = readHeavyReports(cwd);
+		expect(warnings.some((w) => w.includes("[interlinked:bench]"))).toBe(false);
+		expect(JSON.parse(readFileSync(join(cwd, ".interlinked", "bench-baseline.json"), "utf-8")).hot).toBe(1.05);
+	});
+
+	it("treats an unparseable bench baseline file as empty rather than throwing", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(join(cwd, ".interlinked", "bench-baseline.json"), "{not valid json");
+		writeReport("bench", "s.json", { benchmarks: [{ name: "hot", mean: 1.5 }] });
+		const warnings = readHeavyReports(cwd);
+		// Malformed baseline reads as {} (no prior mean for "hot"), so
+		// benchRegressions has nothing to compare against — no regression warning.
+		expect(warnings.some((w) => w.includes("[interlinked:bench]"))).toBe(false);
+	});
+
+	it("does not throw when the bench baseline path cannot be written (a directory in its place)", () => {
+		mkdirSync(join(cwd, ".interlinked", "bench-baseline.json"), { recursive: true });
+		writeReport("bench", "s.json", { benchmarks: [{ name: "hot", mean: 1.5 }] });
+		expect(() => readHeavyReports(cwd)).not.toThrow();
+	});
+
+	it("never throws out of readHeavyReports even when the recordFuzzFailure callback throws", () => {
+		writeReport("fuzz", "s.json", { numFailedTests: 1, testResults: [{ status: "failed", name: "p.test.ts" }] });
+		let result: string[] | undefined;
+		expect(() => {
+			result = readHeavyReports(cwd, () => {
+				throw new Error("callback boom");
+			});
+		}).not.toThrow();
+		expect(result).toEqual([]);
 	});
 });

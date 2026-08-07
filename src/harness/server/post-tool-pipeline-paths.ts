@@ -51,6 +51,13 @@ const GENERATED_DIR_SEGMENTS = [
 	"coverage",
 	".wrangler",
 	".stryker-tmp",
+	// Dotless twin of the above. Stryker's sandbox directory is only called
+	// `.stryker-tmp` by DEFAULT — `tempDirName` renames it, and a sweep that
+	// gives each run its own sandbox necessarily does. The contents are just as
+	// generated (a full tree copy per run), so matching only the dotted form
+	// left ~1GB of copied tree analyzable: measured 2026-08-04 as a 936MB RSS
+	// spike in the daemon ledger plus anti-stomp restart churn.
+	"stryker-tmp",
 	".next",
 	"out",
 ];

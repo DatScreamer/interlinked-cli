@@ -12,6 +12,7 @@
 // is available.
 
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 
@@ -110,6 +111,79 @@ export function liveForeignDaemonPid(pidPath: string): number | null {
 	const pid = readPidFile(pidPath);
 	if (pid === null || pid === process.pid) return null;
 	return isProcessAlive(pid) ? pid : null;
+}
+
+export interface SocketProbeOptions {
+	/** Hard deadline in milliseconds for the connect attempt. */
+	timeout_ms?: number;
+}
+
+/** Default probe deadline: a live, healthy daemon accepts a Unix-domain
+ *  connect essentially instantly, so a few hundred ms is generous headroom
+ *  without meaningfully slowing down the (rare) anti-stomp check path. */
+const DEFAULT_SOCKET_PROBE_TIMEOUT_MS = 300;
+
+/**
+ * Probe whether `socketPath` has a live listener actually ACCEPTING
+ * connections — the complement to `liveForeignDaemonPid`'s "is the PID
+ * alive" check. A daemon process can survive an unexpected error
+ * (`installCrashResilience` deliberately keeps the process running for
+ * continuity) while the thing that failed was its own socket listener: the
+ * PID is alive, the pid file is intact, but nothing is bound to the socket
+ * path anymore. `liveForeignDaemonPid` alone reads that as "a healthy
+ * incumbent owns this" and defers forever — measured in production as a
+ * daemon that stayed alive 9+ hours with `lsof` showing no listener, while
+ * every new start lost the anti-stomp race and exited, over and over.
+ *
+ * Resolves:
+ *   - `true`  — a listener accepted the connection: the incumbent is really
+ *     serving, so the caller should defer to it (the safe, unchanged
+ *     behavior for a genuinely healthy daemon).
+ *   - `false` — the connection was refused, or the socket path doesn't
+ *     exist / isn't a socket (`ECONNREFUSED` / `ENOENT` / `ENOTSOCK`): an
+ *     unambiguous "nobody is listening here" signal. Safe to reap the
+ *     zombie and take over.
+ *   - `true`  — anything else (timeout, an unexpected error code): FAIL
+ *     SAFE. We can't distinguish "healthy but momentarily slow" from
+ *     "wedged", and stomping a possibly-healthy daemon's socket is the
+ *     worse failure mode, so ambiguity defers exactly like the pre-fix
+ *     behavior did.
+ *
+ * Never rejects for a normal connect-level failure — every branch above
+ * resolves. A synchronous throw from `createConnection` itself (malformed
+ * path, platform quirk) is NOT swallowed here; the caller decides how to
+ * fail safe on that (see `server.ts`'s anti-stomp check).
+ */
+export function isDaemonSocketServing(
+	socketPath: string,
+	opts: SocketProbeOptions = {},
+): Promise<boolean> {
+	const timeoutMs = opts.timeout_ms ?? DEFAULT_SOCKET_PROBE_TIMEOUT_MS;
+	return new Promise((resolve) => {
+		let settled = false;
+		const socket = createConnection(socketPath);
+		const finish = (result: boolean): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			try {
+				socket.destroy();
+			} catch {
+				/* intentional: socket already destroyed or never connected */
+			}
+			resolve(result);
+		};
+		const timer = setTimeout(() => finish(true), timeoutMs);
+		socket.on("connect", () => finish(true));
+		socket.on("error", (err: NodeJS.ErrnoException) => {
+			const code = err.code;
+			if (code === "ECONNREFUSED" || code === "ENOENT" || code === "ENOTSOCK") {
+				finish(false);
+				return;
+			}
+			finish(true);
+		});
+	});
 }
 
 // -----------------------------------------------------------------------------

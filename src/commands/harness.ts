@@ -4,6 +4,8 @@
 
 import { existsSync } from "node:fs";
 import { distStaleness, stalenessWarning } from "../harness/build-staleness.js";
+import { readRecentDaemonEvents } from "../harness/daemon-ledger.js";
+import { detectEnforcementGaps, formatEnforcementGapWarning } from "../harness/enforcement-gap.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -335,6 +337,20 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 								`${orphanInfo.candidates.length} (run 'interlinked harness reap' to inspect)`,
 							);
 				lines.push(kvLine("Orphans", orphanLine));
+				// The guard fails OPEN, so an outage is silent: work proceeds
+				// ungated and nothing says so. Measured 2026-08-05/06 in this
+				// repo — a wedged daemon held the pid file for 9h07m while
+				// serving nothing, and a 2h agent wave ran with the content gate
+				// never firing. State the gap in the unit that matters: how long,
+				// and whether it is still open.
+				const gapWarning = formatEnforcementGapWarning(
+					detectEnforcementGaps(readRecentDaemonEvents(cwd), Date.now()),
+					Date.now(),
+				);
+				if (gapWarning) {
+					lines.push("");
+					lines.push(c.yellow(`  ${gapWarning}`));
+				}
 				if (!processStatus.running) {
 					lines.push("");
 					lines.push(c.dim("  Start with: interlinked harness start"));

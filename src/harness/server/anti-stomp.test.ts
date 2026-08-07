@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { type AntiStompDeps, loseAntiStompRace } from "./anti-stomp.js";
+import { type AntiStompDeps, loseAntiStompRace, reapZombieIncumbent } from "./anti-stomp.js";
 
 function makeDeps(): AntiStompDeps & { calls: string[] } {
 	const calls: string[] = [];
@@ -64,5 +64,41 @@ describe("loseAntiStompRace", () => {
 			loseAntiStompRace({ ownerPid: 7, detail: "the raw socket", cwd: "/x", deps }),
 		).toThrow(boom);
 		expect(deps.calls).toEqual(["log", "recordExit", "exit"]);
+	});
+});
+
+describe("reapZombieIncumbent", () => {
+	it("SIGTERMs the given pid", () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		const logAlways = vi.fn();
+		reapZombieIncumbent(4242, logAlways);
+		expect(killSpy).toHaveBeenCalledWith(4242, "SIGTERM");
+		expect(logAlways).not.toHaveBeenCalled();
+		killSpy.mockRestore();
+	});
+
+	it("silently ignores ESRCH (the pid was already gone by the time we signalled it)", () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			const err = new Error("kill ESRCH") as NodeJS.ErrnoException;
+			err.code = "ESRCH";
+			throw err;
+		});
+		const logAlways = vi.fn();
+		expect(() => reapZombieIncumbent(4242, logAlways)).not.toThrow();
+		expect(logAlways).not.toHaveBeenCalled();
+		killSpy.mockRestore();
+	});
+
+	it("logs (but does not throw) on an unexpected signalling failure, e.g. EPERM", () => {
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			const err = new Error("kill EPERM") as NodeJS.ErrnoException;
+			err.code = "EPERM";
+			throw err;
+		});
+		const logAlways = vi.fn();
+		expect(() => reapZombieIncumbent(4242, logAlways)).not.toThrow();
+		expect(logAlways).toHaveBeenCalledTimes(1);
+		expect(String(logAlways.mock.calls[0]?.[0])).toContain("4242");
+		killSpy.mockRestore();
 	});
 });

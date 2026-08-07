@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import os from "node:os";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CohortManager } from "../cohort.js";
 import type { ResourcePlan } from "../resource-governor.js";
 import type { HarnessEvent } from "../types.js";
@@ -9,6 +10,10 @@ import {
 	runSessionEndResourcePlan,
 	type SessionEndJobDeps,
 } from "./session-end-batch.js";
+
+vi.mock("node:child_process", () => ({
+	spawn: vi.fn(() => ({ on: () => {}, unref: () => {} })),
+}));
 
 type SpawnFn = NonNullable<SessionEndJobDeps["spawn"]>;
 
@@ -158,5 +163,98 @@ describe("runSessionEndJobs", () => {
 		expect(() =>
 			runSessionEndJobs(makeCtx(), activePlan, { spawn, cliEntry: "x", execPath: "y" }),
 		).not.toThrow();
+	});
+
+	it("logs the job name when the spawned child emits an error", () => {
+		const ctx = makeCtx();
+		// SAFETY: test double matching only the (event, cb) shape spawnGovernedJob reads.
+		const spawn = ((_file: string, _args: string[]) => {
+			return {
+				on(event: string, cb: (e: Error) => void) {
+					if (event === "error") cb(new Error("ENOENT: no such file"));
+				},
+				unref() {},
+			};
+		}) as unknown as SpawnFn;
+		runSessionEndJobs(ctx, activePlan, { spawn, cliEntry: "/x", execPath: "/node" });
+		const lines = (ctx as unknown as { _logLines: string[] })._logLines;
+		expect(lines.some((l) => l.includes("spawn failed (skipped): ENOENT: no such file"))).toBe(
+			true,
+		);
+	});
+
+	it("resolves the default cli entry from argv[1]'s parent directory", () => {
+		const original = process.argv[1];
+		process.argv[1] = "/repo/dist/harness/server.js";
+		try {
+			const calls: Array<{ file: string; args: string[] }> = [];
+			const spawn = ((file: string, args: string[]) => {
+				calls.push({ file, args });
+				return fakeChild();
+			}) as unknown as SpawnFn;
+			runSessionEndJobs(makeCtx(), activePlan, { spawn, execPath: "/node" });
+			expect(calls[0]?.args).toContain("/repo/dist/index.js");
+		} finally {
+			if (original !== undefined) process.argv[1] = original;
+		}
+	});
+
+	it("resolves the default cli entry relative to '.' when argv[1] is unset", () => {
+		const original = process.argv[1];
+		// SAFETY: simulating a runtime where argv[1] is absent; resolveCliEntry's `?? ""` fallback.
+		process.argv[1] = undefined as unknown as string;
+		try {
+			const calls: Array<{ file: string; args: string[] }> = [];
+			const spawn = ((file: string, args: string[]) => {
+				calls.push({ file, args });
+				return fakeChild();
+			}) as unknown as SpawnFn;
+			runSessionEndJobs(makeCtx(), activePlan, { spawn, execPath: "/node" });
+			expect(calls.length).toBeGreaterThan(0);
+			expect(calls[0]?.args.some((a) => a.endsWith("index.js"))).toBe(true);
+		} finally {
+			if (original !== undefined) process.argv[1] = original;
+		}
+	});
+
+	it("falls back to nodeSpawn/process.execPath/resolveCliEntry when no deps are given", async () => {
+		const { spawn: mockedNodeSpawn } = await import("node:child_process");
+		vi.mocked(mockedNodeSpawn).mockClear();
+		const ctx = makeCtx();
+		runSessionEndJobs(ctx, activePlan, {});
+		expect(vi.mocked(mockedNodeSpawn)).toHaveBeenCalled();
+	});
+});
+
+describe("runSessionEndResourcePlan — os fallback branches", () => {
+	it("falls back to os.cpus().length when availableParallelism is unavailable", () => {
+		const original = Object.getOwnPropertyDescriptor(os, "availableParallelism");
+		Object.defineProperty(os, "availableParallelism", {
+			value: undefined,
+			configurable: true,
+		});
+		try {
+			const ctx = makeCtx();
+			const plan = runSessionEndResourcePlan(ctx, sessionEnd());
+			expect(plan).not.toBeNull();
+		} finally {
+			if (original) Object.defineProperty(os, "availableParallelism", original);
+		}
+	});
+
+	it("defaults load1 to 0 when os.loadavg() returns an empty array", () => {
+		const original = Object.getOwnPropertyDescriptor(os, "loadavg");
+		Object.defineProperty(os, "loadavg", {
+			value: () => [],
+			configurable: true,
+			writable: true,
+		});
+		try {
+			const ctx = makeCtx();
+			const plan = runSessionEndResourcePlan(ctx, sessionEnd());
+			expect(plan).not.toBeNull();
+		} finally {
+			if (original) Object.defineProperty(os, "loadavg", original);
+		}
 	});
 });

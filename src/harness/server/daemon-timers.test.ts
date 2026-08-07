@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const writeHeapSnapshotMock = vi.fn<(path?: string) => string>();
+vi.mock("node:v8", () => ({
+	writeHeapSnapshot: (path?: string) => writeHeapSnapshotMock(path),
+}));
+
 import { installDaemonTimers } from "./daemon-timers.js";
 
 /**
@@ -250,5 +256,97 @@ describe("installDaemonTimers — idle shrink", () => {
 		vi.advanceTimersByTime(10 * 60_000);
 		expect(shutdown).not.toHaveBeenCalled();
 		stop();
+	});
+});
+
+describe("installDaemonTimers — defaults (ceilingBytes/rssBytes omitted)", () => {
+	// Both default expressions (`hooks.ceilingBytes ?? configuredCeilingBytes()`
+	// and `hooks.rssBytes ?? process.memoryUsage().rss`) only run when the
+	// caller omits the corresponding hook — every other test in this file
+	// supplies both explicitly.
+	it("still runs the memory timer without throwing when both are omitted", () => {
+		const shutdown = vi.fn();
+		const refreshStatuslineSnapshot = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot,
+			shutdown,
+			log: vi.fn(),
+		});
+		expect(() => vi.advanceTimersByTime(60_000)).not.toThrow();
+		expect(refreshStatuslineSnapshot).toHaveBeenCalled();
+		stop();
+	});
+});
+
+describe("installDaemonTimers — SIGUSR2 heap snapshot", () => {
+	beforeEach(() => {
+		writeHeapSnapshotMock.mockReset();
+	});
+
+	it("writes a heap snapshot and logs the path on SIGUSR2 when snapshotDir is set", () => {
+		writeHeapSnapshotMock.mockReturnValue("/tmp/heap-123.heapsnapshot");
+		const log = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log,
+			rssBytes: () => 10 * MB,
+			ceilingBytes: 500 * MB,
+			snapshotDir: "/tmp/snaps",
+		});
+		process.emit("SIGUSR2");
+		expect(writeHeapSnapshotMock).toHaveBeenCalledTimes(1);
+		expect(log.mock.calls.some((c) => String(c[0]).includes("Heap snapshot written"))).toBe(
+			true,
+		);
+		stop();
+	});
+
+	it("logs a failure message when writeHeapSnapshot throws", () => {
+		writeHeapSnapshotMock.mockImplementation(() => {
+			throw new Error("disk full");
+		});
+		const log = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log,
+			rssBytes: () => 10 * MB,
+			ceilingBytes: 500 * MB,
+			snapshotDir: "/tmp/snaps",
+		});
+		process.emit("SIGUSR2");
+		expect(log.mock.calls.some((c) => String(c[0]).includes("Heap snapshot failed"))).toBe(
+			true,
+		);
+		stop();
+	});
+
+	it("does not register a SIGUSR2 handler when snapshotDir is absent", () => {
+		const before = process.listenerCount("SIGUSR2");
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => 10 * MB,
+			ceilingBytes: 500 * MB,
+		});
+		expect(process.listenerCount("SIGUSR2")).toBe(before);
+		stop();
+	});
+
+	it("removes its SIGUSR2 listener when stopped", () => {
+		const before = process.listenerCount("SIGUSR2");
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => 10 * MB,
+			ceilingBytes: 500 * MB,
+			snapshotDir: "/tmp/snaps",
+		});
+		expect(process.listenerCount("SIGUSR2")).toBe(before + 1);
+		stop();
+		expect(process.listenerCount("SIGUSR2")).toBe(before);
 	});
 });

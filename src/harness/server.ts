@@ -54,7 +54,7 @@ import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
 import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity-writer.js";
-import { type AntiStompDeps, loseAntiStompRace } from "./server/anti-stomp.js";
+import { type AntiStompDeps, loseAntiStompRace, reapZombieIncumbent } from "./server/anti-stomp.js";
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import { installCrashResilience } from "./server/crash-resilience.js";
@@ -77,7 +77,7 @@ import { createServerBridge, type ServerBridge } from "./server-bridge.js";
 import { createEventLoop } from "./server-event-loop.js";
 import { createSocketLifecycle } from "./server-socket-lifecycle.js";
 import { DaemonOwnershipConflictError, startSessionDaemon } from "./session-daemon.js";
-import { daemonPathsFor, liveForeignDaemonPid } from "./session-paths.js";
+import { daemonPathsFor, isDaemonSocketServing, liveForeignDaemonPid } from "./session-paths.js";
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
 import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/runtime.js";
@@ -584,9 +584,34 @@ const antiStompDeps: AntiStompDeps = {
 // `node server.js` for the same project used to silently delete the live
 // daemon's socket out from under it. A stale pid (dead process) returns
 // null (crash-restart proceeds); a live pid with no socket file also proceeds.
+//
+// A live PID alone is NOT proof of a healthy incumbent: `installCrashResilience()`
+// deliberately keeps the process running through an unexpected error, so a
+// daemon whose socket LISTENER died (but not the process) still passes
+// `liveForeignDaemonPid` forever — measured in production as a daemon alive
+// 9+ hours with `lsof` showing no bound listener, while every new start lost
+// this race and exited (220 starts/hour). Confirm the incumbent actually
+// ANSWERS before deferring to it; a live-but-silent PID is reaped and taken
+// over instead.
 const __foreignDaemonPid = liveForeignDaemonPid(PID_PATH);
 if (__foreignDaemonPid !== null && existsSync(SOCKET_PATH)) {
-	loseAntiStompRace({ ownerPid: __foreignDaemonPid, detail: "the raw socket", cwd: CWD, deps: antiStompDeps });
+	let __incumbentServing: boolean;
+	try {
+		__incumbentServing = await isDaemonSocketServing(SOCKET_PATH);
+	} catch {
+		// Fail safe: an unexpected throw from the probe itself is not proof
+		// the incumbent is dead — prefer deferring (the pre-fix behavior)
+		// over stomping a possibly-healthy daemon's socket.
+		__incumbentServing = true;
+	}
+	if (__incumbentServing) {
+		loseAntiStompRace({ ownerPid: __foreignDaemonPid, detail: "the raw socket", cwd: CWD, deps: antiStompDeps });
+	} else {
+		logAlways(
+			`[interlinked] PID ${__foreignDaemonPid} holds ${PID_PATH} but its raw socket is not answering — reaping the zombie and taking over.`,
+		);
+		reapZombieIncumbent(__foreignDaemonPid, logAlways);
+	}
 }
 
 // Clean up stale raw socket from previous run. Framed startup performs its own

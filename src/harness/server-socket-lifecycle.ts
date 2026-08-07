@@ -250,6 +250,27 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 	function startRawServer(): void {
 		const rawServer = createRawSocketServer();
 		socketServer = rawServer;
+		// A bind failure (EADDRINUSE against a still-live listener, a
+		// permission error, ...) emits 'error' with zero listeners by
+		// default, which Node re-throws as an uncaught exception — and
+		// `installCrashResilience()` deliberately SURVIVES uncaught
+		// exceptions for continuity (crash-resilience.ts). Combined, a raw
+		// listen failure used to leave the process alive with NO raw
+		// listener: `writePidFile()` already ran earlier in startup, so the
+		// pid file names this PID as a healthy incumbent to every future
+		// anti-stomp check, while the raw socket never answers — precisely
+		// the zombie class `isDaemonSocketServing` (session-paths.ts) exists
+		// to detect from the OUTSIDE. Handling `error` here closes the hole
+		// at the SOURCE: a listen failure is fatal, not survivable. A daemon
+		// with no listener has no reason to keep running; exiting lets the
+		// normal auto-revive path spawn a real replacement instead of a
+		// silent zombie.
+		rawServer.on("error", (err: NodeJS.ErrnoException) => {
+			logAlways(
+				`[interlinked] Raw socket listen failed (${err.code ?? err.message}) — exiting so auto-revive can spawn a working daemon.`,
+			);
+			process.exit(1);
+		});
 		rawServer.listen(SOCKET_PATH);
 	}
 

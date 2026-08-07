@@ -83,6 +83,7 @@ import {
 } from "../verification-stop-checks.js";
 import {
 	buildCommitCadenceNudge,
+	buildStaleBaselineNudge,
 	buildVerificationStopWarnings,
 	pushIfNotNull,
 } from "./lifecycle-stop-warnings.js";
@@ -773,6 +774,37 @@ describe("buildVerificationStopWarnings", () => {
 		});
 	});
 
+	it("forwards a stayed-red cycle whose green_at predates red_at (green_at < red_at)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const tdd = new Map<string, unknown>([
+			// An earlier green followed by a later red still counts as stayed-red:
+			// green_at(2) < red_at(10) -> the comparison operand is true.
+			["a", { state: "red", source_file: "/a.ts", red_at: 10, green_at: 2 }],
+		]);
+		mFormatUnresolvedRedWarning.mockReturnValue("UNRESOLVED-RED");
+
+		buildVerificationStopWarnings(ctx, makeEvent(), makeSession({ tdd_cycles: tdd }));
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({
+			redChecks: [],
+			redTests: [{ sourceFile: "/a.ts" }],
+		});
+	});
+
+	it("defaults a missing red_at to 0 when comparing against green_at (?? fallback)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const tdd = new Map<string, unknown>([
+			// red_at is absent -> (cycle.red_at ?? 0) -> 0; green_at(0) < 0 is false,
+			// so this cycle is excluded — exercises the ?? fallback being taken.
+			["a", { state: "red", source_file: "/a.ts", green_at: 0 }],
+		]);
+		mFormatUnresolvedRedWarning.mockReturnValue(null);
+
+		buildVerificationStopWarnings(ctx, makeEvent(), makeSession({ tdd_cycles: tdd }));
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({ redChecks: [], redTests: [] });
+	});
+
 	it("EXCLUDES a red cycle whose red was later cleared by a green (green_at >= red_at)", () => {
 		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
 		const tdd = new Map<string, unknown>([
@@ -915,6 +947,56 @@ describe("buildVerificationStopWarnings", () => {
 		expect(logLines.some((l) => l.includes("untested-exports"))).toBe(false);
 	});
 
+	it("wires readFile to succeed on a real file and fail-open (null) on an unreadable one", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const evCwd = mkdtempSync(join(tmpdir(), "untested-exports-readfile-"));
+		try {
+			const realFile = join(evCwd, "dependent.test.ts");
+			writeFileSync(realFile, "import './thing.js';\n");
+			const ctx = makeCtx({ rules: vscRules(), graphCache: new Map() });
+			mFormatUntestedExportsWarning.mockReturnValue(null);
+
+			buildVerificationStopWarnings(ctx, makeEvent({ cwd: evCwd }), makeSession());
+
+			const arg = mDetectUntestedExports.mock.calls[0]?.[0];
+			expect(arg).toBeDefined();
+			// Success path: real content comes back verbatim (try branch, line 421).
+			expect(arg?.readFile(realFile)).toBe("import './thing.js';\n");
+			// Fail-open path: a nonexistent path is caught and yields null (line 423),
+			// not a thrown exception.
+			expect(arg?.readFile(join(evCwd, "does-not-exist.ts"))).toBeNull();
+		} finally {
+			rmSync(evCwd, { recursive: true, force: true });
+		}
+	});
+
+	it("wires getGraph to lazily build a real ProjectGraph via getGraphForFile", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const evCwd = mkdtempSync(join(tmpdir(), "untested-exports-getgraph-"));
+		try {
+			writeFileSync(join(evCwd, "package.json"), "{}");
+			const graphCache = new Map();
+			const ctx = makeCtx({ rules: vscRules(), graphCache });
+			mFormatUntestedExportsWarning.mockReturnValue(null);
+
+			buildVerificationStopWarnings(ctx, makeEvent({ cwd: evCwd }), makeSession());
+
+			const arg = mDetectUntestedExports.mock.calls[0]?.[0];
+			expect(arg).toBeDefined();
+			const graph = arg?.getGraph();
+			expect(graph).toBeDefined();
+			// getGraphForFile caches by resolved project root — calling again hits
+			// the cache and returns the identical instance.
+			expect(arg?.getGraph()).toBe(graph);
+		} finally {
+			rmSync(evCwd, { recursive: true, force: true });
+		}
+	});
+
 	// --- per_edit_coverage-gated wrapper (checkDeferredCoverage) ------------
 
 	/** vscRules merged with a `per_edit_coverage` block so the deferred-coverage
@@ -1005,6 +1087,116 @@ describe("buildVerificationStopWarnings", () => {
 		const out = buildVerificationStopWarnings(ctx, makeEvent(), session);
 
 		expect(out).toEqual(["UNRESOLVED-RED", "DEFERRED-COVERAGE"]);
+	});
+});
+
+// ===========================================================================
+// buildStaleBaselineNudge — real fs, no mocks (baseline-staleness.js untouched)
+// ===========================================================================
+describe("buildStaleBaselineNudge", () => {
+	it("fires on a fresh cwd (no baselines, no marker) and writes the nudge marker", async () => {
+		const { mkdtempSync, rmSync, existsSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const cwd = mkdtempSync(join(tmpdir(), "stale-baseline-"));
+		try {
+			// No .interlinked dir exists yet: shouldNudge -> true (no marker),
+			// formatStaleBaselineWarning -> non-null (every tracked baseline is
+			// "never generated" = stale), and the marker writeFileSync throws
+			// (parent dir absent) — exercised via the catch { void err }.
+			const ctx = makeCtx({ cwd });
+			const warning = buildStaleBaselineNudge(ctx, makeEvent());
+			expect(warning).not.toBeNull();
+			expect(warning).toContain("[interlinked:baseline-staleness]");
+			expect(existsSync(join(cwd, ".interlinked"))).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("fires and successfully writes the marker when .interlinked/ already exists", async () => {
+		const { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } = await import(
+			"node:fs"
+		);
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const cwd = mkdtempSync(join(tmpdir(), "stale-baseline-write-"));
+		try {
+			mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+			const ctx = makeCtx({ cwd });
+			const warning = buildStaleBaselineNudge(ctx, makeEvent());
+			expect(warning).not.toBeNull();
+			const markerPath = join(cwd, ".interlinked", ".baseline-staleness-nudged");
+			expect(existsSync(markerPath)).toBe(true);
+			expect(readFileSync(markerPath, "utf-8").trim().length).toBeGreaterThan(0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("returns null (shouldNudge=false) when the marker was written moments ago", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const cwd = mkdtempSync(join(tmpdir(), "stale-baseline-throttled-"));
+		try {
+			mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+			writeFileSync(
+				join(cwd, ".interlinked", ".baseline-staleness-nudged"),
+				`${new Date().toISOString()}\n`,
+			);
+			const ctx = makeCtx({ cwd });
+			expect(buildStaleBaselineNudge(ctx, makeEvent())).toBeNull();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("returns null (formatter=null) when every tracked baseline file is fresh", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const cwd = mkdtempSync(join(tmpdir(), "stale-baseline-fresh-"));
+		try {
+			const dir = join(cwd, ".interlinked");
+			mkdirSync(dir, { recursive: true });
+			for (const f of [
+				"coverage-baseline.json",
+				"coverage-edit-baseline.json",
+				"mutation-baseline.json",
+				"untested-files-baseline.json",
+			]) {
+				writeFileSync(join(dir, f), "{}");
+			}
+			const ctx = makeCtx({ cwd });
+			expect(buildStaleBaselineNudge(ctx, makeEvent())).toBeNull();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves interlinkedDir from event.cwd, preferring it over ctx.cwd", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const eventCwd = mkdtempSync(join(tmpdir(), "stale-baseline-eventcwd-"));
+		try {
+			const dir = join(eventCwd, ".interlinked");
+			mkdirSync(dir, { recursive: true });
+			for (const f of [
+				"coverage-baseline.json",
+				"coverage-edit-baseline.json",
+				"mutation-baseline.json",
+				"untested-files-baseline.json",
+			]) {
+				writeFileSync(join(dir, f), "{}");
+			}
+			// ctx.cwd points somewhere else entirely (never used since event.cwd wins).
+			const ctx = makeCtx({ cwd: "/nonexistent-ctx-cwd" });
+			expect(buildStaleBaselineNudge(ctx, makeEvent({ cwd: eventCwd }))).toBeNull();
+		} finally {
+			rmSync(eventCwd, { recursive: true, force: true });
+		}
 	});
 });
 

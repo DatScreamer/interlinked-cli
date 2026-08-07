@@ -23,7 +23,8 @@ import {
 	type RpcRequest,
 	splitFrames,
 } from "./daemon-protocol.js";
-import type { DaemonPaths } from "./session-paths.js";
+import { reapZombieIncumbent } from "./server/anti-stomp.js";
+import { type DaemonPaths, isDaemonSocketServing } from "./session-paths.js";
 
 export interface SessionDaemonOptions {
 	paths: DaemonPaths;
@@ -117,7 +118,36 @@ export async function startSessionDaemon(opts: SessionDaemonOptions): Promise<Se
 	// makes two racing starts resolve to exactly one winner.
 	const claim = claimSessionPid(paths.pid, process.pid);
 	if (!claim.claimed) {
-		throw new DaemonOwnershipConflictError(session_id, claim.ownerPid);
+		// A live PID alone is NOT proof of a healthy incumbent — the same
+		// caveat the raw-socket check in server.ts carries (see
+		// `isDaemonSocketServing`'s doc comment in session-paths.ts):
+		// `installCrashResilience()` deliberately keeps a daemon process
+		// running through an unexpected error, so a session daemon whose
+		// socket LISTENER died (but not the process) still passes this
+		// PID-liveness claim forever. Probe whether the incumbent's framed
+		// socket actually answers before deferring to it.
+		let incumbentServing: boolean;
+		try {
+			incumbentServing = await isDaemonSocketServing(paths.socket);
+		} catch {
+			// Fail safe: an unexpected throw from the probe itself is not
+			// proof the incumbent is dead — prefer deferring (the pre-fix
+			// behavior) over stomping a possibly-healthy daemon's socket.
+			incumbentServing = true;
+		}
+		if (incumbentServing) {
+			throw new DaemonOwnershipConflictError(session_id, claim.ownerPid);
+		}
+		// Live PID, but nothing is actually listening on its socket: a zombie
+		// kept resident by crash-resilience, not a healthy incumbent. Reap
+		// (best effort) and take over. `reapZombieIncumbent`'s SIGTERM is
+		// asynchronous — the zombie's pid may still be alive by the time we
+		// re-check — so we force-write our own claim directly rather than
+		// re-running `claimSessionPid` (which would just reproduce the same
+		// "live foreign pid" conflict). Mirrors the raw-socket path's
+		// decide-then-force-take-over shape in server.ts.
+		reapZombieIncumbent(claim.ownerPid, (msg) => console.error(msg));
+		writeFileSync(paths.pid, String(process.pid));
 	}
 	if (existsSync(paths.socket)) rmSync(paths.socket, { force: true });
 

@@ -36,16 +36,22 @@ vi.mock("../mutation/cloud-runner.js", () => ({
 	createCloudMutationRunner: vi.fn(() => ({ runOverlay: vi.fn() })),
 }));
 
+vi.mock("../mutation/sharded-runner.js", () => ({
+	createShardedMutationRunner: vi.fn(() => ({ runOverlay: vi.fn(), sharded: true })),
+}));
+
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { createCloudMutationRunner } from "../mutation/cloud-runner.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
+import { createShardedMutationRunner } from "../mutation/sharded-runner.js";
 import { runCommitGate, runCoverageWriteGate, runMutationWriteGate } from "./pre-tool-coverage-gates.js";
 
 const mCheckCoverage = checkCoverageWrite as unknown as Mock;
 const mCheckCommit = checkCommitGate as unknown as Mock;
 const mMutation = runPerEditMutationGate as unknown as Mock;
 const mCreateRunner = createCloudMutationRunner as unknown as Mock;
+const mCreateShardedRunner = createShardedMutationRunner as unknown as Mock;
 
 function ev(partial: Partial<HarnessEvent> = {}): HarnessEvent {
 	return {
@@ -149,6 +155,7 @@ beforeEach(() => {
 	mCheckCommit.mockResolvedValue(null);
 	mMutation.mockResolvedValue(null);
 	mCreateRunner.mockReturnValue({ runOverlay: vi.fn() });
+	mCreateShardedRunner.mockReturnValue({ runOverlay: vi.fn(), sharded: true });
 });
 
 afterEach(() => {
@@ -242,6 +249,86 @@ describe("runCoverageWriteGate", () => {
 	});
 });
 
+describe("runCoverageWriteGate — editedFileForEvent branch coverage (apply_patch path resolution)", () => {
+	// editedFileForEvent isn't exported; each branch is exercised indirectly by
+	// driving runCoverageWriteGate with a shaped tool_input and asserting the
+	// gate still runs to completion (depViewForEvent fails open on any error).
+	it("uses tool_input.path when file_path is absent", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({ tool_name: "Edit", cwd: "/repo", tool_input: { path: "src/x.ts" } }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+
+	it("no named path and no apply_patch payload at all (raw is empty)", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({ tool_name: "Edit", cwd: "/repo", tool_input: {} }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+
+	it("raw content present but does not look like an apply_patch payload", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({ tool_name: "Edit", cwd: "/repo", tool_input: { content: "just plain file text, no directives" } }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+
+	it("apply_patch payload with no file sections (first section is undefined)", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({
+				tool_name: "Edit",
+				cwd: "/repo",
+				tool_input: { content: "*** Begin Patch\n*** End Patch" },
+			}),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+
+	it("apply_patch payload with a real section, event.cwd present (resolves against it)", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({
+				tool_name: "Edit",
+				cwd: "/repo",
+				tool_input: {
+					content: "*** Begin Patch\n*** Add File: src/y.ts\n+hello\n*** End Patch",
+				},
+			}),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+
+	it("apply_patch payload with a real section, event.cwd absent (falls back to process.cwd())", async () => {
+		const decision = await runCoverageWriteGate(
+			ctxWith(true),
+			ev({
+				tool_name: "Edit",
+				tool_input: {
+					content: "*** Begin Patch\n*** Add File: src/z.ts\n+hello\n*** End Patch",
+				},
+			}),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mCheckCoverage).toHaveBeenCalledOnce();
+	});
+});
+
 describe("runCommitGate", () => {
 	it("no-op (gate never called) when per_edit_coverage is absent", async () => {
 		const decision = await runCommitGate(
@@ -295,6 +382,16 @@ describe("runCommitGate", () => {
 		expect(decision?.warnings).toEqual(["PRE", "GATE-NO-VERIFY"]);
 	});
 
+	it("merges pre-decision warnings even when the gate's own block carries none", async () => {
+		mCheckCommit.mockResolvedValue({ decision: "block", reason: "R" });
+		const decision = await runCommitGate(
+			ctxWith(true),
+			ev({ tool_name: "Bash", tool_input: { command: "git commit -m x" } }),
+			allow(["PRE"]),
+		);
+		expect(decision?.warnings).toEqual(["PRE"]);
+	});
+
 	it("returns null (continue) when the gate finds nothing (clean commit)", async () => {
 		const decision = await runCommitGate(
 			ctxWith(true),
@@ -346,6 +443,17 @@ describe("runMutationWriteGate", () => {
 		expect(mCreateRunner).not.toHaveBeenCalled();
 	});
 
+	it("falls back to an empty string toolName when event.tool_name is undefined", async () => {
+		mMutation.mockResolvedValue(null);
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: undefined }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mMutation.mock.calls[0]?.[0]?.toolName).toBe("");
+	});
+
 	it("enabled + runner_url: lazily builds the cloud runner and passes it to the gate", async () => {
 		mMutation.mockResolvedValue(null);
 		await runMutationWriteGate(
@@ -355,6 +463,25 @@ describe("runMutationWriteGate", () => {
 		);
 		expect(mCreateRunner).toHaveBeenCalledOnce();
 		expect(mMutation.mock.calls[0]?.[0]?.runner).not.toBeNull();
+		expect(mCreateShardedRunner).not.toHaveBeenCalled();
+	});
+
+	it("enabled + multiple runner_urls: builds a sharded runner over every url (primary + extras)", async () => {
+		mMutation.mockResolvedValue(null);
+		await runMutationWriteGate(
+			ctxMutation({
+				enabled: true,
+				mode: "block",
+				runner_url: "https://runner-a.example",
+				runner_urls: ["https://runner-b.example", ""],
+			}),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		// Two non-empty urls (empty string filtered) => 2 plain runners created, then sharded.
+		expect(mCreateRunner).toHaveBeenCalledTimes(2);
+		expect(mCreateShardedRunner).toHaveBeenCalledOnce();
+		expect(mMutation.mock.calls[0]?.[0]?.runner).toEqual({ runOverlay: expect.any(Function), sharded: true });
 	});
 
 	it("returns the gate's block, merging pre-decision warnings onto it", async () => {
