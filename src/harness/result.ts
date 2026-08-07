@@ -188,6 +188,10 @@ export class Err<T = never, E = unknown> {
 		// cycle — Maximum call stack size exceeded. Yielding `this` back makes
 		// the chain self-referential, which cycle-detecting deep-equal
 		// implementations correctly short-circuit.
+		// SAFETY: `Err<T, E>` stores only `error: E`; `T` is phantom, so no field
+		// of `this` depends on it. Narrowing `T` to `never` therefore removes a
+		// type parameter nothing reads — the runtime object is unchanged, and the
+		// double cast is only needed because TS cannot see that `T` is unused.
 		const self = this as unknown as Err<never, E>;
 		return (function* (): Generator<Err<never, E>, never, undefined> {
 			yield self;
