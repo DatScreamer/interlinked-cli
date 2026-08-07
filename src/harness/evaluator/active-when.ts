@@ -103,7 +103,11 @@ const SESSION_PREDICATES: Record<string, (args: SessionPredicateSpec["args"]) =>
 		const want = typeof args?.count === "number" ? args.count : 2;
 		const cohort = getActiveCohort();
 		if (!cohort) return false;
-		return cohort.getCounts().active >= want;
+		// `activeAgentCount()` — NOT `getCounts().active`, which over-counts both
+		// agents that died without a SubagentStop (still `active` until a timer
+		// sweep) and a single session registered under two names. Either one
+		// blocks a solo session from `git checkout`/`stash`/`rebase`.
+		return cohort.activeAgentCount() >= want;
 	},
 };
 

@@ -179,6 +179,46 @@ export class CohortManager {
 		return counts;
 	}
 
+	/**
+	 * Public API — how many DISTINCT agents are genuinely active right now.
+	 *
+	 * This is the number the cohort-discipline rules gate on, and it must not
+	 * over-count, because over-counting turns a solo session into a blocked one:
+	 * `git checkout` / `stash` / `rebase` all refuse above 2. Measured
+	 * 2026-08-07: a single session with no other agent running was blocked from
+	 * switching branches.
+	 *
+	 * `getCounts().active` over-counts two ways, and this method fixes both:
+	 *
+	 * 1. **Stale entries.** `status` only becomes `lost` when `detectLostAgents()`
+	 *    runs off a daemon timer. Any agent that dies WITHOUT a SubagentStop — a
+	 *    rate-limit kill, a stopped workflow, a crash — stays `active` in the map
+	 *    until that sweep happens to fire, and across a daemon restart the sweep
+	 *    may never see it. Reading `last_event_at` at CALL time makes the count
+	 *    correct without depending on a background timer having run.
+	 *
+	 * 2. **Double registration.** Agents are keyed by NAME, computed as
+	 *    `agent_name || "<source>-<sid8>"`. One session whose events sometimes
+	 *    carry `agent_name` and sometimes do not registers under BOTH keys and
+	 *    counts twice. Collapsing by `session_id` (falling back to the name when
+	 *    a session id is absent) counts a session once however it identified
+	 *    itself.
+	 *
+	 * Deliberately NOT mutating status here: this is a read path consulted on
+	 * every gated tool call, and a predicate that silently rewrites cohort state
+	 * would make `detectLostAgents()`'s ledger reporting non-deterministic.
+	 */
+	activeAgentCount(nowMs: number = harnessNow()): number {
+		const cutoff = nowMs - LOST_TIMEOUT_MS;
+		const live = new Set<string>();
+		for (const agent of this.agents.values()) {
+			if (agent.status !== "active") continue;
+			if (new Date(agent.last_event_at).getTime() < cutoff) continue;
+			live.add(agent.session_id || agent.name);
+		}
+		return live.size;
+	}
+
 	/** Find agent by session ID or agent name from event */
 	private findByEvent(event: HarnessEvent): CohortAgent | undefined {
 		// Try by agent name first

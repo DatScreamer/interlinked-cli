@@ -496,6 +496,62 @@ describe("CohortManager.findByEvent (via public methods)", () => {
 	});
 });
 
+describe("CohortManager.activeAgentCount — the number cohort rules gate on", () => {
+	// Over-counting here is not cosmetic: `active_agent_count_at_least(2)` gates
+	// git checkout / stash / rebase, so a phantom second agent blocks a solo
+	// session from switching branches. Measured live 2026-08-07.
+
+	it("P1: counts a single agent once", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alice" }));
+		expect(c.activeAgentCount()).toBe(1);
+	});
+
+	it("P2: counts two genuinely distinct sessions as two", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alice", session_id: "sess-a" }));
+		c.agentJoined(ev({ agent_name: "bob", session_id: "sess-b" }));
+		expect(c.activeAgentCount()).toBe(2);
+	});
+
+	it("N1: does NOT count a stale agent that died without a stop event", () => {
+		// The rate-limit / stopped-workflow / crash case: no SubagentStop ever
+		// arrives, so `status` stays "active" until a timer sweep that may never
+		// run. Reading last_event_at at call time makes this correct regardless.
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alice" }));
+		c.subagentJoined(
+			ev({ agent_name: "ghost", timestamp: new Date(NOW.getTime() - LOST_TIMEOUT_MS - 1).toISOString() }),
+		);
+		expect(c.getCounts().active).toBe(2); // the raw field still says 2 …
+		expect(c.activeAgentCount()).toBe(1); // … the gated number does not
+	});
+
+	it("N2: counts ONE session registered under two names only once", () => {
+		// `agentJoined` keys on `agent_name || "<source>-<sid8>"`, so a session
+		// whose events sometimes carry agent_name and sometimes do not lands in
+		// the map twice and used to count as a cohort of two. The second join
+		// here OMITS agent_name, taking the synthetic-name branch.
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alice", session_id: "sess-same" }));
+		c.agentJoined(ev({ session_id: "sess-same" }));
+		expect(c.getCounts().active).toBe(2); // two map keys …
+		expect(c.activeAgentCount()).toBe(1); // … one real session
+	});
+
+	it("N3: does not count agents that left gracefully", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "alice" }));
+		c.agentJoined(ev({ agent_name: "bob", session_id: "sess-b" }));
+		c.agentLeft(ev({ agent_name: "bob", session_id: "sess-b" }));
+		expect(c.activeAgentCount()).toBe(1);
+	});
+
+	it("N4: an empty cohort counts zero", () => {
+		expect(new CohortManager().activeAgentCount()).toBe(0);
+	});
+});
+
 describe("active-cohort provider", () => {
 	afterEach(() => setActiveCohort(null));
 
