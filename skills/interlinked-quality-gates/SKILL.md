@@ -14,8 +14,10 @@ hand-lowering a water-line is the canonical gate-gaming move and is blocked.** N
 **When a gate blocks you, the correct move is always to meet the bar — decompose, add a test,
 cover the line — never to loosen the baseline.** The strict gates (cyclomatic, per-edit
 coverage) have **no suppression and no env bypass**; decomposition or a test is the only way
-past. This is the repo's "decompose-first" habit: extract helpers *as you write* branchy
-functions, rather than waiting for the gate to block.
+past. The habit that pays here is **decompose-first**: extract helpers *as you write* branchy
+functions, rather than waiting for the gate to block. (Measured on the harness's own repo
+across 17+ sessions of the strongest available models, at an identical per-edit rate — so it
+is a property of how models write branchy code, not of one codebase.)
 
 ## The gates you bump into at edit time
 These run before an edit lands. The local metric ratchets use **delta semantics**: holding or
@@ -249,11 +251,18 @@ public `interlinked mutation adopt` command.
 - **Interlinked does not choose the mutator strength.** Pin the Stryker operator set and test
   scope in the target repo; changing either can make scores incomparable without changing the
   Interlinked baseline schema.
-- **`mutation accept` annotates the LIVE manifest, not the report baseline.** Shipped
-  2026-07-29: `interlinked mutation accept --file <p> --id <mutantId> --reason <why>` flips one
-  survivor to the audited `equivalent` status in `mutation-manifest.json`, recording the reason
-  in-band. It is a human-invoked `fs` write (the sanctioned carve-out past the integrity gate —
-  hand-editing the manifest to accept a mutant is still blocked). A blank reason is refused.
+- **`mutation accept` REFUSES every prose accept — do not plan around it.** (Corrected
+  2026-08-07; the previous text here described behavior that no longer exists.) Since typed
+  dispositions, `equivalent` status requires a verifier-issued certificate bound to the
+  mutant's current symbol hash, and the CLI cannot mint one — so
+  `interlinked mutation accept --file <p> --id <mutantId> --reason <why>` reports the refusal
+  and exits non-zero, whatever the reason says. A reason is not a mechanism.
+  **Consequence to know before promising anyone a number:** a survivor's only recordable
+  end-states are *killed* or *unjustified*, so an "unjustified survivors" count can never fall
+  below the survivor count. Kill the mutant with a test, or delete the code if the mutant is
+  unkillable because the code should not exist. (`src/commands/mutation-disposition.ts` exists
+  to expose the certificate-free judgments — `dead_code`, `unresolved` — but is not yet wired
+  into the CLI registrar.) Hand-editing the manifest remains blocked by the integrity gate.
   Use it only for mutants with no observable behavior change; agent-facing message prose is
   behavior in this repo, so assert it instead of accepting. Campaign guidance:
   `docs/plans/15-survivor-elimination-campaign.md`.

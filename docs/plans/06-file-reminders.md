@@ -1,5 +1,9 @@
 # File Reminders: Agent-Created & CLI-Managed
 
+> **RETIRED 2026-08-07 — SHIPPED. Do not build this.** `src/commands/reminder.ts`
+> implements the add/list/remove surface this plan proposes. The premise below
+> ("no CLI command — users must hand-edit JSON") is no longer true.
+
 ## Context
 
 File reminders landed in `e89ff1b` (April 2) — `FileReminder` type, evaluator integration, hot-reload via `guard-rules.json`/`guard-rules.local.json`. But:

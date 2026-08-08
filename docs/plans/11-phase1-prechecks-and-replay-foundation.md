@@ -79,10 +79,27 @@ For each check `<id>`:
 
 ### Validation
 
+> **AMENDED 2026-08-07 — step 2 below was the wrong gate, and Workstream A has
+> shipped.** All six checks now live in `check-registry/entries-errors.ts`. The
+> validation rule is kept for the record with its defect named, because it is
+> the clearest instance of the mistake CLAUDE.md's "What this is for" preamble
+> now guards against: **a zero-FP count on THIS repo is not evidence a
+> `pre_block` is safe elsewhere.** This tree is single-language,
+> agent-hardened, and has no human legacy — it is the least informative sample
+> available for the question "will this check false-alarm in a customer's
+> codebase". The Check Evidence Contract's `corpus` obligation is the correct
+> successor; see task #3 (multi-repo agent-edit corpus).
+>
+> Replacement for step 2: measure the check's fire rate and sampled FP rate
+> against **foreign code** (well-regarded OSS in the target language) and the
+> agent-edit corpus. Non-zero fires on this repo remain a reason to look
+> closely — they are not, by themselves, a reason to refuse to ship; and zero
+> fires here are not permission to ship a hard block.
+
 For each check before merge:
 1. Unit tests: ≥3 positive, ≥3 negative cases.
-2. Run `interlinked verify --all-checks` on this repo. Expected FP count: **0** for any of the six on existing code. If any fires on legit code, either tighten the detection or move the check to `post` warning (not advisory) — do not ship a `pre_block` with non-zero FP rate against this codebase.
-3. Dogfood for one week. Track fire rate via the FP telemetry workstream below. If rate >2% suppress-rate or >0% manual-revert-rate, demote to `post` warning.
+2. ~~Run `interlinked verify --all-checks` on this repo. Expected FP count: **0** for any of the six on existing code. If any fires on legit code, either tighten the detection or move the check to `post` warning (not advisory) — do not ship a `pre_block` with non-zero FP rate against this codebase.~~ *(superseded — see the amendment above)*
+3. Dogfood for one week. Track fire rate via the FP telemetry workstream below. If rate >2% suppress-rate or >0% manual-revert-rate, demote to `post` warning. **Note:** a *suppress* or *manual-revert* rate is a genuine FP signal and stays valid — those measure humans and agents disagreeing with the check, not merely the tree being clean.
 
 ---
 

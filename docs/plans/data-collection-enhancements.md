@@ -1,5 +1,11 @@
 # Data Collection Enhancements — Plan (Rev 4)
 
+> **PARTIALLY SUPERSEDED (noted 2026-08-07).** Two things to know before acting:
+> §2 proposes adding `checkPiiInSource()` as new work, but `src/harness/checks/pii.ts`
+> already ships PII detection (with a different design — reconcile against the code
+> before building anything). And file paths throughout are written as `cli/src/…`, a
+> layout that no longer exists; sources live at `src/…`.
+
 Based on competitive analysis of [Entire CLI](https://github.com/entireio/cli), gaps identified in Interlinked's data collection, deep codebase exploration, and code-level review of Rev 3.
 
 ## Product Vision

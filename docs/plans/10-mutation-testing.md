@@ -1,5 +1,15 @@
 # Mutation Testing — Phased Rollout
 
+> **RETIRED 2026-08-07 — superseded by a different architecture. Do not build the CLI
+> described here.** This plan proposes an async `interlinked mutate --diff` command
+> writing into `recurrences.jsonl`; neither the command nor that recurrence kind exists,
+> and neither should. What shipped is a **synchronous per-edit gate** in
+> `src/harness/mutation/` with stable mutant identity and its own manifest — see
+> `docs/design/per-edit-cloud-mutation-testing.md` for the architecture and
+> `docs/plans/15-survivor-elimination-campaign.md` (now BACKGROUND priority) for the
+> cleanup campaign. Kept for the phased-rollout reasoning and the case for mutation
+> testing, which still hold.
+
 Mutation testing as a hook-triggered, async-executed quality signal. Three phases: local detached subprocess (Phase 1), cloud fan-out (Phase 2), cross-session aggregation (Phase 3). Each phase is independently shippable and strictly composes with the next — the agent-facing surface is identical across phases; only the compute location moves.
 
 ## TL;DR

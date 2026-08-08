@@ -1,8 +1,30 @@
 # Survivor Elimination Campaign — whole-codebase mutation hardening
 
-**Status:** ready to execute. The per-edit mutation gate is shipped and enforcing;
-this is the plan for using it to eliminate surviving mutants across the entire
-codebase, one file at a time, optionally across several agents in parallel.
+**Status: BACKGROUND / LOW PRIORITY — do not run this campaign unless explicitly
+asked.** (Set 2026-08-07 by the user: *"it's really a background project, not
+something I want to spend a ton of tokens fixing yet, and not a super urgent
+priority."*) Specifically: **do not spawn parallel agent fleets for this.** The
+mechanics below are sound and stay documented for whenever the work resumes; it
+is the *cadence and cost* that changed, not the method.
+
+Two things a cold agent should know before touching this:
+
+1. **The per-edit gate supersedes the campaign as the priority.** Keeping NEW
+   edits clean is what the harness is for (see CLAUDE.md, "What this is for");
+   retroactively cleaning this tree is housekeeping on an already-atypical
+   codebase. As of 2026-08-07 the gate scopes source edits to the diff and
+   judges test edits by the survivor delta they produce.
+2. **"Unjustified survivors to zero" is currently unreachable by construction.**
+   `mutation accept` refuses every equivalence claim lacking a verifier-issued
+   certificate and nothing in the CLI can mint one, so a survivor's only
+   recordable end-states are *killed* or *unjustified* — the unjustified count
+   can never fall below the survivor count. `src/commands/mutation-disposition.ts`
+   exists to expose `recordDisposition` (`dead_code` / `unresolved`, neither of
+   which needs a certificate) but is **not yet wired into the registrar**. Wire
+   that before promising anyone a zero.
+
+Originally: the plan for using the shipped per-edit gate to eliminate surviving
+mutants across the entire codebase, one file at a time.
 
 Companion documents: `docs/plans/10-mutation-testing.md` (why mutation testing,
 phased rollout), `docs/design/per-edit-cloud-mutation-testing.md` (the gate's

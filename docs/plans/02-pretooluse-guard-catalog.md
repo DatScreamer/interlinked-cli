@@ -1,5 +1,12 @@
 # PreToolUse Guard Catalog -- Blocks and Warnings
 
+> **POINT-IN-TIME SNAPSHOT, not the catalog (noted 2026-08-07).** The authoritative,
+> generated list is **`docs/generated/guard-rules.md`** (`npm run docs` regenerates it,
+> and CI fails if it drifts). This file froze at 66 rules; the current built-in count is
+> tracked by a gen marker in CLAUDE.md and is substantially higher. It also cites
+> `cli/src/harness/evaluator.ts`, a path that no longer exists. Read it for the
+> *reasoning* behind rule categories; never for the *inventory*.
+
 ## Overview
 
 The Interlinked Harness evaluates every agent tool call at two hook points: PreToolUse (before execution) and PostToolUse (after execution). This document catalogs all block and warning categories in the PreToolUse evaluator (`cli/src/harness/evaluator.ts`), along with the PostToolUse quality checks that produce blocking feedback.

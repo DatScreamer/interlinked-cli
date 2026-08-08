@@ -1,5 +1,10 @@
 # Supermodel Graph Provider — deepening the `.graph.*` integration
 
+> **SUPERSEDED 2026-08-07 — Supermodel is being RETIRED.** The phase table below shows
+> work as "pending" against a component that has since been decided for removal; do not
+> pick that work up. See `docs/plans/13-test-quality-suite-implementation-plan.md` §43
+> for the reversal and the `OracleGraph` abstraction that replaces it.
+
 Plan 07 shipped a read-only, one-warning consumer of Supermodel `.graph.*`
 shards. This plan deepens it: the harness's own dependency-aware checks
 consume the shard when one is present and fresh, and the function-level call

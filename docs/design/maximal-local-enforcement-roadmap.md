@@ -6,6 +6,37 @@
 
 The CLI harness/daemon enforces the **maximal set of deterministic checks at runtime** — PreToolUse / PostToolUse / Stop, on every tool call — **locally**, and **dogfoods them on its own codebase first**. Anything that fits the ~25s PreToolUse window stays local; only LLM-judgment review, multi-agent/multi-human aggregation, and embarrassingly-parallel heavy compute (hub-file / whole-repo mutation) go to the cloud. **The harness's own code must always pass the maximally-enforced rule set** — promoting a check is gated on the harness itself being clean for it.
 
+### AMENDED 2026-08-07 — dogfood-clean is NECESSARY but NOT SUFFICIENT
+
+The promotion rule above (`project_maximal_local_enforcement`, 2026-06-01) is
+restated in at least five other design docs. Keep what it gets right; it is
+missing a half, and one of its corollaries is backwards.
+
+**What it gets right:** do not ship a *blocking* check that this repo fails.
+That is an anti-hypocrisy rule and a self-preservation one — a blocker we fail
+on landing blocks our own work first.
+
+**What it misses:** clean-here is evidence the check does not block US. It is
+**not** evidence of a low false-positive rate anywhere else, and this repo is
+the worst available proxy for "anywhere else": single language, agent-hardened,
+no human legacy. See CLAUDE.md, "What this is for". So promotion to a blocking
+gate needs a second input — fire rate and sampled FP rate against foreign code
+and the multi-repo agent-edit corpus — not just a quiet week here.
+
+**The corollary that is backwards:** "the check is quiet here" and "the check is
+language-specific" have both been used below as grounds to leave a check
+demoted. Neither is. A check quiet in this repo is the part of the standard a
+strong model working in TypeScript already clears; point it at a small local
+model or a Ruby codebase and it earns its keep. **Fire rate measures the AGENT
+and the TREE, not the check.** Nothing should be demoted or retired for being
+quiet here — the honest reason to keep a check advisory is a measured
+false-positive rate, and that measurement has to come from somewhere other than
+this tree.
+
+Practical effect until the corpus (task #3) exists: dogfood-clean still gates
+promotion, and a promotion made on dogfood evidence alone should say so, so it
+can be revisited when there is cross-repo evidence to check it against.
+
 ## Shipped this campaign
 
 | Item | Result | Commit |

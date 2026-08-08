@@ -1,5 +1,12 @@
 # Supermodel `.graph.*` Integration
 
+> **SUPERSEDED 2026-08-07 — Supermodel is being RETIRED.** Do not deepen this
+> integration. `docs/plans/13-test-quality-suite-implementation-plan.md` §43 records the
+> reversal and the successor: re-anchor the graph oracle behind an `OracleGraph`
+> abstraction so no consumer binds to Supermodel directly. Some `supermodel` references
+> remain in `src/` — the retirement is in progress, not finished, so treat anything here
+> as describing a component on its way out.
+
 PreToolUse-time blast-radius warnings sourced from Supermodel-emitted `.graph.*` shards, when present.
 
 ## Goal

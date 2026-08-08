@@ -560,8 +560,12 @@ and if we ever do it, it's a separate advisory cloud surface, never a local gate
   or tank the machine (`feedback_safety_continuity.md`). A quality gate that false-blocks
   is worse than silence.
 - **Stop = reflect, not ship** (`feedback_reluctance_to_push.md`).
-- **Dogfood first** — promote a runner to default gate only once the harness's own repo
-  is clean for it (`project_maximal_local_enforcement`).
+- **Dogfood first, but not dogfood only** — promote a runner to default gate only once
+  the harness's own repo is clean for it (`project_maximal_local_enforcement`).
+  **Amended 2026-08-07:** that is a necessary condition, not a sufficient one. Clean here
+  proves the check does not block US; it says nothing about its false-positive rate in the
+  multi-language, human-written repos this runner is meant to serve. Quiet here is likewise
+  never grounds to demote or retire. See `maximal-local-enforcement-roadmap.md` §Thesis.
 
 ---
 

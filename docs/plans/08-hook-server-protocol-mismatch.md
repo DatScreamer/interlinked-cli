@@ -1,5 +1,11 @@
 # Hook ↔ Harness Server Protocol Mismatch
 
+> **RETIRED 2026-08-07 — the bug described below is FIXED. Do not act on this doc.**
+> `session-daemon.ts` is wired into `server.ts` and the daemon serves both protocols
+> (`interlinked harness status` reports `Protocol: dual`). PreToolUse advisories reach
+> the agent normally — verified by direct observation, they arrive on every edit.
+> Kept only as the record of a real outage; read it as history, not as a live warning.
+
 The `dist/hook-entry.js` hook script and `src/harness/server.ts` daemon speak different IPC protocols, so every PreToolUse call from the hook hits its 2-second deadline, falls back to a "timeout" stub, and never delivers the harness's real decision (warnings, blocks, or `additionalContext`) to the agent.
 
 ## TL;DR

@@ -239,6 +239,11 @@ halves of §2.1 / §2.3 / §4.2 live.
   Ship advisory, measure on this repo, promote to block only once clean
   (`project_maximal_local_enforcement`). Each ships ≥3 positive / ≥3 negative fixtures
   per the agent-quality convention.
+  **Amended 2026-08-07:** clean-on-this-repo is necessary, not sufficient — it shows the
+  check does not block US, not that its FP rate is low on the multi-language,
+  human-written codebases the harness targets. And the inverse never holds: staying
+  quiet here is not grounds to leave a check advisory or to retire it. See
+  `maximal-local-enforcement-roadmap.md` §Thesis.
 - **Fail-open.** A flaky behavioral heuristic must never wedge the agent
   (`feedback_safety_continuity.md`). Security checks are the exception to "advisory-first"
   — they block, but are **cloud-anchored** (local is not the trust boundary —

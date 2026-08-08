@@ -131,8 +131,10 @@ The TESTS lens needs a producer. Any repo using vitest adds one line:
 reporters: ["default", "interlinked-cli/viz-reporter"]
 ```
 
-In this repo it is opt-in behind `INTERLINKED_VIZ=1` so a normal `vitest run` stays
-byte-identical: `INTERLINKED_VIZ=1 npx vitest run`. The feed schema
+Gating it behind an env var is the recommended setup, so a normal `vitest run` stays
+byte-identical and only an explicit opt-in emits the feed — that is how interlinked-cli's own
+`vitest.config.ts` wires it: `INTERLINKED_VIZ=1 npx vitest run`. Any equivalent conditional
+works; nothing about the lens requires that variable name. The feed schema
 (`.interlinked/test-events.jsonl`) is runner-agnostic — `{kind: run_start|file_start|test|run_end,
 run_id, file?, name?, status?, ms?, error?}` — so a pytest/cargo adapter writes the same lines
 and the lens renders unchanged. Every feed degrades to an honest empty state when its file is

@@ -1,5 +1,13 @@
 # Multi-Agent CLI Support -- Hook Capabilities and Integration Plan
 
+> **RETIRED 2026-08-07 — SHIPPED. Do not use the effort estimates below to plan work.**
+> `src/lib/hook-installers.ts` exports `installCursorHooks`, `installCopilotHooks`,
+> `installGeminiHooks`, and `installCodexHooks`. The runners this doc frames as
+> upcoming ("Cursor (Lowest Effort) … estimated effort: 1-2 hours") are installed and
+> tagged with `INTERLINKED_CLIENT` so the .mjs runtime can disambiguate them. Kept for
+> the per-runner hook-capability research, which is still accurate and still useful
+> when adding the NEXT runner.
+
 ## Current State
 
 Interlinked currently supports three agent CLIs in production:

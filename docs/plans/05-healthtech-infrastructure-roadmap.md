@@ -1,5 +1,10 @@
 # HealthTech Infrastructure Roadmap -- Mapping Role Requirements to Interlinked
 
+> **RETIRED 2026-08-07 — stale on two counts. Do not plan work from it.**
+> (1) The runner-support priorities ("Priority 3: Cursor Hook Support … near-zero
+> effort") are shipped — see `src/lib/hook-installers.ts`. (2) File paths are written
+> as `cli/src/…`, a layout that no longer exists; sources live at `src/…`.
+
 ## Overview
 
 This document maps the 10-item infrastructure list from the HealthTech role to Interlinked's existing capabilities and identifies what was built this session versus what needs to be built next.

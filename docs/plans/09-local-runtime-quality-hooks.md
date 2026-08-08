@@ -1,5 +1,10 @@
 # Local Runtime Quality Hooks: Assertion Density + Coverage Diff (revision 3)
 
+> **PARTIALLY SHIPPED (noted 2026-08-07).** Phase 1 is DONE despite the table below
+> marking it "Implementation-ready" — `checkAssertionDensity` lives in
+> `behavioral-checks.ts`. Phase 2 remains open. Read the Phase 1 sections as a record of
+> what was built, not as work to pick up.
+
 Two locally-running quality signals that catch test-suite failure modes the harness's existing pipeline doesn't see. This is the third pass on the plan; previous revisions over-applied unrelated registration patterns and assumed APIs that don't exist. This pass is grounded against current source.
 
 ## Phase split
