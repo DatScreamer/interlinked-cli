@@ -2,13 +2,78 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## What this is for (read before changing any check, gate, or threshold)
+
+**Interlinked is a portable, per-tool-call quality and security standard for
+agent-written code.** A local daemon sits in front of an agent's tool calls and
+judges each one — ideally before it reaches disk. Four goals, in priority order:
+
+1. **Judge agent-written code at the moment it is written, in ANY codebase.**
+   This repo is one instance, and an unrepresentative one: single language,
+   agent-hardened, no human legacy. Portability is the product; this tree is the
+   test fixture.
+2. **Ratchet the quality and security of whatever codebase it runs in.** Default
+   scope is the DIFF — the edited region of this tool call, not the file. Opt-in
+   wider scopes: whole-file ("fix the file you touched") and whole-codebase
+   ("bring this repo up to standard": tests, types, coverage, low complexity).
+3. **Catch problems at the earliest point the evidence exists.** PreToolUse when
+   the proposed content is enough; PostToolUse when the file on disk or a
+   compiler is required; trajectory when the pattern spans several calls; Stop
+   when the only observable is "they finished without doing X". A check should
+   declare the earliest phase its evidence supports, and sit there.
+4. **Double as a step-level training signal for other coding agents**, especially
+   small/local ones. An agent that clears the strictest per-tool-call gates is
+   demonstrably good — closer to rewarding every step than rewarding the final
+   diff.
+
+### The consequence that reverses the obvious reading
+
+**A check that never fires in this repo is not dead weight, and must not be
+retired or demoted for being quiet.** It is the part of the standard this
+particular (strong) agent already clears. Point it at a 7B local model or at
+human-written legacy code and it earns its keep.
+
+> **Fire rate measures the AGENT, not the check.**
+
+Two corollaries that bind day-to-day work:
+
+- **Never calibrate a threshold against this repo alone.** It is hardened and
+  atypical. `halstead_difficulty` was tuned to 25 against unit-test fixtures;
+  the real tree said 25 was the *75th percentile* and it fired 2,226 times.
+  Fixtures and a hardened tree fail in opposite directions, and both mislead.
+- **Blocking and scoring have different precision bars.** A wrong block stops
+  real work, so blocking needs high precision. Scoring does not block and can
+  record low-confidence findings weighted by confidence. The existing
+  `[proven]` / `[heuristic]` determinism tag is that axis — use it rather than
+  forcing every check to be blockable.
+
+Treat **more checks as a cost, not a win**: a gate nobody reads is a gate that
+is not running. And expect Goodharting — once gates are a training signal,
+gaming them is the optimal policy, which is why `baseline_integrity_gate`
+exists (the agent being gated can write the water-lines it is judged against).
+
+**Status: this vision is validated at N=1.** Registry-wide rework — explicit
+scope/phase fields, the UBS class port, tier recalibration — waits until the
+harness has run against a genuinely different codebase (other language, human
+legacy, not agent-hardened) and shown where the abstraction is wrong.
+
 ## Project Overview
 
-**Interlinked CLI** (`interlinked-cli`) is the local companion tool for **Interlinked MCP Server**. It captures AI agent activity via hooks, stores events locally (offline-first JSONL), and optionally syncs to the server. The server is the system of record — the CLI covers what it cannot: local process hooks, offline storage, and developer observability.
+`interlinked-cli` is the whole system today: a Node daemon (`src/harness/`, ~795
+source files) plus a CLI (`src/commands/`, ~111). Agent hooks connect to a Unix
+socket per PreToolUse/PostToolUse/Stop event; the daemon returns a block/allow
+decision and warnings, and every event is appended to local JSONL under
+`.interlinked/`. It is offline-first and has one required runtime dependency
+(`commander`).
 
-Terminology:
-- **Interlinked MCP Server** = remote Worker/DO system used by server-backed commands.
-- **Interlinked CLI** = this package.
+**On the "Interlinked MCP Server":** a remote Worker/DO system was the original
+center of this project, and ~17 commands still import `src/lib/api-client.ts`.
+That surface is **dormant** — no non-test source path calls the MCP tool proxy,
+server sync is deliberately unimplemented, and the `active_server` entry in a
+working config today points at a LAN mutation-runner broker, not an MCP server.
+Do not treat the server as the system of record, and do not describe the CLI as
+its companion; the local harness is the product. Leave the dormant code alone
+unless the task is specifically about it.
 
 Source of truth for the CLI is `QuentinCody/interlinked-cli`; current installs run from a linked source checkout. It has a single **required** runtime dependency (`commander`) and zero external dependencies for formatting/output. Two **optionalDependencies** (installed by default; the CLI's core hooks/activity work without them): `typescript` — the JS compiler API the AST-accurate cyclomatic/CRAP gate parses with (the `tsgo` native-port binary has **no importable JS API**, so it can't substitute; TS 7's replacement is an out-of-process gRPC API, stable ~7.1) — and `@typescript/native-preview` (`tsgo`), which accelerates `npm run typecheck`. When `typescript` is absent (`--omit=optional`), the complexity gate degrades to the regex walker and says so loudly (`astComplexityAvailable()`; daemon-startup warning).
 

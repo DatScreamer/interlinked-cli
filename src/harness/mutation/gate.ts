@@ -8,15 +8,17 @@
 // runnerless install honestly discloses `[mutation:not-measured]` and never
 // claims a clean pass. The wiring into pre-tool-pipeline.ts is a thin call site.
 
-import { expectedCompanionTest } from "../coverage-debt.js";
+import { expectedCompanionTest, expectedSourceOfTest } from "../coverage-debt.js";
 import { isTestPath } from "../coverage-test-selector.js";
 import { isRepoScratchPath } from "../large-file-policy.js";
 import type { HarnessDecision } from "../types/decisions.js";
 import { type ChangeSet, changedPaths, normalizeChangeSet } from "./changeset.js";
+import { editScope } from "./edit-range.js";
 import { evaluateMutation } from "./evaluate.js";
 import { collectLocalDeps } from "./local-deps.js";
 import { applyChangeSet } from "./provisioner.js";
 import type { MutationRunOutput } from "./stryker-adapter.js";
+import { testEditEffect } from "./test-edit-effect.js";
 import type { MutationGateOutcome, MutationManifest, MutationReceipt } from "./types.js";
 import { mutationOutcomeToDecision } from "./verdict.js";
 
@@ -216,6 +218,37 @@ export function primaryCodeFile(paths: string[]): string | null {
 }
 
 /**
+ * What this change set should be measured against, including the TEST-EDIT case.
+ *
+ * Editing a test used to measure nothing at all: `primaryCodeFile` correctly
+ * refuses to mutate a test, and with no code file in the set the gate returned
+ * null. But "I added a test" is precisely the claim mutation testing exists to
+ * check, and it was the one edit shape that went unchecked — a test could be
+ * added, pass, and kill nothing, and the harness would say nothing.
+ *
+ * So a test-only change set resolves to the code that test protects, and the
+ * run measures THAT with the new test overlaid. The comparison against the
+ * manifest baseline then answers the real question: did the survivor count go
+ * down?
+ *
+ * The companion convention (`foo.test.ts` -> `foo.ts`) is the same one the
+ * coverage gate pairs on — `expectedSourceOfTest`, not a second opinion. A test
+ * with no such source (an integration or end-to-end suite protecting no single
+ * module) resolves to null and is skipped, because guessing a target for it
+ * would measure something the edit was not about.
+ */
+export function mutationTargetFor(paths: string[], exists: (path: string) => boolean): string | null {
+	const direct = primaryCodeFile(paths);
+	if (direct !== null) return direct;
+	for (const path of paths) {
+		if (!isTestPath(path) || !CODE_EXT.test(path)) continue;
+		const source = expectedSourceOfTest(path);
+		if (source !== path && isMutationTarget(source) && exists(source)) return source;
+	}
+	return null;
+}
+
+/**
  * Is this path product code the tests are supposed to protect?
  *
  * `scratch/` is excluded through the repo's ONE product-code domain definition
@@ -346,7 +379,7 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 	if (!ctx.config.enabled || ctx.config.mode === "off") return null;
 	const changeSet = normalizeChangeSet(ctx.toolName, ctx.toolInput);
 	if (changeSet === null) return null;
-	const target = primaryCodeFile(changedPaths(changeSet));
+	const target = mutationTargetFor(changedPaths(changeSet), (p) => ctx.readDisk(p) !== null);
 	if (target === null) return null;
 
 	if (ctx.runner === null || !ctx.runner.available()) {
@@ -359,10 +392,21 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 	const overlayContent = overlayContentFor(changeSet, target, disk);
 	if (overlayContent === null) return null;
 
+	// Measure the DIFF, not the file. The wire has carried `range` all along, but
+	// only the sharding path set it — so a three-line edit paid for every mutant
+	// in the module and reported survivors in code the edit never touched. A
+	// diffuse change degrades to `whole`, which is the previous behavior.
+	const scope = editScope(disk, overlayContent);
+
 	let result: MutationRunOutput;
 	try {
 		const overlays = buildOverlays({ changeSet, target, overlayContent, readDisk: ctx.readDisk });
-		result = await ctx.runner.run(target, overlayContent, overlays);
+		result = await ctx.runner.run(
+			target,
+			overlayContent,
+			overlays,
+			scope.kind === "span" ? scope.range : undefined,
+		);
 	} catch (err) {
 		// A budget expiry is not a failure — the engine is still working and the
 		// runner retains the report, so hand the handles up for the next window.
@@ -384,5 +428,10 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 	const persistWarning = persistIfCleanMeasured(outcome, ctx.persist);
 	const decision = applyMode(mutationOutcomeToDecision(outcome), ctx.config.mode);
 	if (persistWarning) decision.warnings = [...(decision.warnings ?? []), persistWarning];
+	// A test-only edit leaves the source untouched, so the ordinary "no new
+	// survivors" verdict is trivially satisfied and says nothing about whether
+	// the test was worth adding. Answer that question directly.
+	const effect = testEditEffect(changedPaths(changeSet), target, ctx.baseManifest, result.mutants);
+	if (effect) decision.warnings = [...(decision.warnings ?? []), effect];
 	return decision;
 }

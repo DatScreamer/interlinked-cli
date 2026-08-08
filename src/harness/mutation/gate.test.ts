@@ -5,6 +5,7 @@ import {
 	type MutationGateContext,
 	type MutationRunner,
 	type PerEditMutationConfig,
+	mutationTargetFor,
 	primaryCodeFile,
 	runPerEditMutationGate,
 } from "./gate.js";
@@ -422,5 +423,47 @@ describe("persistIfCleanMeasured — non-Error persistence failure (via runPerEd
 		expect(d?.warnings?.some((w) => w.includes("persistence failed") && w.includes("disk full (string throw)"))).toBe(
 			true,
 		);
+	});
+});
+
+describe("mutationTargetFor — a test edit measures the code it protects", () => {
+	/** Pretend every path exists on disk. */
+	const anyExists = (): boolean => true;
+
+	it("P1: returns the source file directly when one was edited", () => {
+		expect(mutationTargetFor(["src/foo.ts"], anyExists)).toBe("src/foo.ts");
+	});
+
+	it("P2: resolves a test-only edit to its companion source", () => {
+		expect(mutationTargetFor(["src/foo.test.ts"], anyExists)).toBe("src/foo.ts");
+	});
+
+	it("P3: resolves a .spec companion too", () => {
+		expect(mutationTargetFor(["src/foo.spec.ts"], anyExists)).toBe("src/foo.ts");
+	});
+
+	it("P4: prefers a directly-edited source over a co-edited test", () => {
+		// The source is what changed behavior; measuring it is the point.
+		expect(mutationTargetFor(["src/foo.test.ts", "src/bar.ts"], anyExists)).toBe("src/bar.ts");
+	});
+
+	it("N1: skips a test whose companion source does not exist", () => {
+		// An integration suite protecting no single module. Guessing a target
+		// would measure something the edit was not about.
+		expect(mutationTargetFor(["src/e2e-flow.test.ts"], () => false)).toBeNull();
+	});
+
+	it("N2: returns null for a change set with no code in it", () => {
+		expect(mutationTargetFor(["README.md", "docs/x.md"], anyExists)).toBeNull();
+	});
+
+	it("N3: never resolves a test to itself", () => {
+		// The `foo.test.test.ts` failure mode: a bad inverse yields a path that
+		// matches no tests and reports an opaque runner failure.
+		expect(mutationTargetFor(["src/foo.test.ts"], anyExists)).not.toBe("src/foo.test.ts");
+	});
+
+	it("N4: does not treat a non-code test-named file as a target", () => {
+		expect(mutationTargetFor(["src/fixtures/foo.test.json"], anyExists)).toBeNull();
 	});
 });
