@@ -936,6 +936,30 @@ describe("mutationMeasureCommand", () => {
 		expect(err).not.toContain("WARNING");
 	});
 
+	it("T9b: runs the green-suite pre-flight by default, reporting a skipped probe as unverified", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Survived") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/" });
+		// A skipped probe is UNKNOWN, not green — saying nothing would let a
+		// reader infer the suite was checked and passed.
+		expect(io.mocks().stderr).toContain("pre-flight skipped");
+		expect(io.mocks().stderr).toContain("suite health is unverified");
+	});
+
+	it("T9c: --skip-preflight bypasses the pre-flight probe entirely", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Survived") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/", skipPreflight: true });
+		// The probe never ran, so it emits neither its skipped note nor a red
+		// verdict — and the measurement itself still proceeds.
+		expect(io.mocks().stderr).not.toContain("pre-flight");
+		expect(io.mocks().exitCode).not.toBe(1);
+	});
+
 	it("T10: suppresses the measuring diagnostic entirely in --json mode", async () => {
 		vi.stubGlobal(
 			"fetch",
