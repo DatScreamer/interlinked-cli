@@ -243,3 +243,81 @@ describe("installer idempotency — project + user scope", () => {
 		expect(maxInterlinkedPerEvent(claudeSettings(projectDir))).toBe(1);
 	});
 });
+
+// The unbounded-growth regression (2026-08-08). Every idempotency test above
+// bakes a binary INSIDE the project, which is why they all passed while a real
+// machine's ~/.claude/settings.json grew to 2.1MB / 8,092 hook entries and
+// Claude Code refused to read it — taking every setting in the file down with
+// it, in every repo, not just the one that caused it.
+//
+// A user-scope install with an OUT-OF-PROJECT binary defeats both purge layers:
+//   - the command carries no `<projectRoot>/`, so `isProjectOwnedHookEntry`
+//     cannot attribute it and the entry is spared as another repo's;
+//   - if the binary name also carries no Interlinked marker, the entry is not
+//     even recognised as ours, so the verdict never gets a chance to fire.
+// Either way the append that follows adds an identical copy, forever.
+//
+// `withoutIncomingDuplicates` closes both because it is marker- AND
+// ownership-agnostic: an entry identical to the one being written is dropped
+// before any verdict is consulted.
+function totalEntries(settingsPath: string): number {
+	let count = 0;
+	for (const arr of Object.values(readHookFile(settingsPath).hooks ?? {})) {
+		if (Array.isArray(arr)) count += arr.length;
+	}
+	return count;
+}
+
+describe("installer idempotency — user scope with an out-of-project binary", () => {
+	/** A globally-installed binary: outside the project, but still marked as
+	 *  ours by the `hook-entry.js` filename. Ownership cannot attribute it. */
+	const globalMarkedBinary = (): string => join(base, "global", "dist", "hook-entry.js");
+	/** A globally-installed binary carrying NO Interlinked marker at all — the
+	 *  literal shape observed in the wild (`/usr/bin/ih-scope`). */
+	const globalUnmarkedBinary = (): string => join(base, "global", "bin", "ih-scope");
+
+	it("does not stack duplicates across repeated user-scope installs (marked binary)", () => {
+		const opts = { cwd: projectDir, binaryPath: globalMarkedBinary(), runners: CLAUDE, scope: "user" as const };
+		installHooks(opts);
+		const afterFirst = totalEntries(claudeSettings(homeDir));
+		expect(afterFirst).toBeGreaterThan(0);
+
+		installHooks(opts);
+		installHooks(opts);
+		expect(totalEntries(claudeSettings(homeDir))).toBe(afterFirst);
+		expect(maxInterlinkedPerEvent(claudeSettings(homeDir))).toBe(1);
+	});
+
+	it("does not stack duplicates when the binary carries no Interlinked marker", () => {
+		const opts = {
+			cwd: projectDir,
+			binaryPath: globalUnmarkedBinary(),
+			runners: CLAUDE,
+			scope: "user" as const,
+		};
+		installHooks(opts);
+		const afterFirst = totalEntries(claudeSettings(homeDir));
+		expect(afterFirst).toBeGreaterThan(0);
+
+		for (let i = 0; i < 5; i++) installHooks(opts);
+		// Five more installs, still the original count. Before the fix this was
+		// afterFirst * 6 — the growth curve that reached 8,092.
+		expect(totalEntries(claudeSettings(homeDir))).toBe(afterFirst);
+	});
+
+	it("still spares a genuinely different repo's user-scope hooks", () => {
+		// The dedupe must not become a clobber: only entries IDENTICAL to the
+		// incoming ones are dropped. A sibling repo's hook differs, so it stays.
+		const sibling = join(base, "other-repo", "dist", "hook-entry.js");
+		installHooks({ cwd: projectDir, binaryPath: sibling, runners: CLAUDE, scope: "user" as const });
+		const withSibling = totalEntries(claudeSettings(homeDir));
+
+		installHooks({ cwd: projectDir, binaryPath: globalMarkedBinary(), runners: CLAUDE, scope: "user" as const });
+		expect(totalEntries(claudeSettings(homeDir))).toBeGreaterThan(withSibling);
+		expect(
+			preToolUseEntries(claudeSettings(homeDir)).some((e) =>
+				e.hooks?.some((h) => (h.command ?? "").includes("other-repo")),
+			),
+		).toBe(true);
+	});
+});

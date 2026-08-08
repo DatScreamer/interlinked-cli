@@ -16,7 +16,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { isInterlinkedHookEntry, isProjectOwnedHookEntry } from "../lib/hook-ownership.js";
+import { isInterlinkedHookEntry, isProjectOwnedHookEntry, withoutIncomingDuplicates } from "../lib/hook-ownership.js";
 import type { JsonObject } from "../lib/json-types.js";
 import {
 	buildAllAdapters,
@@ -308,7 +308,10 @@ function purgePriorEntries(
 		if (Array.isArray(fragValue)) {
 			const existing = base[key];
 			if (Array.isArray(existing)) {
-				base[key] = filterEntries(existing, verdict, report);
+				// Duplicates first: sparing one re-adds it every install.
+				const deduped = withoutIncomingDuplicates(existing, fragValue);
+				report.removed += existing.length - deduped.length;
+				base[key] = filterEntries(deduped, verdict, report);
 			}
 			continue;
 		}

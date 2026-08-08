@@ -28,6 +28,49 @@ function isRecord(value: unknown): value is JsonObject {
 	return value instanceof Object && !Array.isArray(value);
 }
 
+/**
+ * A stable identity for one hook-array entry: canonical JSON with object keys
+ * sorted, so two entries differing only in key order compare equal.
+ *
+ * Exists to answer the one question the ownership predicates below CANNOT: "is
+ * this existing entry identical to the one I am about to write?" Ownership asks
+ * *whose* hook an entry is; this asks whether it is *the same* hook.
+ *
+ * Why that distinction is load-bearing (measured 2026-08-08): a user-scope
+ * install whose binary lives outside any project — the normal case for a
+ * globally installed `interlinked` — produces a hook command containing no
+ * project path. {@link isProjectOwnedHookEntry} therefore cannot attribute it,
+ * correctly declines to claim it, and the installer spares it as another repo's
+ * hook. The append that follows adds an identical copy, and every later install
+ * adds one more, unbounded, until the runner refuses to read its own settings
+ * file: 8,092 dead entries across 14 events on one machine, all pointing at a
+ * single hook binary that never existed on disk.
+ *
+ * Removing an exact duplicate of what is about to be written is always safe —
+ * the append restores it — and keeping one is never correct, since it only
+ * makes the runner execute the same hook twice.
+ */
+/**
+ * Public API — `existing` minus every entry identical to one in `incoming`.
+ *
+ * Runs BEFORE any ownership verdict, because an exact duplicate of what is
+ * about to be written raises no ownership question at all. See
+ * {@link hookEntryKey} for the unbounded-growth bug this closes.
+ */
+export function withoutIncomingDuplicates(existing: unknown[], incoming: unknown[]): unknown[] {
+	const keys = new Set(incoming.map(hookEntryKey));
+	return existing.filter((entry) => !keys.has(hookEntryKey(entry)));
+}
+
+export function hookEntryKey(entry: unknown): string {
+	return JSON.stringify(entry, (_key, value: unknown) => {
+		if (!isRecord(value)) return value;
+		const sorted: JsonObject = {};
+		for (const k of Object.keys(value).sort()) sorted[k] = value[k];
+		return sorted;
+	});
+}
+
 function pushIfString(out: string[], value: unknown): void {
 	if (typeof value === "string") out.push(value);
 }

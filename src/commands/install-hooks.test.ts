@@ -356,12 +356,20 @@ describe("install-hooks — binary path resolution fallback", () => {
 });
 
 describe("install-hooks — scope parsing", () => {
+	// MUST stay `dryRun: true`. `tmp` sandboxes process.cwd(), but NOT the home
+	// directory, and user scope resolves through `homedir()` — so a non-dry run
+	// here writes into the developer's REAL ~/.claude/settings.json. It did:
+	// this test appended 14 hook blocks per run to a live machine's global
+	// settings until the file hit 2.1MB / 8,092 entries and Claude Code refused
+	// to read it ("File exceeds maxBytes limit"), disabling every setting in it.
+	// The assertion below only needs the REPORTED path, which dry-run produces.
 	it("accepts an explicit non-default scope (user) and reports it in JSON", async () => {
 		const out = await captureStdout(() =>
 			installHooksCommand({
 				runner: "claude-code",
 				binary: "/usr/bin/ih-scope",
 				scope: "user",
+				dryRun: true,
 				json: true,
 			}),
 		);
