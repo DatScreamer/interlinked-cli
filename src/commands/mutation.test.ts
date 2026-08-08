@@ -825,6 +825,40 @@ describe("mutationMeasureCommand", () => {
 		expect(io.mocks().stderr).toContain("No mutation runner configured");
 	});
 
+	// `--skip-preflight` behavior pin. The green-suite pre-flight refuses to
+	// spend a multi-minute engine run against a RED suite, because a failing
+	// suite makes the engine report every mutant it touches as killed. When it
+	// cannot reach a verdict it says so on stderr rather than staying silent —
+	// "skipped" is UNKNOWN, not green — and that line is the observable that
+	// tells the two paths apart here.
+	it("runs the pre-flight by default and reports an unverified suite on stderr", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Killed") })),
+		);
+		await mutationMeasureCommand(FILE, { cwd: tmp, runnerUrl: "http://runner/" });
+		expect(io.mocks().stderr).toContain("pre-flight skipped");
+		expect(io.mocks().stderr).toContain("suite health is unverified");
+	});
+
+	it("--skip-preflight suppresses the pre-flight entirely, and still measures", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => strykerBody("Killed") })),
+		);
+		await mutationMeasureCommand(FILE, {
+			cwd: tmp,
+			runnerUrl: "http://runner/",
+			skipPreflight: true,
+			json: true,
+		});
+		// No pre-flight ran, so it has nothing to report either way.
+		expect(io.mocks().stderr).not.toContain("pre-flight");
+		// …and the measurement itself still happened — the flag skips the
+		// pre-flight, not the run.
+		expect(JSON.parse(io.mocks().stdout).status).toBe("measured");
+	});
+
 	it("P1: measures without recording by default — the manifest is untouched", async () => {
 		vi.stubGlobal(
 			"fetch",
