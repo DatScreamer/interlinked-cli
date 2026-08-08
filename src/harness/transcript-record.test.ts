@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseTranscriptEntry, parseTranscriptText } from "./transcript-record.js";
+import {
+	capToolUseResult,
+	MAX_TOOL_USE_RESULT_BYTES,
+	parseTranscriptEntry,
+	parseTranscriptText,
+	readUsage,
+} from "./transcript-record.js";
 
 // A minimal valid assistant entry with the given content blocks.
 function assistant(content: unknown[], model = "claude-test-5") {
@@ -171,5 +177,106 @@ describe("parseTranscriptText", () => {
 		const recs = parseTranscriptText(lines);
 		expect(recs).toHaveLength(1);
 		expect(recs[0]?.category).toBe("agent_message");
+	});
+});
+
+describe("entry-level metadata capture — positive (must record)", () => {
+	it("P1: carries sidechain, prompt/request ids, effort, permission mode and attribution", () => {
+		const recs = parseTranscriptEntry({
+			...assistant([{ type: "text", text: "hello" }]),
+			isSidechain: true,
+			agentId: "a99a0410",
+			promptId: "p-1",
+			requestId: "req_abc",
+			effort: "high",
+			permissionMode: "bypassPermissions",
+			attributionAgent: "general-purpose",
+		});
+		expect(recs[0]).toMatchObject({
+			is_sidechain: true,
+			agent_id: "a99a0410",
+			prompt_id: "p-1",
+			request_id: "req_abc",
+			effort: "high",
+			permission_mode: "bypassPermissions",
+			attribution_agent: "general-purpose",
+		});
+	});
+
+	it("P2: attaches token usage to the first record of an assistant entry only", () => {
+		const content = [
+			{ type: "text", text: "thinking out loud" },
+			{ type: "tool_use", name: "Bash", id: "toolu_1", input: {} },
+		];
+		const recs = parseTranscriptEntry({
+			...assistant(content),
+			message: {
+				role: "assistant",
+				model: "claude-test-5",
+				usage: { input_tokens: 3, output_tokens: 90, cache_read_input_tokens: 1200 },
+				content,
+			},
+		});
+		expect(recs[0]?.usage).toEqual({
+			input: 3,
+			output: 90,
+			cache_read: 1200,
+			cache_creation: undefined,
+		});
+		expect(recs[1]?.usage).toBeUndefined();
+	});
+
+	it("P3: records the structural toolUseResult and the denial kind on tool_result rows", () => {
+		const recs = parseTranscriptEntry({
+			...user([{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]),
+			toolUseResult: { stdout: "ok", exitCode: 0 },
+			toolDenialKind: "permission",
+		});
+		expect(recs[0]?.tool_use_result).toEqual({ stdout: "ok", exitCode: 0 });
+		expect(recs[0]?.tool_denial_kind).toBe("permission");
+		expect(recs[0]?.tool_use_result_truncated).toBeUndefined();
+	});
+
+	it("P4: truncates an oversized structural result and marks it", () => {
+		const recs = parseTranscriptEntry({
+			...user([{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]),
+			toolUseResult: { blob: "x".repeat(MAX_TOOL_USE_RESULT_BYTES + 100) },
+		});
+		expect(recs[0]?.tool_use_result_truncated).toBe(true);
+		expect(String(recs[0]?.tool_use_result)).toHaveLength(MAX_TOOL_USE_RESULT_BYTES + 1);
+	});
+});
+
+describe("entry-level metadata capture — negative (must not invent)", () => {
+	it("N1: absent metadata leaves the fields off the record entirely", () => {
+		const recs = parseTranscriptEntry(assistant([{ type: "text", text: "plain" }]));
+		expect(recs[0]?.is_sidechain).toBeUndefined();
+		expect(recs[0]?.prompt_id).toBeUndefined();
+		expect(recs[0]?.usage).toBeUndefined();
+	});
+
+	it("N2: a non-object usage payload yields no usage", () => {
+		expect(readUsage({ role: "assistant", usage: "lots" })).toBeNull();
+		expect(readUsage({ role: "assistant", usage: [1, 2] })).toBeNull();
+	});
+
+	it("N3: usage with no recognized numeric field yields null", () => {
+		expect(readUsage({ role: "assistant", usage: { service_tier: "standard" } })).toBeNull();
+	});
+
+	it("N4: a structural result is not attached to non-tool_result rows", () => {
+		const recs = parseTranscriptEntry({
+			...assistant([{ type: "text", text: "hi" }]),
+			toolUseResult: { stdout: "ok" },
+		});
+		expect(recs[0]?.tool_use_result).toBeUndefined();
+	});
+
+	it("N5: an unserializable structural result records nothing rather than throwing", () => {
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		expect(capToolUseResult(circular)).toBeNull();
+		expect(capToolUseResult(undefined)).toBeNull();
+		expect(capToolUseResult(null)).toBeNull();
 	});
 });

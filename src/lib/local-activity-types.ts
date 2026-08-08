@@ -48,6 +48,16 @@ export interface LocalActivityEvent {
 	tool_input?: unknown;
 	tool_response?: unknown;
 	tool_use_id?: string;
+	/** The tool_use id of the call that OWNS this one — on a spawned agent's
+	 *  tool call, the Task call that spawned it. Present only when the runner
+	 *  sends it; it is the sole per-tool-call marker distinguishing subagent
+	 *  work from the parent session's in this log. */
+	parent_tool_use_id?: string;
+	/** The prompt/turn this event belongs to — correlates every event of one
+	 *  turn (a spawned agent's included) back to the prompt that caused it. */
+	prompt_id?: string;
+	/** Reasoning-effort tier in force for this event. */
+	effort?: string;
 	/** Per-session monotonic event ordinal (G3). Stamped by the daemon path;
 	 *  absent on cold-path records and records written before G3. */
 	seq?: number;

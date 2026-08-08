@@ -20,6 +20,7 @@ import type { RunnerAdapter } from "./harness/adapters/types.js";
 import { createDaemonClient } from "./harness/daemon-client.js";
 import { methodForPhase, type RpcMethod } from "./harness/daemon-protocol.js";
 import { callLegacyHarness, isLegacyHarnessSocket } from "./harness/legacy-client.js";
+import { recordPayloadKeys } from "./harness/payload-key-census.js";
 import type { HarnessDecision } from "./harness/types.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
 import {
@@ -204,6 +205,16 @@ function tryBuildEvent(
 	// exists only as a single seam where a future caller can add fallback
 	// behavior if adapter contracts change.
 	const event: UnifiedHookEvent = adapter.parseHookInput(nativeJson, nativeEventName);
+	// Census the payload keys the pipeline does NOT consume. This is the only
+	// point that still holds the untruncated runner payload — everything
+	// downstream sees the whitelisted subset — so a field a runner starts
+	// sending is either noticed here or nowhere. Fail-open by contract.
+	recordPayloadKeys({
+		runner: adapter.id,
+		nativeEvent: nativeEventName,
+		raw: event.raw,
+		cwd: event.context?.cwd ?? process.cwd(),
+	});
 	return event;
 }
 

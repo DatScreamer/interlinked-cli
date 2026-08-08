@@ -26,12 +26,19 @@ import type {
 	AgentEventName,
 	AgentEventRecord,
 	AgentMessageSource,
+	AgentTranscriptMetrics,
 } from "../../lib/collection/types.js";
 import { appendCollection } from "../../lib/collection/writer.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { redactPii, scrubSecrets } from "../../lib/secrets.js";
 import { captureAgentTranscript } from "../timeline-capture.js";
 import type { HarnessEvent } from "../types.js";
+import {
+	readAgentMetrics,
+	rememberAgentType,
+	resolveAgentType,
+	type ResolvedAgentType,
+} from "./agent-event-context.js";
 
 /** Hook events this module persists, mapped to their record `event` name. */
 const AGENT_EVENT_NAMES: Record<string, AgentEventName> = {
@@ -170,13 +177,33 @@ function taskContext(event: HarnessEvent, name: AgentEventName): AgentEventRecor
 	return task.task_id || task.task_subject || task.teammate_name || task.team_name ? task : null;
 }
 
+/** Everything resolved OUTSIDE the pure record assembly: the final message,
+ *  the agent's type label (payload, or remembered from its SubagentStart), and
+ *  the transcript-derived metrics. All optional — an absent field records
+ *  null, so a caller that resolves nothing still gets a well-formed record. */
+export interface AgentEventExtras {
+	resolved?: { text: string; source: AgentMessageSource } | null;
+	agentType?: ResolvedAgentType | null;
+	metrics?: AgentTranscriptMetrics | null;
+}
+
+/** The label straight off the payload. An empty-string `agent_type` is NOT a
+ *  label (Claude Code sends "" on some paths), so it normalizes to null
+ *  rather than surviving as a falsy-but-present value. */
+function payloadLabel(event: HarnessEvent): ResolvedAgentType {
+	const raw = event.agent_type?.trim() || event.tool_name?.trim() || null;
+	return { type: raw, source: raw ? "payload" : null };
+}
+
 /** Pure record assembly for one agent lifecycle event. */
 export function buildAgentEventRecord(
 	event: HarnessEvent,
 	name: AgentEventName,
 	fallbackCwd: string,
-	resolved: { text: string; source: AgentMessageSource } | null,
+	extras: AgentEventExtras = {},
 ): AgentEventRecord {
+	const resolved = extras.resolved ?? null;
+	const label = extras.agentType ?? payloadLabel(event);
 	return {
 		schema: "collection.v1",
 		kind: "agent_event",
@@ -186,13 +213,31 @@ export function buildAgentEventRecord(
 		provider: PROVIDER_BY_SOURCE[event.agent_source] ?? event.agent_source,
 		event: name,
 		subagent_id: event.subagent_id ?? eventField(event, "agent_id"),
-		agent_type: event.agent_type ?? event.tool_name ?? null,
+		agent_type: label.type,
+		agent_type_source: label.source,
 		parent_agent: event.parent_agent ?? null,
 		agent_transcript_path: event.agent_transcript_path ?? null,
 		last_assistant_message: resolved ? scrubFinalMessage(resolved.text) : null,
 		message_source: resolved?.source ?? null,
+		metrics: extras.metrics ?? null,
 		task: taskContext(event, name),
 		cwd: event.cwd ?? fallbackCwd,
+	};
+}
+
+/** Resolve the label + (on stop) message and transcript metrics for one
+ *  event, and remember a start event's label for the stop that follows it. */
+function resolveExtras(event: HarnessEvent, name: AgentEventName): AgentEventExtras {
+	const agentType = resolveAgentType(event);
+	if (name === "subagent_start") {
+		rememberAgentType(event.subagent_id ?? null, agentType.type);
+		return { agentType };
+	}
+	if (name !== "subagent_stop") return { agentType };
+	return {
+		agentType,
+		resolved: resolveFinalMessage(event),
+		metrics: readAgentMetrics(event.agent_transcript_path),
 	};
 }
 
@@ -210,8 +255,8 @@ export function captureAgentEvent(
 		const name = AGENT_EVENT_NAMES[event.hook_event];
 		if (!name) return;
 		const cwd = event.cwd ?? fallbackCwd;
-		const resolved = name === "subagent_stop" ? resolveFinalMessage(event) : null;
-		appendCollection(buildAgentEventRecord(event, name, fallbackCwd, resolved), cwd);
+		const extras = resolveExtras(event, name);
+		appendCollection(buildAgentEventRecord(event, name, fallbackCwd, extras), cwd);
 		if (name === "subagent_stop") {
 			const transcriptPath = event.agent_transcript_path;
 			const drained = captureAgentTranscript(transcriptPath, cwd);
@@ -220,7 +265,9 @@ export function captureAgentEvent(
 			setTimeout(() => captureAgentTranscript(transcriptPath, cwd), AGENT_TRANSCRIPT_REDRAIN_MS).unref();
 			log?.(
 				`Agent event captured: ${name} (${event.subagent_id ?? "unknown"}, ` +
-					`message: ${resolved?.source ?? "none"}, timeline records: ${drained})`,
+					`type: ${extras.agentType?.type ?? "unknown"}, ` +
+					`message: ${extras.resolved?.source ?? "none"}, ` +
+					`tokens: ${extras.metrics?.tokens.output ?? "n/a"} out, timeline records: ${drained})`,
 			);
 		}
 	} catch (err) {

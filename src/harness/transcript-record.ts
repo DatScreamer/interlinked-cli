@@ -64,10 +64,64 @@ export interface TimelineRecord {
 	git_branch?: string | undefined;
 	version?: string | undefined;
 	scrubbed?: boolean;
+	/** True on a SIDECHAIN entry — a spawned agent's turn. Paired with
+	 *  `agent_id` it distinguishes agent work from the parent's without
+	 *  needing the agent-id join. */
+	is_sidechain?: boolean | undefined;
+	/** The runner's prompt / request correlation ids for this entry. `prompt_id`
+	 *  groups an agent's turns under the prompt that started them; `request_id`
+	 *  is the per-round-trip API id (the join key to provider-side records). */
+	prompt_id?: string | undefined;
+	request_id?: string | undefined;
+	/** Reasoning-effort tier the runner ran this turn at. */
+	effort?: string | undefined;
+	/** Permission mode in force (`bypassPermissions`, `acceptEdits`, …). */
+	permission_mode?: string | undefined;
+	/** The runner's own attribution label for the acting agent. */
+	attribution_agent?: string | undefined;
+	/** Why a tool call was denied, when the runner refused one. */
+	tool_denial_kind?: string | undefined;
+	/** The runner's STRUCTURED tool result (diffs, exit codes, file metadata) —
+	 *  strictly richer than the flattened `text`, and captured nowhere else.
+	 *  Serialized-size-capped; `tool_use_result_truncated` marks a drop. */
+	tool_use_result?: unknown;
+	tool_use_result_truncated?: boolean;
+	/** Token usage for the assistant turn this record came from. Attached to
+	 *  the entry's FIRST record only, so summing over the timeline does not
+	 *  double-count an entry that decomposed into several blocks. */
+	usage?: TimelineUsage | undefined;
+}
+
+/** Per-turn token usage as the transcript reports it. */
+export interface TimelineUsage {
+	input?: number | undefined;
+	output?: number | undefined;
+	cache_read?: number | undefined;
+	cache_creation?: number | undefined;
 }
 
 /** The shared per-entry fields every record off one transcript line inherits. */
-type RecordBase = Pick<TimelineRecord, "schema" | "ts" | "session" | "uuid" | "provider" | "agent_id" | "cwd" | "git_branch" | "version">;
+type RecordBase = Pick<
+	TimelineRecord,
+	| "schema"
+	| "ts"
+	| "session"
+	| "uuid"
+	| "provider"
+	| "agent_id"
+	| "cwd"
+	| "git_branch"
+	| "version"
+	| "is_sidechain"
+	| "prompt_id"
+	| "request_id"
+	| "effort"
+	| "permission_mode"
+	| "attribution_agent"
+>;
+
+/** Cap on the serialized structural tool result kept per record. */
+export const MAX_TOOL_USE_RESULT_BYTES = 32 * 1024;
 
 /** Structural view of a transcript JSONL entry — only the fields we read. */
 interface TranscriptEntry {
@@ -79,7 +133,15 @@ interface TranscriptEntry {
 	cwd?: string;
 	gitBranch?: string;
 	version?: string;
-	message?: { role?: string; model?: string; content?: unknown };
+	isSidechain?: boolean;
+	promptId?: string;
+	requestId?: string;
+	effort?: string;
+	permissionMode?: string;
+	attributionAgent?: string;
+	toolDenialKind?: string;
+	toolUseResult?: unknown;
+	message?: { role?: string; model?: string; content?: unknown; usage?: unknown };
 }
 
 /** Structural view of a content block (assistant or user message content). */
@@ -193,10 +255,70 @@ export function parseTranscriptEntry(entry: unknown): TimelineRecord[] {
 		cwd: e.cwd,
 		git_branch: e.gitBranch,
 		version: e.version,
+		is_sidechain: typeof e.isSidechain === "boolean" ? e.isSidechain : undefined,
+		prompt_id: e.promptId,
+		request_id: e.requestId,
+		effort: e.effort,
+		permission_mode: e.permissionMode,
+		attribution_agent: e.attributionAgent,
 	};
-	if (e.type === "user") return userRecords(base, e.message?.content);
-	if (e.type === "assistant") return assistantRecords(base, e.message?.content, e.message?.model);
+	if (e.type === "user") return attachEntryExtras(userRecords(base, e.message?.content), e);
+	if (e.type === "assistant") {
+		return attachEntryExtras(assistantRecords(base, e.message?.content, e.message?.model), e);
+	}
 	return [];
+}
+
+/** Serialize the runner's structural tool result, capped. Returns the value
+ *  itself when it fits, a truncated JSON prefix when it does not, and null
+ *  when the entry carries none / it is not serializable. */
+export function capToolUseResult(value: unknown): { value: unknown; truncated: boolean } | null {
+	if (value === undefined || value === null) return null;
+	try {
+		const json = JSON.stringify(value);
+		if (typeof json !== "string") return null;
+		if (json.length <= MAX_TOOL_USE_RESULT_BYTES) return { value, truncated: false };
+		return { value: `${json.slice(0, MAX_TOOL_USE_RESULT_BYTES)}…`, truncated: true };
+	} catch (err) {
+		void err; // circular / non-serializable — record nothing rather than throw
+		return null;
+	}
+}
+
+/** Read `message.usage` into the compact timeline shape; null when absent. */
+export function readUsage(message: TranscriptEntry["message"]): TimelineUsage | null {
+	const usage = message?.usage;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+	// SAFETY: guarded above as a non-array object; every field is typeof-checked below.
+	const u = usage as Record<string, unknown>;
+	const num = (v: unknown): number | undefined =>
+		typeof v === "number" && Number.isFinite(v) ? v : undefined;
+	const out: TimelineUsage = {
+		input: num(u.input_tokens),
+		output: num(u.output_tokens),
+		cache_read: num(u.cache_read_input_tokens),
+		cache_creation: num(u.cache_creation_input_tokens),
+	};
+	return Object.values(out).some((v) => v !== undefined) ? out : null;
+}
+
+/** Attach the entry-level extras that belong to specific records: the denial
+ *  kind and structural result onto tool_result rows, and token usage onto the
+ *  FIRST record only (so summing the timeline never double-counts an entry
+ *  that decomposed into several blocks). */
+function attachEntryExtras(records: TimelineRecord[], e: TranscriptEntry): TimelineRecord[] {
+	if (records.length === 0) return records;
+	const capped = capToolUseResult(e.toolUseResult);
+	for (const record of records) {
+		if (record.category !== "tool_result") continue;
+		if (e.toolDenialKind) record.tool_denial_kind = e.toolDenialKind;
+		if (!capped) continue;
+		record.tool_use_result = capped.value;
+		if (capped.truncated) record.tool_use_result_truncated = true;
+	}
+	const usage = readUsage(e.message);
+	if (usage && records[0]) records[0].usage = usage;
+	return records;
 }
 
 /**

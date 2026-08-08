@@ -351,6 +351,10 @@ function copySubagentContext(raw: JsonObject, out: HarnessEvent): void {
 	copyString(raw, out, "agent_type");
 	copyString(raw, out, "last_assistant_message");
 	copyString(raw, out, "agent_transcript_path");
+	// Per-tool-call agent attribution when the runner sends it — a subagent's
+	// own tool events otherwise arrive indistinguishable from the parent's.
+	copyString(raw, out, "parent_tool_use_id");
+	copyTurnContext(raw, out);
 	if (out.subagent_id === undefined) {
 		const agentId = readString(raw.agent_id);
 		if (agentId) out.subagent_id = agentId;
@@ -359,6 +363,23 @@ function copySubagentContext(raw: JsonObject, out: HarnessEvent): void {
 		const parentName = readString(raw.parent_agent_name);
 		if (parentName) out.parent_agent = parentName;
 	}
+}
+
+/** Turn-level context the runner sends on most events and the background-agent
+ *  roster it sends on Stop / SubagentStop. `effort` arrives as `{level}`; the
+ *  roster is carried through untyped and parsed by `background-task-log.ts`.
+ *  All three were dropped until the payload-key census surfaced them. */
+function copyTurnContext(raw: JsonObject, out: HarnessEvent): void {
+	const promptId = readString(raw.prompt_id);
+	if (promptId) out.prompt_id = promptId;
+	const effort = raw.effort;
+	if (typeof effort === "string" && effort) out.effort = effort;
+	else if (effort && typeof effort === "object" && !Array.isArray(effort)) {
+		// SAFETY: narrowed to a non-array object; `level` is guarded by readString.
+		const level = readString((effort as JsonObject).level);
+		if (level) out.effort = level;
+	}
+	if (Array.isArray(raw.background_tasks)) out.background_tasks = raw.background_tasks;
 }
 
 function copyString(
@@ -372,7 +393,8 @@ function copyString(
 		| "subagent_id"
 		| "agent_type"
 		| "last_assistant_message"
-		| "agent_transcript_path",
+		| "agent_transcript_path"
+		| "parent_tool_use_id",
 ): void {
 	const value = raw[key];
 	if (typeof value !== "string") return;
@@ -400,6 +422,9 @@ function copyString(
 			return;
 		case "agent_transcript_path":
 			out.agent_transcript_path = value;
+			return;
+		case "parent_tool_use_id":
+			out.parent_tool_use_id = value;
 			return;
 	}
 }

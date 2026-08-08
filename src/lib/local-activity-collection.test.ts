@@ -81,6 +81,8 @@ function agentEvent(over: Partial<AgentEventRecord> = {}): AgentEventRecord {
 		agent_name: "alpha",
 		provider: "claude",
 		event: "subagent_stop",
+		agent_type_source: null,
+		metrics: null,
 		subagent_id: null,
 		agent_type: null,
 		parent_agent: null,

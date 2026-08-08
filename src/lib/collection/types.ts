@@ -250,6 +250,43 @@ export type AgentEventName = "subagent_start" | "subagent_stop" | "task_complete
  *  when the payload omitted it. */
 export type AgentMessageSource = "payload" | "transcript";
 
+/** Where a subagent's `agent_type` label came from. The SubagentStop payload
+ *  usually omits it (measured 2026-08-07: 1439/1507 stop events unlabeled),
+ *  so the daemon reuses the label its SubagentStart carried. Recording the
+ *  source keeps a remembered label distinguishable from a delivered one. */
+export type AgentTypeSource = "payload" | "start_event";
+
+/** Token totals summed over every assistant turn of one agent transcript. */
+export interface AgentTokenTotals {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_creation: number;
+}
+
+/** What one spawned agent did and cost, derived from its own transcript —
+ *  the only place this exists (SubagentStop carries no usage field). */
+export interface AgentTranscriptMetrics {
+	assistant_turns: number;
+	tool_calls: number;
+	tools: Record<string, number>;
+	/** The agent's own tool_use ids — the join key back to activity.jsonl,
+	 *  whose rows carry the PARENT session id and no agent marker. */
+	tool_use_ids: string[];
+	tool_use_ids_truncated: boolean;
+	models: string[];
+	tokens: AgentTokenTotals;
+	/** Both counts are recorded: Claude Code persists thinking blocks with an
+	 *  EMPTY `thinking` string, so a zero-with-text is an upstream fact rather
+	 *  than a capture failure — and stays auditable if that changes. */
+	thinking_blocks: number;
+	thinking_blocks_with_text: number;
+	first_ts: string | null;
+	last_ts: string | null;
+	duration_ms: number | null;
+	transcript_entries: number;
+}
+
 /**
  * A subagent / parallel-agent lifecycle record. This is the durable copy of
  * what a spawned agent RETURNED — background-agent results are delivered to
@@ -274,6 +311,12 @@ export interface AgentEventRecord {
 	 *  PII scrubbed (natural-language field, parity with prompt/thinking). */
 	last_assistant_message: string | null;
 	message_source: AgentMessageSource | null;
+	/** How `agent_type` was resolved; null when the label is unknown. */
+	agent_type_source: AgentTypeSource | null;
+	/** Cost + activity metrics read off the agent's own transcript. Set on
+	 *  `subagent_stop` (null on start / task_completed, and null when the
+	 *  transcript was unreachable). */
+	metrics: AgentTranscriptMetrics | null;
 	/** TaskCompleted context (teammate/task-list lifecycle); null otherwise. */
 	task: {
 		task_id: string | null;

@@ -140,6 +140,21 @@ export interface HarnessEvent {
 	 *  transcript JSONL (`<session-dir>/subagents/agent-<id>.jsonl`), distinct
 	 *  from `transcript_path` (the parent session's transcript). */
 	agent_transcript_path?: string;
+	/** Tool-event payload — the tool_use id of the call that OWNS this one.
+	 *  On a spawned agent's tool call it points at the Task call that spawned
+	 *  it, which is the only live per-tool-call agent attribution: a subagent's
+	 *  Pre/PostToolUse events otherwise carry the parent's session id and no
+	 *  agent marker at all. Absent when the runner does not send it. */
+	parent_tool_use_id?: string;
+	/** Runner payload — the prompt/turn this event belongs to. Correlates every
+	 *  hook event (including a spawned agent's) back to the turn that caused it. */
+	prompt_id?: string;
+	/** Runner payload — reasoning-effort tier in force (`effort.level`). */
+	effort?: string;
+	/** Runner payload (Stop / SubagentStop) — the live roster of work running
+	 *  outside the main loop. A background agent has NO per-agent hook, so this
+	 *  is the only report that it exists; see `background-task-log.ts`. */
+	background_tasks?: unknown;
 
 	/** UserPromptSubmit payload — the raw user prompt text. The hook copies it
 	 *  verbatim so the harness can scan for PII before the hook persists the

@@ -66,6 +66,7 @@ import {
 } from "../trajectory/session-rework.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
+import { captureBackgroundTasks } from "../background-task-log.js";
 import { captureAgentEvent } from "./agent-event-capture.js";
 import {
 	handleSkillEnter,
@@ -125,6 +126,11 @@ export async function handleLifecycleEvent(
 			);
 		}
 	}
+	// Background-agent roster (Stop / SubagentStop payloads). A background
+	// agent fires no per-agent hook of its own, so this array is the only
+	// report that it exists — see harness/background-task-log.ts.
+	captureBackgroundTasks(event, ctx.cwd, log);
+
 	switch (event.hook_event) {
 		case "SessionStart":
 			return handleSessionStart(ctx, event);

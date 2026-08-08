@@ -160,7 +160,7 @@ describe("buildAgentEventRecord", () => {
 			}),
 			"subagent_stop",
 			"/fallback",
-			{ text: "the answer", source: "payload" },
+			{ resolved: { text: "the answer", source: "payload" } },
 		);
 		expect(rec).toMatchObject({
 			schema: "collection.v1",
@@ -183,7 +183,6 @@ describe("buildAgentEventRecord", () => {
 			stopEvent({ tool_name: "Explore", tool_input: { agent_id: "sid-9" } }),
 			"subagent_stop",
 			"/fallback",
-			null,
 		);
 		expect(rec.subagent_id).toBe("sid-9");
 		expect(rec.agent_type).toBe("Explore");
@@ -200,7 +199,6 @@ describe("buildAgentEventRecord", () => {
 			}),
 			"task_completed",
 			"/fallback",
-			null,
 		);
 		expect(rec.task).toEqual({
 			task_id: "t1",

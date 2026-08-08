@@ -83,6 +83,11 @@ export function mapEventToActivityRecord(
 		cwd,
 	};
 	if (event.tool_use_id) rec.tool_use_id = event.tool_use_id;
+	// The owning Task call, when the runner sends it: the one field that says
+	// a SUBAGENT made this call rather than the parent session.
+	if (event.parent_tool_use_id) rec.parent_tool_use_id = event.parent_tool_use_id;
+	if (event.prompt_id) rec.prompt_id = event.prompt_id;
+	if (event.effort) rec.effort = event.effort;
 	if (event.seq !== undefined) rec.seq = event.seq;
 	if (event.event_id) rec.event_id = event.event_id;
 	return rec;
