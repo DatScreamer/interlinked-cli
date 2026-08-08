@@ -349,6 +349,10 @@ export function registerQualityCommands(program: Command): void {
 		.option("--record", "Persist the measured result into .interlinked/mutation-manifest.json")
 		.option("--runner-url <url>", "Override the configured runner endpoint(s)")
 		.option("--budget-ms <ms>", "Total time to keep retrying busy/unreachable endpoints (default: 900000)")
+		.option(
+			"--skip-preflight",
+			"Skip the local green-suite check. For repos where the local runner cannot run the scoped suite at all — NOT a way to measure past a known-failing suite, which scores every mutant it touches as killed",
+		)
 		.option("--cwd <path>", "Project root (default: current directory)")
 		.option("--json", "Machine-readable output")
 		.action(async (file: string, opts: OptionValues) => {

