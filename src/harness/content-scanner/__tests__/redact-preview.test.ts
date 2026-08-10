@@ -580,7 +580,9 @@ describe("writePendingPrompt — filesystem failure paths", () => {
 			return {
 				...actual,
 				mkdirSync: () => {
-					// biome-ignore lint/style/useThrowOnlyError: deliberately non-Error to hit formatErr's String(e) branch
+					// Deliberately non-Error to hit formatErr's String(e) branch.
+					// eslint-style throw-only-Error rules don't fire here (biome
+					// reported the previous suppression as unused).
 					throw "boom-not-an-error";
 				},
 			};

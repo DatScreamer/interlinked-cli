@@ -14,7 +14,10 @@ export default defineConfig({
         // coverage runner sets INTERLINKED_PROPERTY_NUMRUNS — then fast-check's
         // case count is capped so property tests fit the tight per-edit latency
         // budget. Normal / CI / coverage runs (env unset) keep full numRuns.
-        setupFiles: ["./src/test-setup/property-budget.ts"],
+        // home-sandbox FIRST: it must own HOME before any test module loads —
+        // it is the suite-wide defense against tests (and Stryker mutants of
+        // env-override fallbacks) writing into the user's real home.
+        setupFiles: ["./src/test-setup/home-sandbox.ts", "./src/test-setup/property-budget.ts"],
         // Live test feed for `interlinked viz` — OPT-IN via INTERLINKED_VIZ=1.
         // Off by default so a normal `vitest run` keeps vitest's own reporter
         // output byte-identical (the harness parses it) and writes nothing to

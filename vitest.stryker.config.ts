@@ -66,7 +66,10 @@ export default defineConfig({
 		// problem is fixed where it belonged — the tests now use
 		// `vi.spyOn(process, "cwd")` instead (59 files swept) — so nothing needs
 		// the forks pool, and reinstating it would only reintroduce the OOM.
-		setupFiles: ["./src/test-setup/property-budget.ts"],
+		// home-sandbox FIRST — mutation runs are the class that leaked: a mutant
+		// of `INTERLINKED_HOME ?? homedir()` bypasses per-test-file redirects,
+		// so the sandbox must own HOME below the mutated code.
+		setupFiles: ["./src/test-setup/home-sandbox.ts", "./src/test-setup/property-budget.ts"],
 		testTimeout: 30_000,
 		hookTimeout: 30_000,
 		env: {
