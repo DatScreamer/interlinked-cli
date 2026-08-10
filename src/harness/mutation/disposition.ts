@@ -34,9 +34,6 @@
 // edge runs types.ts → disposition.ts (MutantRecord carries a disposition), and
 // importing back would make it a cycle.
 
-import { isJsonObject } from "../../lib/json-types.js";
-import type { JsonObject } from "../../lib/json-types.js";
-
 /** What must happen to the source for a `dead_code` survivor to go away. */
 export type DeadCodeResolution = "delete" | "implement";
 
@@ -231,12 +228,15 @@ function str(v: unknown): string | null {
 	return typeof v === "string" && v.trim() !== "" ? v : null;
 }
 
-/** Narrow ONCE at the boundary; every parser below reads a `JsonObject`, never
- *  a bare `Record<string, unknown>`, and never re-derives this check. */
+function obj(v: unknown): Record<string, unknown> | null {
+	return typeof v === "object" && v !== null && !Array.isArray(v)
+		? (v as Record<string, unknown>)
+		: null;
+}
 
 function parseValidity(v: unknown): CertificateValidity | null {
-	if (!isJsonObject(v)) return null;
-	const o = v;
+	const o = obj(v);
+	if (!o) return null;
 	const mutantId = str(o.mutantId);
 	const sourceSymbolHash = str(o.sourceSymbolHash);
 	const environmentHash = str(o.environmentHash);
@@ -248,8 +248,8 @@ function parseValidity(v: unknown): CertificateValidity | null {
 }
 
 function parseCertificate(v: unknown): ProofCertificate | null {
-	if (!isJsonObject(v)) return null;
-	const o = v;
+	const o = obj(v);
+	if (!o) return null;
 	const producedBy = str(o.producedBy);
 	const verifierVersion = str(o.verifierVersion);
 	const producedAt = str(o.producedAt);
@@ -259,15 +259,15 @@ function parseCertificate(v: unknown): ProofCertificate | null {
 }
 
 function parseMethod(v: unknown): ProofMethod | null {
-	if (!isJsonObject(v)) return null;
-	const o = v;
+	const o = obj(v);
+	if (!o) return null;
 	if (o.kind === "rewrite_lemma") return parseRewriteLemma(o);
 	if (o.kind === "bounded_exhaustive") return parseBoundedExhaustive(o);
 	if (o.kind === "smt_relational") return parseSmtRelational(o);
 	return null;
 }
 
-function parseRewriteLemma(o: JsonObject): RewriteLemma | null {
+function parseRewriteLemma(o: Record<string, unknown>): RewriteLemma | null {
 	const lemmaId = str(o.lemmaId);
 	const normalizedOriginalHash = str(o.normalizedOriginalHash);
 	const normalizedMutantHash = str(o.normalizedMutantHash);
@@ -275,7 +275,7 @@ function parseRewriteLemma(o: JsonObject): RewriteLemma | null {
 	return { kind: "rewrite_lemma", lemmaId, normalizedOriginalHash, normalizedMutantHash };
 }
 
-function parseBoundedExhaustive(o: JsonObject): BoundedExhaustive | null {
+function parseBoundedExhaustive(o: Record<string, unknown>): BoundedExhaustive | null {
 	const domain = str(o.domain);
 	if (!domain || typeof o.casesEnumerated !== "number" || o.domainComplete !== true) return null;
 	return {
@@ -286,7 +286,7 @@ function parseBoundedExhaustive(o: JsonObject): BoundedExhaustive | null {
 	};
 }
 
-function parseSmtRelational(o: JsonObject): SmtRelational | null {
+function parseSmtRelational(o: Record<string, unknown>): SmtRelational | null {
 	const solver = str(o.solver);
 	const solverVersion = str(o.solverVersion);
 	const queryHash = str(o.queryHash);
@@ -295,8 +295,8 @@ function parseSmtRelational(o: JsonObject): SmtRelational | null {
 }
 
 function parseApproval(v: unknown): HumanApproval | null {
-	if (!isJsonObject(v)) return null;
-	const o = v;
+	const o = obj(v);
+	if (!o) return null;
 	const approvedBy = str(o.approvedBy);
 	const approvedAt = str(o.approvedAt);
 	const artifactRef = str(o.artifactRef);
@@ -313,8 +313,8 @@ const SEARCH_STRATEGIES: ReadonlySet<string> = new Set([
 ]);
 
 function parseEvidence(v: unknown): CounterexampleSearchEvidence | null {
-	if (!isJsonObject(v)) return null;
-	const o = v;
+	const o = obj(v);
+	if (!o) return null;
 	const seed = str(o.seed);
 	const searchedAt = str(o.searchedAt);
 	const strategy = str(o.strategy);
@@ -329,7 +329,7 @@ function parseEvidence(v: unknown): CounterexampleSearchEvidence | null {
 	};
 }
 
-function parseDeadCode(o: JsonObject): SurvivorDisposition | null {
+function parseDeadCode(o: Record<string, unknown>): SurvivorDisposition | null {
 	if (o.resolution !== "delete" && o.resolution !== "implement") return null;
 	const issueRef = str(o.issueRef);
 	return issueRef
@@ -337,19 +337,19 @@ function parseDeadCode(o: JsonObject): SurvivorDisposition | null {
 		: { kind: "dead_code", resolution: o.resolution };
 }
 
-function parseProvedEquivalent(o: JsonObject): SurvivorDisposition | null {
+function parseProvedEquivalent(o: Record<string, unknown>): SurvivorDisposition | null {
 	const method = parseMethod(o.method);
 	const certificate = parseCertificate(o.certificate);
 	return method && certificate ? { kind: "proved_equivalent", method, certificate } : null;
 }
 
-function parseProvedUnreachable(o: JsonObject): SurvivorDisposition | null {
+function parseProvedUnreachable(o: Record<string, unknown>): SurvivorDisposition | null {
 	const invariantRef = str(o.invariantRef);
 	const certificate = parseCertificate(o.certificate);
 	return invariantRef && certificate ? { kind: "proved_unreachable", invariantRef, certificate } : null;
 }
 
-function parseDuplicate(o: JsonObject): SurvivorDisposition | null {
+function parseDuplicate(o: Record<string, unknown>): SurvivorDisposition | null {
 	const representativeMutantId = str(o.representativeMutantId);
 	const certificate = parseCertificate(o.certificate);
 	return representativeMutantId && certificate
@@ -357,7 +357,7 @@ function parseDuplicate(o: JsonObject): SurvivorDisposition | null {
 		: null;
 }
 
-function parseOutsideContract(o: JsonObject): SurvivorDisposition | null {
+function parseOutsideContract(o: Record<string, unknown>): SurvivorDisposition | null {
 	const contractHash = str(o.contractHash);
 	const observationModelHash = str(o.observationModelHash);
 	const approval = parseApproval(o.approval);
@@ -365,7 +365,7 @@ function parseOutsideContract(o: JsonObject): SurvivorDisposition | null {
 	return { kind: "outside_contract", contractHash, observationModelHash, approval };
 }
 
-function parseAcceptedRisk(o: JsonObject): SurvivorDisposition | null {
+function parseAcceptedRisk(o: Record<string, unknown>): SurvivorDisposition | null {
 	const owner = str(o.owner);
 	const issue = str(o.issue);
 	const expiresAt = str(o.expiresAt);
@@ -374,12 +374,12 @@ function parseAcceptedRisk(o: JsonObject): SurvivorDisposition | null {
 	return { kind: "accepted_risk", owner, issue, expiresAt, approval };
 }
 
-function parseUnresolved(o: JsonObject): SurvivorDisposition | null {
+function parseUnresolved(o: Record<string, unknown>): SurvivorDisposition | null {
 	const evidence = parseEvidence(o.evidence);
 	return evidence ? { kind: "unresolved", evidence } : { kind: "unresolved" };
 }
 
-type KindParser = (o: JsonObject) => SurvivorDisposition | null;
+type KindParser = (o: Record<string, unknown>) => SurvivorDisposition | null;
 
 const PARSERS: Record<SurvivorDispositionKind, KindParser> = {
 	killed: () => ({ kind: "killed" }),
@@ -398,9 +398,8 @@ const PARSERS: Record<SurvivorDispositionKind, KindParser> = {
  * falls back to the legacy view, which is what keeps old manifests loadable.
  */
 export function parseDisposition(value: unknown): SurvivorDisposition | null {
-	if (!isJsonObject(value)) return null;
-	const o = value;
-	if (typeof o.kind !== "string") return null;
+	const o = obj(value);
+	if (!o || typeof o.kind !== "string") return null;
 	const parser = PARSERS[o.kind as SurvivorDispositionKind] as KindParser | undefined;
 	return parser ? parser(o) : null;
 }

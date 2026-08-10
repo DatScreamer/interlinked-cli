@@ -1,8 +1,6 @@
 // ===========================================
 // Obligation ledger — metric-agnostic TDD-debt state machine
 // ===========================================
-import { isJsonObject } from "../lib/json-types.js";
-import type { JsonObject } from "../lib/json-types.js";
 // The single source of truth for "code changed and a quality bar is not yet
 // met" — coverage today, mutation (cloud, async) by descriptor next. An edit
 // OPENS an obligation; a later measurement DISCHARGES it; a re-edit of the same
@@ -361,119 +359,48 @@ function isDischargeSource(v: unknown): v is DischargeSource {
 	return v === "local" || v === "observed" || v === "cloud";
 }
 
+function isRegion(v: unknown): boolean {
+	if (typeof v !== "object" || v === null) return false;
+	// SAFETY: v is a non-null object after the guard above.
+	const r = v as Record<string, unknown>;
+	return typeof r.start === "number" && typeof r.end === "number";
+}
 
 function isStringArray(v: unknown): v is string[] {
-	return Array.isArray(v) && v.every((entry): entry is string => typeof entry === "string");
+	return Array.isArray(v) && v.every((entry) => typeof entry === "string");
 }
 
-function asString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
+function isOpenRow(row: Record<string, unknown>): row is OpenTxn {
+	if (row.op !== "open") return false;
+	if (row.region !== undefined && !isRegion(row.region)) return false;
+	if (row.detector !== undefined && typeof row.detector !== "string") return false;
+	if (row.strikes !== undefined && typeof row.strikes !== "number") return false;
+	if (row.failingTestFiles !== undefined && !isStringArray(row.failingTestFiles)) return false;
+	return (
+		isObligationKind(row.kind) &&
+		typeof row.file === "string" &&
+		typeof row.contentHash === "string" &&
+		typeof row.sessionId === "string" &&
+		typeof row.atMs === "number"
+	);
 }
 
-function asNumber(v: unknown): number | null {
-	return typeof v === "number" ? v : null;
+function isDischargeRow(row: Record<string, unknown>): row is DischargeTxn {
+	return (
+		row.op === "discharge" &&
+		typeof row.id === "string" &&
+		isDischargeSource(row.source) &&
+		typeof row.atMs === "number"
+	);
 }
 
-function parseRegion(value: unknown): ObligationRegion | null {
-	if (!isJsonObject(value)) return null;
-	const { start, end } = value;
-	if (typeof start !== "number" || typeof end !== "number") return null;
-	return { start, end };
-}
-
-function parseMutationSurvivor(value: unknown): MutationSurvivor | null {
-	if (!isJsonObject(value)) return null;
-	const { line, description, operator } = value;
-	if (typeof line !== "number" || typeof description !== "string") return null;
-	if (operator !== undefined && typeof operator !== "string") return null;
-	return operator === undefined ? { line, description } : { line, description, operator };
-}
-
-function parseSurvivorList(value: unknown): MutationSurvivor[] | null {
-	if (!Array.isArray(value)) return null;
-	const out: MutationSurvivor[] = [];
-	for (const entry of value) {
-		const parsed = parseMutationSurvivor(entry);
-		if (parsed === null) return null;
-		out.push(parsed);
-	}
-	return out;
-}
-
-/** Marker distinguishing "field absent" (`undefined`) from "field present but
- *  malformed" (`INVALID`) so a caller can propagate a parse failure without
- *  conflating it with a legitimately-omitted optional field. */
-const INVALID = Symbol("invalid-optional-field");
-
-/**
- * Parse an optional field: absent ⇒ `undefined` (field stays unset, honoring
- * `exactOptionalPropertyTypes`); present and well-formed ⇒ the parsed value;
- * present but malformed ⇒ `INVALID`, so the caller can reject the whole row.
- */
-function optionalField<T>(value: unknown, parse: (v: unknown) => T | null): T | undefined | typeof INVALID {
-	if (value === undefined) return undefined;
-	const parsed = parse(value);
-	return parsed === null ? INVALID : parsed;
-}
-
-function parseOpenTxn(value: unknown): OpenTxn | null {
-	if (!isJsonObject(value) || value.op !== "open") return null;
-	if (!isObligationKind(value.kind)) return null;
-	if (typeof value.file !== "string") return null;
-	if (typeof value.contentHash !== "string") return null;
-	if (typeof value.sessionId !== "string") return null;
-	if (typeof value.atMs !== "number") return null;
-	const region = optionalField(value.region, parseRegion);
-	if (region === INVALID) return null;
-	const editSeq = optionalField(value.editSeq, asNumber);
-	if (editSeq === INVALID) return null;
-	const detector = optionalField(value.detector, asString);
-	if (detector === INVALID) return null;
-	const strikes = optionalField(value.strikes, asNumber);
-	if (strikes === INVALID) return null;
-	const failingTestFiles = optionalField(value.failingTestFiles, (v) => (isStringArray(v) ? v : null));
-	if (failingTestFiles === INVALID) return null;
-	return {
-		op: "open",
-		kind: value.kind,
-		file: value.file,
-		contentHash: value.contentHash,
-		sessionId: value.sessionId,
-		atMs: value.atMs,
-		...(region !== undefined ? { region } : {}),
-		...(editSeq !== undefined ? { editSeq } : {}),
-		...(detector !== undefined ? { detector } : {}),
-		...(strikes !== undefined ? { strikes } : {}),
-		...(failingTestFiles !== undefined ? { failingTestFiles } : {}),
-	};
-}
-
-function parseDischargeTxn(value: unknown): DischargeTxn | null {
-	if (!isJsonObject(value) || value.op !== "discharge") return null;
-	if (typeof value.id !== "string") return null;
-	if (!isDischargeSource(value.source)) return null;
-	if (typeof value.atMs !== "number") return null;
-	const forContentHash = optionalField(value.forContentHash, asString);
-	if (forContentHash === INVALID) return null;
-	const witness = optionalField(value.witness, asString);
-	if (witness === INVALID) return null;
-	return {
-		op: "discharge",
-		id: value.id,
-		source: value.source,
-		atMs: value.atMs,
-		...(forContentHash !== undefined ? { forContentHash } : {}),
-		...(witness !== undefined ? { witness } : {}),
-	};
-}
-
-function parseEscalateTxn(value: unknown): EscalateTxn | null {
-	if (!isJsonObject(value) || value.op !== "escalate") return null;
-	if (typeof value.id !== "string") return null;
-	if (typeof value.atMs !== "number") return null;
-	const survivors = parseSurvivorList(value.survivors);
-	if (survivors === null) return null;
-	return { op: "escalate", id: value.id, survivors, atMs: value.atMs };
+function isEscalateRow(row: Record<string, unknown>): row is EscalateTxn {
+	return (
+		row.op === "escalate" &&
+		typeof row.id === "string" &&
+		Array.isArray(row.survivors) &&
+		typeof row.atMs === "number"
+	);
 }
 
 /**
@@ -482,11 +409,16 @@ function parseEscalateTxn(value: unknown): EscalateTxn | null {
  * non-null results through `replayObligations`, so a malformed row is skipped,
  * never thrown (fail-open: bookkeeping must not crash the harness). This is the
  * generic successor to `coverage-obligation-ledger.ts`'s coverage-only row
- * narrowing. Each per-op parser returns a CONSTRUCTED object literal checked
- * against its concrete txn member by the compiler — never an assertion over
- * the input — so a required field added to `ObligationTxn` fails to compile
- * here instead of silently under-validating at runtime.
+ * narrowing. The per-op type-guard predicates narrow `row` directly, so no
+ * output cast is needed.
  */
 export function parseObligationTxn(value: unknown): ObligationTxn | null {
-	return parseOpenTxn(value) ?? parseDischargeTxn(value) ?? parseEscalateTxn(value);
+	if (typeof value !== "object" || value === null) return null;
+	// SAFETY: value is a non-null object; the per-op guards below validate every
+	// load-bearing field before `row` is returned as a concrete txn member.
+	const row = value as Record<string, unknown>;
+	if (isOpenRow(row)) return row;
+	if (isDischargeRow(row)) return row;
+	if (isEscalateRow(row)) return row;
+	return null;
 }
