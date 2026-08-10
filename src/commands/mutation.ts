@@ -20,12 +20,8 @@ import {
 	mutationBaselinePath,
 	saveMutationBaseline,
 } from "../harness/mutation-gate.js";
-import {
-	maybeRecordMeasurement,
-	preflightScopedSuite,
-	renderMeasureCommand,
-	testScopeNote,
-} from "./mutation-measure-support.js";
+import type { MeasureOutcome } from "../harness/mutation/measure.js";
+import { measureOneFile, renderMeasureCommand } from "./mutation-measure-support.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -344,108 +340,59 @@ export interface MutationMeasureOptions {
 export async function mutationMeasureCommand(file: string, opts: MutationMeasureOptions): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = resolve(opts.cwd || process.cwd());
-	const configDir = getConfigDir(cwd);
-
-	const { buildScopedMeasureOverlays, configuredRunnerEndpoints, measureFile, readDiskSafe } = await import(
-		"../harness/mutation/measure.js"
-	);
-	const { normalizeManifestKey } = await import("../harness/mutation/manifest.js");
-
-	const key = normalizeManifestKey(file, cwd);
-	const content = readDiskSafe(resolve(cwd, key));
-	if (content === null) {
-		outputError(mode, `Cannot read "${key}" (resolved from "${file}").`);
-		process.exitCode = 1;
-		return;
-	}
-
-	const endpointCfg = opts.runnerUrl
-		? { endpoints: [opts.runnerUrl] }
-		: configuredRunnerEndpoints(cwd, readDiskSafe);
-	if (endpointCfg.endpoints.length === 0) {
-		outputError(
-			mode,
-			"No mutation runner configured. Pass --runner-url <url>, or set per_edit_mutation.runner_url (or .runner_urls) in .interlinked/guard-rules.local.json.",
-		);
-		process.exitCode = 1;
-		return;
-	}
-
-	// Reverse-import-graph test selection (test-scope.ts), not the runner's own
-	// filename-glob guess — a hub file's real tests often aren't named after it.
-	// Computed BEFORE the overlay set so the overlay set can ship a COMPLETE
-	// CLOSURE over the selected scope: every test file the runner will load,
-	// plus their transitive deps, must travel as overlay content — the
-	// runner's worktree resets to HEAD before each run, so anything not
-	// overlaid comes from the runner's own (possibly stale) commit.
-	const { computeMutationTestScopeForRepo } = await import("../harness/mutation/test-scope.js");
-	const scope = computeMutationTestScopeForRepo({ editedRelPath: key, projectRoot: cwd });
-
-	const scopeTests = scope.tests ?? [];
-	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(cwd, p)), scopeTests);
-	const overlays = scoped.overlays;
-
-	if (mode !== "json") {
-		process.stderr.write(
-			`measuring ${key} (${overlays.length} overlay(s)) via ${endpointCfg.endpoints.length} runner(s)…\n${testScopeNote(scope)}`,
-		);
-		if (scoped.unreadable.length > 0) {
-			process.stderr.write(
-				`WARNING: ${scoped.unreadable.length} file(s) in the closure could not be read and are MISSING from the overlay set: ${scoped.unreadable.join(", ")}\n`,
-			);
-		}
-		if (scoped.capped) {
-			process.stderr.write(
-				`WARNING: overlay closure had ${scoped.capped.candidateCount} candidates, capped to ${scoped.capped.limit}; dropped ${scoped.capped.dropped.length} dependency file(s): ${scoped.capped.dropped.join(", ")}\n`,
-			);
-		}
-	}
-
-	// Pre-flight: a mutation run against a RED suite reports every mutant it
-	// touches as KILLED, so the score is a forged pass — see baseline-suite.ts's
-	// docstring for the measured incident (~155 mutants falsely killed). The
-	// probe costs seconds against a run that costs minutes, and unlike the
-	// engine's own dry run it names the failing tests.
-	const redSuite = opts.skipPreflight
-		? null
-		: await preflightScopedSuite({ tests: scopeTests, cwd, quiet: mode === "json" });
-	if (redSuite !== null) {
-		outputError(mode, redSuite);
-		process.exitCode = 1;
-		return;
-	}
-
 	const budgetMs = opts.budgetMs ? Number.parseInt(opts.budgetMs, 10) : undefined;
-	const outcome = await measureFile({
-		file: key,
-		content,
-		overlays,
-		endpoints: endpointCfg.endpoints,
-		fetchImpl: (url, init) => fetch(url, init),
-		...(endpointCfg.token !== undefined ? { token: endpointCfg.token } : {}),
-		...(budgetMs !== undefined && Number.isFinite(budgetMs) ? { deadlineMs: budgetMs } : {}),
-		...(scope.tests ? { testScope: scope.tests } : {}),
+
+	// The whole pipeline — resolve, test-scope, overlay closure, RED-suite
+	// pre-flight, measure, record — lives in `measureOneFile`, because
+	// `mutation sweep` drives the identical sequence and the pre-flight policy in
+	// particular must not exist in two places.
+	const result = await measureOneFile({
+		file,
+		cwd,
+		configDir: getConfigDir(cwd),
+		record: opts.record,
+		skipPreflight: opts.skipPreflight,
+		runnerUrl: opts.runnerUrl,
+		budgetMs,
+		quiet: mode === "json",
+		// Progress goes to stderr as it happens — a note that arrives after a
+		// multi-minute run answers a question the operator no longer has.
+		...(mode === "json" ? {} : { onNote: (note: string) => process.stderr.write(`${note}\n`) }),
 	});
 
-	const record = await maybeRecordMeasurement({ record: opts.record, outcome, configDir, key, content, cwd });
+	// The three LOCAL refusals are errors, not runner verdicts: reporting them
+	// through the measurement renderer would attribute a misconfiguration (or a
+	// red suite) to the runner.
+	if (result.status === "unreadable" || result.status === "no_runner" || result.status === "red_suite") {
+		outputError(mode, result.reason ?? result.status);
+		process.exitCode = 1;
+		return;
+	}
 
+	const outcome: MeasureOutcome = {
+		status: result.status,
+		...(result.reason !== undefined ? { reason: result.reason } : {}),
+		mutantCount: result.mutants,
+		survivorCount: result.survivors,
+		survivors: result.survivorList,
+	};
 	const payload = {
-		file: key,
-		status: outcome.status,
-		reason: outcome.reason,
-		mutants: outcome.mutantCount,
-		survivors: outcome.survivorCount,
-		survivorList: outcome.survivors,
-		record,
+		file: result.file,
+		status: result.status,
+		reason: result.reason,
+		mutants: result.mutants,
+		survivors: result.survivors,
+		survivorList: result.survivorList,
+		record: result.record,
 	};
 
 	output(mode, payload, {
 		json: () => payload,
-		normal: () => renderMeasureCommand(key, outcome, record),
+		normal: () => renderMeasureCommand(result.file, outcome, result.record),
 	});
 
-	// "busy" is nonzero too (a sweep script must not treat it as success), but
-	// stays a DISTINCT status in the payload/render above — never coerced into
-	// "error" or "not_measurable" text a caller might grep for.
-	if (outcome.status === "error" || outcome.status === "busy") process.exitCode = 1;
+	// "busy" is nonzero too (a sweep must not treat it as success), but stays a
+	// DISTINCT status in the payload/render above — never coerced into "error"
+	// or "not_measurable" text a caller might grep for.
+	if (result.status === "error" || result.status === "busy") process.exitCode = 1;
 }

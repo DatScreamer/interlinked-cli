@@ -102,6 +102,41 @@ export interface SymbolRecord {
 	instability: IdentityInstability;
 }
 
+/**
+ * How the measured test set was chosen.
+ *
+ * This is the difference between two survivor counts for the SAME unedited
+ * file, and it is not small: measured 2026-08-09, `deletion-hygiene.ts` read
+ * 186 survivors under the runner's own filename-glob scope and 18 under
+ * import-graph scope; `completions.ts` read 106 and 0. Same source, same
+ * engine, no test written in between — the narrower scope simply loaded fewer
+ * tests, so fewer mutants died.
+ */
+export type MeasurementScope = "import_graph" | "glob_fallback" | "unknown";
+
+/** Which surface produced a measurement. Kept because the surfaces differ in
+ *  scope and budget, not merely in who typed the command. */
+export type MeasurementSurface = "per_edit" | "measure" | "sweep" | "adopt" | "unknown";
+
+/**
+ * The conditions a file's records were measured under.
+ *
+ * Without this, a manifest silently mixes regimes and its survivor totals are
+ * not comparable — across files, or across time for one file. A record with no
+ * provenance is not assumed current; it is reported as unqualified, which is
+ * what it is.
+ */
+export interface MeasurementProvenance {
+	/** ISO timestamp of the run that produced the file's current records. */
+	at: string;
+	scope: MeasurementScope;
+	/** Test files in scope. 0 ⇒ the runner chose its own set. */
+	testCount: number;
+	surface: MeasurementSurface;
+	engine?: string;
+	engineVersion?: string;
+}
+
 /** The persistent per-edit mutation manifest — sibling of CoverageIndexManifest. */
 export interface MutationManifest {
 	version: 1;
@@ -118,6 +153,10 @@ export interface MutationManifest {
 	sourceRevision?: string;
 	/** file → symbolId → record. */
 	files: Record<string, Record<StableId, SymbolRecord>>;
+	/** file → the conditions its records were measured under. Absent for every
+	 *  record written before provenance existed, and for any writer that does
+	 *  not supply it — read as "unqualified", never as "current". */
+	fileProvenance?: Record<string, MeasurementProvenance>;
 }
 
 /**

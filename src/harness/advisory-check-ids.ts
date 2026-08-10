@@ -53,6 +53,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"magic_literal_in_conditional",
 	"write_without_mkdir",
 	"duplicated_policy_constant",
+	"type_predicate_drift",
 	"snapshot_hygiene",
 	"design_slop",
 	"payload_field_casing",

@@ -77,6 +77,7 @@ Commands:
   structure                                  Generic artifact structure management (manifests, catalogs, adoption)
   sync [options]                             Push locally-buffered events to the server
   tasks                                      Task management via the server
+  tdd                                        Inspect and clear TDD cycle state (what the commit gate believes)
   telemetry [options]                        View or tail the local telemetry spool (.interlinked/offline-spool.jsonl)
   trace                                      Agent trace export/import
   trajectory                                 Inspect trajectory snapshots; replay recorded event streams through sequence detectors

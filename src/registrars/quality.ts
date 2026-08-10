@@ -361,6 +361,56 @@ export function registerQualityCommands(program: Command): void {
 		});
 
 	mutationCmd
+		.command("survivors")
+		.description(
+			"List the surviving mutants already recorded in .interlinked/mutation-manifest.json, ranked by open work. Reads state only — no runner, no re-measurement. --shard i/n deals the ranked file list round-robin so a fan-out across machines never overlaps or drops a file.",
+		)
+		.option("--file <substr>", "Only files whose path contains this (case-insensitive); switches to the per-mutant view")
+		.option("--mutator <substr>", "Only mutants whose operator name contains this")
+		.option("--top <n>", "Rows per table (default: 20)")
+		.option("--shard <i/n>", "Report only the i-th of n slices of the ranked file list")
+		.option("--include-dispositioned", "Also list survivors that already carry a disposition")
+		.option("--include-stale", "Also list files that no longer exist in the working tree")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues) => {
+			const { mutationSurvivorsCommand } = await import("../commands/mutation-survivors.js");
+			await mutationSurvivorsCommand(opts);
+		});
+
+	mutationCmd
+		.command("sweep")
+		.description(
+			"Re-measure a ranked slice of the survivor work-list, recording each clean result into the manifest. Sequential per box (a runner holds one worktree and answers 503 while busy); use --shard i/n to split the list across machines without a coordinator.",
+		)
+		.option("--file <substr>", "Only files whose path contains this (case-insensitive)")
+		.option("--limit <n>", "Measure at most n files (applied AFTER --shard)")
+		.option("--shard <i/n>", "Sweep only the i-th of n slices of the ranked list")
+		.option(
+			"--unqualified-only",
+			"Skip files whose records already carry measurement provenance. This is what makes a long sweep restartable: a finished file still has survivors, so without this a restart redoes the work",
+		)
+		.option("--dry-run", "Print the files this sweep would measure, and stop")
+		.option(
+			"--runner-url <url>",
+			"Runner endpoint. Repeat the flag (or pass a comma-separated list) to fan out: each endpoint becomes one worker lane pulling from the shared file queue, which is the same shape a cloud fan-out has",
+			(value: string, prior: string[] = []) => [...prior, value],
+		)
+		.option("--budget-ms <ms>", "Per-file time budget passed to the runner")
+		.option(
+			"--skip-preflight",
+			"Skip the local green-suite check per file. NOT a way to sweep past a known-failing suite, which scores every mutant it touches as killed",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.option("--short", "One-line summary")
+		.action(async (opts: OptionValues) => {
+			const { mutationSweepCommand } = await import("../commands/mutation-sweep.js");
+			await mutationSweepCommand(opts);
+		});
+
+	mutationCmd
 		.command("accept")
 		.description(
 			"Explain why a surviving mutant cannot be accepted by prose. Since typed dispositions (plan 16 §7) status \"equivalent\" requires a verifier-issued certificate bound to the mutant's current symbol hash, which this command cannot mint — so it reports the refusal instead of writing one.",

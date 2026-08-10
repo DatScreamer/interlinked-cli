@@ -14,6 +14,7 @@ import type { SymbolHashEntry } from "./identity.js";
 import { freshInstability, mutantIdsChurned, updateInstability } from "./instability.js";
 import { healManifestFiles } from "./manifest-heal.js";
 import type {
+	MeasurementProvenance,
 	MutantIdentity,
 	MutantRecord,
 	MutantStatus,
@@ -167,6 +168,37 @@ export function loadManifest(dir: string): MutationManifest | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Stamp the conditions one file's records were measured under.
+ *
+ * Pure — returns a new manifest. Keyed through `normalizeManifestKey` like
+ * every other manifest read/write, so an absolute path and a repo-relative one
+ * stamp the SAME entry rather than two.
+ */
+export function stampProvenance(args: {
+	manifest: MutationManifest;
+	file: string;
+	provenance: MeasurementProvenance;
+	cwd?: string | undefined;
+}): MutationManifest {
+	const key = normalizeManifestKey(args.file, args.cwd ?? process.cwd());
+	return {
+		...args.manifest,
+		fileProvenance: { ...(args.manifest.fileProvenance ?? {}), [key]: args.provenance },
+	};
+}
+
+/** The conditions a file's records were measured under, or null when nothing
+ *  recorded them — which is NOT the same as "measured under today's rules". */
+export function provenanceOf(
+	manifest: MutationManifest,
+	file: string,
+	cwd?: string,
+): MeasurementProvenance | null {
+	const key = normalizeManifestKey(file, cwd ?? process.cwd());
+	return manifest.fileProvenance?.[key] ?? null;
 }
 
 export function saveManifest(dir: string, manifest: MutationManifest): void {

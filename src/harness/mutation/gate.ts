@@ -168,7 +168,25 @@ function notMeasuredReason(err: unknown, pendingCount: number): string {
 		return "no test exercises this file, so mutation cannot measure it — add one and the gate starts protecting this code";
 	}
 	if (reason !== null) return `mutation not measurable here (${reason})`;
-	return "the mutation runner failed";
+	return describeRunnerFailure(err);
+}
+
+/**
+ * Quote the runner's own words.
+ *
+ * "the mutation runner failed" was the terminal string for every unclassified
+ * error, and it was the DOMINANT live outcome — 12 occurrences in the last 4000
+ * activity records, against zero measured verdicts. It names the component and
+ * withholds the cause, which is the one combination nobody can act on: the
+ * reader cannot separate a dead endpoint from a failed clone from a crashed
+ * engine, so re-running is the only move left. The client now carries the
+ * response body up (`describeErrorResponse`), so there is finally something to
+ * say.
+ */
+function describeRunnerFailure(err: unknown): string {
+	const message = (err as { message?: unknown })?.message;
+	if (typeof message !== "string" || message.trim() === "") return "the mutation runner failed";
+	return `the mutation runner failed — ${message.trim()}`;
 }
 
 /**

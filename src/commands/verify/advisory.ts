@@ -128,6 +128,13 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// excluded, yet domain values still collide. Advisory until the match can
 	// consult the literal's syntactic role.
 	"duplicated_policy_constant",
+	// type_predicate_drift: a `v is T` guard that checks some required fields of
+	// T but not others. The bug class is real and compiler-invisible (confirmed
+	// 2026-08-09: RpcError.id and SandboxJobRequest.riskTier were both unchecked).
+	// Advisory because resolution is same-file only — a guard that delegates to a
+	// helper in another module reads as incomplete. Tracked to zero by the
+	// `predicate_drift` metric ratchet rather than by blocking.
+	"type_predicate_drift",
 	// snapshot_hygiene: zero-FP path match on *.snap.new / *.pending-snap review
 	// artifacts; test-integrity taste guard — periodic-sweep concern, not per-edit.
 	"snapshot_hygiene",

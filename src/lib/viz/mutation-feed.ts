@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { JsonObject } from "../json-types.js";
 
 /** A mutant flattened for display: where it lives, what it changed, how it ended. */
 export interface MutantView {
@@ -57,13 +58,14 @@ export function emptySnapshot(): MutantSnapshot {
 	return { generation: 0, engine: "", files: 0, mutants: [], byStatus: {}, total: 0 };
 }
 
-function asRecord(v: unknown): Record<string, unknown> | null {
+/** Narrow an unknown value to a JSON object, once, at the boundary. */
+function asRecord(v: unknown): JsonObject | null {
 	if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
 	// SAFETY: a non-null, non-array typeof-"object" value is an indexable record.
-	return v as Record<string, unknown>;
+	return v as JsonObject;
 }
 
-function str(o: Record<string, unknown>, key: string, fallback = ""): string {
+function str(o: JsonObject, key: string, fallback = ""): string {
 	const v = o[key];
 	return typeof v === "string" ? v : fallback;
 }

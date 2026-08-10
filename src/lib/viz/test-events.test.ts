@@ -93,6 +93,10 @@ describe("mapTestLine", () => {
 		expect(mapTestLine("42")).toBeNull();
 	});
 
+	it("returns null on a JSON array line", () => {
+		expect(mapTestLine(JSON.stringify(["ts", "kind", "run_id"]))).toBeNull();
+	});
+
 	it("returns null when a required field is missing", () => {
 		expect(mapTestLine(JSON.stringify({ ts: "t", kind: "test" }))).toBeNull();
 		expect(mapTestLine(JSON.stringify({ kind: "test", run_id: "r" }))).toBeNull();

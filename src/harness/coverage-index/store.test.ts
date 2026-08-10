@@ -423,6 +423,104 @@ describe("contributionFromJson — element-set field validation", () => {
 	});
 });
 
+describe("readAcceptedManifest — parser-construction branches (boundary-parser conversion)", () => {
+	function writeManifestRaw(value: unknown): void {
+		mkdirSync(storeDir, { recursive: true });
+		writeFileSync(join(storeDir, "manifest.json"), JSON.stringify(value), "utf-8");
+	}
+
+	it("rejects a shardBoundary outside the declared literal union", () => {
+		writeManifestRaw({ ...sampleManifest(1), shardBoundary: "process" });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("round-trips the optional sourceRevision when present", () => {
+		writeManifestRaw({ ...sampleManifest(1), sourceRevision: "abc123" });
+		expect(readAcceptedManifest(storeDir)?.sourceRevision).toBe("abc123");
+	});
+
+	it("rejects a non-string sourceRevision", () => {
+		writeManifestRaw({ ...sampleManifest(1), sourceRevision: 42 });
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("omits sourceRevision entirely when absent (never a stray undefined key)", () => {
+		writeManifestRaw(sampleManifest(1));
+		const read = readAcceptedManifest(storeDir);
+		expect(read && "sourceRevision" in read).toBe(false);
+	});
+
+	it("a shard's instability event array with a malformed event rejects the whole manifest", () => {
+		const manifest = {
+			...sampleManifest(1),
+			shards: {
+				s: {
+					shardId: "s",
+					testPaths: ["t"],
+					testContentHashes: {},
+					dependencyHashes: {},
+					lastDurationMs: 0,
+					contributionPath: "p",
+					contributionChecksum: "c",
+					passed: null,
+					instability: { events: [{ at: "2026-01-01", kind: "not-a-real-kind" }] },
+				},
+			},
+		};
+		writeManifestRaw(manifest);
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+
+	it("revives a well-formed instability event array", () => {
+		const manifest = {
+			...sampleManifest(1),
+			shards: {
+				s: {
+					shardId: "s",
+					testPaths: ["t"],
+					testContentHashes: {},
+					dependencyHashes: {},
+					lastDurationMs: 0,
+					contributionPath: "p",
+					contributionChecksum: "c",
+					passed: null,
+					instability: {
+						events: [{ at: "2026-01-01T00:00:00.000Z", kind: "pass_fail_flip" }],
+						consecutiveStableRuns: 0,
+						quarantined: false,
+					},
+				},
+			},
+		};
+		writeManifestRaw(manifest);
+		const read = readAcceptedManifest(storeDir);
+		expect(read?.shards.s?.instability.events).toEqual([
+			{ at: "2026-01-01T00:00:00.000Z", kind: "pass_fail_flip" },
+		]);
+	});
+
+	it("a shard's instability field that is not an array of events (a string) rejects the manifest", () => {
+		const manifest = {
+			...sampleManifest(1),
+			shards: {
+				s: {
+					shardId: "s",
+					testPaths: ["t"],
+					testContentHashes: {},
+					dependencyHashes: {},
+					lastDurationMs: 0,
+					contributionPath: "p",
+					contributionChecksum: "c",
+					passed: null,
+					instability: "not-an-object",
+				},
+			},
+		};
+		writeManifestRaw(manifest);
+		expect(readAcceptedManifest(storeDir)).toBeNull();
+	});
+});
+
 describe("readAcceptedManifest — top-level field validation", () => {
 	function writeManifestRaw(value: unknown): void {
 		mkdirSync(storeDir, { recursive: true });

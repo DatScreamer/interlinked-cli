@@ -35,6 +35,7 @@ import {
 	resolveNearestPackageScripts,
 } from "../../harness/checks/readme-script-drift.js";
 import { detectSnapshotHygiene } from "../../harness/checks/snapshot-hygiene.js";
+import { detectTypePredicateDrift } from "../../harness/checks/type-predicate-drift.js";
 import { checkSpecPathRef } from "../../harness/checks/spec-structure.js";
 import { detectUnawaitedAsyncAssertions } from "../../harness/checks/test-async-assertions.js";
 import {
@@ -343,6 +344,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 			relPath,
 			detectPolicyConstantDrift(content, file),
 		),
+	);
+	r.typePredicateDrift.push(
+		...toIssues("type_predicate_drift", relPath, detectTypePredicateDrift(content, file)),
 	);
 	r.snapshotHygiene.push(
 		...toIssues("snapshot_hygiene", relPath, detectSnapshotHygiene(content, file)),

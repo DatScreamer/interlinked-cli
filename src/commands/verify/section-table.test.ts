@@ -68,6 +68,7 @@ const EXPECTED_KEY_ORDER = [
 	"arrayIterateeVariadicBuiltin",
 	"writeWithoutMkdir",
 	"duplicatedPolicyConstant",
+	"typePredicateDrift",
 	"snapshotHygiene",
 	"payloadFieldCasing",
 	"gitignoredWrittenConfig",

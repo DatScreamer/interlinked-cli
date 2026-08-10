@@ -43,12 +43,12 @@ import { join } from "node:path";
 import { isTestPath } from "../coverage-test-selector.js";
 import { expectedCompanionTest } from "../coverage-pairing.js";
 import { seedFileBaseline } from "./adopt.js";
-import { readNotMeasurable } from "./cloud-runner.js";
+import { describeErrorResponse, readNotMeasurable } from "./cloud-runner.js";
 import { mutationIdentityAvailable } from "./identity.js";
 import { collectLocalDeps } from "./local-deps.js";
-import { normalizeManifestKey } from "./manifest.js";
+import { normalizeManifestKey, stampProvenance } from "./manifest.js";
 import { strykerToAdapted } from "./stryker-adapter.js";
-import type { MutationManifest } from "./types.js";
+import type { MeasurementProvenance, MutationManifest } from "./types.js";
 
 // ============================================================
 // Wire types
@@ -63,6 +63,9 @@ export interface FetchResponseLike {
 	ok: boolean;
 	status: number;
 	json(): Promise<unknown>;
+	/** Optional so a test double stays a two-method object; real `fetch` always
+	 *  has it, and it is the only way to recover an error response's body. */
+	text?: () => Promise<string>;
 }
 
 export type FetchLike = (
@@ -336,20 +339,43 @@ function wholeFileRange(content: string): { start: number; end: number } {
 
 /** Whether one endpoint answered with something other than "busy" — the
  *  signal that ends the retry loop, success or failure alike. */
+/**
+ * One endpoint attempt, with BUSY and UNREACHABLE kept apart.
+ *
+ * Both used to collapse to `null`, and the caller then retried until its whole
+ * deadline elapsed — correct for a contended runner (it will free up) and
+ * badly wrong for a disconnected one (it will not). A sweep with a 900s budget
+ * spent fifteen minutes per file posting to a laptop that had closed.
+ */
+type EndpointAttempt =
+	| { kind: "response"; res: FetchResponseLike }
+	| { kind: "busy" }
+	| { kind: "unreachable" };
+
 async function tryEndpoint(
 	url: string,
 	body: string,
 	headers: Record<string, string>,
 	fetchImpl: FetchLike,
 	requestTimeoutMs: number,
-): Promise<FetchResponseLike | null> {
+): Promise<EndpointAttempt> {
 	try {
 		const res = await fetchImpl(url, { method: "POST", headers, body, signal: AbortSignal.timeout(requestTimeoutMs) });
-		return res.status === 503 ? null : res;
+		return res.status === 503 ? { kind: "busy" } : { kind: "response", res };
 	} catch {
-		return null; // unreachable — try the next endpoint / retry round
+		return { kind: "unreachable" };
 	}
 }
+
+/**
+ * Rounds of "every endpoint refused the connection" before giving up early.
+ *
+ * More than one, because a single round can fail for reasons that clear on
+ * their own — a Wi-Fi handover, a runner restarting, a VPN re-key. Few, because
+ * once a host is actually gone, every further round is dead time multiplied by
+ * every remaining file.
+ */
+const UNREACHABLE_ROUNDS_BEFORE_GIVING_UP = 3;
 
 /**
  * POST one whole-file measurement, trying each configured endpoint in turn and
@@ -377,12 +403,32 @@ export async function requestWholeFileReport(args: RequestArgs): Promise<Request
 	const headers = headersFor(args.token);
 	const deadline = now() + args.deadlineMs;
 	let attempt = 0;
+	let allUnreachableRounds = 0;
 	while (now() < deadline) {
+		let reachedSomeone = false;
 		for (const url of args.endpoints) {
-			const res = await tryEndpoint(url, body, headers, args.fetchImpl, args.requestTimeoutMs);
-			if (res === null) continue;
-			if (!res.ok) return { ok: false, reason: `runner HTTP ${res.status}` };
+			const attempt = await tryEndpoint(url, body, headers, args.fetchImpl, args.requestTimeoutMs);
+			if (attempt.kind === "busy") {
+				reachedSomeone = true;
+				continue;
+			}
+			if (attempt.kind === "unreachable") continue;
+			const res = attempt.res;
+			// Quote the runner rather than reducing it to a status code. This path
+			// is the SWEEP's, distinct from cloud-runner.ts's (the per-edit gate's)
+			// — the same defect existed in both, and a live 719-file sweep found
+			// this copy by reporting a bare `runner HTTP 500` for a file whose
+			// runner had explained itself perfectly well.
+			if (!res.ok) return { ok: false, reason: await describeErrorResponse(res) };
 			return { ok: true, body: await res.json() };
+		}
+		allUnreachableRounds = reachedSomeone ? 0 : allUnreachableRounds + 1;
+		if (allUnreachableRounds >= UNREACHABLE_ROUNDS_BEFORE_GIVING_UP) {
+			return {
+				ok: false,
+				busy: true,
+				reason: `runner_unreachable: no runner answered on ${args.endpoints.join(", ")} across ${allUnreachableRounds} rounds — the host is down or the network is gone, NOT evidence this file lacks tests`,
+			};
 		}
 		attempt++;
 		const waitMs = Math.min(15_000, 1_000 * 2 ** Math.min(attempt, 4)) + Math.floor(Math.random() * 750);
@@ -415,21 +461,31 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 	return v !== null && typeof v === "object";
 }
 
+function mutantLocationLine(m: Record<string, unknown>): number {
+	const location = isRecord(m.location) ? m.location : null;
+	const start = location && isRecord(location.start) ? location.start : null;
+	if (!start || typeof start.line !== "number") return 0;
+	return start.line;
+}
+
+function toMutantEntry(m: unknown): { mutator: string; replacement: string; status: string; line: number } | null {
+	if (!isRecord(m)) return null;
+	return {
+		mutator: typeof m.mutatorName === "string" ? m.mutatorName : "?",
+		replacement: typeof m.replacement === "string" ? m.replacement : "?",
+		status: typeof m.status === "string" ? m.status : "?",
+		line: mutantLocationLine(m),
+	};
+}
+
 function rawMutantEntries(body: unknown): Array<{ mutator: string; replacement: string; status: string; line: number }> {
 	if (!isRecord(body) || !isRecord(body.files)) return [];
 	const out: Array<{ mutator: string; replacement: string; status: string; line: number }> = [];
 	for (const fileResult of Object.values(body.files)) {
 		if (!isRecord(fileResult) || !Array.isArray(fileResult.mutants)) continue;
 		for (const m of fileResult.mutants) {
-			if (!isRecord(m)) continue;
-			const location = isRecord(m.location) ? m.location : null;
-			const start = location && isRecord(location.start) ? location.start : null;
-			out.push({
-				mutator: typeof m.mutatorName === "string" ? m.mutatorName : "?",
-				replacement: typeof m.replacement === "string" ? m.replacement : "?",
-				status: typeof m.status === "string" ? m.status : "?",
-				line: start && typeof start.line === "number" ? start.line : 0,
-			});
+			const entry = toMutantEntry(m);
+			if (entry) out.push(entry);
 		}
 	}
 	return out;
@@ -545,6 +601,10 @@ export interface RecordArgs {
 	rawReport: unknown;
 	at: string;
 	cwd?: string;
+	/** The conditions this measurement ran under. Omitted ⇒ the file's records
+	 *  carry NO provenance and every reader treats them as unqualified — which
+	 *  is the honest reading, not a defect. */
+	provenance?: Omit<MeasurementProvenance, "at"> | undefined;
 }
 
 export interface RecordOutcome {
@@ -617,7 +677,18 @@ export function recordMeasurement(args: RecordArgs): RecordOutcome {
 		...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
 	});
 	if (seeded === null) return { recorded: false, reason: explainRefusal(key, args.rawReport), before };
-	return { recorded: true, manifest: seeded, before, after: summarizeManifestFile(seeded, key) };
+	// Stamp the regime alongside the records it produced. A survivor count is
+	// only comparable to another one measured the same way — see
+	// `MeasurementScope` for the 186-vs-18 measurement that forced this.
+	const manifest = args.provenance
+		? stampProvenance({
+				manifest: seeded,
+				file: args.file,
+				provenance: { ...args.provenance, at: args.at },
+				...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+			})
+		: seeded;
+	return { recorded: true, manifest, before, after: summarizeManifestFile(manifest, key) };
 }
 
 /** Convenience for CLI/script callers that just want to read a file off disk;

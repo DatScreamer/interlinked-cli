@@ -1,0 +1,227 @@
+import { describe, expect, it } from "vitest";
+import { detectTypePredicateDrift } from "./type-predicate-drift.js";
+
+const F = "src/x.ts";
+
+describe("detectTypePredicateDrift — positive (must fire)", () => {
+	it("P1: guard checks two of three required properties", () => {
+		const src = `
+interface Foo {
+	name: string;
+	count: number;
+	owner: string;
+}
+function isFoo(v: unknown): v is Foo {
+	if (!v || typeof v !== "object") return false;
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string" && typeof o.count === "number";
+}
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("unchecked: owner");
+	});
+
+	it("P2: the real RpcError shape — `id` is required and never checked", () => {
+		const src = `
+export interface RpcError {
+	id: string;
+	error: { code: string; message: string; recoverable: boolean };
+}
+export function isError(msg: unknown): msg is RpcError {
+	return typeof (msg as RpcError).error === "object" && (msg as RpcError).error !== null;
+}
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("unchecked: id");
+	});
+
+	it("P3: object-literal `type` alias, not just `interface`", () => {
+		const src = `
+type Job = {
+	kind: string;
+	riskTier: string;
+	timeoutMs: number;
+};
+function isJob(v: unknown): v is Job {
+	const o = v as Record<string, unknown>;
+	return typeof o.kind === "string" && typeof o.timeoutMs === "number";
+}
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("unchecked: riskTier");
+	});
+
+	it("P4: a `readonly` required member is still required", () => {
+		const src = `
+interface Rec {
+	readonly id: string;
+	readonly seq: number;
+	label: string;
+}
+function isRec(v: unknown): v is Rec {
+	const o = v as Record<string, unknown>;
+	return typeof o.id === "string" && typeof o.label === "string";
+}
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("unchecked: seq");
+	});
+
+	it("P5: reports only the drifting guard when a complete one sits beside it", () => {
+		const src = `
+interface A { a: string; b: string; }
+interface B { c: string; d: string; }
+function isA(v: unknown): v is A {
+	const o = v as Record<string, unknown>;
+	return typeof o.a === "string" && typeof o.b === "string";
+}
+function isB(v: unknown): v is B {
+	const o = v as Record<string, unknown>;
+	return typeof o.c === "string";
+}
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("isB");
+		expect(out[0]?.text).toContain("unchecked: d");
+	});
+});
+
+describe("detectTypePredicateDrift — negative (must not fire)", () => {
+	it("N1: guard checks every required property", () => {
+		const src = `
+interface Foo { name: string; count: number; }
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string" && typeof o.count === "number";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N2: the unchecked property is OPTIONAL", () => {
+		const src = `
+interface Foo { name: string; count: number; note?: string; }
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string" && typeof o.count === "number";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N3: the type has fewer than two required properties", () => {
+		const src = `
+interface Foo { name: string; }
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o === "object";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N4: guard runs no runtime shape test (discriminant/delegation only)", () => {
+		const src = `
+interface Foo { name: string; count: number; }
+function isFoo(v: unknown): v is Foo {
+	return validateFoo(v);
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N5: guard mentions none of the required properties — delegating, not drifting", () => {
+		const src = `
+interface Foo { name: string; count: number; }
+function isFoo(v: unknown): v is Foo {
+	return typeof v === "object" && v !== null && schema.check(v);
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N6: the asserted type is not declared in this file", () => {
+		const src = `
+import type { Foo } from "./foo.js";
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N7: destructured access counts as checking the field", () => {
+		const src = `
+interface Foo { name: string; count: number; owner: string; }
+function isFoo(v: unknown): v is Foo {
+	const { name, count, owner } = v as Foo;
+	return typeof name === "string" && typeof count === "number" && typeof owner === "string";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N8: an interface that `extends` is skipped — parent members are invisible here", () => {
+		const src = `
+interface Base { id: string; }
+interface Foo extends Base { name: string; count: number; }
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N9: test files are exempt", () => {
+		const src = `
+interface Foo { name: string; count: number; }
+function isFoo(v: unknown): v is Foo {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string";
+}
+`;
+		expect(detectTypePredicateDrift(src, "src/x.test.ts")).toEqual([]);
+	});
+
+	it("N10: non-TypeScript files are exempt", () => {
+		const src = `
+interface Foo { name: string; count: number; }
+function isFoo(v) { return typeof v.name === "string"; }
+`;
+		expect(detectTypePredicateDrift(src, "src/x.js")).toEqual([]);
+	});
+
+	it("N11: an index signature is not a required named property", () => {
+		const src = `
+interface Bag { [key: string]: unknown; }
+function isBag(v: unknown): v is Bag {
+	return typeof v === "object" && v !== null;
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+});
+
+describe("detectTypePredicateDrift — bounds", () => {
+	it("caps output at 10 findings per file", () => {
+		const blocks = Array.from({ length: 14 }, (_, i) => {
+			return `interface T${i} { a${i}: string; b${i}: string; }
+function is${i}(v: unknown): v is T${i} {
+	const o = v as Record<string, unknown>;
+	return typeof o.a${i} === "string";
+}`;
+		}).join("\n");
+		expect(detectTypePredicateDrift(blocks, F)).toHaveLength(10);
+	});
+
+	it("returns [] for a file containing no predicates at all", () => {
+		expect(detectTypePredicateDrift("export const x = 1;\n", F)).toEqual([]);
+	});
+});

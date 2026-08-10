@@ -131,6 +131,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "type predicate drift",
+		key: "typePredicateDrift",
+		noun: "`value is T` guards that leave some of T's required properties unchecked",
+		passLabel: "no drifting type predicates",
+		color: "33",
+	},
+	{
 		label: "snapshot hygiene",
 		key: "snapshotHygiene",
 		noun: "writes of snapshot-review artifacts (*.snap.new / *.pending-snap) that must not be committed",

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { c, header, kvLine } from "../lib/formatter.js";
 import {
 	maybeRecordMeasurement,
 	type MeasureRecordSummary,
+	measureOneFile,
 	renderMeasureCommand,
 	testScopeNote,
 } from "./mutation-measure-support.js";
@@ -324,5 +325,151 @@ describe("maybeRecordMeasurement", () => {
 		expect(result?.recorded).toBe(false);
 		expect(result?.reason).toContain("not a recognizable mutation report");
 		expect(loadManifest(dir)).toBeNull();
+	});
+});
+
+
+// ===========================================
+// measureOneFile — the whole single-file pipeline (resolve, scope, overlay,
+// pre-flight, measure, record) as ONE reusable step. `mutation measure` and
+// `mutation sweep` both drive it, so the RED-suite pre-flight policy and the
+// record rules exist in exactly one place.
+// ===========================================
+describe("measureOneFile", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "measure-one-"));
+		mkdirSync(join(dir, "src"), { recursive: true });
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(join(dir, "src", "a.ts"), CONTENT);
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const base = () => ({
+		file: "src/a.ts",
+		cwd: dir,
+		configDir: join(dir, ".interlinked"),
+		runnerUrl: "http://runner.invalid",
+		skipPreflight: true,
+		quiet: true,
+	});
+
+	it("P1: returns the measured outcome's counts", async () => {
+		const result = await measureOneFile({
+			...base(),
+			measure: async () => measuredOutcome(report("Survived")),
+		});
+		expect(result.status).toBe("measured");
+		expect(result.survivors).toBe(1);
+		expect(result.mutants).toBe(1);
+	});
+
+	it("P2: records into the manifest when asked, and not otherwise", async () => {
+		const measure = async () => measuredOutcome(report("Killed"));
+		const norecord = await measureOneFile({ ...base(), measure });
+		expect(norecord.record).toBeNull();
+		const recorded = await measureOneFile({ ...base(), record: true, measure });
+		expect(recorded.record?.recorded).toBe(true);
+		expect(loadManifest(join(dir, ".interlinked"))).not.toBeNull();
+	});
+
+	it("P3: runs the RED-suite pre-flight unless skipped, and refuses on red", async () => {
+		let ran = 0;
+		const result = await measureOneFile({
+			...base(),
+			skipPreflight: false,
+			preflight: async () => {
+				ran += 1;
+				return "the scoped suite is RED";
+			},
+			measure: async () => {
+				throw new Error("must not measure against a red suite");
+			},
+		});
+		expect(ran).toBe(1);
+		expect(result.status).toBe("red_suite");
+		expect(result.reason).toContain("RED");
+	});
+
+	it("P4: passes the busy status through instead of flattening it to an error", async () => {
+		const result = await measureOneFile({
+			...base(),
+			measure: async () => ({ status: "busy" as const, reason: "503", mutantCount: 0, survivorCount: 0, survivors: [] }),
+		});
+		expect(result.status).toBe("busy");
+	});
+
+	it("N1: an unreadable path never reaches the runner", async () => {
+		let called = false;
+		const result = await measureOneFile({
+			...base(),
+			file: "src/missing.ts",
+			measure: async () => {
+				called = true;
+				return measuredOutcome(report("Killed"));
+			},
+		});
+		expect(result.status).toBe("unreadable");
+		expect(called).toBe(false);
+	});
+
+	it("N2: no configured runner is its own status, not a failed run", async () => {
+		const result = await measureOneFile({
+			...base(),
+			runnerUrl: undefined,
+			measure: async () => measuredOutcome(report("Killed")),
+		});
+		expect(result.status).toBe("no_runner");
+	});
+
+	it("N3: skipPreflight really skips it", async () => {
+		let ran = 0;
+		await measureOneFile({
+			...base(),
+			preflight: async () => {
+				ran += 1;
+				return null;
+			},
+			measure: async () => measuredOutcome(report("Killed")),
+		});
+		expect(ran).toBe(0);
+	});
+
+	it("P5: runnerUrls (plural, ordered) wins over a single runnerUrl when both are given", async () => {
+		let seenEndpoints: string[] = [];
+		await measureOneFile({
+			...base(),
+			runnerUrl: "http://single.invalid",
+			runnerUrls: ["http://first.invalid", "http://second.invalid"],
+			measure: async (a) => {
+				seenEndpoints = a.endpoints;
+				return measuredOutcome(report("Killed"));
+			},
+		});
+		expect(seenEndpoints).toEqual(["http://first.invalid", "http://second.invalid"]);
+	});
+
+	it("P6: with no explicit runner, falls back to the repo's configured per_edit_mutation endpoint + token", async () => {
+		writeFileSync(
+			join(dir, ".interlinked", "guard-rules.local.json"),
+			JSON.stringify({ per_edit_mutation: { runner_url: "http://configured.invalid", token: "shh" } }),
+		);
+		let seen: { endpoints: string[]; token: string | undefined } = { endpoints: [], token: undefined };
+		const result = await measureOneFile({
+			file: "src/a.ts",
+			cwd: dir,
+			configDir: join(dir, ".interlinked"),
+			skipPreflight: true,
+			quiet: true,
+			measure: async (a) => {
+				seen = { endpoints: a.endpoints, token: a.token };
+				return measuredOutcome(report("Killed"));
+			},
+		});
+		expect(result.status).toBe("measured");
+		expect(seen.endpoints).toEqual(["http://configured.invalid"]);
+		expect(seen.token).toBe("shh");
 	});
 });

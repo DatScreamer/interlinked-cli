@@ -183,8 +183,8 @@ These evaluate on every PreToolUse event (before tool execution).
 |------|----------|--------|-------------|
 | `builtin-nohup-network` | critical | block | Detached background process with network capability — this is a RAT persistence pattern (ref: axios@1.14.1 used nohup python3 dropper with ppid:1) Run network commands in the foreground so their output is visible and they terminate with the session |
 | `builtin-background-network` | high | warn | Background process with network capability. Background network activity is rarely legitimate in an agent context Run network commands in the foreground. If you need async work, explain why |
-| `builtin-cron-persistence` | critical | block | Modifying scheduled tasks or system services creates persistent effects beyond this session Ask the user to configure cron jobs or system services manually |
-| `builtin-cron-file-write` | critical | block | Writing to cron/systemd/launchd directories creates persistent scheduled tasks Ask the user to install services or cron jobs manually |
+| `builtin-cron-persistence` | critical | ask | Modifying scheduled tasks or system services creates persistent effects beyond this session Confirm this is a service you intend to install or reload. Installing a launchd/cron job is normal setup; doing it unannounced is the dropper pattern. |
+| `builtin-cron-file-write` | critical | ask | Writing to cron/systemd/launchd directories creates persistent scheduled tasks Confirm you intend to install or update this service. State plainly what it runs, on what schedule, and how to remove it. |
 
 ## Railway
 

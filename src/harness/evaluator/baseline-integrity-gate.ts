@@ -333,7 +333,16 @@ function detectMetricCaps(file: string, before: unknown, after: unknown): Baseli
 	const out: BaselineGamingFinding[] = [];
 	const b = asObj(before);
 	const a = asObj(after);
-	for (const k of ["max_lines", "max_cyclomatic", "max_cognitive", "crap_threshold"]) {
+	// `max_predicate_drift` is a repo-wide COUNT water-line, not a per-function
+	// cap, but it obeys the same direction rule (may only fall) and lives here so
+	// the ratchet reuses the guarded file rather than minting a loosenable new one.
+	for (const k of [
+		"max_lines",
+		"max_cyclomatic",
+		"max_cognitive",
+		"crap_threshold",
+		"max_predicate_drift",
+	]) {
 		const bv = b[k];
 		const av = a[k];
 		if (isNum(bv) && isNum(av) && av > bv) {

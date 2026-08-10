@@ -72,6 +72,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"array_iteratee_variadic_builtin",
 			"write_without_mkdir",
 			"duplicated_policy_constant",
+			"type_predicate_drift",
 			"snapshot_hygiene",
 			"design_slop",
 			"rust_unsafe_span",
@@ -365,13 +366,14 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 228-key total", () => {
+	it("preserves the full 229-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
 		// 217 + cognitive_complexity (2026-07-24) + 8 Bun-regression detector pack
 		// (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2, 2026-07-20)
-		// + raw_control_bytes (2026-07-25) + procfs_probe_in_test (2026-07-31).
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(228);
+		// + raw_control_bytes (2026-07-25) + procfs_probe_in_test (2026-07-31)
+		// + type_predicate_drift (2026-08-09).
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(229);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(228);
+		expect(fragmentKeyTotal).toBe(229);
 	});
 });

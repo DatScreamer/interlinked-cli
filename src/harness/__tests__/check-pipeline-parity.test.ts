@@ -636,6 +636,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"arrayIterateeVariadicBuiltin",
 			"writeWithoutMkdir",
 			"duplicatedPolicyConstant",
+			"typePredicateDrift",
 			"snapshotHygiene",
 			"designSlop",
 			"payloadFieldCasing",

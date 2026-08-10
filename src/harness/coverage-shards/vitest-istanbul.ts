@@ -9,19 +9,59 @@
 
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
 import type { CanonicalCoverageElementSet } from "../coverage-index/types.js";
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
+/**
+ * Istanbul's per-id location/hit-count maps (`statementMap`, `s`, `branchMap`,
+ * `b`, `fnMap`, `f`). Ids are opaque generated keys, so the map itself stays
+ * open-shaped; individual entries are validated where they are read
+ * ({@link locLine}, {@link locColumn}, and the per-entry checks in
+ * {@link branchElements} / {@link functionElements}).
+ */
+export type IstanbulIdMap = JsonObject;
+
+/** One istanbul file-coverage entry, after unwrapping any `{data: …}` envelope. */
+export interface IstanbulFileCoverage {
+	path?: string;
+	statementMap: IstanbulIdMap;
+	s: IstanbulIdMap;
+	branchMap?: IstanbulIdMap;
+	b?: IstanbulIdMap;
+	fnMap?: IstanbulIdMap;
+	f?: IstanbulIdMap;
+}
+
+export function isRecord(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Unwrap a FileCoverage envelope ({data: …}) to its plain data, or null. */
-function unwrapFileCoverage(raw: unknown): Record<string, unknown> | null {
+/** Optional record field of `raw`, or `undefined` when absent/malformed. */
+function optionalRecord(raw: JsonObject, key: string): IstanbulIdMap | undefined {
+	return isRecord(raw[key]) ? raw[key] : undefined;
+}
+
+/** Parse a FileCoverage envelope ({data: …}) or plain entry, or null when malformed. */
+function parseFileCoverage(raw: unknown): IstanbulFileCoverage | null {
 	if (!isRecord(raw)) return null;
 	const candidate = !isRecord(raw.statementMap) && isRecord(raw.data) ? raw.data : raw;
 	if (!isRecord(candidate)) return null;
-	if (!isRecord(candidate.statementMap) || !isRecord(candidate.s)) return null;
-	return candidate;
+	const { statementMap, s } = candidate;
+	if (!isRecord(statementMap) || !isRecord(s)) return null;
+	const branchMap = optionalRecord(candidate, "branchMap");
+	const b = optionalRecord(candidate, "b");
+	const fnMap = optionalRecord(candidate, "fnMap");
+	const f = optionalRecord(candidate, "f");
+	const path = typeof candidate.path === "string" ? candidate.path : undefined;
+	return {
+		statementMap,
+		s,
+		...(branchMap !== undefined && { branchMap }),
+		...(b !== undefined && { b }),
+		...(fnMap !== undefined && { fnMap }),
+		...(f !== undefined && { f }),
+		...(path !== undefined && { path }),
+	};
 }
 
 /** A `{start: {line, column}}` location's line, or null. */
@@ -70,8 +110,8 @@ function relFor(rawPath: string, projectRoot: string): string | null {
  * disagree about what a "covered line" means.
  */
 function lineAndStatementElements(
-	statementMap: Record<string, unknown>,
-	s: Record<string, unknown>,
+	statementMap: IstanbulIdMap,
+	s: IstanbulIdMap,
 ): { lines: Map<number, number>; statements: Map<string, number> } {
 	const lines = new Map<number, number>();
 	const statements = new Map<string, number>();
@@ -86,11 +126,11 @@ function lineAndStatementElements(
 }
 
 /** Branch elements keyed `line:branchId:pathIndex` from istanbul branch data. */
-function branchElements(fc: Record<string, unknown>): Map<string, number> {
+function branchElements(fc: IstanbulFileCoverage): Map<string, number> {
 	const branches = new Map<string, number>();
 	const branchMap = fc.branchMap;
 	const b = fc.b;
-	if (!isRecord(branchMap) || !isRecord(b)) return branches;
+	if (!branchMap || !b) return branches;
 	for (const [id, branch] of Object.entries(branchMap)) {
 		if (!isRecord(branch)) continue;
 		const hitsArr = b[id];
@@ -107,11 +147,11 @@ function branchElements(fc: Record<string, unknown>): Map<string, number> {
 }
 
 /** Function elements keyed `name@declLine` from istanbul function data. */
-function functionElements(fc: Record<string, unknown>): Map<string, number> {
+function functionElements(fc: IstanbulFileCoverage): Map<string, number> {
 	const functions = new Map<string, number>();
 	const fnMap = fc.fnMap;
 	const f = fc.f;
-	if (!isRecord(fnMap) || !isRecord(f)) return functions;
+	if (!fnMap || !f) return functions;
 	for (const [id, fn] of Object.entries(fnMap)) {
 		if (!isRecord(fn)) continue;
 		const hits = f[id];
@@ -122,12 +162,9 @@ function functionElements(fc: Record<string, unknown>): Map<string, number> {
 	return functions;
 }
 
-/** One istanbul file entry → a canonical element set, or null when malformed. */
-function elementSetFromIstanbul(fc: Record<string, unknown>): CanonicalCoverageElementSet | null {
-	const statementMap = fc.statementMap;
-	const s = fc.s;
-	if (!isRecord(statementMap) || !isRecord(s)) return null;
-	const { lines, statements } = lineAndStatementElements(statementMap, s);
+/** One valid istanbul file entry → a canonical element set. */
+function elementSetFromIstanbul(fc: IstanbulFileCoverage): CanonicalCoverageElementSet {
+	const { lines, statements } = lineAndStatementElements(fc.statementMap, fc.s);
 	const set: CanonicalCoverageElementSet = {
 		lines,
 		branches: branchElements(fc),
@@ -150,12 +187,11 @@ export function istanbulToElementSets(
 	const out = new Map<string, CanonicalCoverageElementSet>();
 	if (!isRecord(data)) return out;
 	for (const [key, rawEntry] of Object.entries(data)) {
-		const fc = unwrapFileCoverage(rawEntry);
+		const fc = parseFileCoverage(rawEntry);
 		if (!fc) continue;
-		const rel = relFor(typeof fc.path === "string" ? fc.path : key, projectRoot);
+		const rel = relFor(fc.path ?? key, projectRoot);
 		if (!rel) continue;
-		const set = elementSetFromIstanbul(fc);
-		if (set) out.set(rel, set);
+		out.set(rel, elementSetFromIstanbul(fc));
 	}
 	return out;
 }

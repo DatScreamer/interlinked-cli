@@ -213,6 +213,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"untested_inverse_pair",
 				"default_export",
 				"duplicated_policy_constant",
+				"type_predicate_drift",
 				"snapshot_hygiene",
 				"design_slop",
 				"payload_field_casing",

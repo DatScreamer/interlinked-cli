@@ -23,11 +23,23 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
+import type { JsonObject } from "../../lib/json-types.js";
 import type {
 	CanonicalCoverageElementSet,
 	CoverageIndexManifest,
+	InstabilityEvent,
+	ShardInstability,
+	ShardManifestEntry,
 	ShardCoverageContribution,
 } from "./types.js";
+
+/**
+ * Narrow ONCE at the boundary; every parser below reads a `JsonObject`, never
+ * a bare `Record<string, unknown>`, and never re-derives this check.
+ */
+function isPlainObject(v: unknown): v is JsonObject {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
 /** The per-runner store directory: `.interlinked/coverage-index/<runner-id>/`. */
 export function storeDirFor(projectRoot: string, runnerId: string): string {
@@ -98,15 +110,14 @@ function stringKeyMap(raw: unknown): Map<string, number> | null {
 
 /** Revive one serialized element set, or null when any dimension is malformed. */
 function elementSetFromJson(raw: unknown): CanonicalCoverageElementSet | null {
-	if (!raw || typeof raw !== "object") return null;
-	const obj = raw as Record<string, unknown>;
-	const lines = numberKeyMap(obj.lines);
-	const branches = stringKeyMap(obj.branches);
-	const functions = stringKeyMap(obj.functions);
+	if (!isPlainObject(raw)) return null;
+	const lines = numberKeyMap(raw.lines);
+	const branches = stringKeyMap(raw.branches);
+	const functions = stringKeyMap(raw.functions);
 	if (!lines || !branches || !functions) return null;
 	const set: CanonicalCoverageElementSet = { lines, branches, functions };
-	if (obj.statements !== undefined) {
-		const statements = stringKeyMap(obj.statements);
+	if (raw.statements !== undefined) {
+		const statements = stringKeyMap(raw.statements);
 		if (!statements) return null;
 		set.statements = statements;
 	}
@@ -119,18 +130,17 @@ function elementSetFromJson(raw: unknown): CanonicalCoverageElementSet | null {
  * arrays — reads as null, and the caller treats the blob as absent.
  */
 export function contributionFromJson(raw: unknown): ShardCoverageContribution | null {
-	if (!raw || typeof raw !== "object") return null;
-	const obj = raw as Record<string, unknown>;
-	if (obj.version !== 1 || typeof obj.shardId !== "string") return null;
-	if (!Array.isArray(obj.files)) return null;
+	if (!isPlainObject(raw)) return null;
+	if (raw.version !== 1 || typeof raw.shardId !== "string") return null;
+	if (!Array.isArray(raw.files)) return null;
 	const files = new Map<string, CanonicalCoverageElementSet>();
-	for (const pair of obj.files) {
+	for (const pair of raw.files) {
 		if (!Array.isArray(pair) || typeof pair[0] !== "string") return null;
 		const set = elementSetFromJson(pair[1]);
 		if (!set) return null;
 		files.set(pair[0], set);
 	}
-	return { shardId: obj.shardId, files };
+	return { shardId: raw.shardId, files };
 }
 
 // ===========================================
@@ -224,18 +234,67 @@ export function readContributionBlob(
 
 const MANIFEST_FILE = "manifest.json";
 
-/** A plain object (not null, not an array). */
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-	return !!v && typeof v === "object" && !Array.isArray(v);
+/** A string value, or null when `v` is not a string (kept distinct from "" being falsy). */
+function str(v: unknown): string | null {
+	return typeof v === "string" ? v : null;
 }
 
-/** Every value is a string. */
-function isStringRecord(v: unknown): boolean {
-	return isPlainObject(v) && Object.values(v).every((x) => typeof x === "string");
+/** `v` is a valid `Record<string, string>`, constructed fresh (never the input object). */
+function parseStringRecord(v: unknown): Record<string, string> | null {
+	if (!isPlainObject(v)) return null;
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(v)) {
+		if (typeof value !== "string") return null;
+		out[key] = value;
+	}
+	return out;
+}
+
+/** `v` is a valid `string[]`. */
+function isStringArray(v: unknown): v is string[] {
+	return Array.isArray(v) && v.every((x): x is string => typeof x === "string");
+}
+
+/** `v` is one of the manifest's declared shard-boundary literals. */
+function isShardBoundary(v: unknown): v is CoverageIndexManifest["shardBoundary"] {
+	return v === "file" || v === "group" || v === "run";
+}
+
+/** Revive one instability event, or null when its shape is malformed. */
+function parseInstabilityEvent(v: unknown): InstabilityEvent | null {
+	if (!isPlainObject(v)) return null;
+	const at = str(v.at);
+	if (at === null) return null;
+	if (v.kind !== "contribution_churn" && v.kind !== "pass_fail_flip") return null;
+	return { at, kind: v.kind };
 }
 
 /**
- * Validate ONE shard entry's load-bearing shape. The manifest's `shards` is a
+ * Revive a shard's stability bookkeeping. Loose by design: an instability
+ * block that is a plain object but omits its own fields (the pre-parser
+ * contract only required "is an object" here) reads as "never observed
+ * instability" rather than rejecting the whole shard entry — `staleShards`
+ * and friends never read this field, so there is nothing to protect by
+ * being stricter than the historical contract.
+ */
+function parseInstability(v: unknown): ShardInstability | null {
+	if (!isPlainObject(v)) return null;
+	const eventsRaw = Array.isArray(v.events) ? v.events : [];
+	const events: InstabilityEvent[] = [];
+	for (const raw of eventsRaw) {
+		const event = parseInstabilityEvent(raw);
+		if (!event) return null;
+		events.push(event);
+	}
+	return {
+		events,
+		consecutiveStableRuns: typeof v.consecutiveStableRuns === "number" ? v.consecutiveStableRuns : 0,
+		quarantined: v.quarantined === true,
+	};
+}
+
+/**
+ * Validate + construct ONE shard entry. The manifest's `shards` is a
  * `Record<string, ShardManifestEntry>`; verifying the field is an object was
  * NOT enough — `{shards:{bad:null}}` passed, was returned as authoritative,
  * and the first consumer to iterate it (`staleShards` → `Object.entries(null)`)
@@ -243,29 +302,111 @@ function isStringRecord(v: unknown): boolean {
  * 2026-06, round 7). Each consumed field is type-checked here at the read
  * boundary so a corrupt entry rejects the whole manifest.
  */
-function isValidShardEntry(v: unknown): boolean {
-	if (!isPlainObject(v)) return false;
-	return (
-		typeof v.shardId === "string" &&
-		Array.isArray(v.testPaths) &&
-		v.testPaths.every((p) => typeof p === "string") &&
-		isStringRecord(v.testContentHashes) &&
-		isStringRecord(v.dependencyHashes) &&
-		typeof v.lastDurationMs === "number" &&
-		typeof v.contributionPath === "string" &&
-		typeof v.contributionChecksum === "string" &&
-		(v.passed === null || typeof v.passed === "boolean") &&
-		isPlainObject(v.instability)
-	);
+function parseShardEntry(v: unknown): ShardManifestEntry | null {
+	if (!isPlainObject(v)) return null;
+	const shardId = str(v.shardId);
+	if (shardId === null) return null;
+	if (!isStringArray(v.testPaths)) return null;
+	const testContentHashes = parseStringRecord(v.testContentHashes);
+	if (!testContentHashes) return null;
+	const dependencyHashes = parseStringRecord(v.dependencyHashes);
+	if (!dependencyHashes) return null;
+	if (typeof v.lastDurationMs !== "number") return null;
+	const contributionPath = str(v.contributionPath);
+	const contributionChecksum = str(v.contributionChecksum);
+	if (contributionPath === null || contributionChecksum === null) return null;
+	if (v.passed !== null && typeof v.passed !== "boolean") return null;
+	const instability = parseInstability(v.instability);
+	if (!instability) return null;
+	return {
+		shardId,
+		testPaths: v.testPaths,
+		testContentHashes,
+		dependencyHashes,
+		lastDurationMs: v.lastDurationMs,
+		contributionPath,
+		contributionChecksum,
+		passed: v.passed,
+		instability,
+	};
+}
+
+/** Every shard entry, constructed and validated, or null if any one entry is corrupt. */
+function parseShardMap(v: unknown): Record<string, ShardManifestEntry> | null {
+	if (!isPlainObject(v)) return null;
+	const shards: Record<string, ShardManifestEntry> = {};
+	for (const [key, value] of Object.entries(v)) {
+		const entry = parseShardEntry(value);
+		if (!entry) return null;
+		shards[key] = entry;
+	}
+	return shards;
+}
+
+/** The manifest's required string-valued fields, or null if any is missing/non-string. */
+function parseRequiredManifestStrings(v: JsonObject): Omit<
+	CoverageIndexManifest,
+	"version" | "generation" | "shardBoundary" | "shards" | "sourceRevision"
+> | null {
+	const authoritativeAt = str(v.authoritativeAt);
+	if (authoritativeAt === null) return null;
+	const runnerId = str(v.runnerId);
+	if (runnerId === null) return null;
+	const runnerVersion = str(v.runnerVersion);
+	if (runnerVersion === null) return null;
+	const coverageEngine = str(v.coverageEngine);
+	if (coverageEngine === null) return null;
+	const coverageConfigHash = str(v.coverageConfigHash);
+	if (coverageConfigHash === null) return null;
+	const testDiscoveryHash = str(v.testDiscoveryHash);
+	if (testDiscoveryHash === null) return null;
+	const dependencyGraphVersion = str(v.dependencyGraphVersion);
+	if (dependencyGraphVersion === null) return null;
+	const environmentHash = str(v.environmentHash);
+	if (environmentHash === null) return null;
+	return {
+		authoritativeAt,
+		runnerId,
+		runnerVersion,
+		coverageEngine,
+		coverageConfigHash,
+		testDiscoveryHash,
+		dependencyGraphVersion,
+		environmentHash,
+	};
 }
 
 /**
- * The accepted manifest for a runner's store, or null when absent/torn —
- * a malformed manifest degrades to "no index" (full-run fallback + eventual
- * re-initialization), never an exception. Validation extends to EACH shard
- * entry, not just the top-level shape: a single corrupt entry rejects the
- * whole manifest, because consumers iterate entries assuming the typed shape
- * (finding 2026-06, round 7).
+ * Validate + construct the manifest from its parsed JSON, or null when
+ * absent/torn — a malformed manifest degrades to "no index" (full-run
+ * fallback + eventual re-initialization), never an exception. Validation
+ * extends to EACH shard entry, not just the top-level shape: a single
+ * corrupt entry rejects the whole manifest, because consumers iterate
+ * entries assuming the typed shape (finding 2026-06, round 7).
+ */
+function parseManifest(raw: unknown): CoverageIndexManifest | null {
+	if (!isPlainObject(raw)) return null;
+	if (raw.version !== 1) return null;
+	if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation)) return null;
+	const strings = parseRequiredManifestStrings(raw);
+	if (!strings) return null;
+	if (!isShardBoundary(raw.shardBoundary)) return null;
+	if (raw.sourceRevision !== undefined && typeof raw.sourceRevision !== "string") return null;
+	const shards = parseShardMap(raw.shards);
+	if (!shards) return null;
+	const base: CoverageIndexManifest = {
+		version: 1,
+		generation: raw.generation,
+		...strings,
+		shardBoundary: raw.shardBoundary,
+		shards,
+	};
+	return raw.sourceRevision === undefined ? base : { ...base, sourceRevision: raw.sourceRevision };
+}
+
+/**
+ * The accepted manifest for a runner's store, or null when absent/torn/
+ * malformed — see {@link parseManifest} for the validation contract.
  */
 export function readAcceptedManifest(storeDir: string): CoverageIndexManifest | null {
 	let raw: unknown;
@@ -274,16 +415,7 @@ export function readAcceptedManifest(storeDir: string): CoverageIndexManifest | 
 	} catch {
 		return null;
 	}
-	if (!raw || typeof raw !== "object") return null;
-	const obj = raw as Record<string, unknown>;
-	if (obj.version !== 1) return null;
-	if (typeof obj.generation !== "number" || !Number.isInteger(obj.generation)) return null;
-	if (typeof obj.runnerId !== "string") return null;
-	if (!isPlainObject(obj.shards)) return null;
-	for (const entry of Object.values(obj.shards)) {
-		if (!isValidShardEntry(entry)) return null;
-	}
-	return raw as CoverageIndexManifest;
+	return parseManifest(raw);
 }
 
 /**

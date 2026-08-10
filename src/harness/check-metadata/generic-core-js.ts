@@ -76,6 +76,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	type_predicate_drift: {
+		name: "Type Predicate Drift",
+		description:
+			"Detects a `value is T` type predicate that validates only some of T's required properties — the annotation is an unchecked assertion, so the unvalidated fields stay unvalidated when T grows",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	snapshot_hygiene: {
 		name: "Snapshot Hygiene",
 		description:

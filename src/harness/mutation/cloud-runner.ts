@@ -105,6 +105,67 @@ export interface FetchResponse {
 	ok: boolean;
 	status: number;
 	json(): Promise<unknown>;
+	/** Optional so an injected test double stays a two-method object. Real
+	 *  `fetch` always provides it, and it is the ONLY way to recover the body of
+	 *  an error response — see `describeErrorResponse`. */
+	text?: () => Promise<string>;
+}
+
+/** How much of a runner's error body to carry into the harness message. Long
+ *  enough for a stack's first frames, short enough not to flood a hook warning. */
+export const ERROR_BODY_CHARS = 400;
+
+/**
+ * Turn a non-ok response into a message that says what actually went wrong.
+ *
+ * The status alone was all this client kept, and it was the least useful thing
+ * available: `mutation runner HTTP 500` reached the agent as "the mutation
+ * runner failed", with the runner's own explanation — clone failed, install
+ * failed, engine crashed, wrong repo — discarded one function call from where
+ * it arrived. A runner that bothers to explain itself must be quoted, not
+ * summarized into a status code.
+ *
+ * Never throws: a body that cannot be read degrades to the bare status, which
+ * is exactly the previous behavior.
+ */
+export async function describeErrorResponse(res: FetchResponse): Promise<string> {
+	const detail = await readErrorBody(res);
+	return detail === null
+		? `mutation runner HTTP ${res.status}`
+		: `mutation runner HTTP ${res.status}: ${detail}`;
+}
+
+async function readErrorBody(res: FetchResponse): Promise<string | null> {
+	if (!res.text) return null;
+	try {
+		const raw = (await res.text()).trim();
+		if (raw === "") return null;
+		return collapse(extractMessage(raw)).slice(0, ERROR_BODY_CHARS);
+	} catch {
+		return null;
+	}
+}
+
+/** Prefer a JSON body's own error field; fall back to the raw text. */
+function extractMessage(raw: string): string {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed === "string") return parsed;
+		if (isRecord(parsed)) {
+			for (const key of ["error", "message", "detail", "reason"]) {
+				const value = parsed[key];
+				if (typeof value === "string" && value.trim() !== "") return value;
+			}
+		}
+	} catch {
+		// Not JSON — the raw text IS the message.
+	}
+	return raw;
+}
+
+/** One line, so a multi-line stack cannot wreck a terminal warning's shape. */
+function collapse(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
 }
 
 export type FetchLike = (
@@ -119,7 +180,7 @@ function headersFor(config: CloudRunnerConfig): Record<string, string> {
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object"; // probe
+	return v !== null && typeof v === "object";
 }
 
 /** Parse the optional overlay test-run signal from the Worker response (spec §7).
@@ -158,7 +219,11 @@ export function createCloudMutationRunner(config: CloudRunnerConfig, fetchImpl: 
 					body: JSON.stringify({ file, overlayContent, overlays, range, job_id: jobId }),
 					signal: controller.signal,
 				});
-				if (!res.ok) throw new Error(`mutation runner HTTP ${res.status}`);
+				// 503 is the single-worktree runner's "busy" lock, which is neither a
+				// failure nor evidence of a missing test — throw the dedicated type here
+				// rather than leaving `gate.ts` to recover it from message text.
+				if (res.status === 503) throw new MutationRunnerBusyError();
+				if (!res.ok) throw new Error(await describeErrorResponse(res));
 				const body = await res.json();
 				// A runner that knows WHY it produced nothing says so, rather than
 				// leaving the gate to report a generic failure.

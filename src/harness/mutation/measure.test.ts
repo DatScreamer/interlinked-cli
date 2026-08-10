@@ -304,7 +304,7 @@ describe("requestWholeFileReport", () => {
 				return fakeResponse(500, {});
 			},
 		});
-		expect(outcome).toEqual({ ok: false, reason: "runner HTTP 500" });
+		expect(outcome).toEqual({ ok: false, reason: "mutation runner HTTP 500" });
 		expect(calls).toBe(1);
 	});
 
@@ -354,7 +354,7 @@ describe("requestWholeFileReport", () => {
 			endpoints: ["http://runner/"],
 			fetchImpl: async () => fakeResponse(500, {}),
 		});
-		expect(outcome).toEqual({ ok: false, reason: "runner HTTP 500" });
+		expect(outcome).toEqual({ ok: false, reason: "mutation runner HTTP 500" });
 		expect((outcome as { busy?: boolean }).busy).toBeUndefined();
 	});
 
@@ -634,5 +634,157 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		});
 		expect(result.recorded).toBe(true);
 		expect(Object.keys(must(result.manifest).files)).toEqual([FILE]);
+	});
+});
+
+
+// ===========================================
+// The sweep's own error path. `cloud-runner.ts` (the per-edit gate's client)
+// had the same defect and was fixed first; a live 719-file sweep then reported
+// a bare `runner HTTP 500` from THIS copy, which is why both now share
+// `describeErrorResponse`.
+// ===========================================
+describe("requestWholeFileReport — a failing runner is quoted, not summarized", () => {
+	function failing(status: number, body: string | null) {
+		return () =>
+			Promise.resolve({
+				ok: false,
+				status,
+				json: () => Promise.resolve(null),
+				...(body === null ? {} : { text: () => Promise.resolve(body) }),
+			});
+	}
+
+	const base = {
+		file: "src/a.ts",
+		content: "export const x = 1;\n",
+		overlays: [],
+		endpoints: ["http://runner.invalid"],
+		jobId: "job-1",
+		deadlineMs: 5_000,
+		requestTimeoutMs: 1_000,
+	};
+
+	/** Narrow the union so a passing run cannot silently skip the assertion. */
+	async function failureOf(status: number, body: string | null) {
+		const out = await requestWholeFileReport({ ...base, fetchImpl: failing(status, body) });
+		if (out.ok) throw new Error("expected the request to fail");
+		return out;
+	}
+
+	it("P1: carries a JSON error body into the reason", async () => {
+		const out = await failureOf(500, JSON.stringify({ error: "worktree checkout failed" }));
+		expect(out.reason).toContain("worktree checkout failed");
+	});
+
+	it("P2: carries a plain-text body too", async () => {
+		const out = await failureOf(502, "bad gateway from proxy");
+		expect(out.reason).toContain("bad gateway from proxy");
+	});
+
+	it("N1: degrades to the bare status when no body can be read", async () => {
+		const out = await failureOf(500, null);
+		expect(out.reason).toBe("mutation runner HTTP 500");
+	});
+
+	it("N2: a non-ok status is a definitive failure, never reported as busy", async () => {
+		const out = await failureOf(500, "boom");
+		expect(out.busy).toBeUndefined();
+	});
+});
+
+
+// ===========================================
+// Disconnection. A contended runner frees up; a closed laptop does not, and
+// treating them the same burned a full per-file budget (900s in the live sweep)
+// on every remaining file.
+// ===========================================
+describe("requestWholeFileReport — an unreachable host is not a busy one", () => {
+	const base = {
+		file: "src/a.ts",
+		content: "export const x = 1;\n",
+		overlays: [],
+		jobId: "job-1",
+		requestTimeoutMs: 50,
+	};
+
+	it("P1: gives up well before the deadline when nothing answers at all", async () => {
+		let slept = 0;
+		const out = await requestWholeFileReport({
+			...base,
+			endpoints: ["http://dead-1", "http://dead-2"],
+			deadlineMs: 900_000,
+			fetchImpl: () => Promise.reject(new Error("ECONNREFUSED")),
+			now: () => 0,
+			sleep: async (ms: number) => {
+				slept += ms;
+			},
+		});
+		if (out.ok) throw new Error("expected failure");
+		expect(out.reason).toContain("runner_unreachable");
+		// It must NOT have waited out the 900s deadline.
+		expect(slept).toBeLessThan(60_000);
+	});
+
+	it("P2: names the endpoints it could not reach, so the operator knows which host to check", async () => {
+		const out = await requestWholeFileReport({
+			...base,
+			endpoints: ["http://mbp:8790"],
+			deadlineMs: 900_000,
+			fetchImpl: () => Promise.reject(new Error("ECONNREFUSED")),
+			now: () => 0,
+			sleep: async () => {},
+		});
+		if (out.ok) throw new Error("expected failure");
+		expect(out.reason).toContain("http://mbp:8790");
+	});
+
+	it("P3: still refuses to read as a no-tests verdict — busy stays set", async () => {
+		const out = await requestWholeFileReport({
+			...base,
+			endpoints: ["http://dead"],
+			deadlineMs: 900_000,
+			fetchImpl: () => Promise.reject(new Error("ECONNREFUSED")),
+			now: () => 0,
+			sleep: async () => {},
+		});
+		if (out.ok) throw new Error("expected failure");
+		expect(out.busy).toBe(true);
+		expect(out.reason).toContain("NOT evidence this file lacks tests");
+	});
+
+	it("N1: one reachable-but-busy endpoint keeps the run alive to the deadline", async () => {
+		let clock = 0;
+		const out = await requestWholeFileReport({
+			...base,
+			endpoints: ["http://dead", "http://busy"],
+			deadlineMs: 30_000,
+			fetchImpl: (url: string) =>
+				url.includes("busy")
+					? Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve(null) })
+					: Promise.reject(new Error("ECONNREFUSED")),
+			now: () => clock,
+			sleep: async (ms: number) => {
+				clock += ms;
+			},
+		});
+		if (out.ok) throw new Error("expected failure");
+		// Reached someone every round, so the early-exit must NOT have fired.
+		expect(out.reason).toContain("runner_busy");
+	});
+
+	it("N2: a healthy fallback answers even when the preferred endpoint is dead", async () => {
+		const out = await requestWholeFileReport({
+			...base,
+			endpoints: ["http://dead", "http://alive"],
+			deadlineMs: 30_000,
+			fetchImpl: (url: string) =>
+				url.includes("alive")
+					? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ files: {} }) })
+					: Promise.reject(new Error("ECONNREFUSED")),
+			now: () => 0,
+			sleep: async () => {},
+		});
+		expect(out.ok).toBe(true);
 	});
 });

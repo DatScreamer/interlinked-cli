@@ -95,6 +95,7 @@ export interface CodeQualityResults {
 	writeWithoutMkdir: CodeQualityIssue[];
 	/** Bare numeric literal duplicating a same-file named policy constant. */
 	duplicatedPolicyConstant: CodeQualityIssue[];
+	typePredicateDrift: CodeQualityIssue[];
 	/** Snapshot-review artifact (*.snap.new / *.pending-snap) written — never commit. */
 	snapshotHygiene: CodeQualityIssue[];
 	/** Raw hook-payload contract field read in one casing with no other-casing fallback. */

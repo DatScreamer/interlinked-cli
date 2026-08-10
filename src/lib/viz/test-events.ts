@@ -12,6 +12,7 @@
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { JsonObject } from "../json-types.js";
 import { readRecentLines } from "../local-activity-collection.js";
 import { createJsonlTailer } from "./event-stream.js";
 
@@ -68,18 +69,21 @@ export function appendTestEvent(path: string, ev: TestEvent): boolean {
 	}
 }
 
-function asRecord(v: unknown): Record<string, unknown> | null {
-	if (typeof v !== "object" || v === null) return null;
-	// SAFETY: a non-null typeof-"object" value is an indexable record at runtime.
-	return v as Record<string, unknown>;
+/** Narrow an arbitrary JSON value to an indexable object, or null. */
+function asRecord(v: unknown): JsonObject | null {
+	if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+	// SAFETY: a non-null, non-array typeof-"object" value is an indexable
+	// record at runtime; JsonObject's index signature makes this the one
+	// narrowing point every field read below routes through.
+	return v as JsonObject;
 }
 
-function str(o: Record<string, unknown>, key: string): string | undefined {
+function str(o: JsonObject, key: string): string | undefined {
 	const v = o[key];
 	return typeof v === "string" ? v : undefined;
 }
 
-function num(o: Record<string, unknown>, key: string): number | undefined {
+function num(o: JsonObject, key: string): number | undefined {
 	const v = o[key];
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
@@ -94,7 +98,7 @@ function asStatus(v: string | undefined): TestStatus | undefined {
 }
 
 /** Copy the optional string fields a producer may set onto the event. */
-function copyStrings(ev: TestEvent, r: Record<string, unknown>): void {
+function copyStrings(ev: TestEvent, r: JsonObject): void {
 	for (const key of ["label", "file", "name", "error"] as const) {
 		const v = str(r, key);
 		if (v !== undefined) ev[key] = v;
@@ -102,7 +106,7 @@ function copyStrings(ev: TestEvent, r: Record<string, unknown>): void {
 }
 
 /** Copy the optional numeric fields a producer may set onto the event. */
-function copyNumbers(ev: TestEvent, r: Record<string, unknown>): void {
+function copyNumbers(ev: TestEvent, r: JsonObject): void {
 	for (const key of ["ms", "passed", "failed", "skipped"] as const) {
 		const v = num(r, key);
 		if (v !== undefined) ev[key] = v;

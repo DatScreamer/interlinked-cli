@@ -7,6 +7,7 @@
 // offset — it never loads the multi-hundred-MB log.
 
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import type { JsonObject } from "../json-types.js";
 import { readRecentLines } from "../local-activity-collection.js";
 
 export interface VizEvent {
@@ -32,18 +33,20 @@ export interface ActivityTailer {
 	stop: () => void;
 }
 
-function asRecord(v: unknown): Record<string, unknown> | null {
-	if (typeof v !== "object" || v === null) return null;
-	// SAFETY: a non-null typeof-"object" value is an indexable record at runtime.
-	return v as Record<string, unknown>;
+/** Narrow an arbitrary JSON value to a plain object, or null. The one place
+ * this file asserts a shape — every other reader takes the resulting
+ * `JsonObject`, never a bare `Record<string, unknown>`. */
+function asRecord(v: unknown): JsonObject | null {
+	if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+	return v as JsonObject;
 }
 
-function str(o: Record<string, unknown>, key: string): string | undefined {
+function str(o: JsonObject, key: string): string | undefined {
 	const v = o[key];
 	return typeof v === "string" ? v : undefined;
 }
 
-function extractFile(r: Record<string, unknown>): string | undefined {
+function extractFile(r: JsonObject): string | undefined {
 	const ti = asRecord(r.tool_input);
 	if (ti) {
 		const f = str(ti, "file_path") ?? str(ti, "path") ?? str(ti, "notebook_path");
@@ -93,7 +96,7 @@ export function mapActivityLine(line: string): VizEvent | null {
  * spawned agent did the work, and the model behind it. All optional — foreign or
  * older rows simply carry no actor and render as `unattributed`.
  */
-function copyActorFields(ev: VizEvent, r: Record<string, unknown>): void {
+function copyActorFields(ev: VizEvent, r: JsonObject): void {
 	const agent = str(r, "agent");
 	if (agent) ev.agent = agent;
 	const session = str(r, "session") ?? str(r, "session_id");
@@ -218,7 +221,7 @@ export interface ChecksTailer {
 	stop: () => void;
 }
 
-function num(o: Record<string, unknown>, key: string): number | undefined {
+function num(o: JsonObject, key: string): number | undefined {
 	const v = o[key];
 	return typeof v === "number" ? v : undefined;
 }
