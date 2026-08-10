@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addToAllowlist, loadAllowlist } from "../package-allowlist.js";
-import { evaluateManifestEdit, extractGoModDeps } from "./manifest-edit-guard.js";
+import {
+	evaluateManifestEdit,
+	extractCargoDeps,
+	extractGemfileDeps,
+	extractGoModDeps,
+	extractPyprojectDeps,
+	parsePipRequirementLine,
+} from "./manifest-edit-guard.js";
 
 let workspace: string;
 
@@ -77,6 +84,13 @@ describe("evaluateManifestEdit — package.json", () => {
 		);
 		expect(r?.decision).toBe("block");
 		expect(r?.reason).toMatch(/evil/);
+		// Pin the exact field values the harness relies on downstream — a
+		// mutant that blanks any of these would still "block" but lose the
+		// rule identity / severity / category the pipeline routes on.
+		expect(r?.rule_id).toBe("supply-chain-manifest-add");
+		expect(r?.severity).toBe("high");
+		expect(r?.category).toBe("supply-chain");
+		expect(r?.reason).toMatch(/npm dependency/);
 	});
 
 	it("allows adding an allowlisted dep", () => {
@@ -273,6 +287,12 @@ describe("evaluateManifestEdit — Cargo.toml", () => {
 		);
 		expect(r?.decision).toBe("block");
 		expect(r?.reason).toMatch(/git|serde/i);
+		// "serde" always appears in the outer reason (it's delta.name, set
+		// before classification runs) — that alone doesn't prove the value was
+		// classified as git_url. Pin the INNER package-allowlist reason text,
+		// which only appears when classifyManifestValue actually returned
+		// { kind: "git_url", ... } for this inline `git = "..."` form.
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
 	});
 
 	it("blocks repinning to a path source pointing outside the workspace (P2.5)", () => {
@@ -283,6 +303,8 @@ describe("evaluateManifestEdit — Cargo.toml", () => {
 			newContent({ filename: "Cargo.toml", current: before, next: after }),
 		);
 		expect(r?.decision).toBe("block");
+		// Same pin as above but for the file_url branch (inline `path = "..."`).
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed/);
 	});
 
 	it("allows a plain version bump on an approved cargo dep", () => {
@@ -888,6 +910,8 @@ describe("evaluateManifestEdit — Cargo.toml preamble and non-matching lines", 
 			newContent({ filename: "Cargo.toml", current: before, next: after }),
 		);
 		expect(r?.decision).toBe("block");
+		// Pin the tarball_url branch specifically (inline `url = "https://...tar.gz"` form).
+		expect(r?.reason).toMatch(/tarball URL installs are never auto-allowed/);
 	});
 });
 
@@ -977,5 +1001,710 @@ describe("evaluateManifestEdit — .csproj / version-catalog / gradle map-notati
 			}),
 		);
 		expect(r).toBeNull();
+	});
+});
+
+// ============================================================
+// Mutation-survivor hardening (2026-08-09). Each test below is written
+// against a specific surviving mutant (see `interlinked mutation survivors
+// --file manifest-edit-guard`), not against generic behavior — the goal is
+// to pin a REAL boundary (exact regex reach, exact reason text, exact
+// captured value) rather than just re-check decision === "block"/null.
+// ============================================================
+
+describe("evaluateManifestEdit — .csproj extension-check specificity", () => {
+	it("does not treat an arbitrary file containing <package> tags as a nuget manifest (name.endsWith('.csproj') pin)", () => {
+		// If the ".csproj" literal ever degrades to "" (endsWith("") is always
+		// true), every file would resolve to the nuget handler.
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "notes.txt",
+				current: "<packages>\n</packages>",
+				next: '<packages>\n  <package id="Evil.Payload" version="1.0.0" />\n</packages>',
+			}),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — brand-new-file fallback content", () => {
+	it("treats a brand-new requirements.txt as having no prior deps, not literal placeholder text", () => {
+		// The "before" fallback for a non-existent file is the empty string.
+		// If that literal ever becomes something else (e.g. "Stryker was
+		// here!"), diffLineOriented would parse a bogus prior dep name out of
+		// it and swallow a same-named new dependency.
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "requirements.in",
+				current: null,
+				next: "Stryker==1.0\n",
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/Stryker/);
+	});
+});
+
+describe("evaluateManifestEdit — safeRead catch-path content", () => {
+	it("treats an unreadable manifest as truly empty, not literal placeholder text (line-oriented sensitivity)", () => {
+		// package.json's before/after diff can't distinguish "" from bogus
+		// placeholder text (both parse to {} via parseJsonSafe), so the
+		// existing EISDIR test doesn't pin safeRead's own catch-return value.
+		// requirements.txt is line-oriented and does distinguish them.
+		const path = join(workspace, "requirements.txt");
+		mkdirSync(path, { recursive: true }); // EISDIR on readFileSync
+		const r = evaluateManifestEdit({
+			filePath: path,
+			newContent: "Stryker==1.0\n",
+			allowlist: loadAllowlist(workspace),
+			cwd: workspace,
+		});
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/Stryker/);
+	});
+});
+
+describe("evaluateManifestEdit — diffPackageJson non-string / unchanged old values", () => {
+	it("does not treat a non-string old dep value as diffable (typeof guard pin)", () => {
+		// oldDeps["foo"] is a number here — the re-pin check must require the
+		// OLD value to be a string before comparing/inspecting the new one.
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: { foo: 123 } }, null, 2),
+				next: JSON.stringify(
+					{ dependencies: { foo: "git+https://attacker.com/evil.git" } },
+					null,
+					2,
+				),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("does not re-flag an unchanged git-URL-pinned dep as a new delta (identity guard pin)", () => {
+		const pinned = JSON.stringify(
+			{ dependencies: { foo: "git+https://ok.example/foo.git" } },
+			null,
+			2,
+		);
+		const r = evaluateManifestEdit(
+			newContent({ filename: "package.json", current: pinned, next: pinned }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — diffByValueShape identity guard (TOML ecosystems)", () => {
+	it("does not re-block an unchanged git-pinned Cargo dep (oldValue !== value pin)", () => {
+		const pinned = `[dependencies]\nserde = { git = "https://ok.example/serde" }\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: pinned, next: pinned }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("evaluateManifestEdit — diffLineOriented multi-line before-set (regex-anchor pin)", () => {
+	it("computes the before-set from every line, not just the first, on an unchanged multi-dep file", () => {
+		// A regex that degrades from /\r?\n/ to /\r\n/ can't split \n-only
+		// content, so a multi-line "before" collapses into a single blob and
+		// only the first dep name survives into beforeSet.
+		const content = "requests==2.31.0\nfoo==1.0\n";
+		const r = evaluateManifestEdit(
+			newContent({ filename: "requirements.txt", current: content, next: content }),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("classifyManifestValue — tarball_url boundary (via package.json new-dep values)", () => {
+	function classify(value: string) {
+		return evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: {} }, null, 2),
+				next: JSON.stringify({ dependencies: { foo: value } }, null, 2),
+			}),
+		);
+	}
+
+	it("classifies a bare .tgz URL as tarball_url", () => {
+		const r = classify("https://attacker.com/foo.tgz");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/tarball URL installs are never auto-allowed/);
+	});
+
+	it("classifies a bare .tgz URL over plain http (not only https)", () => {
+		const r = classify("http://attacker.com/foo.tgz");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/tarball URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a tarball extension followed by trailing non-query junk as tarball_url", () => {
+		const r = classify("https://attacker.com/foo.tgz.README");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+	});
+
+	it("classifies a tarball URL with a query string as tarball_url", () => {
+		const r = classify("https://attacker.com/foo.tgz?token=abc123");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/tarball URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a value that merely contains a tarball URL substring, unanchored (anchor pin)", () => {
+		const r = classify("1.0.0 (mirrors https://attacker.com/foo.tgz)");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+	});
+});
+
+describe("looksLikeUrlSpec — package.json repin prefixes (existing-name value change)", () => {
+	function repin(before: string, after: string) {
+		return evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: { foo: before } }, null, 2),
+				next: JSON.stringify({ dependencies: { foo: after } }, null, 2),
+			}),
+		);
+	}
+
+	it("blocks repinning to a file: spec", () => {
+		const r = repin("^1.0.0", "file:../evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed/);
+	});
+
+	it("blocks repinning to a github: shorthand", () => {
+		const r = repin("^1.0.0", "github:attacker/evil");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("blocks repinning to a gitlab: shorthand", () => {
+		const r = repin("^1.0.0", "gitlab:attacker/evil");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("blocks repinning to a bitbucket: shorthand", () => {
+		const r = repin("^1.0.0", "bitbucket:attacker/evil");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("blocks repinning to a plain https: URL (no .git/tarball suffix)", () => {
+		const r = repin("^1.0.0", "https://mirror.evil/foo");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("does not repin-flag a version string merely containing 'https:' without starting with it (anchor pin)", () => {
+		const r = repin("^1.0.0", "1.0.0 (see https://example.com)");
+		expect(r).toBeNull();
+	});
+});
+
+describe("looksLikeNonRegistrySource — TOML inline-table repins (Cargo)", () => {
+	// Unlike git=/path=/url=, classifyManifestValue has no dedicated branch
+	// for repository=/registry=/source= — a value matched by
+	// looksLikeNonRegistrySource() but not one of those three inline forms
+	// falls through to a plain { kind: "registry", name } classification.
+	// So if the package name was ALREADY approved (as the git=/path=/url=
+	// siblings above pre-approve it to prove the repin itself is what's
+	// gated), the repin would be silently ALLOWED instead of blocked — these
+	// three deliberately leave "serde" unapproved so the assertion still
+	// distinguishes "delta detected" (blocked, unapproved name) from
+	// "delta not detected" (null) if looksLikeNonRegistrySource regresses.
+	function repinCargoUnapproved(after: string) {
+		const before = `[dependencies]\nserde = "1"\n`;
+		return evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+	}
+
+	it("blocks repinning to a repository= source (unapproved name — proves the delta was detected)", () => {
+		const r = repinCargoUnapproved(
+			`[dependencies]\nserde = { repository = "https://mirror.evil/index" }\n`,
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/serde/);
+	});
+
+	it("blocks repinning to a registry= source (unapproved name — proves the delta was detected)", () => {
+		const r = repinCargoUnapproved(
+			`[dependencies]\nserde = { version = "1", registry = "my-registry" }\n`,
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/serde/);
+	});
+
+	it("blocks repinning to a source= source (unapproved name — proves the delta was detected)", () => {
+		const r = repinCargoUnapproved(`[dependencies]\nserde = { source = "vendored-registry" }\n`);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/serde/);
+	});
+});
+
+describe("looksLikeNonRegistrySource — bare-prefix repins (composer.json, unquoted JSON values)", () => {
+	function repinComposer(after: string) {
+		addToAllowlist(workspace, "composer", "monolog/monolog", { approved_by: "x" });
+		const before = JSON.stringify({ require: { "monolog/monolog": "^3.0" } }, null, 2);
+		return evaluateManifestEdit(
+			newContent({ filename: "composer.json", current: before, next: after }),
+		);
+	}
+
+	it("blocks repinning to a bare github: value with no key prefix", () => {
+		const r = repinComposer(
+			JSON.stringify({ require: { "monolog/monolog": "github:attacker/monolog" } }, null, 2),
+		);
+		expect(r?.decision).toBe("block");
+	});
+
+	it("blocks repinning to a bare https: value with no key prefix", () => {
+		const r = repinComposer(
+			JSON.stringify(
+				{ require: { "monolog/monolog": "https://mirror.evil/monolog.zip" } },
+				null,
+				2,
+			),
+		);
+		expect(r?.decision).toBe("block");
+	});
+
+	it("blocks repinning to a bare file: value with no key prefix", () => {
+		const r = repinComposer(
+			JSON.stringify({ require: { "monolog/monolog": "file:../evil" } }, null, 2),
+		);
+		expect(r?.decision).toBe("block");
+	});
+});
+
+describe("classifyManifestValue — registry=/repository=/source= inline-table redirects", () => {
+	// Security-gap regression: looksLikeNonRegistrySource() (the diff-detection
+	// layer) already recognizes repository=/registry=/source= and produces a
+	// delta, but classifyManifestValue() (the classification layer that decides
+	// WHICH allowlist rule applies) had no branch for them — a value shaped
+	// like `{ registry = "…" }` fell through to `{ kind: "registry", name }`.
+	// That's harmless when the name is unapproved (blocked either way, as the
+	// "TOML inline-table repins (Cargo)" describe above proves), but when the
+	// name IS already approved for the default registry, the redirect rode
+	// through silently as an ordinary version bump — the allowlist entry says
+	// nothing about the alternate host. These cases pre-approve the name so a
+	// regression back to the old fallthrough would flip block -> allow (null).
+	function repinCargoApproved(after: string) {
+		addToAllowlist(workspace, "cargo", "serde", { approved_by: "x" });
+		const before = `[dependencies]\nserde = "1"\n`;
+		return evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+	}
+
+	it("P1: blocks repinning an APPROVED cargo dep to a bare registry= alias", () => {
+		const r = repinCargoApproved(`[dependencies]\nserde = { registry = "my-registry" }\n`);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/serde/);
+		expect(r?.reason).toMatch(/never auto-allowed/);
+	});
+
+	it("P2: blocks repinning an APPROVED cargo dep to a repository= mirror URL", () => {
+		const r = repinCargoApproved(
+			`[dependencies]\nserde = { repository = "https://mirror.evil/index" }\n`,
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/serde/);
+		expect(r?.reason).toMatch(/never auto-allowed/);
+	});
+
+	it("P3: blocks repinning an APPROVED pyproject.toml poetry dep to a source= alias", () => {
+		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
+		const before = '[tool.poetry.dependencies]\nrequests = "^2.31"\n';
+		const after =
+			'[tool.poetry.dependencies]\nrequests = { version = "^2.31", source = "private-index" }\n';
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/requests/);
+		expect(r?.reason).toMatch(/never auto-allowed/);
+	});
+
+	it("P4: blocks repinning an APPROVED Gemfile dep to a source: private-server key", () => {
+		addToAllowlist(workspace, "rubygems", "foo", { approved_by: "x" });
+		const before = 'gem "foo", "~> 1.0"\n';
+		const after = 'gem "foo", source: "https://gems.example.com"\n';
+		const r = evaluateManifestEdit(
+			newContent({ filename: "Gemfile", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/foo/);
+		expect(r?.reason).toMatch(/never auto-allowed/);
+	});
+
+	it("N1: does not block an APPROVED cargo dep's plain version bump (no registry/repository/source key)", () => {
+		const r = repinCargoApproved(`[dependencies]\nserde = "1.2"\n`);
+		expect(r).toBeNull();
+	});
+
+	it("N2: does not block an APPROVED pyproject.toml dep's plain version bump", () => {
+		addToAllowlist(workspace, "pypi", "requests", { approved_by: "x" });
+		const before = '[tool.poetry.dependencies]\nrequests = "^2.31"\n';
+		const after = '[tool.poetry.dependencies]\nrequests = "^2.32"\n';
+		const r = evaluateManifestEdit(
+			newContent({ filename: "pyproject.toml", current: before, next: after }),
+		);
+		expect(r).toBeNull();
+	});
+
+	it("N3: does not mis-fire on a value containing 'source' as a substring, not a key (word-boundary check)", () => {
+		// "opensource" has no word boundary before its embedded "source" — the
+		// \bsource\s*[:=] regex must not match inside it. Uses a brand-NEW dep
+		// (not a repin) so classifyManifestValue is always reached regardless
+		// of the diff layer's own gating, isolating the classifier's own
+		// word-boundary behavior. If the regex over-matched, the reason would
+		// say "never auto-allowed" instead of the plain unapproved-name reason.
+		const before = `[dependencies]\nserde = "1"\n`;
+		const after = `[dependencies]\nserde = "1"\nfoo = { version = "1", note = "opensource" }\n`;
+		const r = evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/foo/);
+		expect(r?.reason).not.toMatch(/never auto-allowed/);
+		expect(r?.reason).toMatch(/not in the cargo allowlist/);
+	});
+});
+
+describe("evaluateManifestEdit — recordOf null/non-object field safety", () => {
+	it("does not let a null 'dependencies' field swallow detection of a new devDependencies entry", () => {
+		// If `v && typeof v === "object"` ever degrades to `v || typeof v ===
+		// "object"`, a literal JSON null passes (typeof null === "object" is
+		// the classic JS quirk) and recordOf returns null instead of {},
+		// which throws inside Object.entries() and gets swallowed by
+		// evaluateManifestEdit's outer try/catch — masking a real new dep in
+		// a LATER field of the same edit.
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: null, devDependencies: {} }, null, 2),
+				next: JSON.stringify(
+					{ dependencies: null, devDependencies: { evil: "1.0.0" } },
+					null,
+					2,
+				),
+			}),
+		);
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/evil/);
+	});
+
+	it("ignores a non-object 'dependencies' field (string) rather than iterating its characters", () => {
+		const r = evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: {} }, null, 2),
+				next: JSON.stringify({ dependencies: "not-an-object" }, null, 2),
+			}),
+		);
+		expect(r).toBeNull();
+	});
+});
+
+describe("extractPyprojectDeps (direct)", () => {
+	it("does not parse pre-header content as a dependency (inDepsBlock starts false)", () => {
+		const content = 'foo = "should-not-count"\n[tool.poetry.dependencies]\nrequests = "^2.31"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("foo")).toBe(false);
+		expect(deps.get("requests")).toBe('"^2.31"');
+	});
+
+	it("does not capture dependency-shaped lines before any recognized header (!inDepsBlock guard pin)", () => {
+		const content = 'stray = "1.0"\n[some.other.section]\nreal = "2.0"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("stray")).toBe(false);
+		expect(deps.has("real")).toBe(false);
+	});
+
+	it("recognizes a tool.poetry.group.<name>.dependencies header (group-name char-class pin)", () => {
+		const content = '[tool.poetry.group.dev.dependencies]\npytest = "^7.4"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("pytest")).toBe('"^7.4"');
+	});
+
+	it("recognizes a project.optional-dependencies.<name> header (suffix char-class pin)", () => {
+		const content = '[project.optional-dependencies.test]\nrich = ">=13"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("rich")).toBe('">=13"');
+	});
+
+	it("trims leading whitespace from an indented dependency line (raw.trim() pin)", () => {
+		const content = '[tool.poetry.dependencies]\n  indented = "1.0"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("indented")).toBe('"1.0"');
+	});
+
+	it("does not treat a line merely ending in '#' as a comment line (endsWith vs startsWith pin)", () => {
+		const content = "[tool.poetry.dependencies]\nfoo = 1#\n";
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("foo")).toBe("1");
+	});
+
+	it("does not capture a dependency name from mid-line with a leading invalid character (anchor pin)", () => {
+		const content = '[tool.poetry.dependencies]\n!foo = "1.0"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("foo")).toBe(false);
+	});
+
+	it("parses a dependency line with no space before '=' (whitespace-quantifier pin: before =)", () => {
+		const content = '[tool.poetry.dependencies]\nfoo="1.0"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("foo")).toBe('"1.0"');
+	});
+
+	it("parses a dependency line with no space after '=' (whitespace-quantifier pin: after =)", () => {
+		const content = '[tool.poetry.dependencies]\nfoo ="1.0"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("foo")).toBe('"1.0"');
+	});
+
+	it("captures the dependency value without absorbing the leading space after '=' (whitespace-class pin)", () => {
+		const content = '[tool.poetry.dependencies]\nrequests = "^2.31"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("requests")).toBe('"^2.31"');
+	});
+
+	it("cleanly strips a trailing inline comment regardless of comment-marker spacing (comment-group regex pin)", () => {
+		const content = '[tool.poetry.dependencies]\nfoo = "1.0"   # keep pinned for CVE-2024-1234\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("foo")).toBe('"1.0"');
+	});
+
+	it("excludes the 'python' version-pin key from captured dependencies (python-filter pin)", () => {
+		const content = '[tool.poetry.dependencies]\npython = "^3.11"\nrequests = "^2.31"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("python")).toBe(false);
+		expect(deps.get("requests")).toBe('"^2.31"');
+	});
+
+	it("finds the PEP 508 dependencies array even with leading indentation (array-header whitespace pin)", () => {
+		const content = '  dependencies = [\n  "requests==2.31.0",\n]\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("requests")).toBe("requests==2.31.0");
+	});
+
+	it("finds the dependencies array with no space before '=' (array-header pin: before =)", () => {
+		const content = 'dependencies=[\n  "requests==2.31.0",\n]\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("requests")).toBe("requests==2.31.0");
+	});
+
+	it("finds the dependencies array with no space after '=' (array-header pin: after =)", () => {
+		const content = 'dependencies =[\n  "requests==2.31.0",\n]\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.get("requests")).toBe("requests==2.31.0");
+	});
+
+	it("adds no array-form dependency when the dependencies array is empty ('|| []' fallback pin)", () => {
+		const content = "dependencies = []\n";
+		const deps = extractPyprojectDeps(content);
+		expect(deps.size).toBe(0);
+	});
+
+	it("ignores an unnamed dependencies-array item rather than throwing (nm-guard pin)", () => {
+		const content = 'dependencies = [\n  "===not-a-name",\n  "requests==2.31.0",\n]\n';
+		expect(() => extractPyprojectDeps(content)).not.toThrow();
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("===not-a-name")).toBe(false);
+		expect(deps.get("requests")).toBe("requests==2.31.0");
+	});
+});
+
+describe("extractCargoDeps (direct)", () => {
+	it("does not capture dependency-shaped lines before any [dependencies] header (inBlock init + guard pin)", () => {
+		const content = 'stray = "1.0"\n[dependencies]\nserde = "1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.has("stray")).toBe(false);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+
+	it("recognizes a target.<triple>.dependencies header (target-name char-class pin)", () => {
+		const content = "[target.x86_64-unknown-linux-gnu.dependencies]\nlibc = \"0.2\"\n";
+		const deps = extractCargoDeps(content);
+		expect(deps.get("libc")).toBe('"0.2"');
+	});
+
+	it("trims leading whitespace from an indented dependency line (raw.trim() pin)", () => {
+		const content = '[dependencies]\n  indented = "1.0"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.get("indented")).toBe('"1.0"');
+	});
+
+	it("does not capture a dependency-shaped line outside any recognized section (!inBlock guard pin)", () => {
+		const content = '[package]\nname = "should-not-count"\n[dependencies]\nserde = "1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.has("name")).toBe(false);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+
+	it("does not capture a dependency name from mid-line with a leading invalid character (anchor pin)", () => {
+		const content = '[dependencies]\n!serde = "1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.has("serde")).toBe(false);
+	});
+
+	it("parses a dependency line with no space before '=' (whitespace-quantifier pin: before =)", () => {
+		const content = '[dependencies]\nserde="1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+
+	it("captures the value without a leading space after '=' (whitespace-class pin: after =)", () => {
+		const content = '[dependencies]\nserde = "1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+
+	it("cleanly strips a trailing inline comment regardless of comment-marker spacing (comment-group regex pin)", () => {
+		const content = '[dependencies]\nserde = "1"   # pinned for CVE-2024-0000\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+});
+
+describe("extractGemfileDeps (direct)", () => {
+	it("does not match 'gem' occurring after other text on the same line (anchor pin)", () => {
+		const content = 'xgem "foo"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.has("foo")).toBe(false);
+	});
+
+	it("requires the gem declaration to end the line — no trailing non-comma content (trailing-$ pin)", () => {
+		const content = 'gem "foo" something-else\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.has("foo")).toBe(false);
+	});
+
+	it("captures an indented 'gem' declaration (leading-whitespace class pin)", () => {
+		const content = '  gem "foo"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe("");
+	});
+
+	it("captures a 'gem' declaration with multiple spaces before the name (quantifier pin: after gem)", () => {
+		const content = 'gem  "foo"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe("");
+	});
+
+	it("captures a version constraint with a space before the comma (quantifier pin: before comma)", () => {
+		const content = 'gem "foo" , "~> 1.0"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe('"~> 1.0"');
+	});
+
+	it("captures a version constraint with exactly one space after the comma cleanly (non-whitespace-class pin)", () => {
+		const content = 'gem "foo", "~> 1.0"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe('"~> 1.0"');
+	});
+
+	it("captures a version constraint with two spaces after the comma cleanly (quantifier pin: after comma)", () => {
+		const content = 'gem "foo",  "~> 1.0"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe('"~> 1.0"');
+	});
+
+	it("defaults to an empty string value when a gem has no version constraint (default-fallback pin)", () => {
+		const content = 'gem "foo"\n';
+		const deps = extractGemfileDeps(content);
+		expect(deps.get("foo")).toBe("");
+	});
+});
+
+describe("extractGoModDeps (direct, additional)", () => {
+	it("does not open a require block when 'require (' appears mid-line (startsWith vs endsWith pin)", () => {
+		const goMod = "foo require (\n\tgithub.com/x/y v1.0.0\n)";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.size).toBe(0);
+	});
+
+	it("closes the require block on a bare ')' line so later content isn't misparsed as still-in-block", () => {
+		const goMod = "require (\n\tgithub.com/x/y v1.0.0\n)\ngo 1.22 extra-token\n";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.get("github.com/x/y")).toBe("v1.0.0");
+		expect(deps.has("go")).toBe(false);
+	});
+
+	it("parses an inBlock require line with multiple spaces/tabs between module and version (gofmt alignment)", () => {
+		const goMod = "require (\n\tgithub.com/x/y     v1.0.0\n)";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.get("github.com/x/y")).toBe("v1.0.0");
+	});
+
+	it("does not treat 'require' occurring mid-line as a single-line require directive (anchor pin)", () => {
+		const goMod = "xrequire github.com/x/y v1.0.0\n";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.size).toBe(0);
+	});
+
+	it("parses a single-line require with multiple spaces after 'require' (quantifier pin: after require)", () => {
+		const goMod = "require  github.com/x/y v1.0.0\n";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.get("github.com/x/y")).toBe("v1.0.0");
+	});
+
+	it("parses a single-line require with multiple spaces before the version (quantifier pin: before version)", () => {
+		const goMod = "require github.com/x/y    v1.0.0\n";
+		const deps = extractGoModDeps(goMod);
+		expect(deps.get("github.com/x/y")).toBe("v1.0.0");
+	});
+});
+
+describe("parsePipRequirementLine (direct)", () => {
+	it("trims whitespace left after stripping an inline comment (trim-after-strip pin)", () => {
+		const parsed = parsePipRequirementLine("  requests==2.31.0  # comment");
+		expect(parsed).toEqual({ name: "requests", value: "requests==2.31.0" });
+	});
+
+	it("does not strip a comment across an embedded newline (trailing-$ pin)", () => {
+		const parsed = parsePipRequirementLine("foo # comment\nrest-of-line");
+		expect(parsed?.value).toBe("foo # comment\nrest-of-line");
+	});
+
+	it("removes an inline comment entirely rather than replacing it with placeholder text (replacement-text pin)", () => {
+		const parsed = parsePipRequirementLine("requests==2.31.0 # pinned for CVE");
+		expect(parsed?.value).toBe("requests==2.31.0");
+	});
+
+	it("strips a multi-character inline comment fully, not just one char after '#' (comment-regex greedy pin)", () => {
+		const parsed = parsePipRequirementLine("requests==2.31.0 # keep");
+		expect(parsed?.value).toBe("requests==2.31.0");
+	});
+
+	it("uses the full URL-spec string as both name and value for a git+ line (URL-spec fast-path pin)", () => {
+		const parsed = parsePipRequirementLine("git+https://example.com/pkg.git");
+		expect(parsed).toEqual({
+			name: "git+https://example.com/pkg.git",
+			value: "git+https://example.com/pkg.git",
+		});
+	});
+
+	it("treats a '-e <path>' editable install as a name/value pair, not a pip flag (OR-vs-AND, startsWith pin)", () => {
+		const parsed = parsePipRequirementLine("-e ./local-pkg");
+		expect(parsed).toEqual({ name: "./local-pkg", value: "./local-pkg" });
+	});
+
+	it("only strips a leading '-e ' prefix, not one occurring mid-string (anchor pin: -e strip)", () => {
+		const parsed = parsePipRequirementLine("git+https://x.com/pkg -e trick.git");
+		expect(parsed?.value).toBe("git+https://x.com/pkg -e trick.git");
+	});
+
+	it("strips all whitespace after '-e ', not just one space (quantifier pin: -e strip)", () => {
+		const parsed = parsePipRequirementLine("-e   ./local-pkg");
+		expect(parsed).toEqual({ name: "./local-pkg", value: "./local-pkg" });
+	});
+
+	it("returns null (not a throw) when the trimmed line doesn't start with a valid name character (final regex-guard pin)", () => {
+		expect(() => parsePipRequirementLine("===not-a-name===")).not.toThrow();
+		expect(parsePipRequirementLine("===not-a-name===")).toBeNull();
 	});
 });

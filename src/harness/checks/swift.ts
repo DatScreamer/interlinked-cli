@@ -204,6 +204,16 @@ export function checkSwiftUnhandledTaskError(content: string, filePath: string):
 	return matches;
 }
 
+// Zero-or-more modifiers (access levels, `static`/`final`, and Swift 6's
+// `nonisolated` / `nonisolated(unsafe)`) that may precede a file-scope
+// `var`/`let`. Kept as one shared fragment so the declaration match and the
+// let-skip stay in lockstep — a bare `var` (no modifier at all) still
+// matches because the group is repeated zero-or-more times.
+const SWIFT_DECL_MODIFIER =
+	"(?:public|internal|fileprivate|private|open|package|static|final|nonisolated(?:\\([^)]*\\))?)\\s+";
+const SWIFT_FILE_SCOPE_VAR_RE = new RegExp(`^\\s*(?:${SWIFT_DECL_MODIFIER})*var\\s+\\w`);
+const SWIFT_FILE_SCOPE_LET_RE = new RegExp(`^\\s*(?:${SWIFT_DECL_MODIFIER})*let\\s`);
+
 /**
  * Detect global mutable variables without actor isolation in Swift.
  * Swift 6: Global `var` must be isolated to a global actor or be Sendable.
@@ -231,14 +241,13 @@ export function checkSwiftGlobalVarNoIsolation(content: string, filePath: string
 		// Only check file-scope (depth 0) var declarations
 		if (braceDepth !== 0) continue;
 
-		// Match: var identifier (at file scope)
-		if (!/^\s*(?:public\s+|internal\s+|fileprivate\s+|private\s+)?var\s+\w/.test(line))
-			continue;
+		// Match: var identifier (at file scope), with zero or more modifiers
+		if (!SWIFT_FILE_SCOPE_VAR_RE.test(line)) continue;
 		// Skip if it has @MainActor or other actor isolation
 		if (/@\w*Actor\b/.test(line) || /@\w*Actor\b/.test(nonNull(strippedLines[Math.max(0, i - 1)])))
 			continue;
 		// Skip let (immutable is fine)
-		if (/^\s*(?:public\s+|internal\s+|fileprivate\s+|private\s+)?let\s/.test(line)) continue;
+		if (SWIFT_FILE_SCOPE_LET_RE.test(line)) continue;
 
 		matches.push({
 			line: i + 1,

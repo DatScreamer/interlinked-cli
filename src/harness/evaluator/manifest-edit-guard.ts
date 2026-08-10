@@ -457,5 +457,18 @@ function classifyManifestValue(_eco: Ecosystem, name: string, value: string): Pa
 	if (pathInline) return { kind: "file_url", path: nonNull(pathInline[1]) };
 	const urlInline = value.match(/\burl\s*[:=]\s*['"]?(https?:\/\/[^'"\s,}]+)/);
 	if (urlInline) return { kind: "tarball_url", url: nonNull(urlInline[1]) };
+	// registry=/repository=/source= inline-table keys (Cargo `{ registry = "…" }`,
+	// Ruby `gem "x", source: "…"`, Poetry `{ source = "…" }`): these redirect the
+	// resolver to a NON-default source without changing the package name, so an
+	// already-approved name (approved against the ecosystem's default registry)
+	// would otherwise silently ride through as a plain `registry` spec — the
+	// allowlist entry says nothing about the alternate host. Treat the same as
+	// git_url (never auto-allowed, regardless of whether the name is approved).
+	const repositoryInline = value.match(/\brepository\s*[:=]\s*['"]?([^'"\s,}]+)/);
+	if (repositoryInline) return { kind: "git_url", url: nonNull(repositoryInline[1]) };
+	const registryInline = value.match(/\bregistry\s*[:=]\s*['"]?([^'"\s,}]+)/);
+	if (registryInline) return { kind: "git_url", url: nonNull(registryInline[1]) };
+	const sourceInline = value.match(/\bsource\s*[:=]\s*['"]?([^'"\s,}]+)/);
+	if (sourceInline) return { kind: "git_url", url: nonNull(sourceInline[1]) };
 	return { kind: "registry", name };
 }

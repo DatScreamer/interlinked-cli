@@ -7,7 +7,6 @@ import {
 	type InlineMatch,
 	isTestFile,
 	JS_TS_ALL_EXTS,
-	scanLinesStripped,
 	stripCommentsAndStrings,
 } from "./shared.js";
 
@@ -48,7 +47,33 @@ export function checkSnapshotOveruse(content: string, filePath: string): InlineM
 	];
 }
 
-/** Detect test files importing from other test files — extract to shared helpers. */
+/** Matches an `import(...)`, side-effect `import "..."`, or `require(...)`
+ *  call whose path literal contains `.test.` or `.spec.`. Structural gap
+ *  (unchanged from the original detector): does NOT match ES named/default
+ *  import syntax (`import { x } from "./x.test.ts"`) because "import" is not
+ *  immediately followed by the quote there — only the forms above are
+ *  matched. */
+const TEST_IMPORT_PATH_RE = /(?:import|require)\s*\(?['"]\S*\.(?:test|spec)\./;
+
+/** A bare `import`/`require` keyword, used against the STRIPPED line to
+ *  decide whether a line is live code at all. */
+const IMPORT_KEYWORD_RE = /\b(?:import|require)\b/;
+
+/**
+ * Detect test files importing from other test files — extract to shared helpers.
+ *
+ * `stripCommentsAndStrings` blanks the CONTENTS of every string literal (so
+ * `"./x.test.ts"` becomes `""`), which erases the `.test.`/`.spec.` token the
+ * path regex needs — matching {@link TEST_IMPORT_PATH_RE} against the
+ * stripped line can therefore never fire on well-formed code. Instead: check
+ * the STRIPPED line only for the presence of the `import`/`require` keyword
+ * (comment-stripping blanks whole commented-out lines, so a commented-out
+ * import's keyword is gone from the stripped line and never passes this
+ * gate — same for a keyword that appears only inside a string literal, since
+ * that literal's entire contents are blanked too), then match the actual
+ * `.test.`/`.spec.` path against the ORIGINAL line, which is the only place
+ * the path substring survives.
+ */
 export function checkTestImportingTest(content: string, filePath: string): InlineMatch[] {
 	if (!isTestFile(filePath)) return [];
 	const ext = getExtension(filePath);
@@ -57,12 +82,20 @@ export function checkTestImportingTest(content: string, filePath: string): Inlin
 	const stripped = stripCommentsAndStrings(content);
 	const originalLines = content.split("\n");
 	const strippedLines = stripped.split("\n");
-	return scanLinesStripped(
-		originalLines,
-		strippedLines,
-		/(?:import|require)\s*\(?['"]\S*\.(?:test|spec)\./,
-		10,
-	);
+
+	const matches: InlineMatch[] = [];
+	const MAX_MATCHES = 10;
+	for (let i = 0; i < originalLines.length; i++) {
+		if (matches.length >= MAX_MATCHES) break;
+		const strippedLine = strippedLines[i];
+		const originalLine = originalLines[i];
+		if (strippedLine === undefined || originalLine === undefined) continue;
+		if (!IMPORT_KEYWORD_RE.test(strippedLine)) continue;
+		if (TEST_IMPORT_PATH_RE.test(originalLine)) {
+			matches.push({ line: i + 1, text: originalLine.trim().slice(0, 150) });
+		}
+	}
+	return matches;
 }
 
 /**

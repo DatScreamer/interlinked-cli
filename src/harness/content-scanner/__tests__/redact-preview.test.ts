@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../../lib/non-null.js";
 import {
 	buildAskReason,
@@ -567,6 +567,56 @@ describe("writePendingPrompt — filesystem failure paths", () => {
 		const { request, findingsBySource } = simpleRequest();
 		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
 		expect(result).toBeDefined();
+	});
+
+	it("stringifies a non-Error thrown value from mkdirSync (formatErr's non-Error branch)", async () => {
+		// mkdirSync normally throws a real Error, but formatErr's ternary has a
+		// String(e) fallback for a non-Error throw. node:fs's real exports are
+		// non-configurable under ESM (vi.spyOn can't redefine them directly), so
+		// mock the module for a scoped re-import of just this test instead.
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				mkdirSync: () => {
+					// biome-ignore lint/style/useThrowOnlyError: deliberately non-Error to hit formatErr's String(e) branch
+					throw "boom-not-an-error";
+				},
+			};
+		});
+		const { writePendingPrompt: freshWritePendingPrompt } = await import("../redact-preview.js");
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const { request, findingsBySource } = simpleRequest();
+		try {
+			const result = freshWritePendingPrompt({
+				cwd: tmp,
+				request,
+				findingsBySource,
+				toolName: "Write",
+			});
+			expect(result).toBeUndefined();
+			const written = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+			expect(written).toContain("boom-not-an-error");
+		} finally {
+			stderrSpy.mockRestore();
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
+	it("still returns the path when pruneStale's readdirSync fails (GC is best-effort, never fatal)", () => {
+		// write+execute (no read) lets writeFileSync create a new entry in the
+		// dir but denies readdirSync — this is pruneStale's "directory doesn't
+		// exist / can't be read" branch (the readErr catch), reached without
+		// the directory being literally absent.
+		const dir = join(tmp, ".interlinked", "scanner", "pending");
+		mkdirSync(dir, { recursive: true });
+		chmodSync(dir, 0o300);
+		const { request, findingsBySource } = simpleRequest();
+		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+		expect(result).toBeDefined();
+		expect(result?.startsWith(".interlinked/scanner/pending/")).toBe(true);
 	});
 });
 

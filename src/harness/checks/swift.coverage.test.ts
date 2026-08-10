@@ -345,6 +345,21 @@ describe("checkSwiftFileIdOverFilePath (supplementary branches)", () => {
 		expect(checkSwiftFileIdOverFilePath(code, "Log.swift")).toEqual([]);
 	});
 
+	it("N1: does not flag an identifier that merely starts with the #file text (word-boundary check fails before Path/ID/Literal can even be checked)", () => {
+		// `#file(?:Path)?\b` requires a word→non-word transition right after
+		// "#file" (or "#filePath"); here "#file" runs straight into more
+		// identifier characters ("Identifier"), so \b never holds and the
+		// pattern cannot match at all — distinct from the #fileID/#fileLiteral
+		// exemptions, which rely on the trailing negative lookahead instead.
+		const code = "let tag = #fileIdentifier";
+		expect(checkSwiftFileIdOverFilePath(code, "Log.swift")).toEqual([]);
+	});
+
+	it("N2: does not flag ordinary code that mentions 'file' without the '#' sigil", () => {
+		const code = "let path = fileURL.path";
+		expect(checkSwiftFileIdOverFilePath(code, "Log.swift")).toEqual([]);
+	});
+
 	it("caps results at 10 even with more occurrences", () => {
 		const code = Array.from({ length: 13 }, () => "log(at: #file)").join("\n");
 		expect(checkSwiftFileIdOverFilePath(code, "Log.swift").length).toBe(10);
@@ -355,6 +370,17 @@ describe("checkSwiftFileIdOverFilePath (supplementary branches)", () => {
 // checkSwiftAbbreviations — extra branches not in swift.test.ts
 // ===========================================
 describe("checkSwiftAbbreviations (supplementary branches)", () => {
+	it("N1: does not flag an abbreviated name passed as an unlabeled call argument", () => {
+		// The declaration pattern requires `var|let|func` immediately before
+		// the abbreviation, and the labeled-parameter pattern requires a
+		// colon right after it inside parens. A bare call argument like
+		// `setup(cfgValue)` — no declaration keyword, no colon — satisfies
+		// neither, unlike `setup(cfg: value)` (a labeled call/param, which
+		// the detector cannot distinguish from a declaration and DOES flag).
+		const code = "setup(cfgValue)";
+		expect(checkSwiftAbbreviations(code, "Foo.swift")).toEqual([]);
+	});
+
 	it("caps results at 10 even with more occurrences", () => {
 		const code = Array.from({ length: 12 }, (_, i) => `var btn${i}: UIButton`).join("\n");
 		expect(checkSwiftAbbreviations(code, "View.swift").length).toBe(10);
@@ -385,6 +411,53 @@ describe("checkSwiftGlobalVarNoIsolation (supplementary branches)", () => {
 		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([]);
 	});
 
+	it("P1: flags a Swift 6 `nonisolated(unsafe)` file-scope var", () => {
+		// The declaration regex's modifier fragment now recognizes
+		// `nonisolated`/`nonisolated(unsafe)` alongside the access modifiers,
+		// so a real Swift 6 global written this way is no longer silently
+		// skipped.
+		const code = "nonisolated(unsafe) var counter = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([
+			{ line: 1, text: "nonisolated(unsafe) var counter = 0" },
+		]);
+	});
+
+	it("P2: flags a bare `nonisolated` (no parens) file-scope var", () => {
+		const code = "nonisolated var counter = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([
+			{ line: 1, text: "nonisolated var counter = 0" },
+		]);
+	});
+
+	it("P3: flags an `open` file-scope var", () => {
+		const code = "open var counter = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([
+			{ line: 1, text: "open var counter = 0" },
+		]);
+	});
+
+	it("P4: flags a `package` file-scope var", () => {
+		const code = "package var counter = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([
+			{ line: 1, text: "package var counter = 0" },
+		]);
+	});
+
+	it("P5: flags a stacked-modifier `public nonisolated(unsafe)` file-scope var", () => {
+		const code = "public nonisolated(unsafe) var counter = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([
+			{ line: 1, text: "public nonisolated(unsafe) var counter = 0" },
+		]);
+	});
+
+	it("N2: still does not flag `nonisolated(unsafe) let` (immutable) at file scope", () => {
+		// The `nonisolated(unsafe)` modifier fragment is shared between the
+		// var-match and the let-skip, so an immutable global carrying the
+		// same modifier is correctly exempted, not newly over-flagged.
+		const code = "nonisolated(unsafe) let constant = 0";
+		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift")).toEqual([]);
+	});
+
 	it("caps results at 10 even with more file-scope vars", () => {
 		const code = Array.from({ length: 12 }, (_, i) => `var global${i} = ${i}`).join("\n");
 		expect(checkSwiftGlobalVarNoIsolation(code, "State.swift").length).toBe(10);
@@ -395,6 +468,17 @@ describe("checkSwiftGlobalVarNoIsolation (supplementary branches)", () => {
 // checkSwiftUnhandledTaskError — branches not in swift.test.ts
 // ===========================================
 describe("checkSwiftUnhandledTaskError (supplementary branches)", () => {
+	it("N1: does not flag a try that appears beyond the 30-line task-body scan bound", () => {
+		// `taskBodyHasUnhandledTry` bounds its scan to
+		// `Math.min(startIndex + 30, strippedLines.length)`. The task body
+		// never closes within that window (depth stays 1 the whole time), so
+		// the loop runs the full 30 lines and simply never reaches the `try`
+		// sitting at line index 30 — hasTry stays false and nothing fires.
+		const filler = Array.from({ length: 29 }, (_, i) => `  doStep${i}()`).join("\n");
+		const code = ["Task {", filler, "  try await doWork()", "}"].join("\n");
+		expect(checkSwiftUnhandledTaskError(code, "Worker.swift")).toEqual([]);
+	});
+
 	it("flags Task.detached { try ... } without do/catch", () => {
 		const code = ["Task.detached {", "  try await doWork()", "}"].join("\n");
 		expect(checkSwiftUnhandledTaskError(code, "Worker.swift").length).toBe(1);
@@ -418,6 +502,23 @@ describe("checkSwiftUnhandledTaskError (supplementary branches)", () => {
 // checkSwiftSelfInEscapingClosure — cap branch not in swift.test.ts
 // ===========================================
 describe("checkSwiftSelfInEscapingClosure (supplementary branches)", () => {
+	it("N1: does not flag a self reference beyond the 20-line closure scan window", () => {
+		// The inner forward scan is bounded to
+		// `Math.min(i + 20, strippedLines.length)` from the `@escaping` line,
+		// so a `self.` reference placed at line index 21+ (20 filler lines
+		// after the declaration line) falls outside the window and is never
+		// seen — the detector reports nothing even though a real
+		// (unguarded) self-capture is present in the closure body.
+		const filler = Array.from({ length: 20 }, (_, i) => `    doStep${i}()`);
+		const code = [
+			"func register(handler: @escaping () -> Void) {",
+			...filler,
+			"    self.value = 42",
+			"}",
+		].join("\n");
+		expect(checkSwiftSelfInEscapingClosure(code, "Foo.swift")).toEqual([]);
+	});
+
 	it("caps results at 10 even with many offending escaping closures", () => {
 		// Each pair is an `@escaping` line followed by a `self.` line, so the
 		// inner scan records one match per pair; with 12 pairs the outer

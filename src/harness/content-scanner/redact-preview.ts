@@ -230,12 +230,6 @@ function escapeRowValue(text: string): string {
 	return v;
 }
 
-function formatOffsetRow(f: ScanFinding): string {
-	const len = f.end - f.start;
-	const placeholder = `<${f.label.toUpperCase()}>`;
-	return `${f.source}  [${f.start}..${f.end}]  length ${len}  → ${placeholder}`;
-}
-
 // ===========================================
 // Internals
 // ===========================================

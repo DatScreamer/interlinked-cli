@@ -42,19 +42,24 @@ import { isJsTsFile, isPyFile } from "./_shared.js";
  * terminators, end-of-line comments, and division-looking content inside
  * string literals do not contribute matches.
  *
- * Guard-based suppression is SAME-LINE ONLY — there is deliberately no
- * multi-line lookback or dominating-guard analysis. A brace-walk /
- * indentation-dominance scan over preceding lines was considered and
- * rejected: it would risk false-suppressing a real division-by-zero, the
- * FN failure mode `lineHasZeroGuard`'s contract below flags as the one
- * that defeats the check (missing an FP is fine; hiding a real bug is
- * not). A match is dropped only when its OWN line also carries a
- * zero-guard in one of the shapes `lineHasZeroGuard` recognizes: the
- * Python ternary (`a / n if n > 0 else 0`), the parenthesized
- * `if (n != 0)`, the JS/Go conditional (`n > 0 ? a / n : 0`), or the
- * `n && a / n` short-circuit. A guard on a PRECEDING line — an early-exit
- * `if (n === 0) return;`, an enclosing `if (n !== 0) { … }`, or an
- * upstream `n = n || 1` — does NOT suppress; those divisions still fire.
+ * Guard-based suppression checks the match's OWN line plus a bounded
+ * window of `GUARD_LOOKBACK_LINES` preceding non-blank lines (deliberately
+ * NOT a brace-walk / indentation-dominance scan — that was considered and
+ * rejected as risking false-suppression of a real division-by-zero
+ * elsewhere in the same function; a small fixed window keyed to the
+ * specific divisor identifier is a much narrower, more auditable target).
+ * A match is dropped when its own line carries a zero-guard in one of the
+ * shapes `lineHasZeroGuard` recognizes — the Python ternary
+ * (`a / n if n > 0 else 0`), the parenthesized `if (n != 0)`, the JS/Go
+ * conditional (`n > 0 ? a / n : 0`), or the `n && a / n` short-circuit —
+ * OR when a preceding line within the window carries a guard on the SAME
+ * divisor identifier in one of the shapes `precedingLineHasZeroGuard`
+ * recognizes: an early-exit `if (n === 0) return;` / `if n == 0: return`,
+ * an enclosing `if (n !== 0) {` / `if n > 0:` conditional open, a falsy
+ * guard `if (!n) return;` / `if not n: return`, or a fallback default
+ * `n = n || 1` / `n = n or 1` / `n ||= 1`. Confirmed over-firer
+ * (2026-08): `if (n === 0) return; x = total / n;` split across two
+ * lines used to still flag `total / n` — it no longer does.
  *
  * Python path joins (`base / "sub"`, where `/` is
  * `pathlib.Path.__truediv__` rather than division) get two dedicated
@@ -106,6 +111,15 @@ export function checkDivisionByVariable(content: string, filePath: string): Inli
 		// it appears as `count > 0 ? a / b : 0` or `count !== 0 && a / b`.
 		if (lineHasZeroGuard(line)) continue;
 
+		// Known-FP fix (2026-08): skip when a bounded window of preceding
+		// non-blank lines carries an explicit zero/emptiness guard on the
+		// SAME divisor identifier — `if (n === 0) return; ... total / n`
+		// split across lines used to still fire. Checked against every
+		// divisor identifier on this line (matchAll, not just the first).
+		if (divisorsOnLine(line).some((divisor) => precedingLinesHaveZeroGuard(strippedLines, i, divisor))) {
+			continue;
+		}
+
 		// 139-repo audit: Python `Path / "subdir"` shape — re-run the
 		// regex globally to inspect the operands and skip any match
 		// whose LHS is annotated/assigned as a Path (or whose
@@ -154,6 +168,79 @@ function lineHasZeroGuard(line: string): boolean {
 	if (/\b[A-Za-z_$][\w$]*\s*(?:>\s*0|!==?\s*0)\s*\?[^?]*\//.test(line)) return true;
 	// `<id> && a / <id>` short-circuit.
 	if (/\b[A-Za-z_$][\w$]*\s*&&\s*[A-Za-z_$][\w$]*\s+\/\s+[A-Za-z_$]/.test(line)) return true;
+	return false;
+}
+
+/** How many preceding non-blank lines `precedingLinesHaveZeroGuard` scans. */
+const GUARD_LOOKBACK_LINES = 5;
+
+/**
+ * Return every RHS (divisor) identifier captured by the division regex on
+ * one line. Used to key the preceding-line guard scan to the ACTUAL
+ * divisor rather than any identifier that happens to appear nearby.
+ */
+function divisorsOnLine(line: string): string[] {
+	const re = /(?:^|[^\w$])[a-zA-Z_$]\w*\s+\/\s+([a-zA-Z_$]\w*)/g;
+	const divisors: string[] = [];
+	for (const m of line.matchAll(re)) divisors.push(nonNull(m[1]));
+	return divisors;
+}
+
+/**
+ * Escape a divisor identifier for interpolation into a `RegExp` source
+ * string. Identifiers are already constrained to `[A-Za-z_$][\w$]*` by the
+ * capturing regex, but escape defensively rather than assume that holds.
+ */
+function escapeForRegex(id: string): string {
+	return id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Known-FP fix (2026-08, confirmed over-firer): scan a bounded window of
+ * `GUARD_LOOKBACK_LINES` preceding NON-BLANK lines for an explicit
+ * zero/emptiness guard on `divisor` — the same identifier the flagged
+ * division actually divides by. Deliberately narrow and line-based (no
+ * brace-walk / indentation-dominance analysis, per the module doc) so it
+ * stays deterministic and auditable; a guard elsewhere in the function
+ * that doesn't match one of these shapes still leaves the division
+ * flagged, which is the safe direction for an advisory check.
+ *
+ * Recognized shapes, all keyed to `divisor`:
+ *  - early-exit: `if (divisor === 0) return;` / `if (divisor == 0) continue`
+ *  - Python early-exit: `if divisor == 0: return`
+ *  - enclosing guard open: `if (divisor !== 0) {` / `if (divisor > 0) {`
+ *  - Python enclosing guard: `if divisor > 0:` / `if divisor != 0:`
+ *  - falsy guard: `if (!divisor) return;` / `if not divisor: return`
+ *  - fallback default: `divisor = divisor || 1` / `divisor ||= 1` /
+ *    `divisor = divisor or 1`
+ */
+function precedingLinesHaveZeroGuard(lines: string[], matchLineIdx: number, divisor: string): boolean {
+	const id = escapeForRegex(divisor);
+	const earlyExit = new RegExp(`\\bif\\s*\\(?\\s*${id}\\s*===?\\s*0\\s*\\)?\\s*:?\\s*(?:return|continue)\\b`);
+	const enclosingOpen = new RegExp(
+		`\\bif\\s*\\(\\s*${id}\\s*(?:!==?\\s*0|>\\s*0)\\s*\\)\\s*\\{`,
+	);
+	const enclosingPy = new RegExp(`\\bif\\s+${id}\\s*(?:!=\\s*0|>\\s*0)\\s*:\\s*$`);
+	const falsyGuard = new RegExp(`\\bif\\s*\\(?\\s*(?:!|not\\s+)${id}\\s*\\)?\\s*:?\\s*(?:return|continue)\\b`);
+	const fallbackDefault = new RegExp(
+		`\\b${id}\\s*(?:=\\s*${id}\\s*(?:\\|\\||or)|\\|\\|=)\\s*[\\w."'-]`,
+	);
+
+	let scanned = 0;
+	for (let i = matchLineIdx - 1; i >= 0 && scanned < GUARD_LOOKBACK_LINES; i--) {
+		const candidate = nonNull(lines[i]).trim();
+		if (candidate === "") continue;
+		scanned++;
+		if (
+			earlyExit.test(candidate) ||
+			enclosingOpen.test(candidate) ||
+			enclosingPy.test(candidate) ||
+			falsyGuard.test(candidate) ||
+			fallbackDefault.test(candidate)
+		) {
+			return true;
+		}
+	}
 	return false;
 }
 

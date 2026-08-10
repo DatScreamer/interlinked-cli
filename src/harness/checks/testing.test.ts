@@ -120,46 +120,111 @@ describe("checkSnapshotOveruse", () => {
 		const content = "expect(value).toBe(1);\nexpect(other).toEqual({});";
 		expect(checkSnapshotOveruse(content, TEST_TS)).toEqual([]);
 	});
+
+	it("P1: fires when 5 snapshot calls are interspersed among other assertions inside real describe/it blocks", () => {
+		// Distinct shape from the bare `expect(v).toMatchSnapshot();` lines
+		// above — real test structure with non-snapshot assertions between
+		// the snapshot lines, so the count must still reach the threshold.
+		const content = [
+			'describe("widget", () => {',
+			'\tit("renders a", () => { expect(a).toBe(1); expect(a).toMatchSnapshot(); });',
+			'\tit("renders b", () => { expect(b).toBe(2); expect(b).toMatchSnapshot(); });',
+			'\tit("renders c", () => { expect(c).toMatchInlineSnapshot(); });',
+			'\tit("renders d", () => { expect(d).toEqual({}); expect(d).toMatchSnapshot(); });',
+			'\tit("renders e", () => { expect(e).toMatchSnapshot(); });',
+			"});",
+		].join("\n");
+		const matches = checkSnapshotOveruse(content, TEST_TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("5 snapshot assertions");
+	});
 });
 
 // =====================================================================
 // checkTestImportingTest
 // =====================================================================
 describe("checkTestImportingTest", () => {
-	// BEHAVIORAL REALITY: the detector regex
-	//   /(?:import|require)\s*\(?['"]\S*\.(?:test|spec)\./
-	// is matched against the line AFTER stripCommentsAndStrings(), which
-	// blanks the *contents* of every string literal. So `import "./x.test.js"`
-	// becomes `import ""` and `require("./x.test.js")` becomes `require("")`
-	// before the regex ever sees it — the `.test.`/`.spec.` token never
-	// survives stripping. The detector therefore returns [] for ALL inputs
-	// that reach the scan. The tests below assert that real behavior and the
-	// two early-return gates (non-test file, non-JS/TS extension).
+	// BEHAVIORAL REALITY (post-fix): stripCommentsAndStrings() blanks the
+	// *contents* of every string literal (so `"./x.test.js"` becomes `""`),
+	// which would erase the `.test.`/`.spec.` token if the path regex ran
+	// against the stripped line — the old bug. The detector instead checks
+	// the STRIPPED line only for the bare `import`/`require` keyword (so a
+	// commented-out import, or a keyword that appears only inside some other
+	// string literal, never passes — comment-stripping and string-stripping
+	// both blank those away), then matches the actual `.test.`/`.spec.` path
+	// against the ORIGINAL line, which is the only place that token survives.
 	//
-	// (See "Note on untestable lines" in the task report: the scanLinesStripped
-	// match arm is unreachable through this caller because of string stripping.)
-	it("returns [] for a would-be-positive import — the path is stripped before the regex", () => {
-		const content = `import "./other.test.js";\nconst x = 1;`;
+	// The path regex itself is unchanged and keeps its original structural
+	// gap: it requires "import"/"require" to be immediately (mod whitespace/
+	// paren) followed by the opening quote, so it matches side-effect
+	// imports (`import "./x.test.ts"`), dynamic imports (`import("./x.test.ts")`),
+	// and require() calls, but NOT ES named/default import syntax
+	// (`import { x } from "./x.test.ts"`), where other tokens sit in between.
+
+	it("P1: fires on a side-effect import of another test file", () => {
+		const content = `import "./setup.test.ts";\nconst x = 1;`;
+		const matches = checkTestImportingTest(content, TEST_TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(1);
+		expect(nonNull(matches[0]).text).toContain("./setup.test.ts");
+	});
+
+	it("P2: fires on a require() of a .test file used for shared helpers", () => {
+		const content = `const helpers = require("../shared/widgetHelpers.test.js");`;
+		const matches = checkTestImportingTest(content, TEST_JS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(1);
+		expect(nonNull(matches[0]).text).toContain("widgetHelpers.test.js");
+	});
+
+	it("P3: fires on a dynamic import() of a .spec file", () => {
+		const content = `const mod = await import("./fixture.spec.ts");`;
+		const matches = checkTestImportingTest(content, SPEC_TSX);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(1);
+		expect(nonNull(matches[0]).text).toContain("fixture.spec.ts");
+	});
+
+	it("P4: fires when an unterminated string literal survives stripCommentsAndStrings and the .test. token leaks through", () => {
+		// stripStrings only blanks a QUOTE...content...QUOTE pair that closes
+		// on the SAME line (see shared-text-utils.ts). A string missing its
+		// closing quote is left untouched by both stripping passes, so the
+		// keyword AND the raw `.test.` token both reach their respective
+		// gates unstripped — one of several shapes that fire post-fix, not
+		// the only one anymore.
+		const content = `import "./other.test.js`;
+		const matches = checkTestImportingTest(content, TEST_TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(1);
+		expect(nonNull(matches[0]).text).toContain(".test.js");
+	});
+
+	it("N1: does not fire when the .test import is commented out — the keyword is blanked along with the rest of the comment", () => {
+		const content = `// import "./old.test.js"\nconst y = 2;`;
 		expect(checkTestImportingTest(content, TEST_TS)).toEqual([]);
 	});
 
-	it("returns [] for require() of a .test file — string contents are stripped", () => {
-		const content = `const h = require("./fixtures.test.js");`;
-		expect(checkTestImportingTest(content, TEST_JS)).toEqual([]);
+	it("N2: does not fire when a string literal merely mentions a .test. path without an actual import/require call", () => {
+		// The whole sentence, including the word "require", sits inside ONE
+		// string literal, so stripCommentsAndStrings blanks the keyword away
+		// with the rest of the string content — the keyword gate that guards
+		// against exactly this near-miss (a naive "match the path regex on
+		// the raw line" implementation would incorrectly fire here, since
+		// "require" is immediately followed by a quote).
+		const content = `const help = "you must require './setup.test.ts' manually";`;
+		expect(checkTestImportingTest(content, TEST_TS)).toEqual([]);
 	});
 
-	it("returns [] for a named import from a .test file", () => {
+	it("N3: does not fire on a named import from a .test file — the regex requires the quote directly after import/require", () => {
+		// Structural gap preserved from the original detector: `{ helper } from`
+		// sits between "import" and the opening quote, so TEST_IMPORT_PATH_RE
+		// never matches this line even though the keyword survives stripping.
 		const content = `import { helper } from "./other.test.js";`;
 		expect(checkTestImportingTest(content, TEST_TS)).toEqual([]);
 	});
 
 	it("returns [] for a side-effect import of a normal (non-test) module", () => {
 		const content = `import "./module.js";\nimport "./other.ts";`;
-		expect(checkTestImportingTest(content, TEST_TS)).toEqual([]);
-	});
-
-	it("returns [] when the .test reference is inside a comment (stripped first)", () => {
-		const content = `// import "./old.test.js"\nconst y = 2;`;
 		expect(checkTestImportingTest(content, TEST_TS)).toEqual([]);
 	});
 
@@ -235,5 +300,25 @@ describe("checkExcessiveUseEffect", () => {
 		expect(nonNull(matches[0]).text).toContain("6 useEffect hooks");
 		// The appended snippet is sliced to 100 chars.
 		expect(nonNull(matches[0]).text.includes("z".repeat(101))).toBe(false);
+	});
+
+	it("P1: fires on an arrow-function component with 6 useEffect hooks each with its own dependency array", () => {
+		// Distinct shape from the `function Component() {...}` fixtures above
+		// — arrow-function component, one dependency per effect, no shared
+		// helper generating the body.
+		const content = [
+			"const Widget = () => {",
+			"\tuseEffect(() => { subscribe(); }, []);",
+			"\tuseEffect(() => { trackA(a); }, [a]);",
+			"\tuseEffect(() => { trackB(b); }, [b]);",
+			"\tuseEffect(() => { trackC(c); }, [c]);",
+			"\tuseEffect(() => { trackD(d); }, [d]);",
+			"\tuseEffect(() => { trackE(e); }, [e]);",
+			"\treturn null;",
+			"};",
+		].join("\n");
+		const matches = checkExcessiveUseEffect(content, "src/Widget.jsx");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("6 useEffect hooks");
 	});
 });
