@@ -73,7 +73,7 @@ describe("checkOverMocking — threshold", () => {
 		expect(matches).toEqual([]);
 	});
 
-	it("fires at exactly 8 mock calls (boundary, count >= 8)", () => {
+	it("P1: fires at exactly 8 mock calls (boundary, count >= 8)", () => {
 		const matches = checkOverMocking(mockLines(8), TEST_TS);
 		expect(matches).toHaveLength(1);
 		const m = matches[0] as InlineMatch;

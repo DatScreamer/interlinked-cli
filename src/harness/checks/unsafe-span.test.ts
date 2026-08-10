@@ -881,3 +881,510 @@ describe("checkSuppressionSpan — additional branch coverage", () => {
 		expect(suppression(src)).toHaveLength(0);
 	});
 });
+
+// ─── targeted mutation-kill coverage ───────────────────────────────────────────
+//
+// Each test below pins one or more specific mutation-testing survivors (Stryker
+// operator mutants against the real detector source) by constructing a fixture
+// where the mutated behavior produces a DIFFERENT observable result than the
+// real implementation — verified by hand-tracing the mutated code path, not by
+// argument from "this looks equivalent". Grouped by target function; the
+// comment on each test names the code-level change it distinguishes.
+
+describe("checkRustUnsafeSpan — blankRustBlockComment mutation coverage", () => {
+	it("MK-BC1: a single non-nested block comment before a wide unsafe block still lets it fire", () => {
+		// Pins: the scan must start at `start + 2` (right after "/*", not before
+		// it) and must correctly detect the real "*/" as *the* close (not miss
+		// it, not require an extra one, not flip the *increment* direction on
+		// either side of the pairing). Any of those defects makes the comment
+		// swallow the whole rest of the file, hiding the block below it.
+		const src = ["/* header */", "unsafe {", ...stmts(6, "    "), "}"];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("MK-BC2: a lone unpaired `/` inside a comment body does not falsely open a nested level", () => {
+		// Pins: opening detection must require BOTH "/" at i AND "*" at i+1
+		// (not either alone) — a stray "/" with no "*" after it must not count.
+		const src = ["/* path a/b end */", "unsafe {", ...stmts(6, "    "), "}"];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("MK-BC3: a lone unpaired `*` inside a comment body does not falsely open a nested level", () => {
+		// Pins: opening detection's "*" operand is checked at i+1 against the
+		// CURRENT char being "/", not decoupled from it.
+		const src = ["/* a*b */", "unsafe {", ...stmts(6, "    "), "}"];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("MK-BC4: a genuinely 2-level-nested comment closes after exactly two real closes", () => {
+		// Pins: depth increments (not decrements) on a real nested open, so a
+		// 2-level nest needs exactly 2 real "*/" to close — not 1, not 3.
+		const src = ["/* outer /* inner */ still-outer */", "unsafe {", ...stmts(6, "    "), "}"];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("MK-BC5: a nested comment's inner /* must be detected, or the outer comment closes too early and leaks code", () => {
+		// Pins: the opening check actually inspects individual characters
+		// (not the whole remaining buffer) — if inner "/*" opens are never
+		// detected, the FIRST "*/" (the inner one) wrongly ends the whole
+		// comment, exposing the "unsafe {" that should still be commented out.
+		const src = [
+			"/* outer",
+			"   /* inner */",
+			"   unsafe {",
+			...stmts(6, "       "),
+			"   }",
+			"   still outer */",
+			"fn done() {}",
+		];
+		expect(rust(src, "crates/core/src/nest.rs")).toHaveLength(0);
+	});
+
+	it("MK-BC6: a lone unpaired `*` inside a comment body must not close it early and leak code", () => {
+		// Pins: closing detection's "/" operand at i+1 is checked, not
+		// inverted and not decoupled — a bare "*" with a non-"/" neighbor
+		// must not end the comment.
+		const src = [
+			"/* note: 2*3=6",
+			"   unsafe {",
+			...stmts(6, "       "),
+			"   }",
+			"   end of note */",
+			"fn done() {}",
+		];
+		expect(rust(src, "crates/core/src/note.rs")).toHaveLength(0);
+	});
+});
+
+describe("checkRustUnsafeSpan — additional mutation coverage", () => {
+	it("MK-CR1: reported excerpt is the real source line, sliced/trimmed, not a corrupted read", () => {
+		// Pins rawLineExcerpt end-to-end: correct line index (lineNo - 1, not
+		// +1), the fallback-to-"" only on a genuinely missing line, .trim(),
+		// and the final excerpt is not simply dropped (BlockStatement -> {}).
+		const src = [
+			"fn init(p: *mut u8) {",
+			"    unsafe {",
+			...stmts(6, "        "),
+			"    }",
+			"}",
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text).toMatch(/— unsafe \{$/);
+	});
+
+	it("MK-CR2: a span of exactly 5 reached via the real nonblank count (not the cheap skip check) still does not fire", () => {
+		// Pins the DECISIVE `span <= MAX_UNSAFE_SPAN_LINES` check (not the
+		// earlier total-line skip heuristic, which this fixture deliberately
+		// routes around: 7 total interior lines but only 5 nonblank).
+		const src = [
+			"fn f(p: *mut u8) {",
+			"    unsafe {",
+			"        a();",
+			"", // blank
+			"        // comment",
+			"        b();",
+			"        c();",
+			"        d();",
+			"        e();",
+			"    }",
+			"}",
+		];
+		expect(rust(src)).toHaveLength(0);
+	});
+
+	it("MK-CR3: a long same-line excerpt is truncated to exactly REPORT_LINE_TRUNC and still trimmed", () => {
+		// Pins the .trim().slice(0, 150) chain — removing either the trim or
+		// the slice changes the excerpt's length or leading whitespace.
+		const long = "x".repeat(200);
+		const src = [
+			"fn f(p: *mut u8) {",
+			`    unsafe { // ${long}`,
+			...stmts(6, "        "),
+			"    }",
+			"}",
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		const excerpt = found[0]?.text.split(" — ").pop() ?? "";
+		expect(excerpt).toHaveLength(150);
+		expect(excerpt.startsWith("unsafe")).toBe(true);
+	});
+});
+
+describe("checkSuppressionSpan — countNewlines / line-tracking mutation coverage", () => {
+	it("MK-CN1: a multi-line comment before a disable is counted so the disable's reported line is exact", () => {
+		// Pins countNewlines: if it always returns 0 (or otherwise fails to
+		// count real newlines skipped inside a consumed block comment), the
+		// running `line` counter under-shoots and every directive after it
+		// reports the wrong line number.
+		const src = [
+			"/* a multi-line",
+			"   regular comment",
+			"   spanning lines */",
+			DISABLE,
+			...stmts(12, ""),
+			ENABLE,
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(4);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+});
+
+describe("checkSuppressionSpan — raw excerpt integrity", () => {
+	it("MK-CS1: the reported excerpt is the actual disable-comment source text", () => {
+		// Pins `rawLines = content.split("\n")` — splitting on "" instead
+		// would make every excerpt an unrelated single character.
+		const src = [DISABLE, ...stmts(13, ""), ENABLE];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text.endsWith(`— ${DISABLE}`)).toBe(true);
+	});
+});
+
+describe("checkSuppressionSpan — widestBoundedSpan mutation coverage", () => {
+	it("MK-WBS1: a wide first rule-span survives a narrower later rule-span (widest, not last)", () => {
+		// Pins `span > widest` picking the MAXIMUM across all of a multi-rule
+		// disable's targets — not unconditionally overwriting on every
+		// iteration and not stopping after the first.
+		const src = [
+			"/* eslint-disable no-console, no-undef */", // 1
+			"a();", // 2
+			"/* eslint-enable no-undef */", // 3 — closes no-undef narrow (span 3)
+			...stmts(20, ""), // 4-23
+			"/* eslint-enable no-console */", // 24 — closes no-console wide (span 24)
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 24 lines");
+	});
+
+	it("MK-WBS2: a narrow first rule-span is overtaken by a wider later rule-span (widest, not first)", () => {
+		// Pins the same comparison from the opposite ordering — a detector
+		// that only ever keeps the FIRST processed rule's span (e.g. an
+		// `&&` in place of `||`, or the comparison forced to `false`) passes
+		// MK-WBS1 by accident but fails here.
+		const src = [
+			"/* eslint-disable no-undef, no-console */", // 1
+			"a();", // 2
+			"/* eslint-enable no-undef */", // 3 — closes no-undef narrow (span 3)
+			...stmts(20, ""), // 4-23
+			"/* eslint-enable no-console */", // 24 — closes no-console wide (span 24)
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 24 lines");
+	});
+});
+
+describe("checkSuppressionSpan — isQuoteChar mutation coverage", () => {
+	it("MK-IQ1: eslint-disable text inside a single-quoted string is not detected as a real directive", () => {
+		// Pins the single-quote arm of isQuoteChar specifically (the fixture
+		// also carries a double-quoted string elsewhere in the suite, so this
+		// isolates "'" from '"' and "`"). If single quotes stop being
+		// recognized as string delimiters, the text inside becomes real scan
+		// territory and the block-comment branch (which always outranks the
+		// quote check) picks up the disable directive for real.
+		const src = [
+			"const s = '/* eslint-disable */';", // 1 — single-quoted, must stay opaque
+			...stmts(12, ""), // 2-13
+			"/* eslint-enable */", // 14 — a real, unrelated enable
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+});
+
+// ─── round 2: blankRustCharLiteral / rawStringOpenAt mutation-kill coverage ───
+//
+// Both helpers are internal (not exported); every fixture below drives them
+// through checkRustUnsafeSpan and distinguishes real vs. mutated behavior by
+// an OBSERVABLE consequence — normally whether a `}` embedded in what should
+// be stripped comment/string/char-literal content leaks through as a REAL
+// brace. A leaked `}` closes the `unsafe {` early (block too narrow, 0
+// findings, or a different span); correctly-hidden content lets the block
+// reach its real closing brace several lines down (fires with the expected
+// span). Each comment traces the specific mutant(s) the fixture kills.
+
+describe("checkRustUnsafeSpan — blankRustCharLiteral mutation coverage (round 2)", () => {
+	it("MK-CL1: an escaped literal hiding an embedded quote ('\\\"') must be blanked as ONE unit, not abandoned mid-scan", () => {
+		// Pins the entire escape-handling path together: `next === "\\"` must
+		// read the REAL next char (not `src` itself, not `charAt(start - 1)`),
+		// the scan loop must start at `start + 3`, run `i < src.length` (not
+		// `<=`/`>=`/forced-false/forced-true), advance with `i++` (not `i--`),
+		// detect the close via `ch === "'"` (not `false`, not a `src`-wide
+		// compare), and blank through `i + 1` (not `i - 1`). If ANY of those
+		// break, the loop exits without blanking, the embedded `"` inside the
+		// escape body is left for the main scanner, which misreads it as
+		// opening a REAL string with no other closing quote anywhere in the
+		// file — swallowing everything after it, including the block's real
+		// closing braces, so the block never resolves and the check reports
+		// nothing at all.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			'        let c = \'\\"\';', // 3 — escaped-quote char literal
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("MK-CL2: an escape body containing a real `}` before its closing quote must be scanned char-by-char, not abandoned on the first non-newline char", () => {
+		// Pins the loop's `if (ch === "\n") break` check against a false
+		// positive: if it fires on ANY non-newline char (not just a real
+		// newline), the scan aborts before reaching the true closing quote,
+		// leaving the `}` inside the escape body unblanked — a real brace
+		// that closes the unsafe block right there instead of several lines
+		// down.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let c = '\\u}';", // 3 — multi-char escape body containing `}`
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("MK-CL3: an unterminated escape must stop at the NEXT REAL newline, not scan on into later lines for a stray apostrophe", () => {
+		// Pins `ch === "\n"` positively: if the break never fires (forced
+		// `false`, or compared against `""` instead of an actual newline
+		// character), the scan keeps running past the line boundary and
+		// wrongly pairs the dangling `'\` with an unrelated lifetime
+		// apostrophe several lines later — blanking everything between as
+		// fake char-literal content and hiding real code (and the real
+		// nonblank line count) from the span counter.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let bad = '\\", // 3 — escape opens, no closing quote on this line
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        let l: &'a str = v;", // 8 — real lifetime apostrophe further down
+			"        x5();", // 9
+			"    }", // 10
+			"}", // 11
+		];
+		const found = rust(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 7 nonblank lines");
+	});
+
+	it("MK-CL4: charAt(start+2) not equal to a quote means only the opening apostrophe is consumed, leaving real code (incl. `}`) intact", () => {
+		// Pins the non-escape branch's decisive check: `next !== "" && next
+		// !== "'" && charAt(start + 2) === "'"`. A lifetime marker like `'a`
+		// is exactly two chars short of a 3-char literal, so the real
+		// function must leave the trailing `}` as genuine code — closing the
+		// unsafe block right there. If the whole condition (or its `charAt
+		// (start+2) === "'"` clause) is forced `true`, the apostrophe and the
+		// next two chars get wrongly blanked, hiding the `}` and letting the
+		// block run on to its real close several lines down.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let x: &'a}b;", // 3 — 'a is a lifetime, not a 3-char literal; `}` is real
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		expect(rust(src)).toHaveLength(0);
+	});
+});
+
+describe("checkRustUnsafeSpan — rawStringOpenAt mutation coverage (round 2)", () => {
+	it("RSO1: a hash-delimited raw string with an embedded bare quote must close ONLY at its matching `\"#`, hiding a `}` before it", () => {
+		// Pins the whole r#"…"# detection chain from a non-identifier
+		// position: the leading-context guard must NOT block here (prev char
+		// is a space), the `b`/`c` prefix check must correctly skip (this is
+		// bare `r`), the mandatory `charAt(j) !== "r"` check must pass, the
+		// `#` counting loop must count exactly 1 hash, and the final quote
+		// check must confirm the opener. If any step instead returns null
+		// (guard forced to always block, the r-check inverted, the hash loop
+		// skipped or its update reversed, or the final quote-check inverted),
+		// the raw string is never recognized: the main scanner falls back to
+		// treating the LONE embedded `"` inside the raw body as an ordinary
+		// string open, which closes at the FIRST bare quote it finds — right
+		// after the embedded `"a"`, exposing the `}` right after it as real
+		// code that closes the unsafe block early.
+		const src = [
+			"fn f() {", // 1
+			'    unsafe {', // 2
+			'        let s = r#"a"b}c"#;', // 3 — 1-hash raw string, embedded bare quote + `}`
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src, "crates/core/src/gen2.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RSO2: an identifier ending in 'r' immediately before a hash-quote must NOT be treated as a raw-string opener", () => {
+		// Pins the leading-context guard from the OTHER direction: `foor#"`
+		// is the identifier "foor" followed by an unrelated raw-looking
+		// sequence — the char before this 'r' is 'o' (alnum), so the guard
+		// MUST block detection here, and the real closing `}` right after
+		// the embedded bare quote stays live code, closing the block early.
+		// If the guard fails to block (forced `false`, the `&&` flipped to
+		// `||`, `i - 1` flipped to `i + 1`, `i > 0` flipped to `i <= 0`, or
+		// `charAt(i - 1)` swapped for the whole `src` string), the sequence
+		// gets wrongly accepted as a real raw-string opener, which correctly
+		// hides the `}` and lets the block run on to its real close.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			'        let foor#"a"b}c"#;', // 3 — "foor" + unrelated hash-quote text
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		expect(rust(src, "crates/core/src/gen3.rs")).toHaveLength(0);
+	});
+
+	it("RSO3: a byte raw string (br#\"...\"#) must consume its 'b' prefix before requiring 'r'", () => {
+		// Pins the `charAt(j) === "b" || charAt(j) === "c"` branch (and its
+		// `j++` advance) specifically for 'b'. If the check is forced
+		// `false`, its `||` flipped to `&&`, or its `charAt(j)`/`"b"` operands
+		// swapped for something that never matches, `j` never advances past
+		// 'b' and the mandatory `charAt(j) !== "r"` check then sees 'b'
+		// itself and fails — returning null and falling back to plain-string
+		// parsing, which closes at the first bare quote and exposes the `}`.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			'        let s = br#"a"b}c"#;', // 3
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		const found = rust(src, "crates/core/src/gen4.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RSO4: a C raw string (cr#\"...\"#) must consume its 'c' prefix before requiring 'r'", () => {
+		// Pins the same branch's 'c' arm, distinctly from RSO3's 'b' arm —
+		// Stryker mutates each `charAt(j) === "b"` / `charAt(j) === "c"`
+		// comparison as its own node, so both prefixes need their own case.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			'        let s = cr#"a"b}c"#;', // 3
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		const found = rust(src, "crates/core/src/gen5.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RSO5: a byte string with NO 'r' (b\"\") must be rejected by the mandatory r-check, not treated as a 0-hash raw string", () => {
+		// Pins `charAt(j) !== "r"` positively: `b""` is a real (non-raw) byte
+		// string — after consuming 'b', the next char is `"`, which must fail
+		// the r-check and return null so the plain-string handler takes over
+		// and blanks just the pair of quotes. If the check is forced `false`
+		// (always "proceed as if it were r"), the function instead computes a
+		// bogus 0-hash raw-string opener and searches for a lone closing `"`
+		// starting AFTER the `""` pair — finding none anywhere in the file,
+		// it blanks everything to EOF, hiding the block's real closing
+		// braces entirely.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			'        let x = b"";', // 3
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		const found = rust(src, "crates/core/src/gen6.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
+	it("RSO6: 'r' followed by hashes with NO quote (r#x) must be rejected, not accepted as a real raw-string opener", () => {
+		// Pins the final `charAt(j) !== '"'` check (and its equality-flip /
+		// `charAt` -> `src` / `'"'` -> `''` variants): `r#x` has no opening
+		// quote after its hash, so this must return null and leave `r#x` as
+		// harmless literal code. If forced to proceed anyway, the function
+		// returns a bogus opener with hashes = 1 and searches for a `"#`
+		// closer that does not exist anywhere in the file, blanking
+		// everything to EOF and hiding the block's real closing braces.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			"        let v = r#x;", // 3
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		const found = rust(src, "crates/core/src/gen7.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+});

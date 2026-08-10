@@ -561,6 +561,522 @@ describe("literal masking (review 2026-06)", () => {
 	});
 });
 
+// ===========================================
+// Mutation-kill pins (2026-08) — added against `interlinked mutation
+// survivors --file test-portability.ts`. Each block below targets a
+// specific surviving mutant id (named in the test title or a leading
+// comment) rather than a behavior class already covered above. Kept
+// separate from the hand-written suite above so the provenance of each
+// assertion stays traceable back to a mutant.
+// ===========================================
+
+describe("checkPlatformConditionalAssertion — narration regex boundaries (mutation pin)", () => {
+	it("fires on the singular 'on platform where' phrasing (platforms? optional s)", () => {
+		const content = [
+			"it('x', () => {",
+			"  // on platform where the fixture behaves differently, this leaks",
+			"  expect(1).toBe(1);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("does not treat a line as a comment merely because it CONTAINS // later on", () => {
+		const content = [
+			"it('x', () => {",
+			"  expect(1).toBe(1); // macOS-only quirk noted here in passing",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("does not read narration from a bare prose line that carries no comment marker at all", () => {
+		const content = [
+			"on platforms where legacy code lived, tests broke silently across runners",
+			"it('example', () => { expect(1).toBe(1); });",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — MAX_MATCHES cap is enforced exactly (mutation pin)", () => {
+	it("caps at exactly 10 findings even when 12 files' worth of narration is ungated", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			lines.push(`// on platforms where case ${i} behaves differently, unaddressed`);
+			lines.push(`it('case ${i}', () => { expect(${i}).toBe(${i}); });`);
+		}
+		const matches = checkPlatformConditionalAssertion(lines.join("\n"), TEST_PATH);
+		expect(matches).toHaveLength(10);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — exact message text and slicing (mutation pin)", () => {
+	it("produces the exact narration message, trimmed and truncated to 100 chars", () => {
+		const filler = "z".repeat(90);
+		const rawLine = `    // on platforms where the archive layout differs across runners ${filler} tail-marker`;
+		const content = [
+			"it('setup', () => { expect(0).toBe(0); });",
+			rawLine,
+			"it('subject', () => { expect(1).toBe(1); });",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		const expectedSuffix = rawLine.trim().slice(0, 100);
+		const expectedText =
+			"[comment narrates platform-conditional behavior but the narrated test never gates on it — " +
+			"the assertions encode ONE platform's outcome and will fail on the others (CI). " +
+			"Construct the condition explicitly in the fixture, or gate THIS test with " +
+			`skipIf/process.platform] ${expectedSuffix}`;
+		expect(nonNull(matches[0]).text).toBe(expectedText);
+	});
+
+	it("resolves file-level narration evidence from anywhere in real code, not just the test's own span", () => {
+		const content = [
+			"// on platforms where a symlink exists this behaves differently — see below",
+			"const isDarwinHost = process.platform === 'darwin';",
+			"const helper = () => 1;",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("scopes evidence to the narrated test's FULL body through its LAST line (endLine+1 slice)", () => {
+		const content = [
+			"// windows-only path separator handling below",
+			"it('joins with backslashes', () => { const expected = process.platform === 'win32' ? 'a\\\\b' : 'a/b'; expect(joinPath('a','b')).toBe(expected); });",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — PLATFORM_REF_RE whitespace boundaries (mutation pin)", () => {
+	it("recognizes os.platform() with zero interior whitespace as platform evidence", () => {
+		const content = ["// on platforms where behavior differs by architecture", "const kind = os.platform();"].join(
+			"\n",
+		);
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("recognizes os.platform ( ) with interior whitespace as platform evidence", () => {
+		const content = ["// on platforms where behavior differs by architecture", "const kind = os.platform ();"].join(
+			"\n",
+		);
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — RUNTIME_SKIP_RE whitespace boundaries (mutation pin)", () => {
+	it("recognizes ctx. skip() — space after the dot — as an unconditional skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  ctx. skip();",
+			"  // linux-only raw socket semantics, parked until CI has a runner",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("recognizes ctx .skip() — space before the dot — as an unconditional skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  ctx .skip();",
+			"  // linux-only raw socket semantics, parked until CI has a runner",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("recognizes ctx.skip () — space before the call parens — as an unconditional skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  ctx.skip ();",
+			"  // linux-only raw socket semantics, parked until CI has a runner",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — IF_CONDITION_RE nested-paren boundaries (mutation pin)", () => {
+	it("recognizes if(cond())ctx.skip(); — zero whitespace, empty call parens — as a guarded skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if(!dockerAvailable())ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("recognizes if (cond(true)) ctx.skip(); — an argument inside the nested call — as a guarded skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable(true)) ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("recognizes if (cond() === false) ctx.skip(); — a trailing comparison — as a guarded skip", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (dockerAvailable() === false) ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — platform-derived const declaration spacing (mutation pin)", () => {
+	it("resolves a compact declaration (const flagX=process.platform===...) via its bare identifier", () => {
+		const content = [
+			"const flagX=process.platform==='darwin';",
+			"describe('socket suite', () => {",
+			"  it('binds', (ctx) => {",
+			"    // linux-only raw socket semantics",
+			"    if (!flagX) { ctx.skip(); return; }",
+			"    expect(bind()).toBe(0);",
+			"  });",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("resolves a normally-spaced declaration (const flagX = process.platform === ...) via its bare identifier", () => {
+		const content = [
+			"const flagX = process.platform === 'darwin';",
+			"describe('socket suite', () => {",
+			"  it('binds', (ctx) => {",
+			"    // linux-only raw socket semantics",
+			"    if (!flagX) { ctx.skip(); return; }",
+			"    expect(bind()).toBe(0);",
+			"  });",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("resolves a declaration with double interior whitespace (const  flagX = process.platform === ...)", () => {
+		const content = [
+			"const  flagX = process.platform === 'darwin';",
+			"describe('socket suite', () => {",
+			"  it('binds', (ctx) => {",
+			"    // linux-only raw socket semantics",
+			"    if (!flagX) { ctx.skip(); return; }",
+			"    expect(bind()).toBe(0);",
+			"  });",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — PLATFORM_NAME_SEGMENTS allowlist (mutation pin)", () => {
+	const cases: Array<[word: string, identifier: string]> = [
+		["mac", "useMacFallback"],
+		["macos", "useMacosFallback"],
+		["osx", "runsOsxLegacy"],
+		["darwin", "targetDarwinKernel"],
+		["win32", "onWin32Only"],
+		["wsl", "runsWslShim"],
+		["unix", "targetsUnixSocket"],
+		["posix", "usesPosixApi"],
+		["platform", "readPlatformInfo"],
+		["arch", "checkArchType"],
+		["os", "getOsRelease"],
+	];
+	for (const [word, identifier] of cases) {
+		it(`recognizes '${word}' as a platform-name segment pinned in the identifier scan`, () => {
+			const content = [
+				"it('adjusts for the environment', () => {",
+				"  // on platforms where this diverges, the fallback below applies",
+				`  if (!${identifier}) { return; }`,
+				"  expect(1).toBe(1);",
+				"});",
+			].join("\n");
+			expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+		});
+	}
+});
+
+describe("checkPlatformConditionalAssertion — ancestor gate identifier resolution (mutation pin)", () => {
+	it("resolves an ancestor describe.skipIf gate via a platform-named identifier, isolated from the child's own slice", () => {
+		const content = [
+			"describe.skipIf(IS_NOT_LINUX)('raw socket suite', () => {",
+			"  it('binds the socket', () => {",
+			"    // linux-only raw socket semantics under test",
+			"    expect(bindRawSocket()).toBe(0);",
+			"  });",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("requires only ONE identifier in a multi-condition ancestor gate to be platform-related (some, not every)", () => {
+		const content = [
+			"describe.skipIf(isNotLinux && dockerAvailable)('raw socket suite', () => {",
+			"  it('binds the socket', () => {",
+			"    // linux-only raw socket semantics under test",
+			"    expect(bindRawSocket()).toBe(0);",
+			"  });",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — subjectBlockFor resolution (mutation pin)", () => {
+	it("does not let a later sibling test's evidence vouch for an earlier narrated test with none of its own", () => {
+		const content = [
+			"it('first', () => {",
+			"  // linux-only raw socket semantics under test",
+			"  doStuff();",
+			"});",
+			"it('second', () => {",
+			"  const kind = process.platform;",
+			"  expect(kind).toBeDefined();",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("falls through past a non-test enclosing describe to a lookdown sibling, not the describe's own (empty) span", () => {
+		const content = [
+			"describe('suite', () => {",
+			"  // linux-only semantics for the sibling below",
+			"});",
+			"it('elsewhere', () => {",
+			"  const kind = process.platform;",
+			"  expect(kind).toBeDefined();",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("does not let an unrelated sibling test's evidence vouch for narration scattered across a describe's own helpers", () => {
+		const content = [
+			"describe('suite', () => {",
+			"  // linux-only semantics scattered across this suite",
+			"  const helper = () => 1;",
+			"  const another = () => 2;",
+			"  const yetAnother = () => 3;",
+			"  const stillMore = () => 4;",
+			"  const finalHelper = () => 5;",
+			"  it('runs eventually', () => { expect(1).toBe(1); });",
+			"});",
+			"it('elsewhere', () => {",
+			"  const kind = process.platform;",
+			"  expect(kind).toBeDefined();",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toHaveLength(1);
+	});
+});
+
+describe("checkSilentDependencySkip — MAX_MATCHES cap is enforced exactly (mutation pin)", () => {
+	it("caps at exactly 10 findings even when 12 tests each carry a silent guard", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 12; i++) {
+			lines.push(`it('case ${i}', () => {`);
+			lines.push(`  if (!RG_AVAILABLE) return;`);
+			lines.push(`  expect(${i}).toBe(${i});`);
+			lines.push(`});`);
+		}
+		const matches = checkSilentDependencySkip(lines.join("\n"), TEST_PATH);
+		expect(matches).toHaveLength(10);
+	});
+});
+
+describe("checkSilentDependencySkip — exact message text and slicing (mutation pin)", () => {
+	it("produces the exact silent-skip message, trimmed and truncated to 100 chars", () => {
+		const filler = "w".repeat(90);
+		const guardLine = `  if (!RG_AVAILABLE) return; // dependency binary entirely absent in this environment ${filler} tail`;
+		const content = [
+			"it('uses rg', () => {",
+			guardLine,
+			"  expect(runRg()).toContain('match');",
+			"});",
+		].join("\n");
+		const matches = checkSilentDependencySkip(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		const expectedSuffix = guardLine.trim().slice(0, 100);
+		const expectedText =
+			"[silent dependency skip — this early return records a PASS wherever the " +
+			"dependency is missing (CI included), hiding the gap. Use it.skipIf(...)/" +
+			`describe.skipIf(...) so the skip is REPORTED] ${expectedSuffix}`;
+		expect(nonNull(matches[0]).text).toBe(expectedText);
+	});
+});
+
+describe("checkSilentDependencySkip — non-test-file exemption is || not && (mutation pin)", () => {
+	it("stays quiet on a JS/TS source file that is not a strict test file, even with a guard-shaped body", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) return;",
+			"  expect(runRg()).toContain('match');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, "src/regular-source.ts")).toEqual([]);
+	});
+});
+
+describe("checkSilentDependencySkip — CONSEQUENT_HANDLED_RE whitespace and char-class boundaries (mutation pin)", () => {
+	it("treats ctx .skip() — space before the dot — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { ctx .skip(); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats ctx. skip() — space after the dot — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { ctx. skip(); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats expect (...) — space before the paren — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { expect (1).toBe(1); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats a bare assert(...) — zero-width assert\\w* suffix — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { assert(true); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats assertEqual(...) — word characters after assert — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { assertEqual(1, 1); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats assertOk (...) — space before the paren — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { assertOk (true); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats a bare fail() — zero-width whitespace before the paren — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { fail(); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("treats fail (...) — space before the paren — inside the consequent as handled, not silent", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) { fail ('nope'); return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkSilentDependencySkip — TRAILING_BARE_RETURN_RE boundary conditions (mutation pin)", () => {
+	it("does not flag a bare return that is followed by more code before the closing brace (must reach the end)", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE){return;doSetup();}",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("flags a compact trailing return preceded directly by a semicolon with no whitespace", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE){doSetup();return;}",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("flags a trailing return followed by a space then the semicolon", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE){doSetup();return ;}",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toHaveLength(1);
+	});
+
+	it("flags a trailing return with NO semicolon at all before the closing brace", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE){doSetup();return}",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toHaveLength(1);
+	});
+});
+
+describe("checkSilentDependencySkip — AVAILABILITY_GUARD_RE whitespace boundaries (mutation pin)", () => {
+	const guards = [
+		"if(!RG_AVAILABLE)return;",
+		"if ( !RG_AVAILABLE ) return;",
+		"if(!dockerAvailable())return;",
+		"if(dockerAvailable()===false)return;",
+		"if (dockerAvailable()==false) return;",
+		"if (! RG_AVAILABLE) return;",
+		"if (!dockerAvailable( )) return;",
+		"if (!dockerAvailable() ) return;",
+		"if (dockerAvailable( ) === false) return;",
+		"if (dockerAvailable() === false ) return;",
+	];
+	for (const guard of guards) {
+		it(`recognizes the guard '${guard}' as a silent dependency skip`, () => {
+			const content = ["it('uses the dependency', () => {", `  ${guard}`, "  expect(1).toBe(1);", "});"].join(
+				"\n",
+			);
+			expect(checkSilentDependencySkip(content, TEST_PATH)).toHaveLength(1);
+		});
+	}
+});
+
 describe("dogfood sweep — the repo's own suite stays portability-clean", () => {
 	function collectTestFiles(dir: string, out: string[]): string[] {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {

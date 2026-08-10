@@ -75,6 +75,31 @@ describe("checkTautologicalAssertion", () => {
 		const content = 'it("x", () => { expect(foo).toBe(bar); });';
 		expect(checkTautologicalAssertion(content, "/x/foo.test.ts")).toEqual([]);
 	});
+
+	it("N1: does not flag genuinely independent expect(actual).toBe(expected)", () => {
+		const content = 'it("computes", () => { expect(actual).toBe(expected); });';
+		expect(checkTautologicalAssertion(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("N2: does not flag tautological-looking text inside a comment", () => {
+		const content = [
+			'it("x", () => {',
+			"  // NOTE: expect(foo).toBe(foo) was the old (wrong) assertion",
+			"  expect(foo).toBe(bar);",
+			"});",
+		].join("\n");
+		expect(checkTautologicalAssertion(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("N3: does not flag tautological-looking text inside a string literal", () => {
+		const content = [
+			'it("x", () => {',
+			'  const example = "expect(foo).toBe(foo)";',
+			'  expect(example).toContain("toBe");',
+			"});",
+		].join("\n");
+		expect(checkTautologicalAssertion(content, "/x/foo.test.ts")).toEqual([]);
+	});
 });
 
 describe("checkMockingTheSUT", () => {
@@ -96,6 +121,27 @@ describe("checkMockingTheSUT", () => {
 	it("flags jest.mock of the SUT", () => {
 		const content = 'jest.mock("./bar");';
 		expect(checkMockingTheSUT(content, "/x/bar.spec.ts").length).toBe(1);
+	});
+
+	it("N1: does not flag a commented-out vi.mock of the SUT", () => {
+		const content = [
+			'// vi.mock("./foo");',
+			'import { foo } from "./foo";',
+		].join("\n");
+		expect(checkMockingTheSUT(content, "/x/foo.test.ts")).toEqual([]);
+	});
+
+	it("N2: does not flag a non-test file mocking a same-basename module", () => {
+		const content = 'vi.mock("./foo");';
+		expect(checkMockingTheSUT(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("N3: does not flag mocking a same-basename sibling asset with an unstripped extension", () => {
+		// ./foo.json sits next to the SUT (./foo.ts) but the extension-strip regex
+		// only recognizes ts/tsx/js/jsx/mjs/cjs, so "foo.json" never collapses to
+		// "foo" — a genuinely different module, not the SUT.
+		const content = 'vi.mock("./foo.json");';
+		expect(checkMockingTheSUT(content, "/x/foo.test.ts")).toEqual([]);
 	});
 });
 
@@ -450,6 +496,21 @@ describe("checkEmptyCatch", () => {
 	it("allows empty catch with an intentional rationale comment", () => {
 		const content = "try { doThing(); } catch (e) { /* non-critical: cache warmup */ }";
 		expect(checkEmptyCatch(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("N1: does not flag a catch that rethrows the error", () => {
+		const content = "try { doThing(); } catch (e) { throw e; }";
+		expect(checkEmptyCatch(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("N2: does not flag catch-shaped text inside a string literal", () => {
+		const content = 'const snippet = "try { x(); } catch (e) {}"; doThing(snippet);';
+		expect(checkEmptyCatch(content, "/src/foo.ts")).toEqual([]);
+	});
+
+	it("N3: skips non-JS/TS files entirely (wrong file type)", () => {
+		const content = "catch (e) {}";
+		expect(checkEmptyCatch(content, "/src/foo.py")).toEqual([]);
 	});
 });
 

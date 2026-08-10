@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -162,6 +162,22 @@ describe("classifyFromToolName — fallback + overrides", () => {
 		expect(BUILTIN_TOOL_NAME_CLASSES.read).toBe("read");
 		expect(BUILTIN_TOOL_NAME_CLASSES.bash).toBe("unknown");
 	});
+
+	it("falls back to the normalized tool name when the exact name has no override", () => {
+		const overrides = parseOverrides({
+			tool_name_classes: { my_tool_: "side-effect" },
+			command_substrings: [],
+		});
+		// "My-Tool!" normalizes to "my_tool_" — no literal "My-Tool!" key exists,
+		// so the lookup must fall through to the normalized form.
+		expect(classifyFromToolName("My-Tool!", {}, { overrides })).toBe("side-effect");
+	});
+
+	it("returns modify when toolInput has no extractable command field", () => {
+		// "task" maps to "unknown" in the built-in table, so classification
+		// routes through extractCommandField; a null input must not throw.
+		expect(classifyFromToolName("task", null)).toBe("modify");
+	});
 });
 
 // ---- parseOverrides -----------------------------------------------------------
@@ -233,6 +249,16 @@ describe("parseOverrides — command_substrings", () => {
 			"side-effect",
 		);
 	});
+
+	it("ignores a command_substrings value that isn't an array", () => {
+		const overrides = parseOverrides({ command_substrings: "not-an-array" });
+		expect(overrides.command_substrings).toEqual([]);
+	});
+
+	it("drops a command_substrings entry that isn't an object", () => {
+		const overrides = parseOverrides({ command_substrings: [42, "oops", null] });
+		expect(overrides.command_substrings).toEqual([]);
+	});
 });
 
 // ---- loadOverrides — IO ------------------------------------------------------
@@ -274,6 +300,18 @@ describe("loadOverrides", () => {
 		const out = loadOverrides(file);
 		expect(out).toEqual({ tool_name_classes: {}, command_substrings: [] });
 		expect(stderrSpy).toHaveBeenCalled();
+		stderrSpy.mockRestore();
+	});
+
+	it("returns empty and warns when the path exists but can't be read as a file", () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		// A directory passes existsSync() but readFileSync() throws (EISDIR),
+		// exercising the safeRead failure path distinct from "missing file".
+		const dirAsFile = join(tmp, "not-a-file");
+		mkdirSync(dirAsFile);
+		const out = loadOverrides(dirAsFile);
+		expect(out).toEqual({ tool_name_classes: {}, command_substrings: [] });
+		expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("could not read"));
 		stderrSpy.mockRestore();
 	});
 });

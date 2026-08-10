@@ -240,6 +240,47 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).name).toBe("project_typecheck_clean");
 		expect(nonNull(results[0]).message).toContain("compiler crashed");
 	});
+
+	it("reports 'could not run' when spawnSync itself fails (non-executable local-tsc binary)", () => {
+		// Drive the local-tsc discovery path with a binary file that has no
+		// execute bit — spawnSync then sets `result.error` (EACCES) rather
+		// than returning a normal exit status. This exercises the
+		// `result.error` branch distinctly from a script that runs and fails.
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({}));
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({}));
+		mkdirSync(join(tmp, "node_modules", ".bin"), { recursive: true });
+		writeFileSync(join(tmp, "node_modules", ".bin", "tsc"), "#!/bin/sh\nexit 0\n", {
+			mode: 0o644,
+		});
+		const results = checkProjectTypecheckClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).name).toBe("project_typecheck_failed_to_run");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("could not run");
+		expect(nonNull(results[0]).message).toContain("Verify CI manually");
+	});
+
+	it("reports 'exceeded timeout' when the child process is terminated by a signal", () => {
+		// spawnSync sets `status: null` + `signal: "SIGTERM"` both on a real
+		// timeout AND whenever the child is killed by that signal for any
+		// other reason — the gate can't distinguish, so it must treat any
+		// SIGTERM the same way. The stub script kills itself immediately so
+		// the test doesn't have to wait out the real 60s budget.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable": 'node -e "process.kill(process.pid, \\"SIGTERM\\")"',
+				},
+			}),
+		);
+		const results = checkProjectTypecheckClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).name).toBe("project_typecheck_timed_out");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("exceeded");
+		expect(nonNull(results[0]).message).toContain("timeout");
+	});
 });
 
 describe("resolveTestCommand", () => {
@@ -373,5 +414,46 @@ describe("checkProjectTestsClean", () => {
 		expect(results).toHaveLength(1);
 		expect(nonNull(results[0]).severity).toBe("error");
 		expect(nonNull(results[0]).message).toContain("vitest crashed");
+	});
+
+	it("reports 'could not run' when spawnSync itself fails to launch npm", () => {
+		// resolveTestCommand always resolves to the `npm` binary, so to force
+		// spawnSync's own `result.error` (ENOENT) rather than a script
+		// failure, PATH is temporarily emptied so `npm` can't be resolved.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: "node -e \"process.exit(0)\"" } }),
+		);
+		const savedPath = process.env.PATH;
+		process.env.PATH = "";
+		try {
+			const results = checkProjectTestsClean(tmp);
+			expect(results).toHaveLength(1);
+			expect(nonNull(results[0]).name).toBe("project_tests_failed_to_run");
+			expect(nonNull(results[0]).severity).toBe("warning");
+			expect(nonNull(results[0]).message).toContain("could not run");
+			expect(nonNull(results[0]).message).toContain("Verify CI manually");
+		} finally {
+			process.env.PATH = savedPath;
+		}
+	});
+
+	it("reports 'exceeded timeout' when the test process is terminated by a signal", () => {
+		// Same rationale as the typecheck gate's SIGTERM test: spawnSync's
+		// timeout kill and a same-signal external kill look identical in the
+		// result object, so a self-terminating stub proves the branch without
+		// waiting out the real 5-minute budget.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: { test: 'node -e "process.kill(process.pid, \\"SIGTERM\\")"' },
+			}),
+		);
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).name).toBe("project_tests_timed_out");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("exceeded");
+		expect(nonNull(results[0]).message).toContain("timeout");
 	});
 });

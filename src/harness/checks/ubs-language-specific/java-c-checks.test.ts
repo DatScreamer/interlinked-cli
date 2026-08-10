@@ -42,5 +42,20 @@ describe("ubs-language-specific/java-c-checks", () => {
 		it("returns empty for non-C/C++ files", () => {
 			expect(checkUnsafeFormatString("printf(fmt);", "a.ts")).toEqual([]);
 		});
+
+		// Evidence backfill (Check Evidence Contract) — checkUnsafeFormatString
+		// (ubs_unsafe_format_string). Near-misses: a literal format string in
+		// the format slot with a variable DATA argument elsewhere — the
+		// common, safe shape this detector must not confuse with a
+		// non-literal format.
+		it("N1: does not fire — literal format with a variable data argument `printf(\"%s\\n\", userName)`", () => {
+			const code = 'printf("%s\\n", userName);';
+			expect(checkUnsafeFormatString(code, "a.c")).toEqual([]);
+		});
+
+		it("N2: does not fire — fprintf with a literal format and a variable data argument", () => {
+			const code = 'fprintf(stderr, "error: %d\\n", code);';
+			expect(checkUnsafeFormatString(code, "a.c")).toEqual([]);
+		});
 	});
 });

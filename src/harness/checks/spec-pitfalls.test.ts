@@ -35,6 +35,26 @@ describe("checkSpecPitfalls", () => {
 		}
 	});
 
+	it("P1: fires on the exactly-once-to-external-sink pitfall (Q-13)", () => {
+		const out = checkSpecPitfalls(
+			"# Doc\nThe delivery pipeline provides exactly-once delivery to external webhooks.",
+			MD,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toContain("[exactly_once_external]");
+	});
+
+	it("P2: fires on the in-house-crypto pitfall (SEC-8)", () => {
+		const out = checkSpecPitfalls(
+			"# Doc\nWe will implement AES and HMAC in-house for the crypto layer.",
+			MD,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toContain("[in_house_crypto]");
+	});
+
 	it("requires same-line co-occurrence and markdown files", () => {
 		// Patterns split across lines never fire (the FP control).
 		const split = "# Doc\nThe system is exactly-once.\nWebhooks are documented elsewhere.";
@@ -54,6 +74,30 @@ describe("checkSpecClaimUntagged", () => {
 
 	it("nudges untagged guarantee claims only in opted-in files", () => {
 		const out = checkSpecClaimUntagged(optedIn, MD);
+		expect(out).toEqual([
+			expect.objectContaining({ line: 3, text: expect.stringContaining("untagged") }),
+		]);
+	});
+
+	it("P1: fires on an untagged 'zero-copy' guarantee claim in an opted-in file", () => {
+		const doc = [
+			"# Doc",
+			"Replay is byte-identical. [claim: theorem]",
+			"The pipeline uses a zero-copy transfer between stages.",
+		].join("\n");
+		const out = checkSpecClaimUntagged(doc, MD);
+		expect(out).toEqual([
+			expect.objectContaining({ line: 3, text: expect.stringContaining("untagged") }),
+		]);
+	});
+
+	it("P2: fires on an untagged 'never loses' guarantee claim in an opted-in file", () => {
+		const doc = [
+			"# Doc",
+			"Replay is byte-identical. [claim: theorem]",
+			"The write-ahead log never loses a committed record.",
+		].join("\n");
+		const out = checkSpecClaimUntagged(doc, MD);
 		expect(out).toEqual([
 			expect.objectContaining({ line: 3, text: expect.stringContaining("untagged") }),
 		]);

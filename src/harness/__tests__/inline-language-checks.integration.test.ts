@@ -5,6 +5,23 @@ import {
 	__test__,
 	runInlineLanguageChecks,
 } from "../quality-checks/inline-language-checks.js";
+import type { InlineCheckDef, LanguageProfile } from "../types.js";
+
+/** Build a minimal synthetic LanguageProfile for cases getProfileForFile
+ *  can't reach (an invalid/unrecognized language id, a hand-picked pattern
+ *  the shipped profiles never use). */
+function buildProfile(id: string, inline_checks: InlineCheckDef[]): LanguageProfile {
+	return {
+		id: id as unknown as LanguageProfile["id"],
+		display_name: id,
+		file_extensions: [],
+		project_root_markers: [],
+		type_check: null,
+		linter: null,
+		test_runner: null,
+		inline_checks,
+	};
+}
 
 // Helper: run inline checks against a synthetic file on-disk path. The
 // filesystem never gets touched — runInlineLanguageChecks only reads
@@ -537,6 +554,56 @@ describe("per-language comment/string stripping", () => {
 	it("offset preservation: stripped line count equals original", async () => {
 		const src = `# comment\nprint(1)\n# another\n`;
 		expect(stripPython(src).split("\n").length).toBe(src.split("\n").length);
+	});
+});
+
+describe("runInlineLanguageChecks — safeCompile and stripForLanguage edge cases", () => {
+	it("skips a malformed regex pattern instead of throwing (safeCompile catch)", () => {
+		const def: InlineCheckDef = {
+			name: "malformed_pattern_check",
+			description: "deliberately malformed for the safeCompile catch path",
+			file_types: [".ts"],
+			severity: "warning",
+			fix_instruction: "n/a",
+			pattern: "(", // unbalanced group — `new RegExp` throws a SyntaxError
+		};
+		const profile = buildProfile("typescript", [def]);
+		const results = runInlineLanguageChecks("/repo/src/m.ts", "const x = 1;\n", profile);
+		expect(results).toEqual([]);
+	});
+
+	it("returns typescript content unstripped (stripForLanguage typescript branch)", () => {
+		const def: InlineCheckDef = {
+			name: "ts_probe_check",
+			description: "probes the typescript no-op stripper branch",
+			file_types: [".ts"],
+			severity: "warning",
+			fix_instruction: "n/a",
+			pattern: "TODO_MARKER",
+		};
+		const profile = buildProfile("typescript", [def]);
+		// The typescript branch of stripForLanguage returns content as-is (no
+		// comment/string stripping), so a pattern still matches text sitting
+		// inside a `//` comment — unlike every other language's stripper.
+		const src = "// TODO_MARKER: still present after the no-op strip\n";
+		const results = runInlineLanguageChecks("/repo/src/m.ts", src, profile);
+		expect(results.filter((r) => r.name === "ts_probe_check")).toHaveLength(1);
+	});
+
+	it("hits the exhaustiveness default branch for an unrecognized language id", () => {
+		const def: InlineCheckDef = {
+			name: "never_fires_check",
+			description: "unreachable in practice — only exercised via an invalid LanguageId",
+			file_types: [".foo"],
+			severity: "warning",
+			fix_instruction: "n/a",
+			pattern: "x",
+		};
+		const profile = buildProfile("not_a_real_language", [def]);
+		// The `never` exhaustiveness assertion is a compile-time guard, not a
+		// runtime throw: an unrecognized id at runtime falls into the default
+		// branch and returns the content unmodified rather than crashing.
+		expect(() => runInlineLanguageChecks("/repo/src/m.foo", "x\n", profile)).not.toThrow();
 	});
 });
 

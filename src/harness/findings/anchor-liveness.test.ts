@@ -35,14 +35,28 @@ function anchoredFinding(line: number): Finding {
 	);
 }
 
+// `upsertFinding` → `recordFinding` mirrors every finding into
+// `~/.interlinked/findings-corpus.jsonl` unless `INTERLINKED_HOME` redirects it.
+// The tmp `dir` above governs only the per-repo corpus; the global mirror
+// resolves its own path and swallows every error, so a leak is silent and the
+// test still passes. Same fix as `src/commands/findings.test.ts`.
+let fakeHome: string;
+let prevInterlinkedHome: string | undefined;
+
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "anchor-live-"));
 	file = join(dir, "mod.ts");
 	writeFileSync(file, CONTENT);
+	prevInterlinkedHome = process.env.INTERLINKED_HOME;
+	fakeHome = mkdtempSync(join(tmpdir(), "anchor-live-home-"));
+	process.env.INTERLINKED_HOME = fakeHome;
 });
 
 afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
+	rmSync(fakeHome, { recursive: true, force: true });
+	if (prevInterlinkedHome === undefined) delete process.env.INTERLINKED_HOME;
+	else process.env.INTERLINKED_HOME = prevInterlinkedHome;
 });
 
 describe("captureAnchor", () => {

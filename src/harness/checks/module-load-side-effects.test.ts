@@ -29,4 +29,7 @@ describe("findTopLevelSideEffects", () => {
 	it("does not flag I/O-call text inside a string literal", () => {
 		expect(n('const note = "remember to call readFileSync at startup";')).toBe(0);
 	});
+	it("N1: does not flag top-level I/O in a hook-entry entrypoint module", () => {
+		expect(n('const cfg = readFileSync("./c.json");', "src/hook-entry.ts")).toBe(0);
+	});
 });

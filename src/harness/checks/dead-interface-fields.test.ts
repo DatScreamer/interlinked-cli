@@ -2,7 +2,7 @@
 // Cross-module dead-interface-field detector — unit + integration tests
 // ===========================================
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -138,6 +138,65 @@ describe("findDeadInterfaceFields", () => {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "consumer.ts"), `export function f() { return 1; }\n`);
 		expect(findDeadInterfaceFields(dir, dir)).toEqual([]);
+	});
+
+	it("returns empty when targetDir/searchRoot don't exist (walkSourceFiles readdirSync catch)", () => {
+		const missing = join(tmp, "does-not-exist");
+		expect(findDeadInterfaceFields(missing, missing)).toEqual([]);
+	});
+
+	it("skips a broken symlink entry while walking instead of throwing (walkSourceFiles statSync catch)", () => {
+		const dir = join(tmp, "src");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "types.ts"),
+			`export interface Settings {\n  isolatedField: number;\n}\n`,
+		);
+		// A dangling symlink is listed by readdirSync but statSync on it throws
+		// ENOENT — the walk must skip it rather than crash.
+		symlinkSync(join(dir, "ghost-target.ts"), join(dir, "broken-link.ts"));
+		const findings = findDeadInterfaceFields(dir, dir);
+		expect(findings.map((f) => f.field)).toContain("isolatedField");
+	});
+
+	it("skips an unreadable declaring file instead of throwing (extractInterfaceFields readFileSync catch)", () => {
+		const dir = join(tmp, "src");
+		mkdirSync(dir, { recursive: true });
+		const declPath = join(dir, "secret.ts");
+		writeFileSync(declPath, `export interface Settings {\n  isolatedField: number;\n}\n`);
+		chmodSync(declPath, 0o000);
+		try {
+			// The file can't be read, so extractInterfaceFields returns [] for it —
+			// no crash, and no finding for a field the detector never saw.
+			const findings = findDeadInterfaceFields(dir, dir);
+			expect(findings.map((f) => f.field)).not.toContain("isolatedField");
+		} finally {
+			chmodSync(declPath, 0o644);
+		}
+	});
+
+	it("skips an unreadable corpus file while searching for reads instead of throwing (fieldIsReadElsewhere readFileSync catch)", () => {
+		const dir = join(tmp, "src");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "types.ts"),
+			`export interface Settings {\n  isolatedField: number;\n}\n`,
+		);
+		// This file DOES read isolatedField, but it's unreadable — the search
+		// must fail open (treat it as "not a read") rather than throw, so the
+		// field still comes back as dead-looking rather than crashing the run.
+		const consumerPath = join(dir, "consumer.ts");
+		writeFileSync(
+			consumerPath,
+			`import type { Settings } from "./types.js";\nexport function f(s: Settings) { return s.isolatedField; }\n`,
+		);
+		chmodSync(consumerPath, 0o000);
+		try {
+			const findings = findDeadInterfaceFields(dir, dir);
+			expect(findings.map((f) => f.field)).toContain("isolatedField");
+		} finally {
+			chmodSync(consumerPath, 0o644);
+		}
 	});
 });
 

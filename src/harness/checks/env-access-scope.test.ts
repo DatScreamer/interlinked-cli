@@ -29,4 +29,7 @@ describe("findProcessEnvOutsideConfig", () => {
 	it("does not flag process.env-like text inside a string literal", () => {
 		expect(n('const help = "set process.env.FOO before running";')).toBe(0);
 	});
+	it("N1: does not flag reads in a bootstrap-named module (boundary allowlist)", () => {
+		expect(n("const url = process.env.SERVER_URL;", "src/bootstrap.ts")).toBe(0);
+	});
 });

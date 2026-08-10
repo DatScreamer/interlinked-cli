@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,15 @@ describe("liveForeignDaemonPid", () => {
 		writeFileSync(p, `${process.ppid}\n`);
 		expect(liveForeignDaemonPid(p)).toBe(process.ppid);
 	});
+
+	it("returns null when the pid path is unreadable (safeReadFile catch — a directory, not a file)", () => {
+		// existsSync(path) is true for a directory too, but readFileSync throws
+		// EISDIR — safeReadFile swallows that and readPidFile then sees an
+		// empty/non-numeric string, so this reads as "no pid" rather than crashing.
+		const p = join(tmp, ".interlinked", "harness.pid");
+		mkdirSync(p);
+		expect(liveForeignDaemonPid(p)).toBeNull();
+	});
 });
 
 describe("sanitizeSessionId", () => {
@@ -108,6 +117,16 @@ describe("discoverDaemons", () => {
 		const daemons = discoverDaemons(tmp);
 		expect(nonNull(daemons[0]).alive).toBe(false);
 	});
+
+	it("returns empty when .interlinked exists but is unreadable as a directory (readdirSync catch)", () => {
+		// .interlinked EXISTS (existsSync is true for a plain file too) but is a
+		// FILE, not a directory — readdirSync throws ENOTDIR, which is swallowed
+		// rather than propagated.
+		const root = mkdtempSync(join(tmpdir(), "interlinked-sp-file-"));
+		writeFileSync(join(root, ".interlinked"), "not a directory");
+		expect(discoverDaemons(root)).toEqual([]);
+		rmSync(root, { recursive: true, force: true });
+	});
 });
 
 describe("cleanupOrphans", () => {
@@ -125,6 +144,25 @@ describe("cleanupOrphans", () => {
 		writeFileSync(join(tmp, ".interlinked", "harness-live.pid"), `${process.pid}`);
 		const cleaned = cleanupOrphans(tmp);
 		expect(cleaned.length).toBe(0);
+	});
+
+	it("still reports a dead daemon as cleaned when its files can't actually be removed (removeIfExists catch)", () => {
+		// Removing a directory ENTRY requires WRITE permission on the containing
+		// directory, not the entry itself — stripping write from .interlinked
+		// makes rmSync throw EACCES even though the pid file is still readable
+		// and statable. removeIfExists swallows that; cleanupOrphans still
+		// records the dead entry (removal failure is not a discovery failure).
+		const pidFile = join(tmp, ".interlinked", "harness-locked.pid");
+		writeFileSync(pidFile, "999999999");
+		chmodSync(join(tmp, ".interlinked"), 0o500);
+		try {
+			const cleaned = cleanupOrphans(tmp);
+			expect(cleaned.map((c) => c.session_id)).toContain("locked");
+		} finally {
+			// Restore write permission so the outer afterEach's recursive rmSync
+			// can actually delete the directory.
+			chmodSync(join(tmp, ".interlinked"), 0o700);
+		}
 	});
 });
 
@@ -183,5 +221,21 @@ describe("isDaemonSocketServing", () => {
 		await new Promise<void>((resolve) => nonNull(server).listen(sockPath, () => resolve()));
 
 		await expect(isDaemonSocketServing(sockPath, { timeout_ms: 200 })).resolves.toBe(true);
+	});
+
+	it("resolves true (fail-safe) on an unexpected connect error code (EACCES, not the three known-safe codes)", async () => {
+		// A parent directory with no write/execute-for-others permission makes
+		// the connect attempt fail with EACCES — a code that is neither
+		// ECONNREFUSED, ENOENT, nor ENOTSOCK, so the function can't tell
+		// "nobody is listening" from "wedged" and defers to the fail-safe branch.
+		const lockedDir = join(tmp, ".interlinked", "locked");
+		mkdirSync(lockedDir);
+		const sockPath = join(lockedDir, "x.sock");
+		chmodSync(lockedDir, 0o000);
+		try {
+			await expect(isDaemonSocketServing(sockPath, { timeout_ms: 200 })).resolves.toBe(true);
+		} finally {
+			chmodSync(lockedDir, 0o700);
+		}
 	});
 });

@@ -36,6 +36,33 @@ describe("checkAesEcbMode", () => {
 		const out = checkAesEcbMode(lines.join("\n"), "a.py");
 		expect(out).toHaveLength(10);
 	});
+
+	it("pins the exact 1-indexed line, trimmed text, and 150-char slice cap on a non-first-line match", () => {
+		const filler1 = "x = 1";
+		const raw = "   c = AES.new(k, AES.MODE_ECB)" + "z".repeat(200) + "   ";
+		const filler2 = "y = 2";
+		const content = [filler1, raw, filler2].join("\n");
+		const out = checkAesEcbMode(content, "a.py");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toBe(raw.trim().slice(0, 150));
+		expect(out[0]?.text).toHaveLength(150);
+	});
+
+	it("pins the exact line for the Node algorithm-string form on a non-first line", () => {
+		const content = ["x = 1", 'createCipheriv("aes-128-ecb", k, iv)', "y = 2"].join("\n");
+		const out = checkAesEcbMode(content, "a.ts");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+	});
+
+	it("flags modes.ECB( with no space before the paren (kills the \\s*->\\s bare-quantifier mutant)", () => {
+		expect(checkAesEcbMode("cipher = modes.ECB(iv)", "a.py")).toHaveLength(1);
+	});
+
+	it("flags modes.ECB ( with a space before the paren (kills the \\s*->\\S* mutant)", () => {
+		expect(checkAesEcbMode("cipher = modes.ECB (iv)", "a.py")).toHaveLength(1);
+	});
 });
 
 describe("checkTlsVerifyDisabled", () => {
@@ -65,6 +92,58 @@ describe("checkTlsVerifyDisabled", () => {
 		const out = checkTlsVerifyDisabled(lines.join("\n"), "a.py");
 		expect(out).toHaveLength(10);
 	});
+
+	it("pins the exact 1-indexed line, trimmed text, and 150-char slice cap on a non-first-line match", () => {
+		const filler1 = "x = 1";
+		const raw = "   requests.get(url, verify=False)" + "z".repeat(200) + "   ";
+		const filler2 = "y = 2";
+		const content = [filler1, raw, filler2].join("\n");
+		const out = checkTlsVerifyDisabled(content, "a.py");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toBe(raw.trim().slice(0, 150));
+		expect(out[0]?.text).toHaveLength(150);
+	});
+
+	it("flags 'verify = False' with spaces both sides (kills both verify\\S* quantifier mutants)", () => {
+		expect(checkTlsVerifyDisabled("requests.get(url, verify = False)", "a.py")).toHaveLength(1);
+	});
+
+	it("flags InsecureSkipVerify:true with no spaces (kills the two bare-\\s InsecureSkipVerify mutants)", () => {
+		expect(checkTlsVerifyDisabled("tls.Config{InsecureSkipVerify:true}", "a.go")).toHaveLength(1);
+	});
+
+	it("flags InsecureSkipVerify : true with spaces both sides (kills the two \\S* InsecureSkipVerify mutants)", () => {
+		expect(checkTlsVerifyDisabled("tls.Config{InsecureSkipVerify : true}", "a.go")).toHaveLength(1);
+	});
+
+	it("flags rejectUnauthorized:false with no space (kills the bare-\\s rejectUnauthorized mutant)", () => {
+		expect(checkTlsVerifyDisabled("https.request({rejectUnauthorized:false})", "a.ts")).toHaveLength(1);
+	});
+
+	it("flags rejectUnauthorized : false with a space before ':' (kills the \\S* rejectUnauthorized mutant)", () => {
+		expect(checkTlsVerifyDisabled("https.request({rejectUnauthorized : false})", "a.ts")).toHaveLength(1);
+	});
+
+	it("flags check_hostname=False with no spaces (kills the two bare-\\s check_hostname mutants)", () => {
+		expect(checkTlsVerifyDisabled("ctx.check_hostname=False", "a.py")).toHaveLength(1);
+	});
+
+	it("flags check_hostname = False with spaces both sides (kills the two \\S* check_hostname mutants)", () => {
+		expect(checkTlsVerifyDisabled("ctx.check_hostname = False", "a.py")).toHaveLength(1);
+	});
+
+	it("flags a zero-gap NODE_TLS_REJECT_UNAUTHORIZED=\"0\" (kills the exact-1-char-gap and bare-\\s env mutants)", () => {
+		expect(checkTlsVerifyDisabled('NODE_TLS_REJECT_UNAUTHORIZED="0"', "a.ts")).toHaveLength(1);
+	});
+
+	it("flags NODE_TLS_REJECT_UNAUTHORIZED with non-whitespace filler before '=' (kills the [\\s\\S]->[\\s\\s] mutant)", () => {
+		expect(checkTlsVerifyDisabled('NODE_TLS_REJECT_UNAUTHORIZED,,="0"', "a.ts")).toHaveLength(1);
+	});
+
+	it("flags NODE_TLS_REJECT_UNAUTHORIZED=0 with an unquoted zero (kills the quote-required mutant)", () => {
+		expect(checkTlsVerifyDisabled("NODE_TLS_REJECT_UNAUTHORIZED=0", "a.ts")).toHaveLength(1);
+	});
 });
 
 describe("checkWeakHash", () => {
@@ -88,6 +167,30 @@ describe("checkWeakHash", () => {
 		const lines = Array.from({ length: 12 }, (_, i) => `h${i} = hashlib.md5(data)`);
 		const out = checkWeakHash(lines.join("\n"), "a.py");
 		expect(out).toHaveLength(10);
+	});
+
+	it("pins the exact 1-indexed line, trimmed text, and 150-char slice cap on a non-first-line match", () => {
+		const filler1 = "x = 1";
+		const raw = "   h = hashlib.md5(data)" + "z".repeat(200) + "   ";
+		const filler2 = "y = 2";
+		const content = [filler1, raw, filler2].join("\n");
+		const out = checkWeakHash(content, "a.py");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toBe(raw.trim().slice(0, 150));
+		expect(out[0]?.text).toHaveLength(150);
+	});
+
+	it("flags hashlib.md5 ( with a space before the paren (kills the direct-form \\s*->\\S* mutant)", () => {
+		expect(checkWeakHash("hashlib.md5 (data)", "a.py")).toHaveLength(1);
+	});
+
+	it("flags createHash (\"md5\") with a space before the paren (kills the first createHash \\s*->\\S* mutant)", () => {
+		expect(checkWeakHash('crypto.createHash ("md5")', "a.ts")).toHaveLength(1);
+	});
+
+	it("flags createHash( \"md5\") with a space after the paren (kills the second createHash \\s*->\\S* mutant)", () => {
+		expect(checkWeakHash('crypto.createHash( "md5")', "a.ts")).toHaveLength(1);
 	});
 });
 
@@ -230,6 +333,75 @@ describe("checkRecursiveWalkerLstat", () => {
 		const out = checkRecursiveWalkerLstat(fns.join("\n"), "src/walker.ts");
 		expect(out).toHaveLength(10);
 	});
+
+	it("pins the exact 1-indexed line, trimmed text, and 150-char slice cap for the statSync call", () => {
+		const src = [
+			'import { readdirSync, statSync } from "node:fs";',
+			"function walk(dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    const p = dir + '/' + e;",
+			"    const st =    statSync(p)" + "z".repeat(200) + "    ;   ",
+			"    if (st.isDirectory()) walk(p);",
+			"  }",
+			"}",
+		];
+		const matchLine = src[4] as string;
+		const out = checkRecursiveWalkerLstat(src.join("\n"), "src/walker.ts");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(5);
+		expect(out[0]?.text).toBe(matchLine.trim().slice(0, 150));
+		expect(out[0]?.text).toHaveLength(150);
+	});
+
+	it("flags a recursive walker declared as `const walk = (dir) => { ... }` (declRe2/m2 branch)", () => {
+		const src = [
+			'import { readdirSync, statSync } from "node:fs";',
+			"const walk = (dir) => {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"};",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still detects readdirSync with a space before its paren (kills the readdirSync \\s*->\\S* mutants)", () => {
+		const src = [
+			"function walk(dir) {",
+			"  for (const e of readdirSync (dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("still detects statSync with a space before its paren (kills the statSync \\s*->\\S* mutants)", () => {
+		const src = [
+			"function walk(dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync (e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does NOT flag a walker whose lstatSync call has a space before its paren (kills the lstatSync \\s*->\\S* mutant)", () => {
+		const src = [
+			"function walk(dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (lstatSync (e).isSymbolicLink()) continue;",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
 });
 
 describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
@@ -271,5 +443,29 @@ describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
 		);
 		const out = checkWeakRandom(lines.join("\n"), "src/a.py");
 		expect(out).toHaveLength(10);
+	});
+
+	it("pins the exact 1-indexed line, trimmed text, and 150-char slice cap on a non-first-line match", () => {
+		const filler1 = "idx = 1";
+		const raw = "   nonceValue = random.random()" + "z".repeat(200) + "   ";
+		const filler2 = "idx2 = 2";
+		const content = [filler1, raw, filler2].join("\n");
+		const out = checkWeakRandom(content, "src/a.py");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.line).toBe(2);
+		expect(out[0]?.text).toBe(raw.trim().slice(0, 150));
+		expect(out[0]?.text).toHaveLength(150);
+	});
+
+	it("does NOT fire on a .ts extension even when content would match the weak-random + security-context shape (kills the .py-guard-removed mutant)", () => {
+		// If the `getExtension(filePath) !== ".py"` guard were disabled, this
+		// content (a real random.<fn> call plus a security-context identifier)
+		// would produce a match on ANY extension — so a non-.py result of []
+		// proves the guard is still active.
+		expect(checkWeakRandom("nonceValue = random.randint(0, 100)", "src/a.ts")).toEqual([]);
+	});
+
+	it("flags random.random ( with a space before the paren (kills the \\s*->\\S* mutant)", () => {
+		expect(checkWeakRandom("nonceValue = random.random ()", "src/a.py")).toHaveLength(1);
 	});
 });

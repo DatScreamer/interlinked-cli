@@ -957,3 +957,132 @@ describe("checkRegexFromInterpolation — mutation-hardening", () => {
 		expect(found.map((f) => f.line)).toEqual([2]);
 	});
 });
+
+// ─── Mutation-hardening round 2 (Stryker survivor sweep, 2026-08) ────────────
+//
+// Every case below embeds a literal "RegExp(" call INSIDE a regex-literal
+// (or comment / bracket) that must stay hidden for correct behavior. A
+// mis-parse that ends the containing token early leaks that inner text into
+// the stripped view as live code, producing a spurious finding — which is
+// exactly what these cases pin against.
+
+describe("checkRegexFromInterpolation — mutation-hardening round 2", () => {
+	it("R98: an escaped `/` inside a regex literal is skipped, not read as the closing delimiter", () => {
+		const src = "const bad = /a\\/ RegExp(`${y}`)/;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R99: a regex literal that bails at a newline lets the swallowed text be re-scanned as real code", () => {
+		const src = ["const bad = /abc", "RegExp(`${y}`)xyz/;"].join("\n");
+		const found = run(src, "src/lib/nlbail.ts");
+		expect(found.map((f) => f.line)).toEqual([2]);
+	});
+
+	it("R100: a char class that never exits swallows the rest of the line as regex interior — the real call on line 2 still fires", () => {
+		const src = ["const closeClass = /[a/RegExp(`${z}`)]/;", "const re = new RegExp(`${w}`);"].join("\n");
+		const found = run(src, "src/lib/neverexit.ts");
+		expect(found.map((f) => f.line)).toEqual([2]);
+	});
+
+	it("R101: a `/` immediately inside a char class is protected — not mistaken for the closing delimiter", () => {
+		const src = "const bad = /[ / RegExp(`${z}`)]/;\nconst safe=1;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R102: a char class whose close never registers bails at end of line, exposing nothing extra from a well-formed one", () => {
+		const src = "const bad = /[a RegExp(`${z}`) b]c/;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R103: a `/` right after `[` is still inside the class — not read as the closing delimiter", () => {
+		const src = "const bad = /a[b/ RegExp(`${z}`)]c/;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R104: only a genuine `/` closes a regex literal — no other character is mistaken for it", () => {
+		const src = "const bad = /abc RegExp(`${z}`) def/;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R105: trailing regex flags are letters-only — the flag scan correctly bounds the token so a following call stays hidden", () => {
+		const src = "const bad = /x/RegExp(`${z}`);";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R106: the significant-char backscan checks the char exactly at its window boundary, not one short of it", () => {
+		const src = `x${" ".repeat(199)}/RegExp(\`\${z}\`)/;`;
+		expect(fires(src)).toBe(true);
+	});
+
+	it("R107: a `/` at the very start of a file with nothing before it is a regex literal, not division", () => {
+		const src = "/RegExp(`${z}`)/;";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R108: an unclosed-looking block comment with a later `*/` is bounded there, not swallowed to EOF", () => {
+		const src = "/* comment */\nconst re = new RegExp(`${x}`);";
+		const found = run(src);
+		expect(found.map((f) => f.line)).toEqual([2]);
+	});
+
+	it("R109: the escape-lookbehind window is clamped to the file start, not computed as a negative slice offset", () => {
+		const prefix = [
+			"function guard(userInput) {",
+			"  const n = escapeForRegex(userInput);",
+			"  return new RegExp(`^${n}`);",
+			"}",
+			"",
+		].join("\n");
+		const padding = "// pad ".repeat(400);
+		expect(run(prefix + padding, "src/lib/paddedescape.ts")).toHaveLength(0);
+	});
+
+	it("R110: the two-step-escape lookbehind is used as-is when no earlier scope boundary exists to cut it", () => {
+		const src = "n = escapeForRegex(userInput);\nconst re = new RegExp(`^${n}`);";
+		expect(run(src, "src/lib/nocut.ts")).toHaveLength(0);
+	});
+
+	it("R111: a `+` inside a nested call's own parens is not a top-level split point of the outer concatenation", () => {
+		const src = "const re = new RegExp('^' + escapeRegExp(a + b));";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R112: an escape-call-shaped prefix that never closes its own parens is not recognized as an escape call", () => {
+		const src = "const re = new RegExp(`${escapeFoo(x}`);";
+		expect(fires(src)).toBe(true);
+	});
+
+	it("R113: argument extraction respects the scan budget even when a real closing paren exists further out", () => {
+		const src = `new RegExp('${"x".repeat(1550)}' + \`\${y}\`);`;
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R114: a stray unmatched bracket is caught immediately — later brackets rebalancing the depth counter don't resync the scan", () => {
+		const src = "const re = new RegExp(x]( + y));";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("R115: the CONCAT_MSG text is pinned in full, not just matched by a substring", () => {
+		const src = "const re = new RegExp('^' + userInput);";
+		const found = run(src);
+		expect(found).toEqual([
+			{
+				line: 1,
+				text:
+					"regex_from_interpolation: RegExp built by string concatenation with unescaped dynamic parts — data becomes pattern syntax; " +
+					"escape them (RegExp.escape / an escapeRegExp helper) or compose from CONST_CASE fragments — " +
+					src,
+			},
+		]);
+	});
+
+	it("R116: a decimal exponent literal ('5e10') is not a clean numeric match — the anchor requires the whole substitution to be numeric", () => {
+		const src = "const re = new RegExp(`x{1,${5e10}}`);";
+		expect(fires(src)).toBe(true);
+	});
+
+	it("R117: the escape-call head must match from the very start of the operand, not from a match found mid-string", () => {
+		const src = "const re = new RegExp('^' + 9escapeFoo(x));";
+		expect(fires(src)).toBe(true);
+	});
+});

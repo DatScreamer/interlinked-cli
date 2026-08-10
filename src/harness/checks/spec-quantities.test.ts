@@ -19,6 +19,15 @@ describe("checkSpecCapacityClaims", () => {
 		);
 	});
 
+	it("P2: fires on an additional unaddressed N-bit field (sequence vocab)", () => {
+		const out = checkSpecCapacityClaims(
+			"# Doc\nThe 6-bit sequence number increments on every request; reuse policy is undocumented.",
+			MD,
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("64");
+	});
+
 	it("flags every bit field on a line, not just the first (round-2 #28)", () => {
 		const out = checkSpecCapacityClaims(
 			"# D\nA 12-bit slot and an 8-bit generation counter are reused per epoch.",
@@ -63,6 +72,20 @@ describe("checkSpecTableSums", () => {
 			}),
 		]);
 		expect(out[0]?.text).toContain("sum to 72");
+	});
+
+	it("P2: fires when a Sum-labeled row disagrees with the column total", () => {
+		const table = [
+			"| Region | Revenue |",
+			"|---|---|",
+			"| East | 120 |",
+			"| West | 130 |",
+			"| **Sum** | 300 |",
+		].join("\n");
+		const out = checkSpecTableSums(table, MD);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("states 300");
+		expect(out[0]?.text).toContain("sum to 250");
 	});
 
 	it("stays silent on correct totals, non-numeric columns, and tiny tables", () => {

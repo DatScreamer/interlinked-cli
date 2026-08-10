@@ -25,7 +25,7 @@ const cloneBody = `{
 }`;
 
 describe("checkCodeClones", () => {
-	it("flags two near-identical functions in the same file", () => {
+	it("P1: flags two near-identical functions in the same file", () => {
 		const content = `
 function collectA(rows: Row[]): number[] ${cloneBody}
 function collectB(rows: Row[]): number[] ${cloneBody}
@@ -37,7 +37,7 @@ function collectB(rows: Row[]): number[] ${cloneBody}
 		expect(nonNull(matches[0]).text).toContain("similar to");
 	});
 
-	it("flags a clone living in a sibling file", () => {
+	it("P2: flags a clone living in a sibling file", () => {
 		const editedContent = `
 function collectA(rows: Row[]): number[] ${cloneBody}
 `;
@@ -53,11 +53,11 @@ function collectZ(rows: Row[]): number[] ${cloneBody}
 		expect(nonNull(matches[0]).text).toContain("b.ts");
 	});
 
-	it("returns [] for non-JS/TS files", () => {
+	it("N1: does not fire on non-JS/TS files (extension guard)", () => {
 		expect(checkCodeClones("whatever", join(dir, "notes.md"))).toEqual([]);
 	});
 
-	it("returns [] for files with no duplicated functions", () => {
+	it("N2: does not fire on files with no duplicated functions", () => {
 		const content = `
 function uniqueOne(x: number): number {
 	const a = x + 1;

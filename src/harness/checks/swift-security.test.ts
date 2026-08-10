@@ -32,22 +32,22 @@ describe("checkSwiftWeakCrypto", () => {
 		expect(checkSwiftWeakCrypto(code, "Crypto.swift").length).toBe(1);
 	});
 
-	it("does not flag SHA256 (modern hash)", () => {
+	it("N1: does not flag SHA256 (modern hash)", () => {
 		const code = "let h = SHA256.hash(data: data)";
 		expect(checkSwiftWeakCrypto(code, "Crypto.swift")).toEqual([]);
 	});
 
-	it("does not flag inside a string literal", () => {
+	it("N2: does not flag inside a string literal", () => {
 		const code = 'let s = "do not use CC_MD5 here"';
 		expect(checkSwiftWeakCrypto(code, "Crypto.swift")).toEqual([]);
 	});
 
-	it("does not flag in non-Swift files", () => {
+	it("N3: does not flag in non-Swift files", () => {
 		const code = "CC_MD5(input)";
 		expect(checkSwiftWeakCrypto(code, "Crypto.ts")).toEqual([]);
 	});
 
-	it("skips test files", () => {
+	it("N4: skips test files", () => {
 		const code = "CC_MD5(input)";
 		expect(checkSwiftWeakCrypto(code, "CryptoTests.swift")).toEqual([]);
 	});
@@ -64,37 +64,42 @@ describe("checkSwiftHttpUrlLiteral", () => {
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift").length).toBe(1);
 	});
 
-	it("does not flag https://", () => {
+	it("N1: does not flag https://", () => {
 		const code = 'let u = URL(string: "https://api.example.com/v1")';
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
 	});
 
-	it("does not flag http://localhost (ATS allows it)", () => {
+	it("N2: does not flag http://localhost (ATS allows it)", () => {
 		const code = 'let u = URL(string: "http://localhost:8080/test")';
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
 	});
 
-	it("does not flag http://127.0.0.1", () => {
+	it("N3: does not flag http://127.0.0.1", () => {
 		const code = 'let u = URL(string: "http://127.0.0.1:9000/")';
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
 	});
 
-	it("does not flag http://device.local (ATS-permitted)", () => {
+	it("N4: does not flag http://192.168.1.5 (RFC 1918 private)", () => {
+		const code = 'let u = URL(string: "http://192.168.1.5:8080/dev")';
+		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
+	});
+
+	it("N5: does not flag http://device.local (ATS-permitted)", () => {
 		const code = 'let u = URL(string: "http://my-printer.local/status")';
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
 	});
 
-	it("does not flag in a comment", () => {
+	it("N6: does not flag in a comment", () => {
 		const code = "// example: http://api.example.com/foo";
 		expect(checkSwiftHttpUrlLiteral(code, "Net.swift")).toEqual([]);
 	});
 
-	it("does not flag in non-Swift files", () => {
+	it("N7: does not flag in non-Swift files", () => {
 		const code = '"http://api.example.com/v1"';
 		expect(checkSwiftHttpUrlLiteral(code, "Net.ts")).toEqual([]);
 	});
 
-	it("skips test files", () => {
+	it("N8: skips test files", () => {
 		const code = 'let u = URL(string: "http://api.example.com/v1")';
 		expect(checkSwiftHttpUrlLiteral(code, "NetTests.swift")).toEqual([]);
 	});
@@ -121,22 +126,27 @@ describe("checkSwiftUserDefaultsForSecret", () => {
 		expect(checkSwiftUserDefaultsForSecret(code, "View.swift").length).toBe(1);
 	});
 
-	it("does not flag UserDefaults for non-sensitive key", () => {
+	it("N1: does not flag UserDefaults for non-sensitive key", () => {
 		const code = 'UserDefaults.standard.set(true, forKey: "hasSeenOnboarding")';
 		expect(checkSwiftUserDefaultsForSecret(code, "Auth.swift")).toEqual([]);
 	});
 
-	it("does not flag @AppStorage for theme preference", () => {
+	it("N2: does not flag @AppStorage for theme preference", () => {
 		const code = '@AppStorage("themePreference") var theme: String = "dark"';
 		expect(checkSwiftUserDefaultsForSecret(code, "View.swift")).toEqual([]);
 	});
 
-	it("does not flag in non-Swift files", () => {
+	it("N3: does not flag a plain dictionary subscript unrelated to UserDefaults", () => {
+		const code = 'settings.set(pw, forKey: "password")';
+		expect(checkSwiftUserDefaultsForSecret(code, "Auth.swift")).toEqual([]);
+	});
+
+	it("N4: does not flag in non-Swift files", () => {
 		const code = 'UserDefaults.standard.set(pw, forKey: "password")';
 		expect(checkSwiftUserDefaultsForSecret(code, "Auth.ts")).toEqual([]);
 	});
 
-	it("skips test files", () => {
+	it("N5: skips test files", () => {
 		const code = 'UserDefaults.standard.set(pw, forKey: "password")';
 		expect(checkSwiftUserDefaultsForSecret(code, "AuthTests.swift")).toEqual([]);
 	});
@@ -170,10 +180,18 @@ describe("checkSwiftAtsArbitraryLoads", () => {
 		expect(checkSwiftAtsArbitraryLoads(code, "Info.plist").length).toBe(1);
 	});
 
-	it("does not flag NSAllowsArbitraryLoads false", () => {
+	it("N1: does not flag NSAllowsArbitraryLoads false", () => {
 		const code = `<plist><dict>
 			<key>NSAllowsArbitraryLoads</key>
 			<false/>
+		</dict></plist>`;
+		expect(checkSwiftAtsArbitraryLoads(code, "Info.plist")).toEqual([]);
+	});
+
+	it("N2: does not flag NSAllowsArbitraryLoads NO-string form", () => {
+		const code = `<plist><dict>
+			<key>NSAllowsArbitraryLoads</key>
+			<string>NO</string>
 		</dict></plist>`;
 		expect(checkSwiftAtsArbitraryLoads(code, "Info.plist")).toEqual([]);
 	});
@@ -195,14 +213,14 @@ describe("checkSwiftAtsArbitraryLoads", () => {
 		expect(checkSwiftAtsArbitraryLoads(code, "Info.plist").length).toBe(1);
 	});
 
-	it("does not flag a plist without ATS keys", () => {
+	it("N3: does not flag a plist without ATS keys", () => {
 		const code = `<plist><dict>
 			<key>CFBundleName</key><string>App</string>
 		</dict></plist>`;
 		expect(checkSwiftAtsArbitraryLoads(code, "Info.plist")).toEqual([]);
 	});
 
-	it("does not run on .swift files", () => {
+	it("N4: does not run on .swift files", () => {
 		const code = "NSAllowsArbitraryLoads";
 		expect(checkSwiftAtsArbitraryLoads(code, "Foo.swift")).toEqual([]);
 	});

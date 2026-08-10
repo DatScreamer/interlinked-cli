@@ -29,6 +29,9 @@ const metricsReworkCommand = vi.fn();
 const mutationCheckCommand = vi.fn();
 const mutationBaselineCommand = vi.fn();
 const mutationAcceptCommand = vi.fn();
+const mutationMeasureCommand = vi.fn();
+const mutationSurvivorsCommand = vi.fn();
+const mutationSweepCommand = vi.fn();
 const designCommand = vi.fn();
 
 vi.mock("../commands/check.js", () => ({
@@ -77,6 +80,13 @@ vi.mock("../commands/mutation.js", () => ({
 	mutationCheckCommand: (...args: unknown[]) => mutationCheckCommand(...args),
 	mutationBaselineCommand: (...args: unknown[]) => mutationBaselineCommand(...args),
 	mutationAcceptCommand: (...args: unknown[]) => mutationAcceptCommand(...args),
+	mutationMeasureCommand: (...args: unknown[]) => mutationMeasureCommand(...args),
+}));
+vi.mock("../commands/mutation-survivors.js", () => ({
+	mutationSurvivorsCommand: (...args: unknown[]) => mutationSurvivorsCommand(...args),
+}));
+vi.mock("../commands/mutation-sweep.js", () => ({
+	mutationSweepCommand: (...args: unknown[]) => mutationSweepCommand(...args),
 }));
 vi.mock("../commands/design.js", () => ({
 	designCommand: (...args: unknown[]) => designCommand(...args),
@@ -143,7 +153,15 @@ describe("registerQualityCommands — structure", () => {
 			// reported to a human but never reached the manifest, so campaign work
 			// was invisible to the ratchet (files hardened 261 -> 25 survivors still
 			// read 261). Read-only by default; `--record` writes via applyMeasuredRun.
-			["accept", "baseline", "check", "measure"].sort(),
+			// `survivors` (2026-08-09) is the READ verb for the same manifest: every
+			// mutant the runner already failed to kill was recorded and unreadable,
+			// so standing mutation debt was reachable only by hand-written JSON
+			// scripts. State only — no runner, no re-measurement.
+			// `sweep` (2026-08-09) drives that work-list back through the SAME
+			// single-file pipeline `measure` uses (`measureOneFile`), so the
+			// RED-suite pre-flight exists once. Sequential per box; `--shard i/n`
+			// is how a fleet splits the list with no coordinator.
+			["accept", "baseline", "check", "measure", "survivors", "sweep"].sort(),
 		);
 	});
 
@@ -854,6 +872,103 @@ describe("mutation subcommands — action wiring", () => {
 			}),
 		).rejects.toThrow();
 		expect(mutationAcceptCommand).not.toHaveBeenCalled();
+	});
+
+	it("measure forwards the file argument plus flags to mutationMeasureCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			["mutation", "measure", "src/foo.ts", "--record", "--skip-preflight", "--json"],
+			{ from: "user" },
+		);
+		expect(mutationMeasureCommand).toHaveBeenCalledWith("src/foo.ts", {
+			record: true,
+			skipPreflight: true,
+			json: true,
+		});
+	});
+
+	it("measure passes empty opts by default", async () => {
+		const program = build();
+		await program.parseAsync(["mutation", "measure", "src/foo.ts"], { from: "user" });
+		expect(mutationMeasureCommand).toHaveBeenCalledWith("src/foo.ts", {});
+	});
+
+	it("survivors forwards filter/shard/display options to mutationSurvivorsCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"mutation",
+				"survivors",
+				"--file",
+				"src/foo.ts",
+				"--mutator",
+				"ConditionalExpression",
+				"--top",
+				"5",
+				"--shard",
+				"1/3",
+				"--include-dispositioned",
+				"--include-stale",
+				"--json",
+			],
+			{ from: "user" },
+		);
+		expect(mutationSurvivorsCommand).toHaveBeenCalledWith({
+			file: "src/foo.ts",
+			mutator: "ConditionalExpression",
+			top: "5",
+			shard: "1/3",
+			includeDispositioned: true,
+			includeStale: true,
+			json: true,
+		});
+	});
+
+	it("survivors passes empty opts by default", async () => {
+		const program = build();
+		await program.parseAsync(["mutation", "survivors"], { from: "user" });
+		expect(mutationSurvivorsCommand).toHaveBeenCalledWith({});
+	});
+
+	it("sweep forwards a single --runner-url as a one-element array to mutationSweepCommand", async () => {
+		const program = build();
+		await program.parseAsync(
+			["mutation", "sweep", "--runner-url", "http://box-a:9000", "--limit", "3", "--dry-run"],
+			{ from: "user" },
+		);
+		expect(mutationSweepCommand).toHaveBeenCalledWith({
+			runnerUrl: ["http://box-a:9000"],
+			limit: "3",
+			dryRun: true,
+		});
+	});
+
+	it("sweep accumulates repeated --runner-url flags into one array (fan-out)", async () => {
+		const program = build();
+		await program.parseAsync(
+			[
+				"mutation",
+				"sweep",
+				"--runner-url",
+				"http://box-a:9000",
+				"--runner-url",
+				"http://box-b:9000",
+				"--unqualified-only",
+				"--skip-preflight",
+			],
+			{ from: "user" },
+		);
+		expect(mutationSweepCommand).toHaveBeenCalledWith({
+			runnerUrl: ["http://box-a:9000", "http://box-b:9000"],
+			unqualifiedOnly: true,
+			skipPreflight: true,
+		});
+	});
+
+	it("sweep passes empty opts by default", async () => {
+		const program = build();
+		await program.parseAsync(["mutation", "sweep"], { from: "user" });
+		expect(mutationSweepCommand).toHaveBeenCalledWith({});
 	});
 });
 

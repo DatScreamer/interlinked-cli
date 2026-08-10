@@ -45,6 +45,16 @@ describe("checkSwiftDispatchMainSync", () => {
 		const code = "DispatchQueue.main.sync { update() }";
 		expect(checkSwiftDispatchMainSync(code, "ViewTests.swift")).toEqual([]);
 	});
+
+	it("N1: checkSwiftDispatchMainSync does not fire when the call is only in a comment", () => {
+		const code = "// TODO: replace DispatchQueue.main.sync { legacy() } with async";
+		expect(checkSwiftDispatchMainSync(code, "View.swift")).toEqual([]);
+	});
+
+	it("N2: checkSwiftDispatchMainSync does not fire on a custom queue named 'main'", () => {
+		const code = 'let queue = DispatchQueue(label: "main")\nqueue.sync { doStuff() }';
+		expect(checkSwiftDispatchMainSync(code, "View.swift")).toEqual([]);
+	});
 });
 
 describe("checkSwiftTaskSleepLegacy", () => {
@@ -87,5 +97,15 @@ describe("checkSwiftTaskSleepLegacy", () => {
 	it("skips test files", () => {
 		const code = "try await Task.sleep(nanoseconds: 100)";
 		expect(checkSwiftTaskSleepLegacy(code, "ServiceTests.swift")).toEqual([]);
+	});
+
+	it("N1: checkSwiftTaskSleepLegacy does not fire when the call is only in a comment", () => {
+		const code = "// migrate: Task.sleep(nanoseconds: 1_000_000_000) is deprecated";
+		expect(checkSwiftTaskSleepLegacy(code, "Service.swift")).toEqual([]);
+	});
+
+	it("N2: checkSwiftTaskSleepLegacy does not fire on a different receiver's sleep(nanoseconds:)", () => {
+		const code = "await MockClock.sleep(nanoseconds: 1_000)";
+		expect(checkSwiftTaskSleepLegacy(code, "Service.swift")).toEqual([]);
 	});
 });

@@ -447,4 +447,76 @@ describe("parser-imports (mutation coverage)", () => {
 			expect(out[0]?.symbols).toEqual(["a"]);
 		});
 	});
+
+	describe("namespace dynamic-import regex boundaries (all quantifier positions at once)", () => {
+		// The destructured-dynamic-import form already has an equivalent
+		// all-quantifiers test; the plain-identifier ("namespace") dynamic
+		// import form did not, so every \s+/\s* boundary in that regex
+		// (after const/let/var, around =, after await, inside the parens)
+		// stayed unpinned. Because the identifier itself is discarded from
+		// the output either way, a single space at each of those spots
+		// leaves the fallback bare-`import(...)` regex able to mask a
+		// broken boundary; only interior parens whitespace defeats that
+		// fallback too, which is why every \s spot here uses two spaces.
+		it("matches through extra whitespace at every quantified position (no await)", () => {
+			const out = parseImports("const  modSpacey  =  import(  'modSpacey'  );", "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "modSpacey", symbols: [], isTypeOnly: false },
+			]);
+		});
+
+		it("matches through extra whitespace at every quantified position (with await)", () => {
+			const out = parseImports("const mod2 = await  import(  'module2'  );", "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "module2", symbols: [], isTypeOnly: false },
+			]);
+		});
+	});
+
+	describe("default-import regex keeps the 'type' keyword optional", () => {
+		it("matches a plain (non-type) default import", () => {
+			// The existing default-import coverage only exercises the
+			// type-only form (`import type Foo from …`), so a mutation that
+			// makes the `(?:type\s+)?` group MANDATORY still passed every
+			// existing case — this pins the plain form the group is meant
+			// to make optional.
+			const out = parseImports("import Foo from './foo';", "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./foo", symbols: ["Foo"], isTypeOnly: false },
+			]);
+		});
+	});
+
+	describe("isInsideStringLiteral backslash-run direction", () => {
+		it("counts the backslash run immediately BEFORE the matched quote, not after", () => {
+			// Only one quote precedes "require(" here (the backtick is a
+			// different quote kind, so it never becomes `lastQuote`), and
+			// that quote is immediately followed by one backslash. The
+			// escape-parity loop must walk backward (j = i - 1, j--) from
+			// the quote to see that backslash; walking forward instead
+			// finds the (non-backslash) content after "require(" and
+			// misreports the quote as unescaped/closed.
+			const out = parseImports('bbbb`\\require("./z.js")', "/tmp/x.ts");
+			expect(out).toEqual([]);
+		});
+	});
+
+	describe("comment-skip applies even when the comment text itself contains require(/import(", () => {
+		it("does not parse a require() call that only exists inside a // comment", () => {
+			// The comment-skip check only fires after a line has already
+			// survived the initial "does this look import-related" filter —
+			// which it does here, because "require(" appears in the comment
+			// text. This reaches the `startsWith("//")` skip that the
+			// existing whole-line-comment test (using a fake `import {…}`
+			// comment) never reaches, because that one is filtered out one
+			// step earlier.
+			const out = parseImports("// x = require('y');", "/tmp/x.ts");
+			expect(out).toEqual([]);
+		});
+
+		it("does not parse an import() call that only exists inside a // comment", () => {
+			const out = parseImports("// x = import('y');", "/tmp/x.ts");
+			expect(out).toEqual([]);
+		});
+	});
 });

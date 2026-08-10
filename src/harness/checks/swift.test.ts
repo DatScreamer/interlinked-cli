@@ -50,6 +50,16 @@ describe("checkSwiftTaskDetached", () => {
 		const code = "Task.detached { work() }";
 		expect(checkSwiftTaskDetached(code, "Foo.ts")).toEqual([]);
 	});
+
+	it("N1: checkSwiftTaskDetached does not fire when the call is only in a comment", () => {
+		const code = "// avoid Task.detached { legacy() } here, use structured concurrency";
+		expect(checkSwiftTaskDetached(code, "Foo.swift")).toEqual([]);
+	});
+
+	it("N2: checkSwiftTaskDetached does not fire on a differently-named type ending in Task", () => {
+		const code = "MyTask.detached { work() }";
+		expect(checkSwiftTaskDetached(code, "Foo.swift")).toEqual([]);
+	});
 });
 
 describe("checkSwiftUnhandledTaskError", () => {
@@ -211,6 +221,16 @@ describe("checkSwiftFilterCount", () => {
 	it("does not flag in non-Swift file", () => {
 		const code = "items.filter { $0 }.count";
 		expect(checkSwiftFilterCount(code, "Foo.ts")).toEqual([]);
+	});
+
+	it("N1: checkSwiftFilterCount does not fire when .filter{} and .count are on separate lines", () => {
+		const code = "let active = items.filter { $0.isActive }\n	.count";
+		expect(checkSwiftFilterCount(code, "Foo.swift")).toEqual([]);
+	});
+
+	it("N2: checkSwiftFilterCount does not fire when the call is only in a comment", () => {
+		const code = "// consider: items.filter { $0.isActive }.count is wasteful";
+		expect(checkSwiftFilterCount(code, "Foo.swift")).toEqual([]);
 	});
 });
 

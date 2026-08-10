@@ -292,6 +292,19 @@ describe("parseExports — single-line re-export / star forms", () => {
 			{ name: "as Bar", kind: "type", isTypeOnly: true, line: 1 },
 		]);
 	});
+
+	it("a partial 'type ' prefix strip leaves a residual leading space that itself forms a false 'as' delimiter", () => {
+		// The specifier text is "type  as Bar" (two spaces between "type" and "as").
+		// If the per-specifier `.replace(/^type\s+/, "")` strip only consumed ONE
+		// of the two spaces (e.g. a regex weakened to `\s` instead of `\s+`), the
+		// residual leading space left in front of "as" would itself satisfy
+		// `\s+as\s+` and wrongly split the name down to just "Bar" instead of the
+		// correct "as Bar" (the strip must remove the WHOLE run of whitespace so
+		// no leading space is left for the alias-split regex to latch onto).
+		expect(parseExports("export { type  as Bar }")).toEqual([
+			{ name: "as Bar", kind: "const", isTypeOnly: false, line: 1 },
+		]);
+	});
 });
 
 describe("parseExports — multiline export { ... } accumulation", () => {
@@ -354,6 +367,17 @@ describe("parseExports — multiline export { ... } accumulation", () => {
 	it("doubled whitespace before the 'from' clause on the closing line still marks a re-export", () => {
 		expect(parseExports(["export {", "  foo", "}  from  './mod'"].join("\n"))).toEqual([
 			{ name: "foo", kind: "re-export", isTypeOnly: false, line: 1 },
+		]);
+	});
+
+	it("a partial 'type ' prefix strip on the accumulated buffer leaves a residual space that forms a false 'as' delimiter", () => {
+		// Mirrors the single-line case above, but through processExportStatement's
+		// own copy of the same per-specifier `.replace(/^type\s+/, "")` strip. If
+		// that strip left one of the two spaces between "type" and "as" behind, the
+		// leftover leading space would itself satisfy `\s+as\s+` and wrongly split
+		// the name down to "Bar" instead of the correct "as Bar".
+		expect(parseExports(["export {", "  type  as Bar", "}"].join("\n"))).toEqual([
+			{ name: "as Bar", kind: "const", isTypeOnly: false, line: 1 },
 		]);
 	});
 });

@@ -42,6 +42,16 @@ describe("checkSwiftEmptyCatch", () => {
 		const code = "do { try x() } catch { }";
 		expect(checkSwiftEmptyCatch(code, "FooTests.swift")).toEqual([]);
 	});
+
+	it("N1: does not flag a multi-line catch with a real handling body", () => {
+		const code = "do { try x() }\ncatch {\n    logger.error(error)\n    retryQueue.append(error)\n}\n";
+		expect(checkSwiftEmptyCatch(code, "Foo.swift")).toEqual([]);
+	});
+
+	it("N2: does not flag a same-line catch with a nested non-empty block", () => {
+		const code = "do { try x() } catch { if attempt < 3 { retry() } }";
+		expect(checkSwiftEmptyCatch(code, "Foo.swift")).toEqual([]);
+	});
 });
 
 describe("checkSwiftTryQuestionDiscarded", () => {
@@ -83,6 +93,11 @@ describe("checkSwiftTryQuestionDiscarded", () => {
 	it("does not flag in non-Swift files", () => {
 		const code = "try? doStuff()";
 		expect(checkSwiftTryQuestionDiscarded(code, "Foo.ts")).toEqual([]);
+	});
+
+	it("N1: does not flag try? as the second statement on a compound line", () => {
+		const code = "let ok = validate(); try? cleanup()";
+		expect(checkSwiftTryQuestionDiscarded(code, "Foo.swift")).toEqual([]);
 	});
 });
 
@@ -126,6 +141,17 @@ describe("checkSwiftNsurlLegacyBridge", () => {
 		const code = "NSURL(string: x)";
 		expect(checkSwiftNsurlLegacyBridge(code, "NetTests.swift")).toEqual([]);
 	});
+
+	it("N1: does not flag NSURL mentioned only in a comment", () => {
+		const code =
+			'// TODO: migrate away from NSURL(string:) usage here\nlet u = URL(string: "https://example.com")';
+		expect(checkSwiftNsurlLegacyBridge(code, "Net.swift")).toEqual([]);
+	});
+
+	it("N2: does not flag a lookalike name not in the legacy alternation", () => {
+		const code = "let config = NSURLSessionConfiguration.default";
+		expect(checkSwiftNsurlLegacyBridge(code, "Net.swift")).toEqual([]);
+	});
 });
 
 describe("checkSwiftFatalErrorInGuard", () => {
@@ -167,6 +193,12 @@ describe("checkSwiftFatalErrorInGuard", () => {
 	it("skips test files", () => {
 		const code = "guard let x = y else { fatalError() }";
 		expect(checkSwiftFatalErrorInGuard(code, "FooTests.swift")).toEqual([]);
+	});
+
+	it("N1: does not flag a fatalError several lines below a guard block that closes early", () => {
+		const code =
+			'guard let x = y else {\n    log.error("missing")\n}\nsomewhereElse()\nfatalError("unreachable")\n';
+		expect(checkSwiftFatalErrorInGuard(code, "Foo.swift")).toEqual([]);
 	});
 });
 
@@ -239,5 +271,20 @@ describe("checkSwiftPrintInViewBody", () => {
 			}
 		`;
 		expect(checkSwiftPrintInViewBody(code, "FooViewTests.swift")).toEqual([]);
+	});
+
+	it("N1: does not flag print in a lookalike property whose name merely contains 'body'", () => {
+		const code = `
+			struct FooView: View {
+				var body: some View {
+					Text("hi")
+				}
+				var bodyText: String {
+					print("computing bodyText")
+					return "hi"
+				}
+			}
+		`;
+		expect(checkSwiftPrintInViewBody(code, "FooView.swift")).toEqual([]);
 	});
 });

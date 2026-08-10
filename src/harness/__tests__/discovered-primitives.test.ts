@@ -4,7 +4,7 @@
 // builtins, threshold-gates them, caches discovery, and counts
 // bare-builtin violations in arbitrary file content.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -198,6 +198,21 @@ describe("countBareBuiltinCalls", () => {
 	it("returns 0 on empty content", () => {
 		expect(countBareBuiltinCalls("", parseInt_, [])).toBe(0);
 	});
+
+	it("leaves an arrow wrapper's own body un-excised when it has no '{' anywhere (bodyOpen === -1)", () => {
+		// The excision pass finds the declaration match then searches for the
+		// next "{" in the WHOLE remaining string to bound the body. An arrow
+		// function with an expression body has no "{" at all — when the file
+		// has no braces anywhere after the match, that search comes back -1
+		// and the wrapper's own body is left un-excised, so its internal
+		// parseInt call is (incorrectly, but documented) counted as a bare
+		// violation alongside the real external call.
+		const content =
+			"const safeParseInt = (s: string): number => parseInt(s, 10);\n" +
+			"const a = parseInt(x, 10);";
+		expect(content.includes("{")).toBe(false);
+		expect(countBareBuiltinCalls(content, parseInt_, ["safeParseInt"])).toBe(2);
+	});
 });
 
 describe("discoverPrimitives", () => {
@@ -267,6 +282,36 @@ describe("discoverPrimitives", () => {
 
 	it("returns empty for a repo with no source files", () => {
 		expect(discoverPrimitives(tmp)).toEqual([]);
+	});
+
+	it("skips a file that fails to read (tryReadFile's catch) without throwing", () => {
+		// A real wrapper that meets the threshold, plus a sibling file whose
+		// permissions block reads once discovery reaches it — statSync (used
+		// by listSourceFiles to decide isFile()) succeeds, but readFileSync
+		// throws EACCES; tryReadFile's catch swallows it and discovery
+		// continues over the remaining files instead of crashing.
+		write(
+			"src/lib/safe.ts",
+			`
+				export function safeParseInt(s: string): number {
+					return parseInt(s, 10);
+				}
+			`,
+		);
+		const calls = Array.from(
+			{ length: PRIMITIVE_CALL_SITE_THRESHOLD + 1 },
+			(_, i) => `safeParseInt("${i}");`,
+		).join("\n");
+		write("src/uses.ts", calls);
+		write("src/blocked.ts", "const irrelevant = parseInt('99', 10);");
+		chmodSync(join(tmp, "src/blocked.ts"), 0o000);
+		try {
+			const prims = discoverPrimitives(tmp);
+			expect(prims.find((p) => p.wrapperName === "safeParseInt")).toBeDefined();
+		} finally {
+			// Restore so the outer afterEach's rmSync can clean the tree up.
+			chmodSync(join(tmp, "src/blocked.ts"), 0o644);
+		}
 	});
 });
 
@@ -463,6 +508,18 @@ describe("capturePrimitiveViolations", () => {
 		const result = capturePrimitiveViolations(tmp, fileContent);
 		expect(result).toBeDefined();
 		expect(result?.safeParseInt).toBe(2);
+	});
+
+	it("fails open (undefined) when discovery itself throws, instead of propagating", () => {
+		// repoRoot points at a FILE, not a directory. discoverPrimitives()
+		// itself degrades gracefully (readdirSync fails, walk yields []),
+		// but refreshIfStale's subsequent saveCache() then tries to
+		// mkdirSync(".interlinked", {recursive:true}) *inside* that file,
+		// which throws ENOTDIR — capturePrimitiveViolations's catch turns
+		// that into undefined rather than crashing the PostToolUse ratchet.
+		const fakeRepoRoot = join(tmp, "not-a-directory.txt");
+		writeFileSync(fakeRepoRoot, "i am a file, not a repo root");
+		expect(capturePrimitiveViolations(fakeRepoRoot, "const x = parseInt('1');")).toBeUndefined();
 	});
 
 	it("returns undefined when the file has no bare-builtin calls at all", () => {

@@ -197,6 +197,19 @@ describe("decomposePattern - top-level alternation with escaped pipe (line 437)"
 	});
 });
 
+describe("decomposePattern - stray '|' reached inside extractLiteralSegments (lines 293-297)", () => {
+	it("stops the char-walk at a '|' left over after a depth-imbalanced split, dropping the tail", () => {
+		// A leading unmatched ')' drives splitAlternation's depth negative, so
+		// its "depth === 0" split guard never fires on the '|' that follows —
+		// the whole string comes back as ONE top branch, and extractLiteralSegments
+		// walks it directly, hitting the '|' case itself: it flushes what came
+		// before and stops, so "def" after the pipe is never scanned.
+		const result = decomposePattern(")abc|def", true, false);
+		expect(result.literalSegments).toEqual([")abc"]);
+		expect(result.hasLiterals).toBe(true);
+	});
+});
+
 describe("decomposePattern - empty/short pattern guard", () => {
 	it("returns an empty result for a pattern shorter than 3 chars", () => {
 		expect(decomposePattern("ab", true, false)).toEqual({

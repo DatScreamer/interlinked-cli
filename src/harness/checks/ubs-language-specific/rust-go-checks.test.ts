@@ -18,6 +18,27 @@ describe("ubs-language-specific/rust-go-checks", () => {
 		expect(checkMutexLockUnwrap(code, "a.ts")).toEqual([]);
 	});
 
+	it("N1: checkMutexLockUnwrap does not fire on `.lock().expect(reason)` (documented recovery, not unwrap)", () => {
+		const code = 'let m: Mutex<u64> = Mutex::new(0);\nlet v = m.lock().expect("mutex poisoned by a prior panic");';
+		expect(checkMutexLockUnwrap(code, "a.rs")).toEqual([]);
+	});
+
+	it("N2: checkMutexLockUnwrap does not fire on a `match` over the lock Result (handles Err explicitly)", () => {
+		const code =
+			"let m: Mutex<u64> = Mutex::new(0);\nmatch m.lock() {\n    Ok(guard) => use_guard(guard),\n    Err(poisoned) => recover(poisoned),\n}";
+		expect(checkMutexLockUnwrap(code, "a.rs")).toEqual([]);
+	});
+
+	it("N3: checkMutexLockUnwrap does not fire on `if let Ok(guard) = m.lock()` (no unwrap call at all)", () => {
+		const code = "let m: Mutex<u64> = Mutex::new(0);\nif let Ok(guard) = m.lock() {\n    use_guard(guard);\n}";
+		expect(checkMutexLockUnwrap(code, "a.rs")).toEqual([]);
+	});
+
+	it("N4: checkMutexLockUnwrap does not fire on the exact triggering pattern in a non-Rust file", () => {
+		const code = "let m: Mutex<u64> = Mutex::new(0);\nlet v = m.lock().unwrap();";
+		expect(checkMutexLockUnwrap(code, "a.go")).toEqual([]);
+	});
+
 	it("checkGoroutineNoWaitgroup flags a fire-and-forget goroutine", () => {
 		const code = "func main() {\n  go func() { work() }()\n}";
 		expect(checkGoroutineNoWaitgroup(code, "a.go").length).toBeGreaterThan(0);

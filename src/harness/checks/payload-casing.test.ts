@@ -38,6 +38,10 @@ describe("detectPayloadFieldCasing", () => {
 		expect(detectPayloadFieldCasing("const c = rawInput.cwd;", TS)).toEqual([]);
 	});
 
+	it("N1: does NOT flag a variable whose name only shares a prefix with a payload var (e.g. `rawInputs`, not `rawInput`)", () => {
+		expect(detectPayloadFieldCasing("const t = rawInputs.transcript_path;", TS)).toEqual([]);
+	});
+
 	it("ignores test files and non-JS/TS files", () => {
 		expect(detectPayloadFieldCasing("rawInput.transcript_path", "foo.test.ts")).toEqual([]);
 		expect(detectPayloadFieldCasing("rawInput.transcript_path", "foo.py")).toEqual([]);

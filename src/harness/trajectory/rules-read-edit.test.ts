@@ -460,6 +460,438 @@ describe("additional branch coverage", () => {
 });
 
 // ============================================================
+// Mutation-hardening: pinned real-behavior assertions
+// ============================================================
+// Every case below was verified empirically against a mutated copy of the
+// source (scratch/mut-probe/probe.mts): the assertion holds on real code AND
+// fails against the specific mutant it targets, so these are not guesses.
+
+describe("isPostSurgicalEdit (shared gate): every clause is load-bearing", () => {
+	it("does NOT fire on a PreToolUse Edit even with a multi-line old_string (hook clause required)", () => {
+		const v = run(rebBlindEditUnreadFile, [
+			ev("PreToolUse", "Edit", { file_path: "/repo/src/x.ts", old_string: TWO_LINES, new_string: "y\nz" }),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("does NOT fire on a non-Edit/MultiEdit tool even with file_path+old_string set (tool clause required)", () => {
+		const v = run(rebBlindEditUnreadFile, [
+			ev("PostToolUse", "Bash", { file_path: "/repo/src/x.ts", old_string: TWO_LINES, new_string: "y\nz" }),
+		]);
+		expect(v).toBeNull();
+	});
+});
+
+describe("metric() and rebBlindEditUnreadFile: exact severities and reason text", () => {
+	it("metric() always sets severity to exactly 'low'", () => {
+		const v = run(rebReadRecencyDecayEdit, [read("/repo/src/x.ts"), ...reads(45), edit("/repo/src/x.ts")]);
+		expect(v?.severity).toBe("low");
+	});
+
+	it("rebBlindEditUnreadFile always sets severity to exactly 'medium'", () => {
+		expect(run(rebBlindEditUnreadFile, [edit("/repo/src/x.ts")])?.severity).toBe("medium");
+	});
+
+	it("rebBlindEditUnreadFile reason names the basename and the exact trailing sentences", () => {
+		const v = run(rebBlindEditUnreadFile, [edit("/repo/src/x.ts")]);
+		expect(v?.reason).toContain("Multi-line edit to x.ts, which this session never read or grepped.");
+		expect(v?.reason).toContain("Editing unseen content risks clobbering context the file's surroundings depend on — ");
+		expect(v?.reason).toContain("read the region first.");
+	});
+
+	it("rebColdStartFirstEditZeroReads reason is the exact three-part sentence", () => {
+		const v = run(rebColdStartFirstEditZeroReads, [edit("/repo/src/x.ts")]);
+		expect(v?.reason).toContain("First edit of the session with zero reads and zero searches beforehand — editing an ");
+		expect(v?.reason).toContain("existing file cold. Orient first (read the file or search for its usages) unless the ");
+		expect(v?.reason).toContain("change was fully specified upfront.");
+	});
+
+	it("rebColdStartFirstEditZeroReads requires isPostSurgicalEdit at its OWN call site (separate from the shared helper)", () => {
+		const v = run(rebColdStartFirstEditZeroReads, [
+			ev("PreToolUse", "Edit", { file_path: "/repo/src/x.ts", old_string: TWO_LINES, new_string: "y\nz" }),
+		]);
+		expect(v).toBeNull();
+	});
+});
+
+describe("lastReadStep: exact/loop precedence and max-step selection", () => {
+	it("prefers the EXACT key over a later suffix-matching pseudo-read", () => {
+		const events = [
+			read("/repo/src/x.ts"),
+			...reads(30),
+			bash("cat src/x.ts"),
+			...reads(14, "src/late"),
+			edit("/repo/src/x.ts"),
+		];
+		expect(run(rebReadRecencyDecayEdit, events)?.ruleId).toBe("reb_read_recency_decay_edit");
+	});
+
+	it("recognizes a bare-basename pseudo-read via the endsWith/equals clauses", () => {
+		expect(run(rebBlindEditUnreadFile, [bash("cat x.ts"), edit("/repo/src/x.ts")])).toBeNull();
+	});
+
+	it("uses endsWith, not startsWith, for the suffix-match clause", () => {
+		const state = createState("s1");
+		state.fileReadSteps.set("dir", 1);
+		const event = edit("/dir/name.ts");
+		expect(rebBlindEditUnreadFile(state, event)).not.toBeNull();
+	});
+
+	it("a crafted step-0 read still counts as a valid match (best===null must assign unconditionally)", () => {
+		const state = createState("s1");
+		state.fileReadSteps.set("x.ts", 0);
+		expect(rebBlindEditUnreadFile(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+
+	it("among multiple matching keys inserted LOW-step-first, returns the MAX step, not the first", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("new/x.ts", 5);
+		state.fileReadSteps.set("old/x.ts", 90);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		// real: last=90, gap=10<=40 -> null. A mutant that only keeps the FIRST
+		// hit (best never updates again) would compute last=5, gap=95>40 -> fires.
+		expect(rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+
+	it("among multiple matching keys inserted HIGH-step-first, returns the MAX step, not the last processed", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("old/x.ts", 90);
+		state.fileReadSteps.set("new/x.ts", 5);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		// real: last=90 (max, correct compare) -> null. A mutant that always
+		// overwrites unconditionally would end on the LAST-processed value (5).
+		expect(rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+});
+
+describe("sessionHasOriented: readCount alone is sufficient", () => {
+	it("readCount>0 with no searches and no fileReadSteps entries still counts as oriented (crafted state)", () => {
+		const state = createState("s1");
+		state.readCount = 1;
+		expect(rebColdStartFirstEditZeroReads(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+});
+
+describe("unrelatedFraction: window exclusion, relatedness clauses, and the ratio itself", () => {
+	it("excludes the CURRENT event from its own window", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		const event = edit("/repo/src/x.ts");
+		state.recentEvents = [bash("echo a"), bash("echo b"), event];
+		// real: excluding the edit itself leaves 2/2 unrelated -> fires. If the
+		// edit were NOT excluded it would count as related (same file_path),
+		// dropping the ratio to 2/3 <= 0.7 -> suppressed.
+		expect(rebReadRecencyDecayEdit(state, event)?.ruleId).toBe("reb_read_recency_decay_edit");
+	});
+
+	it("a matching file_path marks an event related independent of its command text", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		const event = edit("/repo/src/x.ts");
+		state.recentEvents = [read("/repo/src/x.ts"), bash("echo a"), bash("echo b")];
+		// real: the Read of the same file is related (2/3 unrelated <= 0.7) -> null.
+		expect(rebReadRecencyDecayEdit(state, event)).toBeNull();
+	});
+
+	it("computes unrelated/total, not unrelated*total", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		const event = edit("/repo/src/x.ts");
+		const relatedEvents = Array.from({ length: 19 }, () => read("/repo/src/x.ts"));
+		state.recentEvents = [...relatedEvents, bash("echo unrelated")];
+		// real ratio: 1/20 = 0.05 <= 0.7 -> null. A multiply mutant gives 1*20=20,
+		// which also fails the <=0.7 check but for the wrong reason on OTHER
+		// inputs — here it would (wrongly) NOT suppress.
+		expect(rebReadRecencyDecayEdit(state, event)).toBeNull();
+	});
+
+	it("reason text names the exact trailing sentence and the leading gap/basename template", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		const v = rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"));
+		expect(v?.reason).toContain("steps after it was last read, with the intervening");
+		expect(v?.reason).toContain("work almost entirely elsewhere — the mental model of this file may be stale.");
+	});
+});
+
+describe("rebReadRecencyDecayEdit: every guard clause and both thresholds are load-bearing", () => {
+	it("requires an EDIT_TOOLS member (non-edit tools never reach the gap/ratio checks)", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		expect(rebReadRecencyDecayEdit(state, ev("PostToolUse", "Grep", { file_path: "/repo/src/x.ts" }))).toBeNull();
+	});
+
+	it("requires PostToolUse specifically, independent of the tool clause", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		const event = ev("PreToolUse", "Edit", { file_path: "/repo/src/x.ts", old_string: "a", new_string: "b" });
+		expect(rebReadRecencyDecayEdit(state, event)).toBeNull();
+	});
+
+	it("requires BOTH a file_path present AND a source-code extension (|| not &&)", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/notes.md", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		expect(rebReadRecencyDecayEdit(state, edit("/repo/notes.md"))).toBeNull();
+	});
+
+	it("a gap of exactly 40 steps stays at/under the threshold (boundary, not below)", () => {
+		const state = createState("s1");
+		state.stepCount = 41;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		expect(rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+
+	it("an unrelated fraction of exactly 0.7 stays at/under the threshold (boundary, not below)", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		const unrelated = Array.from({ length: 7 }, () => bash("echo unrelated"));
+		const related = Array.from({ length: 3 }, () => read("/repo/src/x.ts"));
+		state.recentEvents = [...unrelated, ...related];
+		expect(rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"))).toBeNull();
+	});
+
+	it("requires 'MultiEdit' specifically to be an EDIT_TOOLS member", () => {
+		const state = createState("s1");
+		state.stepCount = 100;
+		state.fileReadSteps.set("/repo/src/x.ts", 1);
+		state.recentEvents = Array.from({ length: 50 }, () => bash("echo unrelated"));
+		const event = ev("PostToolUse", "MultiEdit", { file_path: "/repo/src/x.ts", old_string: "a\nb", new_string: "c\nd" });
+		expect(rebReadRecencyDecayEdit(state, event)?.ruleId).toBe("reb_read_recency_decay_edit");
+	});
+});
+
+describe("dirOf and maxSameDirCount: directory grouping edge cases", () => {
+	it("a leading-slash-only path and a bare filename both resolve to the empty directory (same group)", () => {
+		const events: ToolEvent[] = [];
+		for (let i = 0; i < 5; i++) events.push(read(`/f${i}.ts`));
+		for (let i = 0; i < 5; i++) events.push(read(`b${i}.ts`));
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("tracks the running MAX across directories, small group processed AFTER the large one", () => {
+		const events: ToolEvent[] = [];
+		for (let i = 0; i < 6; i++) events.push(read(`/repo/dirA/f${i}.ts`));
+		for (let i = 0; i < 4; i++) events.push(read(`/repo/dirB/f${i}.ts`));
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("tracks the running MAX across directories, small group processed BEFORE the large one", () => {
+		const events: ToolEvent[] = [];
+		for (let i = 0; i < 4; i++) events.push(read(`/repo/dirB/f${i}.ts`));
+		for (let i = 0; i < 6; i++) events.push(read(`/repo/dirA/f${i}.ts`));
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("an exact half/half split (5-vs-5) is NOT a strict majority — the rule fires", () => {
+		const events: ToolEvent[] = [];
+		for (let i = 0; i < 5; i++) events.push(read(`/repo/dirA/f${i}.ts`));
+		for (let i = 0; i < 5; i++) events.push(read(`/repo/dirB/f${i}.ts`));
+		expect(run(rebReadStormNoEdit, events)?.ruleId).toBe("reb_read_storm_no_edit");
+	});
+});
+
+describe("rebReadStormNoEdit: window-scan admission and re-read handling", () => {
+	it("the top guard requires the Read tool (a crafted Bash-with-file_path trigger never fires)", () => {
+		const events = [...scatteredReads(10), ev("PostToolUse", "Bash", { file_path: "/repo/pkgTrigger/mod.ts" })];
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("the top guard requires PostToolUse specifically (a PreToolUse Read trigger never fires)", () => {
+		const events = [...scatteredReads(10), ev("PreToolUse", "Read", { file_path: "/repo/pkgTrigger/mod.ts" })];
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("requires the triggering event to carry a file_path", () => {
+		expect(run(rebReadStormNoEdit, [...scatteredReads(10), ev("PostToolUse", "Read", {})])).toBeNull();
+	});
+
+	it("an edit event breaks the count-back scan entirely, even across directory-dispersed batches", () => {
+		const batch1 = Array.from({ length: 4 }, (_, i) => read(`/repo/pkgA${i}/mod.ts`));
+		const batch2 = Array.from({ length: 6 }, (_, i) => read(`/repo/pkgB${i}/mod.ts`));
+		expect(run(rebReadStormNoEdit, [...batch1, edit("/repo/src/x.ts"), ...batch2])).toBeNull();
+	});
+
+	it("a non-Read event carrying a file_path is still excluded from the distinct count", () => {
+		const events = [
+			...Array.from({ length: 8 }, (_, i) => read(`/repo/pkgA${i}/mod.ts`)),
+			ev("PostToolUse", "Bash", { file_path: "/repo/pkgBash/mod.ts" }),
+			read("/repo/pkgTrigger/mod.ts"),
+		];
+		expect(run(rebReadStormNoEdit, events)).toBeNull();
+	});
+
+	it("a trigger that RE-reads an already-seen file suppresses the crossing, even at exactly 10 unique paths behind it", () => {
+		const originalReads = scatteredReads(10);
+		const rereadTrigger = read("/repo/pkg0/mod.ts");
+		expect(run(rebReadStormNoEdit, [...originalReads, rereadTrigger])).toBeNull();
+	});
+
+	it("reason text is the exact two-sentence message", () => {
+		const v = run(rebReadStormNoEdit, scatteredReads(10));
+		expect(v?.reason).toContain("A long survey can be ");
+		expect(v?.reason).toContain("deliberate — but if the goal was a change, it may be time to converge on one.");
+	});
+});
+
+describe("resolveRelative and moduleKnown: path-math edge cases", () => {
+	it("drops an empty path segment produced by a double slash, rather than pushing it", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/src/sub/mod.js"),
+			edit("/repo/src/a.ts", "// top", 'import { x } from "./sub//mod.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("prefixes a relative (non-absolute) dir with '', not a sentinel string", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("src/helper.ts"),
+			edit("src/a.ts", "// top", 'import { h } from "./helper.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("drops a literal '.' path segment carried in the importing file's own directory", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/src/helper.ts"),
+			edit("/repo/src/./a.ts", "// top", 'import { h } from "./helper.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("moduleKnown matches via kn.endsWith(/resolved) when resolved has no directory prefix", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("deep/nested/helper.ts"),
+			edit("a.ts", "// top", 'import { h } from "./helper.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+});
+
+describe("rebImportAddedWithoutReadingModule: guard clauses and reason formatting", () => {
+	it("requires an EDIT_TOOLS member at its OWN call site (separate from other rules' identical-looking guard)", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			ev("PostToolUse", "Grep", { file_path: "/repo/src/a.ts", new_string: 'import { x } from "./unseen.js";' }),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("requires PostToolUse specifically at its OWN call site", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			ev("PreToolUse", "Edit", { file_path: "/repo/src/a.ts", old_string: "// top", new_string: 'import { x } from "./unseen.js";' }),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("caps the reason list at 3 imports and joins them with ', '", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit(
+				"/repo/src/a.ts",
+				"// top",
+				'import { a } from "./one.js";\nimport { b } from "./two.js";\nimport { c } from "./three.js";\nimport { d } from "./four.js";',
+			),
+		]);
+		expect(v?.reason).toContain("./one.js, ./two.js, ./three.js");
+		expect(v?.reason).not.toContain("./four.js");
+	});
+
+	it("reason trailing text is the exact two-sentence message", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'import { x } from "./unseen.js";'),
+		]);
+		expect(v?.reason).toContain("the imported surface (names, signatures) is assumed, not seen. A typecheck will confirm ");
+		expect(v?.reason).toContain("resolution, but not intent.");
+	});
+});
+
+describe("(module) IMPORT_SPEC_RE / JS_TS_FILE_RE: exact regex boundaries", () => {
+	it("'from' matches with zero trailing whitespace before the quote", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'import { x } from"./unseen.js";'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("'require' matches with a space before the opening paren", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'const u = require ("./unseen.js");'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("dynamic 'import(' matches with a space before the opening paren", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'const u = import ("./unseen.js");'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("JS_TS_FILE_RE requires the extension at the END of the path, not merely present", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/x.ts.backup", "// top", 'import { x } from "./unseen.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+});
+
+// ============================================================
+// Known gap: daemon-restart state loss reads as "never read" (pinned)
+// ============================================================
+// `reb_blind_edit_unread_file`'s ONLY source of "was this read?" is the
+// TrajectoryState object it is handed. src/harness/server/trajectory-shadow.ts
+// holds that state in a plain in-memory `Map<string, TrajectoryState>`
+// (`stateBySession`), keyed by session_id, with NO persistence to disk. A
+// daemon restart (rebuild, crash, RSS-ceiling auto-restart — see
+// project_daemon_lifecycle_ledger) re-creates the map empty; `getState()`
+// then calls `createState(session)` fresh for the SAME session_id the agent
+// is still using. From the rule's point of view a state-loss is INDISTIN-
+// GUISHABLE from a genuine unread — this test pins that the rule cannot see
+// the difference, which is the exact mechanism behind the observed false-
+// fires (files that WERE read this session, before a mid-session restart).
+// This is a state-continuity gap in the daemon's wiring, not a defect in
+// this file's pure functions — the fix belongs in trajectory-shadow.ts
+// (e.g. rehydrate fileReadSteps from activity.jsonl on a cache miss), which
+// this test-only unit must not touch.
+describe("reb_blind_edit_unread_file: daemon-restart state loss (documented gap, not a bug in this file)", () => {
+	it("fires on a fresh TrajectoryState even when the SAME session_id genuinely read the file earlier — a restart mid-session is indistinguishable from never-read", () => {
+		// Simulates the moment right after a daemon restart: a brand-new state for
+		// a session_id the agent has been using all along (createState is exactly
+		// what trajectory-shadow.ts's getState() calls on a stateBySession miss).
+		const stateAfterRestart = createState("continuing-session-id");
+		// The agent's NEXT tool call is a multi-line edit to a file it read
+		// several turns ago — but that read landed in the OLD (now-discarded)
+		// TrajectoryState instance, so this fresh one has no record of it.
+		const eventAfterRestart = edit("/repo/src/x.ts");
+		const v = rebBlindEditUnreadFile(stateAfterRestart, eventAfterRestart);
+		// Current (gap) behavior: fires as if genuinely unread. If trajectory
+		// state ever gains restart-survivable persistence, this assertion should
+		// flip to `.toBeNull()` — until then it pins the gap, not the fix.
+		expect(v?.ruleId).toBe("reb_blind_edit_unread_file");
+	});
+
+	it("contrast: within ONE continuous state (no restart), the same read+edit sequence correctly suppresses", () => {
+		// Same file, same read-then-edit shape, but folded into a SINGLE state —
+		// demonstrating the rule is correct when its state isn't discarded mid-session.
+		const v = run(rebBlindEditUnreadFile, [read("/repo/src/x.ts"), edit("/repo/src/x.ts")]);
+		expect(v).toBeNull();
+	});
+});
+
+// ============================================================
 // Wiring
 // ============================================================
 

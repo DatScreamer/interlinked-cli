@@ -21,6 +21,32 @@ describe("ubs-language-specific (smoke)", () => {
 		expect(checkJavaOptionalGet(code, "sample.ts")).toEqual([]);
 	});
 
+	// Evidence backfill (Check Evidence Contract) — checkJavaOptionalGet
+	// (ubs_java_optional_get). Near-misses derived from the guard families
+	// `isOptionalGetGuarded` recognizes: isPresent/orElse/orElseGet/
+	// orElseThrow/ifPresent/ifPresentOrElse/map/flatMap/filter, matched
+	// either on the same line as the `.get()` or on any earlier line.
+	describe("checkJavaOptionalGet (ubs_java_optional_get) — evidence backfill", () => {
+		it("N1: does not fire — same-line ternary guard `x.isPresent() ? x.get() : \"none\"`", () => {
+			const code = [
+				"Optional<String> value = fetch();",
+				'String result = value.isPresent() ? value.get() : "none";',
+			].join("\n");
+			expect(checkJavaOptionalGet(code, "Sample.java")).toEqual([]);
+		});
+
+		it("N2: does not fire — earlier-line inverted early-return guard `if (!order.isPresent()) throw ...` then `.get()`", () => {
+			const code = [
+				"Optional<Order> order = repo.find(id);",
+				"if (!order.isPresent()) {",
+				"    throw new NotFoundException();",
+				"}",
+				"Order o = order.get();",
+			].join("\n");
+			expect(checkJavaOptionalGet(code, "OrderService.java")).toEqual([]);
+		});
+	});
+
 	it("checkDivisionByVariable flags `a / b`", () => {
 		expect(checkDivisionByVariable("const r = a / b;", "calc.ts").length).toBeGreaterThan(0);
 	});
@@ -179,5 +205,35 @@ describe("ubs-language-specific (smoke)", () => {
 		// `if debug:` is unrelated to the divisor — must fire.
 		const code = `result = a / b\nif debug:\n    log()`;
 		expect(checkDivisionByVariable(code, "src/calc.py").length).toBeGreaterThan(0);
+	});
+
+	// Evidence backfill (Check Evidence Contract) — checkDivisionByVariable
+	// (ubs_division_by_variable). Near-misses derived from the same-line
+	// zero-guard shapes `lineHasZeroGuard` recognizes (see the detector's
+	// doc comment): these genuinely suppress, so they are honest
+	// MUST-NOT-FIRE cases, not the known FP below.
+	describe("checkDivisionByVariable (ubs_division_by_variable) — evidence backfill", () => {
+		it("N1: does not fire — same-line ternary zero-guard `count !== 0 ? total / count : 0`", () => {
+			const code = `const avg = count !== 0 ? total / count : 0;`;
+			expect(checkDivisionByVariable(code, "src/avg.ts")).toEqual([]);
+		});
+
+		it("N2: does not fire — same-line parenthesized guard `if (n != 0) avg = total / n;`", () => {
+			const code = `if (n != 0) avg = total / n;`;
+			expect(checkDivisionByVariable(code, "src/avg.js")).toEqual([]);
+		});
+
+		// FIXED 2026-08-09 (was project_ubs_division_overfires_guarded): the
+		// guard scan now looks at a bounded window of preceding lines, so an
+		// early-return zero-guard on the line above suppresses the division
+		// warning. This test previously pinned the false positive (asserting
+		// it fired); the guard-window fix landed the same day and flipped it
+		// into a regular must-not-fire case.
+		it("N9: preceding-line early-return zero-guard suppresses (FP fixed by guard window)", () => {
+			const code = ["function avg(total, count) {", "  if (count === 0) return 0;", "  return total / count;", "}"].join(
+				"\n",
+			);
+			expect(checkDivisionByVariable(code, "src/calc.ts")).toEqual([]);
+		});
 	});
 });

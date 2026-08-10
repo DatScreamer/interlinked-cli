@@ -459,3 +459,59 @@ describe("coverageEditPlan — fullSuiteReason routes scoped vs full (finding 20
 		expect(plan.fullSuiteReason).toContain("src/old.ts");
 	});
 });
+
+describe("targetForSection — unreadable source path (safeReadFile catch)", () => {
+	it("treats an unreadable before-file as empty and fails open (section skipped)", () => {
+		// A DIRECTORY sits where the patch expects a file — readFileSync throws
+		// EISDIR, which safeReadFile swallows, returning "" as the "before"
+		// content. The hunk's context then can't be found against an empty
+		// before, so reconstruction fails and the section is dropped rather
+		// than throwing.
+		mkdirSync(join(root, "src", "cantread.ts"), { recursive: true });
+		const targets = coverageTargetsFor(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/cantread.ts",
+					"@@",
+					"-const x = 1;",
+					"+const x = 2;",
+				),
+			}),
+			root,
+			CFG,
+		);
+		expect(targets).toEqual([]);
+	});
+});
+
+describe("addedLineNumbers — LCS cell-budget fallback", () => {
+	it("marks every after-line as edited once before×after exceeds the LCS cell budget", () => {
+		// LCS_CELL_BUDGET is 4,000,000; ~2001 lines on each side clears it
+		// even accounting for the trailing-newline split element.
+		const lineCount = 2001;
+		const beforeLines = Array.from({ length: lineCount }, (_, i) => `const line${i} = ${i};`);
+		writeFile("src/big.ts", `${beforeLines.join("\n")}\n`);
+		const targets = coverageTargetsFor(
+			event("apply_patch", {
+				command: patch(
+					"*** Update File: src/big.ts",
+					"@@",
+					"-const line1000 = 1000;",
+					"+const line1000 = 9999;",
+				),
+			}),
+			root,
+			CFG,
+		);
+		expect(targets).toHaveLength(1);
+		const target = nonNull(targets[0]);
+		expect(target.proposed).toContain("const line1000 = 9999;");
+		const expectedLineCount = target.proposed.split("\n").length;
+		// Budget-exceeded fallback marks EVERY after-line as edited, not just
+		// the single line the hunk actually changed — the strict/safe direction
+		// (never under-counts an inserted line).
+		expect(target.editedLines?.size).toBe(expectedLineCount);
+		expect(target.editedLines?.has(1)).toBe(true);
+		expect(target.editedLines?.has(expectedLineCount)).toBe(true);
+	});
+});

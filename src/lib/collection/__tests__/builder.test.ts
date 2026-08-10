@@ -67,6 +67,7 @@ describe("buildCollectionRecord — tool class detection", () => {
 		["Read", "file_read"],
 		["ReadFile", "file_read"],
 		["read_file", "file_read"],
+		["view", "file_read"],
 		["Edit", "file_edit"],
 		["EditFile", "file_edit"],
 		["edit_file", "file_edit"],
@@ -83,12 +84,18 @@ describe("buildCollectionRecord — tool class detection", () => {
 		["SearchFiles", "search"],
 		["search_files", "search"],
 		["Glob", "search"],
+		["glob", "search"],
+		["ListFiles", "search"],
+		["list_files", "search"],
 		["WebFetch", "fetch"],
 		["web_fetch", "fetch"],
 		["WebSearch", "fetch"],
 		["web_search", "fetch"],
 		["NotebookEdit", "notebook_edit"],
+		["notebook_edit", "notebook_edit"],
 		["TaskCreate", "task"],
+		["TaskUpdate", "task"],
+		["TaskStop", "task"],
 		["mcp__context7__resolve-library-id", "mcp_call"],
 		["SomeMcpTool", "other"],
 	])("maps %s → %s", (toolName, expectedClass) => {
@@ -177,6 +184,31 @@ describe("buildCollectionRecord — shell_exec", () => {
 	it("extracts shell observation from structured response", () => {
 		const rec = buildCollectionRecord(shellPostEvent)!;
 		expect(rec.observation).toMatchObject({ stdout: "ok", stderr: "", exit_code: 0 });
+	});
+
+	it("reads exit_code from the exit_code alias when exitCode is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "x" }, tool_response: { exit_code: 2 } }),
+		)!;
+		expect(rec.observation).toMatchObject({ exit_code: 2 });
+	});
+
+	it("reads exit_code from the returncode alias when exitCode/exit_code are absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "x" }, tool_response: { returncode: 3 } }),
+		)!;
+		expect(rec.observation).toMatchObject({ exit_code: 3 });
+	});
+
+	it("reads duration_ms from the response object", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "x" },
+				tool_response: { stdout: "x", duration_ms: 150 },
+			}),
+		)!;
+		expect(rec.observation).toMatchObject({ duration_ms: 150 });
 	});
 
 	it("carries git context", () => {
@@ -313,6 +345,35 @@ describe("buildCollectionRecord — file_edit", () => {
 
 		expect(rec.tool_class).toBe("file_edit");
 		expect(rec.action).toMatchObject({ path: "/src/main.ts" });
+		expect(rec.action).toMatchObject({ diff: { hunks: [{ old: "", new: patchBody }] } });
+	});
+
+	it("does not treat a non-MultiEdit tool with a stray edits array as MultiEdit", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: {
+					file_path: "/x.ts",
+					old_string: "a",
+					new_string: "b",
+					edits: [{ old_string: "z", new_string: "y" }],
+				},
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ diff: { hunks: [{ old: "a", new: "b" }] } });
+	});
+
+	it("defaults missing old_string/new_string on a single Edit to empty strings", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Edit",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: "File edited successfully",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ diff: { hunks: [{ old: "", new: "" }] } });
 	});
 });
 
@@ -334,8 +395,34 @@ describe("buildCollectionRecord — file_write", () => {
 		expect(rec.action).toMatchObject({
 			path: "/new.ts",
 			is_new_file: true,
+			content: "export const x = 1;",
 		});
 		expect(rec.observation).toMatchObject({ applied: true });
+	});
+
+	it("sets content to null when input.content is not a string", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Write",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: "File created",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ content: null });
+	});
+
+	it("sets is_new_file to false when the event does not flag a new file", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Write",
+				tool_input: { file_path: "/existing.ts", content: "x" },
+				tool_response: "File updated",
+				is_new_file: false,
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ is_new_file: false });
 	});
 });
 
@@ -356,6 +443,11 @@ describe("buildCollectionRecord — search", () => {
 		expect(rec.action).toEqual({ pattern: "TODO", path: "/src", flags: null });
 		expect(rec.observation).toMatchObject({ result_text: "src/main.ts:5:// TODO fix" });
 	});
+
+	it("defaults pattern to an empty string when no pattern/query/glob field is present", () => {
+		const rec = buildCollectionRecord(baseEvent({ tool_name: "Grep", tool_input: {} }))!;
+		expect(rec.action).toEqual({ pattern: "", path: null, flags: null });
+	});
 });
 
 // -------------------------------------------------------
@@ -374,6 +466,11 @@ describe("buildCollectionRecord — fetch", () => {
 		expect(rec.tool_class).toBe("fetch");
 		expect(rec.action).toEqual({ url: "https://example.com", prompt: "get data" });
 		expect(rec.observation).toMatchObject({ status: 200, result: "page content" });
+	});
+
+	it("defaults url to an empty string when neither url nor query is present", () => {
+		const rec = buildCollectionRecord(baseEvent({ tool_name: "WebFetch", tool_input: {} }))!;
+		expect(rec.action).toEqual({ url: "", prompt: null });
 	});
 });
 
@@ -398,6 +495,8 @@ describe("buildCollectionRecord — fidelity", () => {
 		expect(stdoutFidelity).toBeDefined();
 		expect(nonNull(stdoutFidelity).interlinked_capped).toBe(true);
 		expect(nonNull(stdoutFidelity).completeness).toBe("interlinked_capped");
+		expect(nonNull(stdoutFidelity).source).toBe("provider_hook");
+		expect(nonNull(stdoutFidelity).provider_payload_bytes).toBe(1048576);
 	});
 
 	it("marks complete when no truncation signals", () => {
@@ -413,6 +512,21 @@ describe("buildCollectionRecord — fidelity", () => {
 		const stdoutFidelity = rec.fidelity.fields["observation.stdout"];
 		expect(nonNull(stdoutFidelity).interlinked_capped).toBe(false);
 		expect(nonNull(stdoutFidelity).completeness).toBe("complete");
+		expect(nonNull(stdoutFidelity).captured_bytes).toBe(Buffer.byteLength("hi", "utf8"));
+		expect(rec.fidelity.record.completeness).toBe("complete");
+	});
+
+	it("defaults provider_payload_bytes to 0 when tool_output_bytes is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo hi" },
+				tool_response: { stdout: "hi", stderr: "", exitCode: 0 },
+			}),
+		)!;
+
+		const stdoutFidelity = rec.fidelity.fields["observation.stdout"];
+		expect(nonNull(stdoutFidelity).provider_payload_bytes).toBe(0);
 	});
 
 	it("marks absent when observation field is missing", () => {
@@ -425,6 +539,75 @@ describe("buildCollectionRecord — fidelity", () => {
 
 		expect(rec.fidelity.record.completeness).toBe("complete");
 		expect(Object.keys(rec.fidelity.fields)).toHaveLength(0);
+	});
+
+	it("omits a fidelity field entry when the observation field itself is null", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				tool_response: { stderr: "oops", exitCode: 1 },
+				tool_output_bytes: 10,
+			}),
+		)!;
+
+		expect(rec.observation).toMatchObject({ stdout: null });
+		expect(rec.fidelity.fields["observation.stdout"]).toBeUndefined();
+		expect(rec.fidelity.fields["observation.stderr"]).toBeDefined();
+	});
+
+	it("builds exactly the shell_exec field map (stdout + stderr) when both are present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				tool_response: { stdout: "hi", stderr: "warn", exitCode: 0 },
+				tool_output_bytes: 10,
+			}),
+		)!;
+
+		expect(Object.keys(rec.fidelity.fields).sort()).toEqual(["observation.stderr", "observation.stdout"]);
+	});
+
+	it("builds exactly the file_read field map (content) for a Read", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Read",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: "file body",
+				tool_output_bytes: 10,
+			}),
+		)!;
+
+		expect(Object.keys(rec.fidelity.fields)).toEqual(["observation.content"]);
+	});
+
+	it("builds exactly the search field map (result_text) for a Grep", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Grep",
+				tool_input: { pattern: "TODO" },
+				tool_response: "src/main.ts:5:// TODO",
+				tool_output_bytes: 10,
+			}),
+		)!;
+
+		expect(Object.keys(rec.fidelity.fields)).toEqual(["observation.result_text"]);
+	});
+
+	it("does not mark fidelity as capped for a plain string shell response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "ls" },
+				tool_response: "file1.ts\nfile2.ts",
+				tool_output_bytes: 20,
+			}),
+		)!;
+
+		const stdoutFidelity = rec.fidelity.fields["observation.stdout"];
+		expect(nonNull(stdoutFidelity).interlinked_capped).toBe(false);
+		expect(nonNull(stdoutFidelity).completeness).toBe("complete");
 	});
 });
 
@@ -444,6 +627,9 @@ describe("buildCollectionRecord — privacy", () => {
 		expect(rec.privacy.redaction_status).toBe("unscanned");
 		expect(rec.privacy.allowed_for_training).toBe(false);
 		expect(rec.privacy.allowed_for_cloud_upload).toBe(false);
+		expect(rec.privacy.sensitivity).toBe("unknown");
+		expect(rec.privacy.contains_sensitive).toBe("unknown");
+		expect(rec.privacy.redaction_passes).toEqual([]);
 	});
 
 	it("sets not_required for post events with no observation", () => {
@@ -481,6 +667,19 @@ describe("buildCollectionRecord — provider_raw", () => {
 		)!;
 
 		expect(rec.provider_raw.tool_response_sha256).toBe("abcd1234");
+	});
+
+	it("carries tool_input_sha256 (content_sha256) from activity event", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				tool_response: "hi",
+				content_sha256: "input-hash-abc",
+			}),
+		)!;
+
+		expect(rec.provider_raw.tool_input_sha256).toBe("input-hash-abc");
 	});
 });
 
@@ -782,6 +981,18 @@ describe("buildCollectionRecord — file_read observation edge shapes", () => {
 			byte_count: Buffer.byteLength("direct content", "utf8"),
 		});
 	});
+
+	it("falls back to top-level content when r.file is present but not an object", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Read",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: { file: "not-an-object", content: "fallback content" },
+			}),
+		)!;
+
+		expect(rec.observation).toMatchObject({ content: "fallback content" });
+	});
 });
 
 // -------------------------------------------------------
@@ -926,6 +1137,19 @@ describe("buildCollectionRecord — guard telemetry via legacy type field", () =
 			buildCollectionRecord(baseEvent({ event_type: "tool_use", type: "guard_block" })),
 		).toBeNull();
 	});
+
+	it("returns null on a guard-prefixed legacy type even when a real tool_name is present (isolates the guard check from the tool_name gate)", () => {
+		expect(
+			buildCollectionRecord(
+				baseEvent({
+					event_type: "tool_use",
+					type: "guard_block",
+					tool_name: "Bash",
+					tool_input: { command: "x" },
+				}),
+			),
+		).toBeNull();
+	});
 });
 
 // -------------------------------------------------------
@@ -996,5 +1220,174 @@ describe("buildCollectionRecord — outcome discriminator (finding 5)", () => {
 		const rec = buildCollectionRecord(preEvent({ tool_name: "Bash" }))!;
 		expect(rec.phase).toBe("pre");
 		expect(rec.outcome).toBeUndefined();
+	});
+});
+
+// -------------------------------------------------------
+// Git context — buildGit
+// -------------------------------------------------------
+describe("buildCollectionRecord — git context", () => {
+	it("returns null git when neither git_head nor git_branch is present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" } }),
+		)!;
+		expect(rec.git).toBeNull();
+	});
+
+	it("carries a partial git context when only git_head is present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, git_head: "abc123" }),
+		)!;
+		expect(rec.git).toEqual({ head: "abc123", branch: null });
+	});
+
+	it("carries a partial git context when only git_branch is present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, git_branch: "main" }),
+		)!;
+		expect(rec.git).toEqual({ head: null, branch: "main" });
+	});
+});
+
+// -------------------------------------------------------
+// extractFilePath — apply_patch header parsing edge shapes
+// -------------------------------------------------------
+describe("buildCollectionRecord — extractFilePath field-alias resolution", () => {
+	it("resolves the file path from the filePath alias when file_path is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Edit", tool_input: { filePath: "/alias.ts", old_string: "a", new_string: "b" } }),
+		)!;
+		expect(rec.action).toMatchObject({ path: "/alias.ts" });
+	});
+
+	it("resolves the file path from the path alias when file_path/filePath are absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Edit", tool_input: { path: "/alias2.ts", old_string: "a", new_string: "b" } }),
+		)!;
+		expect(rec.action).toMatchObject({ path: "/alias2.ts" });
+	});
+
+	it("defaults path to an empty string when no path field is present", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Edit", tool_input: { old_string: "a", new_string: "b" } }),
+		)!;
+		expect(rec.action).toMatchObject({ path: "" });
+	});
+});
+
+describe("buildCollectionRecord — extractFilePath apply_patch header anchoring", () => {
+	it("does not treat an embedded 'Move to:' substring mid-line as the destination header", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { command: "prefix *** Move to: /should-not-match.ts\n*** Update File: /src/real.ts" },
+				tool_response: "Patch applied",
+			}),
+		)!;
+		expect(rec.action).toMatchObject({ path: "/src/real.ts" });
+	});
+
+	it("does not treat an embedded 'Update File:' substring mid-line as a path header", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { command: "prefix *** Update File: /should-not-match.ts" },
+				tool_response: "Patch applied",
+			}),
+		)!;
+		expect(rec.action).toMatchObject({ path: "" });
+	});
+
+	it("trims trailing whitespace from a Move to destination path", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { command: "*** Move to: /dest.ts   \n*** Update File: /src/main.ts" },
+				tool_response: "Patch applied",
+			}),
+		)!;
+		expect(rec.action).toMatchObject({ path: "/dest.ts" });
+	});
+
+	it("trims trailing whitespace from an Update File path", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { command: "*** Update File: /src/main.ts   " },
+				tool_response: "Patch applied",
+			}),
+		)!;
+		expect(rec.action).toMatchObject({ path: "/src/main.ts" });
+	});
+
+	it("returns an empty path when apply_patch command has no recognizable header", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { command: "some random patch body with no headers" },
+				tool_response: "Patch applied",
+			}),
+		)!;
+		expect(rec.action).toMatchObject({ path: "" });
+	});
+});
+
+// -------------------------------------------------------
+// notebook_edit / other / task actions
+// -------------------------------------------------------
+describe("buildCollectionRecord — notebook_edit action", () => {
+	it("builds the notebook_edit action with path, cell, and diff", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "NotebookEdit",
+				tool_input: { file_path: "/nb.ipynb", cell: "3", diff: { before: "a", after: "b" } },
+				tool_response: "Cell updated",
+			}),
+		)!;
+		expect(rec.action).toEqual({ path: "/nb.ipynb", cell: "3", diff: { before: "a", after: "b" } });
+	});
+
+	it("defaults diff to null when input.diff is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "NotebookEdit",
+				tool_input: { file_path: "/nb.ipynb", cell: "1" },
+				tool_response: "Cell updated",
+			}),
+		)!;
+		expect(rec.action).toEqual({ path: "/nb.ipynb", cell: "1", diff: null });
+	});
+});
+
+describe("buildCollectionRecord — other action", () => {
+	it("builds the other action as a passthrough of the provider input", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "SomeMcpTool", tool_input: { anything: 1 } }),
+		)!;
+		expect(rec.action).toEqual({ provider_input: { anything: 1 }, provider_input_ref: null });
+	});
+});
+
+describe("buildCollectionRecord — task action", () => {
+	it("builds the task action from subject/task/description fields", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "TaskCreate",
+				tool_input: { subject: "write tests", description: "cover survivors" },
+			}),
+		)!;
+		expect(rec.action).toEqual({ task: "write tests", params: "cover survivors" });
+	});
+
+	it("falls back to the task field when subject is absent", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "TaskCreate", tool_input: { task: "fallback task" } }),
+		)!;
+		expect(rec.action).toEqual({ task: "fallback task", params: null });
+	});
+
+	it("defaults task to an empty string when neither subject nor task is present", () => {
+		const rec = buildCollectionRecord(baseEvent({ tool_name: "TaskCreate", tool_input: {} }))!;
+		expect(rec.action).toEqual({ task: "", params: null });
 	});
 });

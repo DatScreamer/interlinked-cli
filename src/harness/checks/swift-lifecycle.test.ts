@@ -36,7 +36,7 @@ describe("checkSwiftNotificationObserverNoRemoval", () => {
 		expect(checkSwiftNotificationObserverNoRemoval(code, "X.swift").length).toBe(2);
 	});
 
-	it("does not flag when removeObserver is present somewhere in the file", () => {
+	it("N1: does not flag when removeObserver is present somewhere in the file (removal in deinit)", () => {
 		const code = `
 			class Foo {
 				init() {
@@ -93,7 +93,7 @@ describe("checkSwiftTimerNoInvalidate", () => {
 		expect(checkSwiftTimerNoInvalidate(code, "X.swift").length).toBe(1);
 	});
 
-	it("does not flag when timer.invalidate() is present", () => {
+	it("N1: does not flag when timer.invalidate() is present", () => {
 		const code = `
 			class Foo {
 				var t: Timer?
@@ -144,7 +144,7 @@ describe("checkSwiftCombineNoStore", () => {
 		expect(checkSwiftCombineNoStore(code, "Foo.swift").length).toBe(1);
 	});
 
-	it("does not flag when .store(in: &cancellables) is present", () => {
+	it("N1: does not flag when .store(in: &cancellables) is present", () => {
 		const code = `
 			class Foo {
 				var cancellables = Set<AnyCancellable>()

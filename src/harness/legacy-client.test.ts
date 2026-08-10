@@ -899,3 +899,36 @@ describe("legacyToolName", () => {
 		expect(toLegacyHarnessEvent(ev).tool_name).toBe("exotic_tool");
 	});
 });
+
+// ===========================================================================
+// copyTurnContext / copyString — effort object shape + parent_tool_use_id
+// ===========================================================================
+
+describe("copyTurnContext — effort field", () => {
+	it("reads effort.level from an {level} object shape", () => {
+		const ev = makeEvent({ raw: { effort: { level: "high" } } });
+		expect(toLegacyHarnessEvent(ev).effort).toBe("high");
+	});
+
+	it("ignores an effort object whose level is missing or non-string", () => {
+		const ev = makeEvent({ raw: { effort: { level: 5 } } });
+		expect("effort" in toLegacyHarnessEvent(ev)).toBe(false);
+	});
+
+	it("reads effort directly when sent as a plain string", () => {
+		const ev = makeEvent({ raw: { effort: "low" } });
+		expect(toLegacyHarnessEvent(ev).effort).toBe("low");
+	});
+});
+
+describe("copyString — parent_tool_use_id", () => {
+	it("copies parent_tool_use_id onto the legacy event when string-typed", () => {
+		const ev = makeEvent({ raw: { parent_tool_use_id: "tool-parent-9" } });
+		expect(toLegacyHarnessEvent(ev).parent_tool_use_id).toBe("tool-parent-9");
+	});
+
+	it("omits parent_tool_use_id when not string-typed", () => {
+		const ev = makeEvent({ raw: { parent_tool_use_id: 42 } });
+		expect("parent_tool_use_id" in toLegacyHarnessEvent(ev)).toBe(false);
+	});
+});

@@ -31,7 +31,7 @@ describe("checkPlaceholderMarkdownLinks", () => {
 	});
 
 	// ── Negative cases: legitimate patterns that must NOT be flagged ──
-	it("does not flag a real URL link", () => {
+	it("N1: does not flag a real URL link", () => {
 		const matches = checkPlaceholderMarkdownLinks(
 			"See [the docs](https://example.com/x).\n",
 			"guide.md",
@@ -39,7 +39,7 @@ describe("checkPlaceholderMarkdownLinks", () => {
 		expect(matches).toEqual([]);
 	});
 
-	it("does not flag a real same-page anchor link", () => {
+	it("N2: does not flag a real same-page anchor link", () => {
 		const matches = checkPlaceholderMarkdownLinks(
 			"Jump to [setup](#installation-steps).\n",
 			"guide.md",

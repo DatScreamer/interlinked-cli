@@ -3,13 +3,14 @@ import { nonNull } from "../../lib/non-null.js";
 import {
 	classifyFileSensitivity,
 	DEFAULT_TAINT_CONFIG,
+	formatTaintSources,
 	isNetworkCommand,
 	isStepLimitExceeded,
 	ratchetSensitivity,
 	SENSITIVITY_ORDER,
 	shouldBlockNetwork,
 } from "../taint-tracker.js";
-import type { SessionTrajectory } from "../types.js";
+import type { SessionTrajectory, TaintTrackingConfig } from "../types.js";
 
 // Deterministic fixtures.
 const FIXED_NOW = 1_700_000_000_000;
@@ -92,6 +93,54 @@ describe("classifyFileSensitivity", () => {
 	it("classifies normal source files as Public", () => {
 		expect(classifyFileSensitivity("/project/src/index.ts", config)).toBe("Public");
 		expect(classifyFileSensitivity("/project/README.md", config)).toBe("Public");
+	});
+
+	it("matches a '**/*.ext*' style glob against any path containing the stem", () => {
+		// Exercises the suffix-wildcard branch inside the internal glob matcher:
+		// pattern "**/*.log*" -> rest "*.log*" -> starts with "*." AND ends with
+		// "*" -> matches on `filePath.includes(".log")` rather than endsWith.
+		const custom: TaintTrackingConfig = {
+			...DEFAULT_TAINT_CONFIG,
+			file_sensitivity: [{ glob: "**/*.log*", level: "Internal" }],
+		};
+		expect(classifyFileSensitivity("/var/app.log.2026-08-09", custom)).toBe("Internal");
+		expect(classifyFileSensitivity("/var/app.txt", custom)).toBe("Public");
+	});
+
+	it("falls through to no-match for a glob that neither equals the path nor starts with '**/'", () => {
+		// A bare (non "**/"-prefixed) pattern that also isn't an exact-string
+		// match exercises the final `return false` fallback.
+		const custom: TaintTrackingConfig = {
+			...DEFAULT_TAINT_CONFIG,
+			file_sensitivity: [{ glob: "config.local.json", level: "Internal" }],
+		};
+		expect(classifyFileSensitivity("/project/config.local.json", custom)).toBe("Public");
+	});
+});
+
+describe("formatTaintSources", () => {
+	function withSources(files: string[]): SessionTrajectory {
+		const session = makeSession();
+		session.taint_sources = files.map((file, i) => ({
+			file,
+			level: "Confidential" as const,
+			at_step: i,
+			provenance: "local_read" as const,
+		}));
+		return session;
+	}
+
+	it("returns 'unknown' when there are no taint sources", () => {
+		expect(formatTaintSources(makeSession())).toBe("unknown");
+	});
+
+	it("joins every source file when there are three or fewer", () => {
+		expect(formatTaintSources(withSources([".env", "cert.pem"]))).toBe(".env, cert.pem");
+	});
+
+	it("shows only the last three sources when there are more than three", () => {
+		const session = withSources([".env", "cert.pem", "id_rsa", "secrets/api.json"]);
+		expect(formatTaintSources(session)).toBe("cert.pem, id_rsa, secrets/api.json");
 	});
 });
 

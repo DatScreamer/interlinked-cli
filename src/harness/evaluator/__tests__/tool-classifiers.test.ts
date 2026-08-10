@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -96,12 +96,42 @@ describe("estimateEditLine", () => {
 		expect(estimateEditLine(file, "missing")).toBeUndefined();
 		expect(estimateEditLine(join(tmpDir, "no-such-file.txt"), "alpha")).toBeUndefined();
 	});
+
+	it("returns undefined when readFileSync throws (e.g. path is a directory)", () => {
+		const dirPath = join(tmpDir, "a-directory");
+		mkdirSync(dirPath);
+		// existsSync(dirPath) is true, but readFileSync on a directory throws EISDIR —
+		// exercises the catch-block fallback distinct from the "file missing" case.
+		expect(estimateEditLine(dirPath, "anything")).toBeUndefined();
+	});
 });
 
 describe("globMatch", () => {
+	it("matches an exact path against an exact pattern", () => {
+		expect(globMatch("src/foo/bar.ts", "src/foo/bar.ts")).toBe(true);
+		expect(globMatch("src/foo/bar.ts", "src/foo/baz.ts")).toBe(false);
+	});
+
 	it("matches **/*.ext anywhere in the tree", () => {
 		expect(globMatch("src/foo/bar.ts", "**/*.ts")).toBe(true);
 		expect(globMatch("src/foo/bar.ts", "**/*.js")).toBe(false);
+	});
+
+	it("matches **/<literal-name> as a suffix or exact basename (no wildcard rest)", () => {
+		expect(globMatch("src/foo/package.json", "**/package.json")).toBe(true);
+		expect(globMatch("package.json", "**/package.json")).toBe(true); // filePath === rest
+		expect(globMatch("src/foo/other.json", "**/package.json")).toBe(false);
+	});
+
+	it("matches bare *.ext patterns (no **/ prefix) in any directory", () => {
+		expect(globMatch("src/foo/bar.ts", "*.ts")).toBe(true);
+		expect(globMatch("bar.ts", "*.ts")).toBe(true);
+		expect(globMatch("src/foo/bar.js", "*.ts")).toBe(false);
+	});
+
+	it("matches bare *.env* trailing-wildcard patterns (no **/ prefix)", () => {
+		expect(globMatch("src/.env.local", "*.env*")).toBe(true);
+		expect(globMatch("src/.env.local", "*.other*")).toBe(false);
 	});
 
 	it("matches pipe-separated patterns as a union", () => {
@@ -119,6 +149,11 @@ describe("globMatch", () => {
 		expect(globMatch("src/a/b.ts", "src/**")).toBe(true);
 		expect(globMatch("src/a.ts", "src/*")).toBe(true);
 		expect(globMatch("src/a/b.ts", "src/*")).toBe(false);
+	});
+
+	it("matches dir/** against the dir path itself (filePath === prefix)", () => {
+		expect(globMatch("src", "src/**")).toBe(true);
+		expect(globMatch("other", "src/**")).toBe(false);
 	});
 
 	it("returns false for non-matching bare patterns", () => {

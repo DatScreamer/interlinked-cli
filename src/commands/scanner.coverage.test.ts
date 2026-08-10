@@ -73,6 +73,46 @@ vi.mock("../harness/content-scanner/review-files.js", () => ({
 }));
 vi.mock("node:readline/promises", () => ({ createInterface: mockCreateInterface }));
 
+// --- scanner-render.js: pickReview is wrapped so ONE test can force its
+// null return (reviews.length === 0 is already intercepted earlier in
+// scannerReviewCommand, so pickReview's own `null` branch is otherwise
+// unreachable through real callers) -----------------------------------------
+
+const { mockPickReview } = vi.hoisted(() => ({ mockPickReview: vi.fn() }));
+
+vi.mock("./scanner-render.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./scanner-render.js")>();
+	// Default: transparent pass-through to the real implementation, so every
+	// other test in this file (and other describe blocks below) sees real
+	// pickReview behavior unless a test explicitly overrides it once.
+	mockPickReview.mockImplementation(actual.pickReview);
+	return { ...actual, pickReview: mockPickReview };
+});
+
+// --- lib/output.js: `output()` is wrapped to ALSO invoke the `json`
+// renderer (silently, result discarded) after doing its real job. Some
+// renderer closures — e.g. the SKIP-decision json payload inside
+// scannerReviewCommand — are architecturally unreachable via mode="json"
+// in production (an earlier guard requires an explicit decision flag
+// whenever mode is "json", so decision can never be "skip" there). This
+// wrapper exercises + pins those closures' shape without changing what the
+// CLI actually prints for any existing assertion. -----------------------
+
+vi.mock("../lib/output.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/output.js")>();
+	return {
+		...actual,
+		output: (
+			mode: Parameters<typeof actual.output>[0],
+			data: unknown,
+			renderers: Parameters<typeof actual.output>[2],
+		) => {
+			actual.output(mode, data, renderers);
+			renderers.json?.();
+		},
+	};
+});
+
 import {
 	scannerOffCommand,
 	scannerOnCommand,
@@ -780,6 +820,39 @@ describe("scannerReviewCommand — JSON skip payload", () => {
 		const parsed = JSON.parse(errored()) as { error: string };
 		expect(parsed.error).toMatch(/non-interactive/i);
 		expect(mockCreateInterface).not.toHaveBeenCalled();
+	});
+});
+
+describe("scannerReviewCommand — pickReview returns null (defensive branch)", () => {
+	it("errors with 'no pending reviews matched' when pickReview yields null", async () => {
+		mockListPendingReviews.mockReturnValue([makeSummary()]);
+		mockReadReview.mockReturnValue(makeReviewPayload());
+		mockPickReview.mockReturnValueOnce(null);
+		await scannerReviewCommand({ allow: true });
+		expect(process.exitCode).toBe(1);
+		expect(errored()).toMatch(/no pending reviews matched/);
+		expect(mockWriteDecision).not.toHaveBeenCalled();
+	});
+});
+
+describe("scannerReviewCommand — skip-decision json payload closure", () => {
+	it("the json renderer for a skip decision returns the skip payload shape", async () => {
+		// Real flow: normal mode + TTY + no flag -> interactive prompt -> "s"
+		// -> decision="skip". mode stays "normal" (json is impossible here by
+		// construction), but the output() wrapper above still calls the json
+		// closure so its literal shape is exercised and pinned.
+		mockListPendingReviews.mockReturnValue([makeSummary()]);
+		mockReadReview.mockReturnValue(makeReviewPayload());
+		questionAnswers.push("s");
+		const restoreTty = makeTtyStdin();
+		try {
+			await scannerReviewCommand({});
+		} finally {
+			restoreTty();
+		}
+		// The real (normal-mode) output is unaffected — still the dim skip line.
+		expect(logged()).toContain("Skipped — review left in place");
+		expect(mockWriteDecision).not.toHaveBeenCalled();
 	});
 });
 

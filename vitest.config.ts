@@ -102,6 +102,12 @@ export default defineConfig({
             // same interchange format coverage.py / cargo-llvm-cov / gcov emit,
             // so the ratchet + CRAP consume every language through one parser.
             reporter: ["text-summary", "json", "json-summary", "lcov"],
+            // Emit the report even when tests fail (vitest default withholds
+            // it). 2026-08-09: ~204 tests fail ONLY under coverage mode (they
+            // pass plain — subprocess/stdout interplay, root cause open), and
+            // the withheld report starved every coverage consumer. A partial
+            // report labeled by a red run beats no report.
+            reportOnFailure: true,
             reportsDirectory: "coverage",
             exclude: [
                 "node_modules/**",

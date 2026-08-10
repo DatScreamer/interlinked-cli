@@ -217,6 +217,44 @@ describe("runRatchetComparison — non_null_assertion_ratchet", () => {
 	});
 });
 
+describe("runRatchetComparison — unjustified_cast_ratchet", () => {
+	it("fires when unjustified `as` casts increase, with before→after counts", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				baseline: zeroBaseline({ unjustifiedCastCount: 0 }),
+				// two `as` casts with no `// SAFETY:` justification
+				postContent: "const a = x as Foo;\nconst b = y as Bar;",
+			}),
+		);
+		const finding = results.find((r) => r.name === "unjustified_cast_ratchet");
+		expect(finding).toBeDefined();
+		expect(finding?.severity).toBe("warning");
+		expect(finding?.file).toBe("/repo/src/touched.ts");
+		expect(finding?.message).toContain("0 -> 2");
+		expect(finding?.message).toContain("SAFETY:");
+	});
+
+	it("does NOT fire when the unjustified-cast count is unchanged", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				baseline: zeroBaseline({ unjustifiedCastCount: 1 }),
+				postContent: "const a = x as Foo;",
+			}),
+		);
+		expect(names(results)).not.toContain("unjustified_cast_ratchet");
+	});
+
+	it("does NOT fire when unjustifiedCastCount is absent on the baseline (optional guard)", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				baseline: requiredOnlyBaseline(),
+				postContent: "const a = x as Foo;\nconst b = y as Bar;",
+			}),
+		);
+		expect(names(results)).not.toContain("unjustified_cast_ratchet");
+	});
+});
+
 describe("runRatchetComparison — multiple core dimensions at once", () => {
 	it("emits findings in declaration order: suppression, as-any, non-null", () => {
 		const results = runRatchetComparison(

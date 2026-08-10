@@ -1313,3 +1313,77 @@ describe("registry pipeline filtering", () => {
 		expect(snapshot).toMatch(/^inline_checks_enabled=0$/m);
 	});
 });
+
+// ===========================================
+// safeWork / safeCaps — catch branches (L110-111, L121-122)
+// ===========================================
+// Both counters are best-effort: a lifetime-ledger or metric-caps failure must
+// still let the snapshot write with zeroed-out fields, never throw.
+
+describe("writeStatuslineArtifacts — ledger and caps failure swallowing", () => {
+	let cwd: string;
+	let interlinkedDir: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "statusline-ledger-fail-"));
+		interlinkedDir = join(cwd, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		vi.doUnmock("./enforcement-ledger.js");
+		vi.doUnmock("./metric-caps.js");
+		vi.resetModules();
+	});
+
+	it("falls back to zeroed lifetime counters when updateEnforcementLedger throws", async () => {
+		vi.resetModules();
+		vi.doMock("./enforcement-ledger.js", () => ({
+			updateEnforcementLedger: () => {
+				throw new Error("ledger read failed");
+			},
+		}));
+		const mod = await import("./statusline-snapshot.js");
+		mod.writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^lifetime_blocked=0$/m);
+		expect(text).toMatch(/^lifetime_caught=0$/m);
+		expect(text).toMatch(/^lifetime_evaluated=0$/m);
+	});
+
+	it("falls back to zeroed metric caps when maxCyclomaticFor/crapThresholdFor throw", async () => {
+		vi.resetModules();
+		vi.doMock("./metric-caps.js", () => ({
+			maxCyclomaticFor: () => {
+				throw new Error("caps read failed");
+			},
+			crapThresholdFor: () => {
+				throw new Error("caps read failed");
+			},
+		}));
+		const mod = await import("./statusline-snapshot.js");
+		mod.writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^cap_cyclomatic=0$/m);
+		expect(text).toMatch(/^cap_crap=0$/m);
+	});
+});

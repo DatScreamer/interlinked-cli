@@ -209,8 +209,8 @@ describe("cognitiveComplexityCheck — registry detector contract", () => {
 		return `function monster(${params}) { ${body} return 0; }`;
 	}
 
-	it("fires on a function over the cap, naming function, line, and score", () => {
-		const code = monster(6); // 1+2+3+4+5+6 = 21 > 15
+	it("P1: fires on a function over the cap, naming function, line, and score", () => {
+		const code = monster(6); // 1+2+3+4+5+6 = 21 > 15 — provably over the cap
 		const matches = cognitiveComplexityCheck(code, "src/a.ts");
 		expect(matches).toHaveLength(1);
 		expect(matches[0]?.line).toBe(1);

@@ -13,7 +13,7 @@
 //   - Returns InlineMatch[] with `line` + `text` mirroring the detector
 //     finding's line + message when the detector fires.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -152,6 +152,159 @@ describe("endpoint-security-adapters: detector fires (positive case)", () => {
 		const m = matches[0];
 		expect(typeof nonNull(m).line).toBe("number");
 		expect(nonNull(m).text.toLowerCase()).toContain("allowlist");
+	});
+});
+
+describe("adaptEndpointAuthMissing — negative (must not fire)", () => {
+	it("N1: does not fire when the route carries an inline auth chain (app.use(requireAuth) above the route)", () => {
+		const file = join(tmpRoot, "routes.ts");
+		const content = [
+			"app.use(requireAuth);",
+			'app.get("/admin/users", (req, res) => {',
+			"  res.json({ ok: true });",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointAuthMissing(content, file)).toEqual([]);
+	});
+
+	it("N2: does not fire when a mount-level auth middleware appears anywhere in the file (scanForMountLevelAuth is whole-file, not position-scoped)", () => {
+		// Auth is wired below the route (would not actually protect it in real
+		// Express), but checkEndpointAuthMissing's in-file backstop scans the
+		// entire file for `<receiver>.use(<authIdent>)`, not just lines above
+		// the route -- this is the documented "second pass" behavior.
+		const file = join(tmpRoot, "routes-late-mount.ts");
+		const content = [
+			'app.get("/admin/users", (req, res) => {',
+			"  res.json({ ok: true });",
+			"});",
+			"app.use(requireAuth);",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointAuthMissing(content, file)).toEqual([]);
+	});
+});
+
+describe("adaptEndpointIdorShape — negative (must not fire)", () => {
+	it("N1: does not fire when the query is scoped to an auth-context identifier alongside the path param", () => {
+		const file = join(tmpRoot, "users-owned.ts");
+		const content = [
+			'import express from "express";',
+			"const app = express();",
+			'app.get("/users/:id", async (req, res) => {',
+			"  const user = await prisma.user.findUnique({ where: { id: req.params.id, ownerId: req.user.id } });",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointIdorShape(content, file)).toEqual([]);
+	});
+
+	it("N2: does not fire when the path param is read but never used as a DB key", () => {
+		const file = join(tmpRoot, "users-echo.ts");
+		const content = [
+			'app.get("/users/:id", async (req, res) => {',
+			"  const id = req.params.id;",
+			"  res.json({ id });",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointIdorShape(content, file)).toEqual([]);
+	});
+});
+
+describe("adaptEndpointMissingTenantFilter — negative (must not fire)", () => {
+	it("N1: does not fire when the WHERE clause already includes a configured tenant column", () => {
+		const file = join(tmpRoot, "projects-scoped.ts");
+		const content = [
+			"app.get('/api/projects', async (req, res) => {",
+			"  const projects = await prisma.project.findMany({ where: { org_id: req.user.orgId, status: 'active' } });",
+			"  res.json(projects);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointMissingTenantFilter(content, file)).toEqual([]);
+	});
+
+	it("N2: does not fire when the query targets a table on the exempt list (default: sessions)", () => {
+		const file = join(tmpRoot, "sessions.ts");
+		const content = [
+			"app.get('/api/sessions', async (req, res) => {",
+			"  const rows = await prisma.session.findMany({ where: { userId: id } });",
+			"  res.json(rows);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointMissingTenantFilter(content, file)).toEqual([]);
+	});
+});
+
+describe("adaptEndpointSsrfShape — negative (must not fire)", () => {
+	it("N1: does not fire when a URL-shaped value is read but never passed to an HTTP client", () => {
+		const file = join(tmpRoot, "webhook-store.ts");
+		const content = [
+			"app.post('/api/webhook', async (req, res) => {",
+			"  const webhookUrl = req.body.webhookUrl;",
+			"  await prisma.subscription.create({ data: { webhookUrl } });",
+			"  res.json({ ok: true });",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointSsrfShape(content, file)).toEqual([]);
+	});
+
+	it("N2: does not fire when the URL passes through a registered url-bucket sanitizer first", () => {
+		// Register an allow-list-style sanitizer under the `url` sink class so
+		// isSanitized() finds it in the handler body.
+		mkdirSync(join(tmpRoot, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmpRoot, ".interlinked", "sanitizers.json"),
+			JSON.stringify({
+				version: 1,
+				sanitizers: {
+					url: [{ name: "isAllowedHost", kind: "function", pattern: "isAllowedHost" }],
+				},
+			}),
+		);
+		const file = join(tmpRoot, "proxy-validated.ts");
+		const content = [
+			"app.post('/api/proxy', async (req, res) => {",
+			"  const url = req.body.url;",
+			"  if (!isAllowedHost(url)) return res.status(400).json({ error: 'blocked' });",
+			"  const r = await fetch(url);",
+			"  res.json(await r.json());",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointSsrfShape(content, file)).toEqual([]);
+	});
+});
+
+describe("adaptEndpointMassAssignment — negative (must not fire)", () => {
+	it("N1: does not fire when the body is destructured and rebuilt before the create() call", () => {
+		const file = join(tmpRoot, "users-destructured.ts");
+		const content = [
+			"app.post('/api/users', async (req, res) => {",
+			"  const { name, email } = req.body;",
+			"  const user = await prisma.user.create({ data: req.body });",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointMassAssignment(content, file)).toEqual([]);
+	});
+
+	it("N2: does not fire when a zod safeParse() call precedes the spread in the handler body", () => {
+		const file = join(tmpRoot, "users-safeparse.ts");
+		const content = [
+			"app.post('/api/users', async (req, res) => {",
+			"  const parsed = UserCreateSchema.safeParse(req.body);",
+			"  const user = await prisma.user.create({ data: req.body });",
+			"  res.json(user);",
+			"});",
+		].join("\n");
+		writeFileSync(file, content);
+		expect(adaptEndpointMassAssignment(content, file)).toEqual([]);
 	});
 });
 

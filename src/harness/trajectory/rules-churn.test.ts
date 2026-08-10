@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sha256 } from "./helpers.js";
+import { normalizeCommand, sha256 } from "./helpers.js";
 import {
 	CHURN_RULES,
 	churnEditsWithoutGreen,
@@ -12,7 +12,7 @@ import {
 	churnUndoWarValueToggle,
 } from "./rules-churn.js";
 import { applyEvent, createState } from "./state.js";
-import type { ToolEvent, TrajectoryRule, Verdict } from "./types.js";
+import type { ToolEvent, TrajectoryRule, TrajectoryState, Verdict } from "./types.js";
 
 // ===========================================
 // Compact event builders
@@ -86,6 +86,51 @@ function firedIds(verdicts: Verdict[]): Set<string> {
 	return new Set(verdicts.map((v) => v.ruleId));
 }
 
+/** Fold every event and return the resulting state (discarding verdicts). */
+function runState(events: ToolEvent[]): TrajectoryState {
+	const state = createState("s");
+	for (const ev of events) applyEvent(state, ev);
+	return state;
+}
+
+function lastEvent(events: ToolEvent[]): ToolEvent {
+	const e = events[events.length - 1];
+	if (!e) throw new Error("no events");
+	return e;
+}
+
+/** A synthetic PostToolUse edit event not run through applyEvent — for probing
+ *  a rule directly against hand-crafted state. */
+function postEditEvent(tool: "Edit" | "Write" | "MultiEdit", input: ToolEvent["input"]): ToolEvent {
+	return {
+		ts: "2026-01-01T00:00:00Z",
+		session: "s",
+		agent: "a",
+		tool,
+		toolUseId: nextId(),
+		hook: "PostToolUse",
+		input,
+		contentSha256: sha256(input.new_string ?? ""),
+		toolOutcome: "success",
+		checkDecision: "allow",
+		failedCheckIds: [],
+	};
+}
+
+/** Crafted state with a pre-populated commandFailures entry (bash-repeat rule). */
+function makeBashState(cmd: string, count: number): TrajectoryState {
+	const state = createState("s");
+	state.commandFailures.set(normalizeCommand(cmd), { count, lastStep: 1 });
+	return state;
+}
+
+/** Crafted state with a pre-populated familyReruns entry (test/build-rerun rule). */
+function makeFamilyState(fam: string, count: number): TrajectoryState {
+	const state = createState("s");
+	state.familyReruns.set(fam, { failingNoEditCount: count, editCountAtLastRun: 0, lastStep: 1 });
+	return state;
+}
+
 // Stable multi-line block whose first+last lines are constant → constant anchor.
 const F1 = "function f() {\n  return 1;\n}";
 const F2 = "function f() {\n  return 2;\n}";
@@ -95,13 +140,19 @@ const F3 = "function f() {\n  return 3;\n}";
 // churn_sha_cycle_revisit
 // ===========================================
 describe("churn_sha_cycle_revisit", () => {
-	it("fires on A→B→A when a failing check intervened", () => {
+	it("fires on A→B→A when a failing check intervened, with an exact reason and medium severity", () => {
 		const v = run([
 			...editEvents("src/a.ts", "", "A"),
 			...editEvents("src/a.ts", "A", "B", { fail: true }),
 			...editEvents("src/a.ts", "B", "A"),
 		]);
-		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(true);
+		const hit = v.find((x) => x.ruleId === "churn_sha_cycle_revisit");
+		expect(hit?.severity).toBe("medium");
+		expect(hit?.reason).toBe(
+			"Edit to src/a.ts returned its content to an earlier state this session " +
+				"(1 prior occurrence(s) of this exact content). The file is " +
+				"cycling through states rather than converging — step back and reconsider the approach.",
+		);
 	});
 
 	it("fires on A→B→A→B→A with two distinct revisits", () => {
@@ -157,12 +208,18 @@ describe("churn_sha_cycle_revisit", () => {
 // churn_literal_edit_revert
 // ===========================================
 describe("churn_literal_edit_revert", () => {
-	it("fires on a strict exact undo (foo→bar then bar→foo)", () => {
+	it("fires on a strict exact undo (foo→bar then bar→foo), with an exact reason and medium severity", () => {
 		const v = run([
 			...editEvents("src/a.ts", "foo", "bar"),
 			...editEvents("src/a.ts", "bar", "foo"),
 		]);
-		expect(firedIds(v).has("churn_literal_edit_revert")).toBe(true);
+		const hit = v.find((x) => x.ruleId === "churn_literal_edit_revert");
+		expect(hit?.severity).toBe("medium");
+		expect(hit?.reason).toBe(
+			"Edit to src/a.ts is an exact undo of an earlier edit this session (the new text " +
+				"restores what a prior edit replaced, and vice-versa). This is a literal revert — " +
+				"if the earlier change was wrong, understand why before re-touching this region.",
+		);
 	});
 
 	it("fires when the revert follows an unrelated edit in between", () => {
@@ -220,7 +277,7 @@ describe("churn_undo_war_value_toggle", () => {
 		expect(firedIds(v).has("churn_undo_war_value_toggle")).toBe(true);
 	});
 
-	it("fires with the high severity band", () => {
+	it("fires with the high severity band and an exact reason", () => {
 		const v = run([
 			...editEvents("src/a.ts", F1, F2),
 			...editEvents("src/a.ts", F2, F1),
@@ -228,6 +285,11 @@ describe("churn_undo_war_value_toggle", () => {
 		]);
 		const hit = v.find((x) => x.ruleId === "churn_undo_war_value_toggle");
 		expect(hit?.severity).toBe("high");
+		expect(hit?.reason).toBe(
+			"A region of src/a.ts is flapping between two values (A→B→A) with no test/build run " +
+				"between the flips. This is an undo-war, not a bisection — pick one value and verify it, " +
+				"or change the surrounding code so the choice is forced.",
+		);
 	});
 
 	it("fires on a different file's toggle", () => {
@@ -276,14 +338,22 @@ describe("churn_edits_without_green", () => {
 		return evs;
 	}
 
-	it("fires at exactly 5 failing edits on a source file", () => {
+	it("fires at exactly 5 failing edits on a source file, with an exact reason and medium severity", () => {
 		const v = run(nFailingEdits("src/a.ts", 5));
-		expect(firedIds(v).has("churn_edits_without_green")).toBe(true);
+		const hit = v.find((x) => x.ruleId === "churn_edits_without_green");
+		expect(hit?.severity).toBe("medium");
+		expect(hit?.reason).toBe(
+			"src/a.ts has had 5 consecutive edits without reaching a clean state (no edit " +
+				"passed its checks). Repeated edits that never go green are a sign of guessing — " +
+				"read the failing output carefully and form a hypothesis before the next edit.",
+		);
 	});
 
-	it("fires at the 8-edit escalation", () => {
+	it("fires at the 8-edit escalation, still at medium severity (not yet 12)", () => {
 		const v = run(nFailingEdits("src/a.ts", 8));
-		expect(v.filter((x) => x.ruleId === "churn_edits_without_green").length).toBeGreaterThanOrEqual(2);
+		const hits = v.filter((x) => x.ruleId === "churn_edits_without_green");
+		expect(hits.length).toBeGreaterThanOrEqual(2);
+		expect(hits.every((h) => h.severity === "medium")).toBe(true);
 	});
 
 	it("fires with high severity at 12", () => {
@@ -316,13 +386,19 @@ describe("churn_edits_without_green", () => {
 // churn_repeated_failing_bash
 // ===========================================
 describe("churn_repeated_failing_bash", () => {
-	it("fires on the third identical failing command", () => {
+	it("fires on the third identical failing command, with an exact reason and medium severity", () => {
 		const v = run([
 			...bashEvents("make widget", { outcome: "fail" }),
 			...bashEvents("make widget", { outcome: "fail" }),
 			...bashEvents("make widget", { outcome: "fail" }),
 		]);
-		expect(firedIds(v).has("churn_repeated_failing_bash")).toBe(true);
+		const hit = v.find((x) => x.ruleId === "churn_repeated_failing_bash");
+		expect(hit?.severity).toBe("medium");
+		expect(hit?.reason).toBe(
+			"The same Bash command has now failed 3 times this session with no " +
+				"successful edit between the runs. Re-running an unchanged command yields the same " +
+				"failure — change an input or fix the underlying cause before re-issuing it.",
+		);
 	});
 
 	it("keeps firing on the fourth failing run", () => {
@@ -376,13 +452,19 @@ describe("churn_repeated_failing_bash", () => {
 // churn_rerun_failing_test_no_source_change
 // ===========================================
 describe("churn_rerun_failing_test_no_source_change", () => {
-	it("fires on a third failing test run with no source change", () => {
+	it("fires on a third failing test run with no source change, with an exact reason and medium severity", () => {
 		const v = run([
 			...bashEvents("npm test", { outcome: "fail" }),
 			...bashEvents("npm test", { outcome: "fail" }),
 			...bashEvents("npm test", { outcome: "fail" }),
 		]);
-		expect(firedIds(v).has("churn_rerun_failing_test_no_source_change")).toBe(true);
+		const hit = v.find((x) => x.ruleId === "churn_rerun_failing_test_no_source_change");
+		expect(hit?.severity).toBe("medium");
+		expect(hit?.reason).toBe(
+			"The test suite has been re-run 3 times while still failing, " +
+				"with no successful source edit between the runs. The result is deterministic — edit the " +
+				"code (or the test) before running it again.",
+		);
 	});
 
 	it("fires for a build-family rerun", () => {
@@ -447,8 +529,17 @@ describe("churn_revert_after_check_fail_combo", () => {
 		];
 	}
 
-	it("fires on fail → literal revert → byte-identical re-apply with no green between", () => {
-		expect(firedIds(run(combo())).has("churn_revert_after_check_fail_combo")).toBe(true);
+	it("fires on fail → literal revert → byte-identical re-apply with no green between, with an exact reason", () => {
+		const v = run(combo());
+		const hit = v.find((x) => x.ruleId === "churn_revert_after_check_fail_combo");
+		expect(hit?.action).toBe("nudge");
+		expect(hit?.severity).toBe("high");
+		expect(hit?.reason).toBe(
+			"src/a.ts just re-applied, byte-for-byte, an edit that already failed a check earlier " +
+				"this session (with a revert in between and no passing check since). Re-applying a " +
+				"known-failing change without addressing why it failed will fail the same way — fix the " +
+				"root cause instead of toggling.",
+		);
 	});
 
 	it("fires when an unrelated-region edit sits inside the window", () => {
@@ -499,22 +590,6 @@ describe("churn_revert_after_check_fail_combo", () => {
 // Additional branch coverage — missing file_path guards + crafted-state paths
 // ===========================================
 describe("additional branch coverage", () => {
-	function postEditEvent(tool: "Edit" | "Write" | "MultiEdit", input: ToolEvent["input"]): ToolEvent {
-		return {
-			ts: "2026-01-01T00:00:00Z",
-			session: "s",
-			agent: "a",
-			tool,
-			toolUseId: nextId(),
-			hook: "PostToolUse",
-			input,
-			contentSha256: sha256(input.new_string ?? ""),
-			toolOutcome: "success",
-			checkDecision: "allow",
-			failedCheckIds: [],
-		};
-	}
-
 	it("churn_sha_cycle_revisit: returns null when the event has no file_path", () => {
 		const state = createState("s");
 		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
@@ -610,6 +685,550 @@ describe("additional branch coverage", () => {
 			...editEvents("src/noop3.ts", "same", "same", { fail: true }),
 		]);
 		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+});
+
+// ===========================================
+// isPostEdit — shared post-edit gate (exercised through the rules that call it)
+// ===========================================
+describe("isPostEdit gate", () => {
+	it("a PreToolUse clone of a matching event never satisfies the post-edit gate (churn_sha_cycle_revisit)", () => {
+		const events = [
+			...editEvents("src/pre-sha.ts", "", "A"),
+			...editEvents("src/pre-sha.ts", "A", "B", { fail: true }),
+			...editEvents("src/pre-sha.ts", "B", "A"),
+		];
+		const state = runState(events);
+		const preEvent: ToolEvent = { ...lastEvent(events), hook: "PreToolUse" };
+		expect(churnShaCycleRevisit(state, preEvent)).toBeNull();
+	});
+
+	it("a Bash tool event never satisfies the post-edit gate, even with hook=PostToolUse and matching state", () => {
+		const events = [
+			...editEvents("src/g.ts", "foo", "bar"),
+			...editEvents("src/g.ts", "bar", "foo"),
+		];
+		const state = runState(events);
+		const fakeEvent: ToolEvent = {
+			ts: "t",
+			session: "s",
+			agent: "a",
+			tool: "Bash",
+			toolUseId: nextId(),
+			hook: "PostToolUse",
+			input: { file_path: "src/g.ts", old_string: "bar", new_string: "foo" },
+			toolOutcome: "success",
+		};
+		expect(churnLiteralEditRevert(state, fakeEvent)).toBeNull();
+	});
+
+	it("fires for a Write-tool edit just like an Edit-tool edit", () => {
+		const v = run([
+			...editEvents("src/w.ts", "foo", "bar", { tool: "Write" }),
+			...editEvents("src/w.ts", "bar", "foo", { tool: "Write" }),
+		]);
+		expect(firedIds(v).has("churn_literal_edit_revert")).toBe(true);
+	});
+
+	it("fires for a MultiEdit-tool edit just like an Edit-tool edit", () => {
+		const v = run([
+			...editEvents("src/m.ts", "foo", "bar", { tool: "MultiEdit" }),
+			...editEvents("src/m.ts", "bar", "foo", { tool: "MultiEdit" }),
+		]);
+		expect(firedIds(v).has("churn_literal_edit_revert")).toBe(true);
+	});
+});
+
+// ===========================================
+// Module-level FLAKY_HEADS + isFlakyCommand (churn_repeated_failing_bash FP guard)
+// ===========================================
+describe("isFlakyCommand — FLAKY_HEADS verb coverage", () => {
+	const FLAKY_VERBS = [
+		"wget", "ping", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "dig", "nslookup", "host",
+	];
+	it.each(FLAKY_VERBS)("does NOT fire churn_repeated_failing_bash for repeated failing '%s' commands", (verb) => {
+		const v = run([
+			...bashEvents(`${verb} example.com`, { outcome: "fail" }),
+			...bashEvents(`${verb} example.com`, { outcome: "fail" }),
+			...bashEvents(`${verb} example.com`, { outcome: "fail" }),
+		]);
+		expect(firedIds(v).has("churn_repeated_failing_bash")).toBe(false);
+	});
+
+	it("treats a pipeline as flaky when only SOME of its heads are flaky (.some, not .every)", () => {
+		const v = run([
+			...bashEvents("echo start && curl http://example.com/health", { outcome: "fail" }),
+			...bashEvents("echo start && curl http://example.com/health", { outcome: "fail" }),
+			...bashEvents("echo start && curl http://example.com/health", { outcome: "fail" }),
+		]);
+		expect(firedIds(v).has("churn_repeated_failing_bash")).toBe(false);
+	});
+
+	it("matches 'git fetch' with a single space (the +git regex, not a non-whitespace requirement)", () => {
+		const v = run([
+			...bashEvents("git fetch", { outcome: "fail" }),
+			...bashEvents("git fetch", { outcome: "fail" }),
+			...bashEvents("git fetch", { outcome: "fail" }),
+		]);
+		expect(firedIds(v).has("churn_repeated_failing_bash")).toBe(false);
+	});
+
+	it("matches 'git  fetch' across multiple spaces (the + quantifier, not a single \\s)", () => {
+		const v = run([
+			...bashEvents("git  fetch", { outcome: "fail" }),
+			...bashEvents("git  fetch", { outcome: "fail" }),
+			...bashEvents("git  fetch", { outcome: "fail" }),
+		]);
+		expect(firedIds(v).has("churn_repeated_failing_bash")).toBe(false);
+	});
+});
+
+// ===========================================
+// churn_sha_cycle_revisit — guard clauses, defensive holes, loop boundaries
+// ===========================================
+describe("churn_sha_cycle_revisit — mutation hardening", () => {
+	it("does NOT fire when contentSha256 is absent, even with matching history", () => {
+		const events = [
+			...editEvents("src/nosha.ts", "", "A"),
+			...editEvents("src/nosha.ts", "A", "B", { fail: true }),
+			...editEvents("src/nosha.ts", "B", "A"),
+		];
+		const state = runState(events);
+		const evNoSha: ToolEvent = { ...lastEvent(events) };
+		delete evNoSha.contentSha256;
+		expect(churnShaCycleRevisit(state, evNoSha)).toBeNull();
+	});
+
+	it("does NOT throw when there is no prior sha history for the file (hist undefined)", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { file_path: "src/brandnew.ts", old_string: "", new_string: "hello" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when file_path is missing, even if history exists under the undefined key", () => {
+		const state = createState("s");
+		(state.fileShaHistory as Map<unknown, unknown>).set(undefined, [
+			{ sha: "A", normSha: "a", atStep: 1 },
+			{ sha: "B", normSha: "b", atStep: 2 },
+			{ sha: "A", normSha: "a", atStep: 3 },
+		]);
+		(state.fileEditLog as Map<unknown, unknown>).set(undefined, [
+			{ old: "A", new: "B", anchor: "x", atStep: 2, failedCheck: true, greenCountAtEntry: 0 },
+		]);
+		state.stepCount = 3;
+		const ev = postEditEvent("Edit", { old_string: "B", new_string: "A" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("does not throw when the history's freshest entry is missing (defensive guard)", () => {
+		const state = createState("s");
+		const file = "src/holeycur.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			{ sha: "A", normSha: "a", atStep: 1 },
+			{ sha: "B", normSha: "b", atStep: 2 },
+			undefined,
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("optional chaining protects the prior-match scan against an earlier hole", () => {
+		const state = createState("s");
+		const file = "src/holeymid.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			undefined,
+			{ sha: "A", normSha: "a", atStep: 2 },
+			{ sha: "A", normSha: "a", atStep: 3 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("optional chaining protects the whitespace-only comparison against a hole", () => {
+		const state = createState("s");
+		const file = "src/holeynorm.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			{ sha: "A", normSha: "a", atStep: 1 },
+			undefined,
+			{ sha: "A", normSha: "a", atStep: 3 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire on a distinct sequence even with a failing edit inside it (no actual cycle)", () => {
+		const v = run([
+			...editEvents("src/nocycle2.ts", "", "A"),
+			...editEvents("src/nocycle2.ts", "A", "B", { fail: true }),
+			...editEvents("src/nocycle2.ts", "B", "C"),
+		]);
+		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(false);
+	});
+});
+
+// ===========================================
+// churn_literal_edit_revert — guard clauses, defensive holes, asymmetric matches
+// ===========================================
+describe("churn_literal_edit_revert — mutation hardening", () => {
+	it("does NOT throw when the file has no edit log yet (log undefined)", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { file_path: "src/brandnewlit.ts", old_string: "a", new_string: "b" });
+		expect(churnLiteralEditRevert(state, ev)).toBeNull();
+	});
+
+	it("does not throw when the freshest edit-log entry is missing (defensive guard)", () => {
+		const state = createState("s");
+		const file = "src/lit-hole.ts";
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "a", new: "b", anchor: "x", atStep: 1, failedCheck: false, greenCountAtEntry: 0 },
+			undefined,
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "b", new_string: "a" });
+		expect(churnLiteralEditRevert(state, ev)).toBeNull();
+	});
+
+	it("skips a missing earlier edit-log slot instead of throwing", () => {
+		const state = createState("s");
+		const file = "src/lit-hole3.ts";
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "foo", new: "bar", anchor: "x", atStep: 1, failedCheck: false, greenCountAtEntry: 0 },
+			undefined,
+			{ old: "bar", new: "foo", anchor: "x", atStep: 2, failedCheck: false, greenCountAtEntry: 0 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "bar", new_string: "foo" });
+		expect(churnLiteralEditRevert(state, ev)).not.toBeNull();
+	});
+
+	it("does NOT block a deletion-then-insertion revert (asymmetric empty-string guard)", () => {
+		const v = run([
+			...editEvents("src/emptyrevert.ts", "", "X"),
+			...editEvents("src/emptyrevert.ts", "X", ""),
+		]);
+		expect(firedIds(v).has("churn_literal_edit_revert")).toBe(true);
+	});
+
+	it("does NOT fire when only the new-half of the revert-match coincides (old-half differs)", () => {
+		const v = run([
+			...editEvents("src/halfrevert.ts", "X", "Y"),
+			...editEvents("src/halfrevert.ts", "Z", "X"),
+		]);
+		expect(firedIds(v).has("churn_literal_edit_revert")).toBe(false);
+	});
+});
+
+// ===========================================
+// churn_undo_war_value_toggle — guard clauses + defensive holes
+// ===========================================
+describe("churn_undo_war_value_toggle — mutation hardening", () => {
+	it("does NOT fire on a PreToolUse clone of the event, even with a matching toggle", () => {
+		const events = [
+			...editEvents("src/pretoggle.ts", F1, F2),
+			...editEvents("src/pretoggle.ts", F2, F1),
+			...editEvents("src/pretoggle.ts", F1, F2),
+		];
+		const state = runState(events);
+		const preEvent: ToolEvent = { ...lastEvent(events), hook: "PreToolUse" };
+		expect(churnUndoWarValueToggle(state, preEvent)).toBeNull();
+	});
+
+	it("does NOT fire when file_path is missing, even though a file literally named 'undefined' has a matching toggle", () => {
+		const events = [
+			...editEvents("undefined", F1, F2),
+			...editEvents("undefined", F2, F1),
+			...editEvents("undefined", F1, F2),
+		];
+		const state = runState(events);
+		const ev = postEditEvent("Edit", { old_string: F1, new_string: F2 });
+		expect(churnUndoWarValueToggle(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when a different file's key merely shares the prefix (anchor key must include the separator)", () => {
+		const events = [
+			...editEvents("src/a.tsx", F1, F2),
+			...editEvents("src/a.tsx", F2, F1),
+			...editEvents("src/a.tsx", F1, F2),
+		];
+		const state = runState(events);
+		// "src/a.ts" is a PREFIX of "src/a.tsx" — must not match its anchor keys.
+		const ev = postEditEvent("Edit", { file_path: "src/a.ts", old_string: F1, new_string: F2 });
+		expect(churnUndoWarValueToggle(state, ev)).toBeNull();
+	});
+
+	it("skips an anchor sequence with a hole at the oldest slot instead of throwing", () => {
+		const state = createState("s");
+		const file = "src/hole-toggle.ts";
+		const anchor = "anch1";
+		(state.anchorValueSeq as Map<string, unknown>).set(`${file} ${anchor}`, [
+			undefined,
+			{ valueHash: "h1", atStep: 2, verifyCountAtEntry: 0 },
+			{ valueHash: "h2", atStep: 3, verifyCountAtEntry: 0 },
+		]);
+		state.stepCount = 3;
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(churnUndoWarValueToggle(state, ev)).toBeNull();
+	});
+
+	it("skips an anchor sequence with a hole at the freshest slot instead of throwing", () => {
+		const state = createState("s");
+		const file = "src/hole-toggle2.ts";
+		const anchor = "anch2";
+		(state.anchorValueSeq as Map<string, unknown>).set(`${file} ${anchor}`, [
+			{ valueHash: "h0", atStep: 1, verifyCountAtEntry: 0 },
+			{ valueHash: "h1", atStep: 2, verifyCountAtEntry: 0 },
+			undefined,
+		]);
+		state.stepCount = 3;
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(churnUndoWarValueToggle(state, ev)).toBeNull();
+	});
+});
+
+// ===========================================
+// churn_edits_without_green — isPostEdit gate
+// ===========================================
+describe("churn_edits_without_green — mutation hardening", () => {
+	it("does NOT fire on a PreToolUse clone of the event, even with a matching edits-without-green count", () => {
+		const events = [
+			...editEvents("src/pregreen.ts", "v0", "v1", { fail: true }),
+			...editEvents("src/pregreen.ts", "v1", "v2", { fail: true }),
+			...editEvents("src/pregreen.ts", "v2", "v3", { fail: true }),
+			...editEvents("src/pregreen.ts", "v3", "v4", { fail: true }),
+			...editEvents("src/pregreen.ts", "v4", "v5", { fail: true }),
+		];
+		const state = runState(events);
+		const preEvent: ToolEvent = { ...lastEvent(events), hook: "PreToolUse" };
+		expect(churnEditsWithoutGreen(state, preEvent)).toBeNull();
+	});
+});
+
+// ===========================================
+// churn_repeated_failing_bash — guard clauses (direct-call, crafted state)
+// ===========================================
+describe("churn_repeated_failing_bash — mutation hardening", () => {
+	it("does NOT fire when the guard-bypassing event is not PostToolUse", () => {
+		const state = makeBashState("make widget", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Bash", toolUseId: nextId(),
+			hook: "PreToolUse", input: { command: "make widget" }, toolOutcome: "fail",
+		};
+		expect(churnRepeatedFailingBash(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when the tool is not Bash", () => {
+		const state = makeBashState("make widget", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Edit", toolUseId: nextId(),
+			hook: "PostToolUse", input: { command: "make widget" }, toolOutcome: "fail",
+		};
+		expect(churnRepeatedFailingBash(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when the triggering event itself did not fail", () => {
+		const state = makeBashState("make widget", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Bash", toolUseId: nextId(),
+			hook: "PostToolUse", input: { command: "make widget" }, toolOutcome: "success",
+		};
+		expect(churnRepeatedFailingBash(state, ev)).toBeNull();
+	});
+});
+
+// ===========================================
+// churn_rerun_failing_test_no_source_change — guard clauses (direct-call)
+// ===========================================
+describe("churn_rerun_failing_test_no_source_change — mutation hardening", () => {
+	it("does NOT fire when the guard-bypassing event is not PostToolUse", () => {
+		const state = makeFamilyState("test", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Bash", toolUseId: nextId(),
+			hook: "PreToolUse", input: { command: "npm test" }, toolOutcome: "fail",
+		};
+		expect(churnRerunFailingTestNoSourceChange(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when the tool is not Bash", () => {
+		const state = makeFamilyState("test", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Edit", toolUseId: nextId(),
+			hook: "PostToolUse", input: { command: "npm test" }, toolOutcome: "fail",
+		};
+		expect(churnRerunFailingTestNoSourceChange(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when the triggering event itself did not fail", () => {
+		const state = makeFamilyState("test", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Bash", toolUseId: nextId(),
+			hook: "PostToolUse", input: { command: "npm test" }, toolOutcome: "success",
+		};
+		expect(churnRerunFailingTestNoSourceChange(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire for a non test/build family even with a matching rerun counter", () => {
+		const state = makeFamilyState("lint", 5);
+		const ev: ToolEvent = {
+			ts: "t", session: "s", agent: "a", tool: "Bash", toolUseId: nextId(),
+			hook: "PostToolUse", input: { command: "eslint ." }, toolOutcome: "fail",
+		};
+		expect(churnRerunFailingTestNoSourceChange(state, ev)).toBeNull();
+	});
+});
+
+// ===========================================
+// churn_revert_after_check_fail_combo — guard clauses, holes, window bound,
+// AND-chain isolation, boundary-exact disruptor checks
+// ===========================================
+describe("churn_revert_after_check_fail_combo — mutation hardening", () => {
+	function combo(opts: { e1Fail?: boolean; revertClean?: boolean; reapplyNew?: string } = {}): ToolEvent[] {
+		const e1Fail = opts.e1Fail ?? true;
+		const revertClean = opts.revertClean ?? false;
+		const reNew = opts.reapplyNew ?? "b";
+		return [
+			...editEvents("src/a.ts", "a", "b", { fail: e1Fail }),
+			...editEvents("src/a.ts", "b", "a", { fail: !revertClean }),
+			...editEvents("src/a.ts", "a", reNew, { fail: true }),
+		];
+	}
+
+	it("does NOT fire on a PreToolUse clone of the event, even though the combo state matches", () => {
+		const events = combo();
+		const state = runState(events);
+		const preEvent: ToolEvent = { ...lastEvent(events), hook: "PreToolUse" };
+		expect(churnRevertAfterCheckFailCombo(state, preEvent)).toBeNull();
+	});
+
+	it("does NOT fire when file_path is missing, even with a matching log under the undefined key", () => {
+		const state = createState("s");
+		const log = [
+			{ old: "a", new: "b", anchor: "x", atStep: 1, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "b", new: "a", anchor: "x", atStep: 2, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "a", new: "b", anchor: "x", atStep: 3, failedCheck: true, greenCountAtEntry: 0 },
+		];
+		(state.fileEditLog as Map<unknown, unknown>).set(undefined, log);
+		state.lastDisruptStep = 0;
+		const ev = postEditEvent("Edit", { old_string: "a", new_string: "b" });
+		expect(churnRevertAfterCheckFailCombo(state, ev)).toBeNull();
+	});
+
+	it("does NOT throw when the file has no edit log yet (log undefined)", () => {
+		const state = createState("s");
+		const ev = postEditEvent("Edit", { file_path: "src/brandnewcombo.ts", old_string: "a", new_string: "b" });
+		expect(churnRevertAfterCheckFailCombo(state, ev)).toBeNull();
+	});
+
+	it("does NOT fire when E3 is a no-op, even when an identical earlier failing pair would otherwise match", () => {
+		const v = run([
+			...editEvents("src/noopmatch.ts", "z", "z", { fail: true }),
+			...editEvents("src/noopmatch.ts", "z", "z", { fail: true }),
+			...editEvents("src/noopmatch.ts", "z", "z", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("Math.max window bound: does NOT find a matching E1 that sits outside the 6-edit lookback window", () => {
+		const file = "src/window.ts";
+		const v = run([
+			...editEvents(file, "p", "q", { fail: true }),
+			...editEvents(file, "q", "p", { fail: true }),
+			...editEvents(file, "f0", "f1", { fail: true }),
+			...editEvents(file, "f1", "f2", { fail: true }),
+			...editEvents(file, "f2", "f3", { fail: true }),
+			...editEvents(file, "f3", "f4", { fail: true }),
+			...editEvents(file, "f4", "f5", { fail: true }),
+			...editEvents(file, "f5", "f6", { fail: true }),
+			...editEvents(file, "p", "q", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("does NOT fire when the matching earlier edit never failed a check (even though the tool call itself failed)", () => {
+		const file = "src/e1nofail.ts";
+		const v = run([
+			...editEvents(file, "a", "b", { outcome: "fail", fail: false }),
+			...editEvents(file, "b", "a", { fail: true }),
+			...editEvents(file, "a", "b", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("does NOT fire when only the old-half of the byte-identical match holds (new-half differs)", () => {
+		const file = "src/halfmatch.ts";
+		const v = run([
+			...editEvents(file, "different-old", "b", { fail: true }),
+			...editEvents(file, "b", "different-old", { fail: true }),
+			...editEvents(file, "a", "b", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("does NOT fire when the byte-identical match has no literal revert in between (unrelated edit only)", () => {
+		const file = "src/norevert.ts";
+		const v = run([
+			...editEvents(file, "x", "y", { fail: true }),
+			...editEvents(file, "m", "n", { fail: true }),
+			...editEvents(file, "x", "y", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("inner loop start bound: does not treat a same-shaped pair BEFORE E1 as the required revert-between", () => {
+		const file = "src/loopdir.ts";
+		const v = run([
+			...editEvents(file, "start", "mid", { fail: true }),
+			...editEvents(file, "y", "x", { fail: true }),
+			...editEvents(file, "x", "y", { fail: true }),
+			...editEvents(file, "m", "n", { fail: true }),
+			...editEvents(file, "x", "y", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("revertBetween requires ALL three AND-chain conditions — a new-only partial match does not count", () => {
+		const file = "src/partial1.ts";
+		const v = run([
+			...editEvents(file, "a", "b", { fail: true }),
+			...editEvents(file, "different", "a", { fail: true }),
+			...editEvents(file, "a", "b", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("revertBetween requires ALL three AND-chain conditions — an old-only partial match does not count", () => {
+		const file = "src/partial2.ts";
+		const v = run([
+			...editEvents(file, "a", "b", { fail: true }),
+			...editEvents(file, "b", "different", { fail: true }),
+			...editEvents(file, "a", "b", { fail: true }),
+		]);
+		expect(firedIds(v).has("churn_revert_after_check_fail_combo")).toBe(false);
+	});
+
+	it("lastDisruptStep boundary: a disruptor exactly AT e1's step does not suppress (must be strictly after)", () => {
+		const state = createState("s");
+		const file = "src/disruptbound1.ts";
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "a", new: "b", anchor: "x", atStep: 2, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "b", new: "a", anchor: "x", atStep: 4, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "a", new: "b", anchor: "x", atStep: 8, failedCheck: true, greenCountAtEntry: 0 },
+		]);
+		state.lastDisruptStep = 2;
+		state.stepCount = 8;
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "a", new_string: "b" });
+		expect(churnRevertAfterCheckFailCombo(state, ev)).not.toBeNull();
+	});
+
+	it("lastDisruptStep boundary: a disruptor exactly AT e3's step does not suppress (must be strictly before)", () => {
+		const state = createState("s");
+		const file = "src/disruptbound2.ts";
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "a", new: "b", anchor: "x", atStep: 2, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "b", new: "a", anchor: "x", atStep: 4, failedCheck: true, greenCountAtEntry: 0 },
+			{ old: "a", new: "b", anchor: "x", atStep: 8, failedCheck: true, greenCountAtEntry: 0 },
+		]);
+		state.lastDisruptStep = 8;
+		state.stepCount = 8;
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "a", new_string: "b" });
+		expect(churnRevertAfterCheckFailCombo(state, ev)).not.toBeNull();
 	});
 });
 

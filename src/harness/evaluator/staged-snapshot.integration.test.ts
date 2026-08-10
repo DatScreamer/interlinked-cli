@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -295,6 +305,101 @@ describe("materializeIndexSnapshot — tracked-only pathspec scopes (`git commit
 		try {
 			expect(existsSync(join(snap?.root ?? "", "src/sneaky.test.ts"))).toBe(false);
 			expect(existsSync(join(snap?.root ?? "", "lib/new.ts"))).toBe(true);
+		} finally {
+			snap?.cleanup();
+		}
+	});
+});
+
+// A malformed git pathspec magic makes the underlying `git ls-files` call
+// fail (exit 128). gitLines() must swallow that and return [] rather than
+// propagating — overlayTrackedScope then simply overlays nothing, and the
+// snapshot as a whole still succeeds (fail-safe, not fail-closed).
+describe("materializeIndexSnapshot — gitLines failure fail-safe", () => {
+	it("a malformed tracked-only pathspec fails the underlying git call without aborting the snapshot", () => {
+		writeRepo("src/a.ts", "export const a = 1;\n");
+		git("add", "src/a.ts");
+		git("commit", "-qm", "baseline");
+		const badPathspec = ":(icase,malformed";
+		const snap = materializeIndexSnapshot(repo, false, [badPathspec], [badPathspec]);
+		expect(snap).not.toBeNull();
+		snap?.cleanup();
+	});
+});
+
+// Symlink re-materialization (finding 2026-06): a copy-through of a TRACKED
+// symlink would follow both the source and destination link and corrupt the
+// old external target's content, so each overlay path must re-create the
+// symlink itself via readlink + symlink rather than copying bytes.
+describe("materializeIndexSnapshot — tracked symlink re-pointing", () => {
+	beforeEach(() => {
+		mkdirSync(join(repo, "src"), { recursive: true });
+		symlinkSync("target-a", join(repo, "src/link.ts"));
+		git("add", "src/link.ts");
+		git("commit", "-qm", "add tracked symlink");
+	});
+
+	it("-a mode: a repointed tracked symlink is re-created with the NEW target", () => {
+		rmSync(join(repo, "src/link.ts"));
+		symlinkSync("target-b", join(repo, "src/link.ts")); // tracked, unstaged repoint
+
+		const snap = materializeIndexSnapshot(repo, true);
+		expect(snap).not.toBeNull();
+		try {
+			const snapLink = join(snap?.root ?? "", "src/link.ts");
+			const st = lstatSync(snapLink);
+			expect(st.isSymbolicLink()).toBe(true);
+			expect(readlinkSync(snapLink)).toBe("target-b");
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("narrow constructed path: a repointed tracked symlink is re-created with the NEW target", () => {
+		rmSync(join(repo, "src/link.ts"));
+		symlinkSync("target-c", join(repo, "src/link.ts"));
+
+		const snap = materializeIndexSnapshot(repo, false, ["src/link.ts"]);
+		expect(snap).not.toBeNull();
+		try {
+			const snapLink = join(snap?.root ?? "", "src/link.ts");
+			const st = lstatSync(snapLink);
+			expect(st.isSymbolicLink()).toBe(true);
+			expect(readlinkSync(snapLink)).toBe("target-c");
+		} finally {
+			snap?.cleanup();
+		}
+	});
+
+	it("tracked-only pathspec scope: a repointed tracked symlink is re-created with the NEW target", () => {
+		rmSync(join(repo, "src/link.ts"));
+		symlinkSync("target-d", join(repo, "src/link.ts"));
+
+		const snap = materializeIndexSnapshot(repo, false, ["src"], ["src"]);
+		expect(snap).not.toBeNull();
+		try {
+			const snapLink = join(snap?.root ?? "", "src/link.ts");
+			const st = lstatSync(snapLink);
+			expect(st.isSymbolicLink()).toBe(true);
+			expect(readlinkSync(snapLink)).toBe("target-d");
+		} finally {
+			snap?.cleanup();
+		}
+	});
+});
+
+// -a mode must also stage TRACKED FILE DELETIONS, not just modifications.
+describe("materializeIndexSnapshot — -a mode tracked deletion", () => {
+	it("a tracked file deleted in the worktree (unstaged) is removed from the -a snapshot", () => {
+		writeRepo("src/gone.ts", "export const g = 1;\n");
+		git("add", "src/gone.ts");
+		git("commit", "-qm", "add gone.ts");
+		rmSync(join(repo, "src/gone.ts")); // tracked deletion, unstaged — -a WILL stage it
+
+		const snap = materializeIndexSnapshot(repo, true);
+		expect(snap).not.toBeNull();
+		try {
+			expect(existsSync(join(snap?.root ?? "", "src/gone.ts"))).toBe(false);
 		} finally {
 			snap?.cleanup();
 		}

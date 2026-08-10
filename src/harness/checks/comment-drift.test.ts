@@ -85,6 +85,19 @@ describe("checkCommentClaimsLimitNoGuard", () => {
 		`;
 		expect(checkCommentClaimsLimitNoGuard(content, "src/x.ts")).toEqual([]);
 	});
+
+	it("P1: fires on checkCommentClaimsLimitNoGuard when the comment claims a numeric cap the body never checks", () => {
+		const content = `
+			/** Queue at most 20 jobs before rejecting new ones. */
+			function enqueue(job: Job): void {
+				queue.push(job);
+			}
+		`;
+		const matches = checkCommentClaimsLimitNoGuard(content, "src/queue.ts");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text.toLowerCase()).toContain("20");
+	});
 });
 
 describe("checkCommentClaimsNullThrowsInstead", () => {
@@ -137,6 +150,20 @@ describe("checkCommentClaimsNullThrowsInstead", () => {
 			}
 		`;
 		expect(checkCommentClaimsNullThrowsInstead(content, "src/x.ts")).toEqual([]);
+	});
+
+	it("P1: fires on checkCommentClaimsNullThrowsInstead when the comment promises undefined but the body throws unguarded", () => {
+		const content = `
+			/** Get the cached config. Returns undefined if not yet loaded. */
+			function getConfig(): Config {
+				if (!cache.config) throw new Error("config not loaded");
+				return cache.config;
+			}
+		`;
+		const matches = checkCommentClaimsNullThrowsInstead(content, "src/config.ts");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text.toLowerCase()).toContain("undefined");
 	});
 });
 
@@ -207,6 +234,19 @@ describe("checkCommentClaimsValidationMissing", () => {
 		`;
 		expect(checkCommentClaimsValidationMissing(content, "src/x.ts")).toEqual([]);
 	});
+
+	it("P1: fires on checkCommentClaimsValidationMissing when the comment claims sanitization but the body is a pure pass-through", () => {
+		const content = `
+			/** Sanitizes the filename before writing to disk. */
+			function toSafeFilename(name: string): string {
+				return name;
+			}
+		`;
+		const matches = checkCommentClaimsValidationMissing(content, "src/fs-util.ts");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text.toLowerCase()).toContain("sanitizes");
+	});
 });
 
 describe("checkCommentClaimsIdempotentMutates", () => {
@@ -240,6 +280,19 @@ describe("checkCommentClaimsIdempotentMutates", () => {
 			}
 		`;
 		expect(checkCommentClaimsIdempotentMutates(content, "src/x.ts")).toEqual([]);
+	});
+
+	it("P1: fires on checkCommentClaimsIdempotentMutates when the comment claims idempotency but the body unconditionally appends", () => {
+		const content = `
+			/** Idempotent — safe to call this handler more than once. */
+			function recordEvent(evt: Event): void {
+				events.push(evt);
+			}
+		`;
+		const matches = checkCommentClaimsIdempotentMutates(content, "src/events.ts");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
+		expect(nonNull(matches[0]).text.toLowerCase()).toContain("idempotent");
 	});
 });
 
@@ -282,6 +335,23 @@ describe("checkCommentClaimsThrowsDoesnt", () => {
 			}
 		`;
 		expect(checkCommentClaimsThrowsDoesnt(content, "src/x.ts")).toEqual([]);
+	});
+
+	it("P1: fires on checkCommentClaimsThrowsDoesnt when @throws {NotFoundError} is declared but the body throws a plain Error instead", () => {
+		const content = `
+			/**
+			 * Fetch a user by id.
+			 * @throws {NotFoundError} when the user does not exist.
+			 */
+			function fetchUser(id: string): User {
+				const u = db.find(id);
+				if (!u) throw new Error("user missing: " + id);
+				return u;
+			}
+		`;
+		const matches = checkCommentClaimsThrowsDoesnt(content, "src/users.ts");
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(2);
 	});
 });
 

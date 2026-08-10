@@ -543,6 +543,18 @@ describe("checkMarshalLoad — precision", () => {
 		const matches = checkMarshalLoad(code, "src/many.py");
 		expect(matches).toEqual(lines.slice(0, 10).map((text, i) => ({ line: i + 1, text })));
 	});
+
+	it("N1: bare `# noqa` on the call line suppresses a real marshal.loads call", () => {
+		expect(checkMarshalLoad("obj = marshal.loads(buf)  # noqa", "src/a.py")).toEqual([]);
+	});
+
+	it("N2: marshal.dumps (the write direction) does not match the load(s)-only regex", () => {
+		expect(checkMarshalLoad("buf = marshal.dumps(obj)", "src/a.py")).toEqual([]);
+	});
+
+	it("N3: a comment merely mentioning marshal.load is stripped before matching", () => {
+		expect(checkMarshalLoad("# uses marshal.load(f) internally\nx = 1", "src/a.py")).toEqual([]);
+	});
 });
 
 describe("checkShelveOpen — precision", () => {
@@ -567,6 +579,18 @@ describe("checkShelveOpen — precision", () => {
 		const code = lines.join("\n");
 		const matches = checkShelveOpen(code, "src/many.py");
 		expect(matches).toEqual(lines.slice(0, 10).map((text, i) => ({ line: i + 1, text })));
+	});
+
+	it("N1: bare `# noqa` on the call line suppresses a real shelve.open call", () => {
+		expect(checkShelveOpen("d = shelve.open(p)  # noqa", "src/a.py")).toEqual([]);
+	});
+
+	it("N2: shelve.Shelf(p) direct class instantiation does not match the .open(-only regex", () => {
+		expect(checkShelveOpen("d = shelve.Shelf(p)", "src/a.py")).toEqual([]);
+	});
+
+	it("N3: a comment merely mentioning shelve.open is stripped before matching", () => {
+		expect(checkShelveOpen("# call shelve.open(path) here\nx = 1", "src/a.py")).toEqual([]);
 	});
 });
 
@@ -906,6 +930,18 @@ describe("checkPyNoneEquality — mutation hardening", () => {
 		const padding = "y".repeat(140);
 		const code = `   value == None  ${padding}`;
 		expect(checkPyNoneEquality(code, "a.py")).toEqual([{ line: 1, text: code.trim().slice(0, 150) }]);
+	});
+
+	it("N1: a lowercase `none` identifier is not the None singleton (case-sensitive literal)", () => {
+		expect(checkPyNoneEquality("if x == none: pass", "a.py")).toEqual([]);
+	});
+
+	it("N2: `NoneType` fails the trailing word-boundary — None is not a whole word here", () => {
+		expect(checkPyNoneEquality("if x == NoneType: pass", "a.py")).toEqual([]);
+	});
+
+	it("N3: a `== None` comparison inside a string literal is stripped before matching", () => {
+		expect(checkPyNoneEquality('msg = "if x == None: pass"', "a.py")).toEqual([]);
 	});
 });
 

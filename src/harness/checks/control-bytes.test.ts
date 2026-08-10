@@ -47,12 +47,12 @@ describe("checkRawControlBytes — flags raw bytes", () => {
 });
 
 describe("checkRawControlBytes — legitimate source is untouched", () => {
-	it("does not flag the correct escape form", () => {
+	it("N1: does not flag the correct escape form (near-miss: same byte, expressed as \\xNN instead of raw)", () => {
 		const src = 'const key = `${file}\\x00${anchor}`;\n';
 		expect(checkRawControlBytes(src, "src/x.ts")).toHaveLength(0);
 	});
 
-	it("does not flag tab, newline, or carriage return", () => {
+	it("N2: does not flag tab, newline, or carriage return (near-miss: the three C0 bytes the detector deliberately permits)", () => {
 		const src = "const a = 1;\r\n\tconst b = 2;\n";
 		expect(checkRawControlBytes(src, "src/x.ts")).toHaveLength(0);
 	});
@@ -74,20 +74,20 @@ describe("checkRawControlBytes — legitimate source is untouched", () => {
 	// Excluded on purpose: each has a raw/single-quoted string form that cannot
 	// carry an escape, so a literal byte could be the only expression available.
 	// Shell is excluded because a literal ESC for terminal output is an idiom.
-	it("ignores languages with escape-less string forms", () => {
+	it("N3: ignores languages with escape-less string forms (near-miss: same raw byte, an extension where it may be the only expression)", () => {
 		const src = `key = "${NUL}"\n`;
 		for (const path of ["main.go", "lib.rs", "app.rb", "run.sh"]) {
 			expect(checkRawControlBytes(src, path), path).toHaveLength(0);
 		}
 	});
 
-	it("ignores binary and unknown extensions", () => {
+	it("N4: ignores binary and unknown extensions (near-miss: same raw byte, an extension outside TEXT_SOURCE_EXTS)", () => {
 		const src = `key = "${NUL}"\n`;
 		expect(checkRawControlBytes(src, "logo.png")).toHaveLength(0);
 		expect(checkRawControlBytes(src, "archive.gz")).toHaveLength(0);
 	});
 
-	it("ignores vendored and fixture paths (binary payloads live there on purpose)", () => {
+	it("N5: ignores vendored and fixture paths (near-miss: same raw byte and extension, but the path is exempt on purpose)", () => {
 		const src = `const a = "${NUL}";\n`;
 		expect(checkRawControlBytes(src, "src/harness/checks/__fixtures__/x.ts")).toHaveLength(0);
 		expect(checkRawControlBytes(src, "node_modules/pkg/index.js")).toHaveLength(0);

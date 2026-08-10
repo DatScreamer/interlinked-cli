@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { checkRustTestDeterminism } from "./rust-test-determinism.js";
 
 describe("checkRustTestDeterminism (rust_test_nondeterminism)", () => {
-	it("fires on thread_rng in a tests/ integration file (whole-file scope)", () => {
+	it("P1: fires on thread_rng in a tests/ integration file (whole-file scope)", () => {
 		const src = "fn setup() {\n    let mut r = rand::thread_rng();\n}\n";
 		expect(checkRustTestDeterminism(src, "tests/integration.rs")).toHaveLength(1);
 	});
 
-	it("fires on thread_rng / Uuid::new_v4 inside a #[cfg(test)] module", () => {
+	it("P2: fires on thread_rng / Uuid::new_v4 inside a #[cfg(test)] module", () => {
 		const src = [
 			"pub fn real() -> u32 { 42 }",
 			"",
@@ -21,6 +21,11 @@ describe("checkRustTestDeterminism (rust_test_nondeterminism)", () => {
 			"}",
 		].join("\n");
 		expect(checkRustTestDeterminism(src, "src/lib.rs").map((m) => m.line).sort((a, b) => a - b)).toEqual([7, 8]);
+	});
+
+	it("P3: fires on the fully-qualified uuid::Uuid::new_v4() form inside a tests/ file", () => {
+		const src = "fn make_id() -> String {\n    uuid::Uuid::new_v4().to_string()\n}\n";
+		expect(checkRustTestDeterminism(src, "tests/ids.rs")).toHaveLength(1);
 	});
 
 	it("does NOT fire on production thread_rng OUTSIDE the test module", () => {
