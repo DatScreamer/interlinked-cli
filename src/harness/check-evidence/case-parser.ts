@@ -42,10 +42,14 @@ export function directionFromTitle(title: string): CaseDirection | null {
 	const prefix = CASE_PREFIX_RE.exec(title);
 	if (prefix) return prefix[1] === "N" ? "negative" : "positive";
 
-	if (/must not fire|does not fire|no match|negative|must stay silent|silent/.test(t)) {
+	// Each phrase accepts a hyphen wherever a space is written: 9 suites label
+	// with the hyphenated dialect (`MUST-NOT-FIRE:`), and an explicit label in a
+	// spelling variant is evidence, not an inference. Negative stays first, so
+	// the `fire` tail of `must-not-fire` can never read as positive.
+	if (/must[ -]not[ -]fire|does[ -]not[ -]fire|no[ -]match|negative|must[ -]stay[ -]silent|silent/.test(t)) {
 		return "negative";
 	}
-	if (/must fire|does fire|positive|detects|flags/.test(t)) return "positive";
+	if (/must[ -]fire|does[ -]fire|positive|detects|flags/.test(t)) return "positive";
 	return null;
 }
 

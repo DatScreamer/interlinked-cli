@@ -8,6 +8,7 @@ import { detectWriteWithoutMkdir } from "../../checks/fs-write-safety.js";
 import { detectNaNCoercionGuards } from "../../checks/nan-coercion.js";
 import { detectPolicyConstantDrift } from "../../checks/policy-constant-drift.js";
 import { detectSnapshotHygiene } from "../../checks/snapshot-hygiene.js";
+import { detectTypePredicateDrift } from "../../checks/type-predicate-drift.js";
 import {
 	checkAwaitStateToctou,
 	checkBooleanTrap,
@@ -38,7 +39,50 @@ import {
 	checkUntestedInversePair,
 	checkUnvalidatedJsonBoundary,
 } from "../../generic-checks.js";
-import type { CheckRegistration } from "../types.js";
+import type { CheckRegistration, InlineMatch } from "../types.js";
+
+// Named wrappers (not inline arrows) so Check Evidence Contract resolution
+// (fn.name) can attribute evidence — an inline `fn: (a, b) => ...` arrow
+// resolves its name to the property key "fn", not the real detector. `cwd`
+// defaults to process.cwd() for the registry but stays overridable so tests
+// can pass a temp dir, per the pattern in agent-safety-advanced.coverage.
+// integration.test.ts / property-testing.integration.test.ts.
+
+/** Registry-facing wrapper: binds `circular_imports` detection to a cwd. */
+export function checkCircularImportsAtCwd(
+	content: string,
+	filePath: string,
+	cwd: string = process.cwd(),
+): InlineMatch[] {
+	return checkCircularImports(content, filePath, cwd);
+}
+
+/** Registry-facing wrapper: binds `dead_exports` detection to a cwd. */
+export function checkDeadExportsAtCwd(
+	content: string,
+	filePath: string,
+	cwd: string = process.cwd(),
+): InlineMatch[] {
+	return checkDeadExports(content, filePath, cwd);
+}
+
+/** Registry-facing wrapper: binds `untested_inverse_pair` detection to a cwd. */
+export function checkUntestedInversePairAtCwd(
+	content: string,
+	filePath: string,
+	cwd: string = process.cwd(),
+): InlineMatch[] {
+	return checkUntestedInversePair(content, filePath, cwd);
+}
+
+/** Registry-facing wrapper: binds `untested_idempotent` detection to a cwd. */
+export function checkUntestedIdempotentAtCwd(
+	content: string,
+	filePath: string,
+	cwd: string = process.cwd(),
+): InlineMatch[] {
+	return checkUntestedIdempotent(content, filePath, cwd);
+}
 
 export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 	{
@@ -114,7 +158,7 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 		pipeline: "agent_safety",
 		fix_instruction:
 			"Break the cycle by moving shared types/constants to a third module that both sides depend on, or by flipping one edge to a type-only import (if it's only used in type positions). Cycles cause hard-to-debug `undefined` values at runtime because ES modules initialize one side before the other completes.",
-		fn: (content, filePath) => checkCircularImports(content, filePath, process.cwd()),
+		fn: checkCircularImportsAtCwd,
 		resultsPropName: "circularImports",
 	},
 	{
@@ -129,7 +173,7 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 		pipeline: "agent_safety",
 		fix_instruction:
 			"Either remove the unused export (so the public surface reflects what's actually consumed) or leave a comment explaining that it's deliberately part of the public API for external consumers. Cold readers — including agents — waste time trying to understand handles that nothing actually uses.",
-		fn: (content, filePath) => checkDeadExports(content, filePath, process.cwd()),
+		fn: checkDeadExportsAtCwd,
 		resultsPropName: "deadExports",
 	},
 	{
@@ -144,7 +188,7 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 		pipeline: "agent_safety",
 		fix_instruction:
 			"Add a round-trip property test asserting the inverse law -- e.g. with fast-check: `fc.assert(fc.property(fc.string(), (x) => expect(decode(encode(x))).toBe(x)))`. The round trip is the cheapest high-mutation-kill test for an encode/decode-style pair; its absence means the pair is unverified against malformed or edge-case inputs.",
-		fn: (content, filePath) => checkUntestedInversePair(content, filePath, process.cwd()),
+		fn: checkUntestedInversePairAtCwd,
 		resultsPropName: "untestedInversePair",
 	},
 	{
@@ -159,7 +203,7 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 		pipeline: "agent_safety",
 		fix_instruction:
 			"Add a property test asserting idempotence with fast-check: `fc.assert(fc.property(fc.string(), (x) => expect(f(f(x))).toEqual(f(x))))`. A normalizer/sanitizer must be safe to apply twice; the property catches the case where a second pass changes the output.",
-		fn: (content, filePath) => checkUntestedIdempotent(content, filePath, process.cwd()),
+		fn: checkUntestedIdempotentAtCwd,
 		resultsPropName: "untestedIdempotent",
 	},
 	{
@@ -238,6 +282,21 @@ export const AGENT_CLARITY_ENTRIES: CheckRegistration[] = [
 			"A bare literal repeats the value of a named policy constant defined in the same file. Reference the constant (e.g. `MAX_RETRIES` instead of the bare `7`) so the two can't drift — when the cap changes, every use updates with it. Trivial numbers (0, 1, 2, 100, 1000, …) are already excluded, so a flagged literal is a genuine policy value.",
 		fn: detectPolicyConstantDrift,
 		resultsPropName: "duplicatedPolicyConstant",
+	},
+	{
+		id: "type_predicate_drift",
+		phase: "post",
+		name: "Type Predicate Drift",
+		description:
+			"Detects a hand-rolled `value is T` type predicate that checks some of T's required properties but silently ignores others — a `v is T` annotation is an unchecked assertion, so the compiler never notices the gap and a field added to T stays unvalidated forever",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"A `v is T` return type is an assertion the compiler never verifies against the body, so the listed required fields of T go unchecked at runtime. Replace the predicate with a parser that returns a CONSTRUCTED object: `function parseT(v: unknown): T | null { … return { a, b, c }; }`. The object literal IS checked against T, so adding a required field fails to compile here instead of silently under-validating at the boundary.",
+		fn: detectTypePredicateDrift,
+		resultsPropName: "typePredicateDrift",
 	},
 	{
 		id: "snapshot_hygiene",

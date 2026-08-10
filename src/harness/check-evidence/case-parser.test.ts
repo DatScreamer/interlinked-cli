@@ -19,6 +19,14 @@ describe("directionFromTitle — positive (must classify as positive)", () => {
 	it("P3: reads 'detects' prose", () => {
 		expect(directionFromTitle("detects a raw SQL concat")).toBe("positive");
 	});
+
+	it("P4: reads the hyphenated MUST-FIRE dialect (9 suites label this way)", () => {
+		expect(directionFromTitle("MUST-FIRE: bare marshal.loads call")).toBe("positive");
+	});
+
+	it("P5: reads hyphenated 'does-fire' prose", () => {
+		expect(directionFromTitle("does-fire on an unguarded call")).toBe("positive");
+	});
 });
 
 describe("directionFromTitle — negative (must classify as negative or null)", () => {
@@ -36,6 +44,18 @@ describe("directionFromTitle — negative (must classify as negative or null)", 
 
 	it("N4: an unlabeled title yields null rather than a guess", () => {
 		expect(directionFromTitle("returns an empty array for an empty file")).toBeNull();
+	});
+
+	it("N5: reads the hyphenated MUST-NOT-FIRE dialect (9 suites label this way)", () => {
+		expect(directionFromTitle("MUST-NOT-FIRE: noqa-suppressed call")).toBe("negative");
+	});
+
+	it("N6: hyphenated 'must-not-fire' is never read as positive via its 'fire' tail", () => {
+		expect(directionFromTitle("checkFoo must-not-fire boundary cases")).toBe("negative");
+	});
+
+	it("N7: reads hyphenated 'must-stay-silent' prose", () => {
+		expect(directionFromTitle("must-stay-silent on vendored paths")).toBe("negative");
 	});
 });
 
