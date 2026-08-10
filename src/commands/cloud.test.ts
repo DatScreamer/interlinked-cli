@@ -45,6 +45,7 @@ import {
 	deriveAdminUrl,
 	formatRecentEvents,
 	loadCloudUrl,
+	parseCloudGovernorUrl,
 	type RecentEvent,
 } from "./cloud.js";
 
@@ -110,6 +111,67 @@ afterEach(() => {
 	outSpy.mockRestore();
 	errSpy.mockRestore();
 	vi.unstubAllGlobals();
+});
+
+// =======================================================================
+// parseCloudGovernorUrl — the boundary parser loadCloudUrl delegates to
+// =======================================================================
+
+describe("parseCloudGovernorUrl", () => {
+	it("P1: returns the url when cloud_governor.url is a non-empty string", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: { url: "https://x/governor/evaluate" } })).toBe(
+			"https://x/governor/evaluate",
+		);
+	});
+
+	it("P2: ignores unrelated sibling fields on both the root and the block", () => {
+		expect(
+			parseCloudGovernorUrl({
+				agent_name: "qcody",
+				cloud_governor: { enabled: true, timeout_ms: 3000, url: "https://x/governor/evaluate" },
+			}),
+		).toBe("https://x/governor/evaluate");
+	});
+
+	it("N1: returns null for a non-object root value (array)", () => {
+		expect(parseCloudGovernorUrl(["not", "an", "object"])).toBeNull();
+	});
+
+	it("N2: returns null for a non-object root value (string)", () => {
+		expect(parseCloudGovernorUrl("nope")).toBeNull();
+	});
+
+	it("N3: returns null for a null root value", () => {
+		expect(parseCloudGovernorUrl(null)).toBeNull();
+	});
+
+	it("N4: returns null when cloud_governor is missing entirely", () => {
+		expect(parseCloudGovernorUrl({ agent_name: "x" })).toBeNull();
+	});
+
+	it("N5: returns null when cloud_governor is a non-object (string)", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: "nope" })).toBeNull();
+	});
+
+	it("N6: returns null when cloud_governor is a non-object (array) -- isJsonObject rejects arrays", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: ["nope"] })).toBeNull();
+	});
+
+	it("N7: returns null when cloud_governor is null", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: null })).toBeNull();
+	});
+
+	it("N8: returns null when url is present but not a string", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: { url: 42 } })).toBeNull();
+	});
+
+	it("N9: returns null when url is an empty string", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: { url: "" } })).toBeNull();
+	});
+
+	it("N10: returns null when url is missing", () => {
+		expect(parseCloudGovernorUrl({ cloud_governor: { enabled: true } })).toBeNull();
+	});
 });
 
 // =======================================================================

@@ -511,6 +511,69 @@ describe("logsCommand — follow mode", () => {
 		expect(out).not.toContain("not-json");
 	});
 
+	// -- parseLogEvent (via tailFollow's readNew) — well-formed vs malformed --
+
+	it("P1: a well-formed event (ts/agent/type all strings) is parsed and rendered", async () => {
+		await runFollow({ follow: true }, () => {
+			const content = `${JSON.stringify(ev({ summary: "wellformed" }))}\n`;
+			fsState.fileContent = Buffer.from(content, "utf-8");
+			fsState.size = fsState.fileContent.length;
+			watchCallback?.();
+		});
+		expect(allOut()).toContain("wellformed");
+	});
+
+	it("P2: extra unrecognized keys (e.g. tokens) survive through to formatEvent", async () => {
+		// LogEvent carries an index signature specifically so callers can read
+		// arbitrary extra keys (formatEvent reads `event.tokens`) -- the parser
+		// must not silently drop them from the constructed literal.
+		await runFollow({ follow: true }, () => {
+			const content = `${JSON.stringify(ev({ summary: "x.ts", tokens: { input: 1200, output: 800 } }))}\n`;
+			fsState.fileContent = Buffer.from(content, "utf-8");
+			fsState.size = fsState.fileContent.length;
+			watchCallback?.();
+		});
+		expect(allOut()).toContain("2.0k tok");
+	});
+
+	it("N1: a line that parses to a top-level JSON array is skipped, not rendered", async () => {
+		await runFollow({ follow: true }, () => {
+			const content = `${JSON.stringify(["not", "an", "event"])}\n${JSON.stringify(ev({ summary: "good" }))}\n`;
+			fsState.fileContent = Buffer.from(content, "utf-8");
+			fsState.size = fsState.fileContent.length;
+			watchCallback?.();
+		});
+		const out = allOut();
+		expect(out).toContain("good");
+		expect(out).not.toContain("not,an,event");
+	});
+
+	it("N2: a line missing a required field (agent) is skipped rather than rendered with a garbage fallback", async () => {
+		await runFollow({ follow: true }, () => {
+			const missingAgent = ev({ summary: "should-not-print" });
+			delete missingAgent.agent;
+			const content = `${JSON.stringify(missingAgent)}\n${JSON.stringify(ev({ summary: "good" }))}\n`;
+			fsState.fileContent = Buffer.from(content, "utf-8");
+			fsState.size = fsState.fileContent.length;
+			watchCallback?.();
+		});
+		const out = allOut();
+		expect(out).toContain("good");
+		expect(out).not.toContain("should-not-print");
+	});
+
+	it("N3: a bare JSON null line is skipped without throwing", async () => {
+		await runFollow({ follow: true }, () => {
+			const content = `null\n${JSON.stringify(ev({ summary: "good" }))}\n`;
+			fsState.fileContent = Buffer.from(content, "utf-8");
+			fsState.size = fsState.fileContent.length;
+			watchCallback?.();
+		});
+		const out = allOut();
+		expect(out).toContain("good");
+		expect(out).toContain("Following"); // no crash -- banner + event both rendered
+	});
+
 	it("a read error inside readNew is swallowed (best-effort tail)", async () => {
 		await runFollow({ follow: true }, () => {
 			fsState.size = 50; // grows past offset 0 so the read path is entered

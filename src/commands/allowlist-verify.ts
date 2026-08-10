@@ -34,7 +34,7 @@ import {
 import { findManifestFiles } from "../harness/manifest-file-walk.js";
 import { type Allowlist, isPackageAllowed, loadAllowlist } from "../harness/package-allowlist.js";
 import type { Ecosystem } from "../harness/package-install-parser.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject } from "../lib/json-types.js";
 
 export interface VerifyOpts {
 	cwd: string;
@@ -102,11 +102,15 @@ function readManifestsByName(
 function checkPackageJson(cwd: string, al: Allowlist, issues: string[]): void {
 	const names = new Set<string>();
 	for (const [rel, content] of readManifestsByName(cwd, (n) => n === "package.json")) {
-		let parsed: JsonObject;
+		let parsed: unknown;
 		try {
-			parsed = JSON.parse(content) as JsonObject;
+			parsed = JSON.parse(content);
 		} catch {
 			issues.push(`  could not parse ${rel} (JSON error)`);
+			continue;
+		}
+		if (!isJsonObject(parsed)) {
+			issues.push(`  ${rel} is not a JSON object`);
 			continue;
 		}
 		for (const field of [
@@ -116,8 +120,8 @@ function checkPackageJson(cwd: string, al: Allowlist, issues: string[]): void {
 			"peerDependencies",
 		]) {
 			const m = parsed[field];
-			if (!m || typeof m !== "object") continue;
-			for (const name of Object.keys(m as JsonObject)) names.add(name);
+			if (!isJsonObject(m)) continue;
+			for (const name of Object.keys(m)) names.add(name);
 		}
 	}
 	for (const name of names) reportUnapproved(al, "npm", name, issues);

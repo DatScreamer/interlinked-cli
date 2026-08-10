@@ -83,6 +83,21 @@ describe("checkCUnsafeFunctions", () => {
 		const matches = checkCUnsafeFunctions(code, "util.h");
 		expect(matches.length).toBe(1);
 	});
+
+	it("N1: does not fire on fgets — 'gets' has no word boundary inside fgets", () => {
+		const code = "char buf[64];\nfgets(buf, sizeof(buf), stdin);";
+		expect(checkCUnsafeFunctions(code, "io.c")).toEqual([]);
+	});
+
+	it("N2: does not fire on a custom_strcpy wrapper — no word boundary before strcpy", () => {
+		const code = "custom_strcpy(dst, src, sizeof(dst));";
+		expect(checkCUnsafeFunctions(code, "safe.c")).toEqual([]);
+	});
+
+	it("N3: does not fire on sprintf_s — Annex K bounds-checked variant", () => {
+		const code = 'sprintf_s(buf, sizeof(buf), "%d items", count);';
+		expect(checkCUnsafeFunctions(code, "fmt.c")).toEqual([]);
+	});
 });
 
 // ===========================================
@@ -122,6 +137,21 @@ describe("checkCIncludeGuard", () => {
 	it("does NOT flag with pragma once after whitespace", () => {
 		const code = "\n  #pragma once\nvoid foo();";
 		expect(checkCIncludeGuard(code, "foo.h")).toEqual([]);
+	});
+
+	it("N1: does not fire when #pragma once follows a license comment banner", () => {
+		const code = "/*\n * Copyright 2026 Acme Corp.\n * SPDX-License-Identifier: MIT\n */\n#pragma once\nvoid foo();";
+		expect(checkCIncludeGuard(code, "foo.h")).toEqual([]);
+	});
+
+	it("N2: does not fire on a reserved-identifier ifndef/define guard style", () => {
+		const code = "#ifndef __FOO_H__\n#define __FOO_H__\nvoid foo();\n#endif";
+		expect(checkCIncludeGuard(code, "foo.h")).toEqual([]);
+	});
+
+	it("N3: does not fire on a conditional MSVC-style pragma once guard in a .hxx file", () => {
+		const code = "#if defined(_MSC_VER)\n#pragma once\n#endif\nvoid foo();";
+		expect(checkCIncludeGuard(code, "foo.hxx")).toEqual([]);
 	});
 });
 
@@ -264,5 +294,20 @@ describe("checkCSprintfUsage", () => {
 	it("ignores calls in strings", () => {
 		const code = 'const char *msg = "use sprintf for formatting";';
 		expect(checkCSprintfUsage(code, "help.c")).toEqual([]);
+	});
+
+	it("N1: does not fire on a my_sprintf_wrapper identifier — no word boundary before sprintf", () => {
+		const code = 'my_sprintf_wrapper(buf, "%d items", count);';
+		expect(checkCSprintfUsage(code, "fmt.c")).toEqual([]);
+	});
+
+	it("N2: does not fire on vsnprintf — bounds-checked variadic variant", () => {
+		const code = 'vsnprintf(buf, sizeof(buf), fmt, args);';
+		expect(checkCSprintfUsage(code, "fmt.c")).toEqual([]);
+	});
+
+	it("N3: does not fire on sprintf_s — Annex K bounds-checked variant", () => {
+		const code = 'sprintf_s(buf, sizeof(buf), "%d items", count);';
+		expect(checkCSprintfUsage(code, "fmt.c")).toEqual([]);
 	});
 });

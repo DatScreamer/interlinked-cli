@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
 import { DEFAULT_CONFIG } from "./rules/default-config.js";
 import {
@@ -85,8 +86,8 @@ function readActiveModePreset(cwd: string): HarnessModePreset | null {
 	const sharedConfigPath = join(cwd, ".interlinked", "config.json");
 	if (!existsSync(sharedConfigPath)) return null;
 	try {
-		const parsed = JSON.parse(readFileSync(sharedConfigPath, "utf-8")) as { mode?: unknown };
-		const rawMode = typeof parsed.mode === "string" ? parsed.mode : undefined;
+		const parsed: unknown = JSON.parse(readFileSync(sharedConfigPath, "utf-8"));
+		const rawMode = isJsonObject(parsed) && typeof parsed.mode === "string" ? parsed.mode : undefined;
 		if (!rawMode) return null;
 		const resolved = isKnownMode(rawMode) ? rawMode : migrateLegacyMode(rawMode, undefined);
 		return getModePreset(resolved);

@@ -12,6 +12,7 @@
 // and never carries thinking, which would make every record look unthinking.
 
 import { existsSync } from "node:fs";
+import { isJsonObject } from "../lib/json-types.js";
 import { readRecentLines } from "../lib/local-activity-collection.js";
 import { getActivityPath } from "../lib/local-activity-paths.js";
 import type { CheckResult } from "./doctor-checks.js";
@@ -20,6 +21,25 @@ import type { CheckResult } from "./doctor-checks.js";
 const SAMPLE = 25;
 /** Below this many recent tool calls there isn't enough signal to call an outage. */
 const MIN_SIGNAL = 5;
+
+/** The only field this probe reads off a `tool_use_start` record. */
+interface ToolUseStartSample {
+	thinking?: unknown;
+}
+
+/**
+ * Parse one activity.jsonl line's already-`JSON.parse`d value into a
+ * `tool_use_start` sample, or null when it isn't an object, isn't a
+ * `tool_use_start` record, or is some other malformed shape (array,
+ * primitive, null). Returns a CONSTRUCTED literal rather than casting the
+ * parsed value, so a non-object line (an array, a bare string) can't slip
+ * through as if it were a record.
+ */
+function parseToolUseStartSample(value: unknown): ToolUseStartSample | null {
+	if (!isJsonObject(value)) return null;
+	if (value.type !== "tool_use_start") return null;
+	return { thinking: value.thinking };
+}
 
 /**
  * Health row for live reasoning-trace capture. Inspects the newest `SAMPLE`
@@ -35,15 +55,15 @@ export function thinkingCaptureCheck(cwd: string): CheckResult {
 		return { name, status: "pass", message: "no activity log yet -- nothing to assess" };
 	}
 
-	const starts: Array<{ thinking?: unknown }> = [];
+	const starts: ToolUseStartSample[] = [];
 	try {
 		// Newest-first; scan a generous line budget so lifecycle/tool_use records
 		// interleaved with tool_use_start don't starve the sample.
 		for (const line of readRecentLines(path, SAMPLE * 60)) {
 			if (starts.length >= SAMPLE) break;
 			try {
-				const rec = JSON.parse(line) as { type?: string; thinking?: unknown };
-				if (rec.type === "tool_use_start") starts.push(rec);
+				const sample = parseToolUseStartSample(JSON.parse(line));
+				if (sample) starts.push(sample);
 			} catch (e) {
 				void e; // skip malformed line
 			}

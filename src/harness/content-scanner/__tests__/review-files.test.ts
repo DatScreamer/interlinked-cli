@@ -15,6 +15,8 @@ import {
 	consumeDecision,
 	countPendingReviews,
 	listPendingReviews,
+	parseDecisionPayload,
+	parseReviewPayload,
 	readDecision,
 	readReview,
 	writeDecision,
@@ -195,6 +197,161 @@ describe("listPendingReviews / countPendingReviews", () => {
 		});
 		const list = listPendingReviews(cwd);
 		expect(list.map((r: { url: string }) => r.url)).toEqual(["newer", "older"]);
+	});
+});
+
+describe("parseReviewPayload — positive (must parse)", () => {
+	// No return-type annotation: letting TS infer a concrete object type (not
+	// `unknown`) is what makes the `{ ...validPayload(), ... }` spreads below
+	// type-check. `parseReviewPayload` takes `unknown`, so the concrete type
+	// is still accepted at every call site.
+	function validPayload() {
+		return {
+			timestamp: "2026-01-01T00:00:00.000Z",
+			url: "https://example.com",
+			prompt: "p",
+			tool_name: "WebFetch",
+			body: "b",
+			redacted_body: "b",
+			findings: [fakeFinding("private_email", "a@b.c")],
+			cache_key: "k1",
+		};
+	}
+
+	it("P1: parses a well-formed payload with a finding", () => {
+		const input = validPayload();
+		expect(parseReviewPayload(input)).toEqual(input);
+	});
+
+	it("P2: parses an empty findings array", () => {
+		const input = { ...validPayload(), findings: [] };
+		expect(parseReviewPayload(input)).toEqual(input);
+	});
+
+	it("P3: keeps an absent optional finding score as undefined", () => {
+		const input = validPayload();
+		const parsed = parseReviewPayload(input);
+		expect(parsed?.findings[0]?.score).toBeUndefined();
+	});
+
+	it("P4: keeps a present optional finding score", () => {
+		const input = {
+			...validPayload(),
+			findings: [{ ...fakeFinding("x", "y"), score: 0.9 }],
+		};
+		expect(parseReviewPayload(input)?.findings[0]?.score).toBe(0.9);
+	});
+});
+
+describe("parseReviewPayload — negative (must reject)", () => {
+	it("N1: rejects non-object JSON", () => {
+		expect(parseReviewPayload(["array"])).toBeNull();
+		expect(parseReviewPayload("string")).toBeNull();
+		expect(parseReviewPayload(null)).toBeNull();
+	});
+
+	it("N2: rejects a payload missing a required field", () => {
+		const { url: _url, ...rest } = {
+			timestamp: "2026-01-01T00:00:00.000Z",
+			url: "u",
+			prompt: "p",
+			tool_name: "WebFetch",
+			body: "b",
+			redacted_body: "b",
+			findings: [],
+			cache_key: "k",
+		};
+		expect(parseReviewPayload(rest)).toBeNull();
+	});
+
+	it("N3: rejects when findings is not an array", () => {
+		expect(
+			parseReviewPayload({
+				timestamp: "2026-01-01T00:00:00.000Z",
+				url: "u",
+				prompt: "p",
+				tool_name: "WebFetch",
+				body: "b",
+				redacted_body: "b",
+				findings: "not-an-array",
+				cache_key: "k",
+			}),
+		).toBeNull();
+	});
+
+	it("N4: rejects the whole payload when one finding in the array is malformed", () => {
+		expect(
+			parseReviewPayload({
+				timestamp: "2026-01-01T00:00:00.000Z",
+				url: "u",
+				prompt: "p",
+				tool_name: "WebFetch",
+				body: "b",
+				redacted_body: "b",
+				findings: [fakeFinding("ok", "text"), { label: "missing-fields" }],
+				cache_key: "k",
+			}),
+		).toBeNull();
+	});
+});
+
+describe("parseDecisionPayload — positive (must parse)", () => {
+	it("P1: parses a well-formed decision", () => {
+		const input = {
+			decision: "redact",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			cache_key: "k",
+			actor: { user: "u", host: "h", tty: null },
+		};
+		expect(parseDecisionPayload(input)).toEqual(input);
+	});
+
+	it("P2: accepts a string tty", () => {
+		const input = {
+			decision: "allow",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			cache_key: "k",
+			actor: { user: "u", host: "h", tty: "/dev/ttys001" },
+		};
+		expect(parseDecisionPayload(input)?.actor.tty).toBe("/dev/ttys001");
+	});
+});
+
+describe("parseDecisionPayload — negative (must reject)", () => {
+	it("N1: rejects non-object JSON", () => {
+		expect(parseDecisionPayload([1, 2, 3])).toBeNull();
+	});
+
+	it("N2: rejects a decision value outside allow|redact|block", () => {
+		expect(
+			parseDecisionPayload({
+				decision: "maybe",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				cache_key: "k",
+				actor: { user: "u", host: "h", tty: null },
+			}),
+		).toBeNull();
+	});
+
+	it("N3: rejects a missing actor", () => {
+		expect(
+			parseDecisionPayload({
+				decision: "allow",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				cache_key: "k",
+			}),
+		).toBeNull();
+	});
+
+	it("N4: rejects an actor with a wrong-typed field", () => {
+		expect(
+			parseDecisionPayload({
+				decision: "allow",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				cache_key: "k",
+				actor: { user: "u", host: 123, tty: null },
+			}),
+		).toBeNull();
 	});
 });
 

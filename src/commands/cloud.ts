@@ -15,6 +15,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthToken } from "../lib/auth.js";
 import { c, relativeTime, table } from "../lib/formatter.js";
+import { isJsonObject } from "../lib/json-types.js";
+
+/** Parse the `cloud_governor.url` field out of a parsed config.local.json
+ *  value. Returns null when the value isn't an object, the `cloud_governor`
+ *  block is missing/not an object, or `url` is missing/empty/non-string. */
+export function parseCloudGovernorUrl(value: unknown): string | null {
+	if (!isJsonObject(value)) return null;
+	const cg = value.cloud_governor;
+	if (!isJsonObject(cg)) return null;
+	const url = cg.url;
+	return typeof url === "string" && url.length > 0 ? url : null;
+}
 
 /** Read cloud_governor.url from config.local.json. Returns null when the file
  *  is missing, unparseable, or the block lacks a url. */
@@ -22,11 +34,7 @@ export function loadCloudUrl(cwd: string): string | null {
 	try {
 		const path = join(cwd, ".interlinked", "config.local.json");
 		if (!existsSync(path)) return null;
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as { cloud_governor?: unknown };
-		const cg = parsed.cloud_governor;
-		if (!cg || typeof cg !== "object") return null;
-		const url = (cg as { url?: unknown }).url;
-		return typeof url === "string" && url.length > 0 ? url : null;
+		return parseCloudGovernorUrl(JSON.parse(readFileSync(path, "utf8")));
 	} catch {
 		return null;
 	}

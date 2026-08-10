@@ -8,6 +8,7 @@ import {
 	detectReturnArrayPush,
 } from "../../checks/array-method-misuse.js";
 import { detectDesignSlop } from "../../checks/design-slop.js";
+import { checkAnonymousRegistration } from "../../checks/anonymous-registration.js";
 import { detectPayloadFieldCasing } from "../../checks/payload-casing.js";
 import {
 	checkExcessiveUseEffect,
@@ -230,6 +231,28 @@ export const CODE_QUALITY_ENTRIES_EXTRA: CheckRegistration[] = [
 		fn: detectArrayIterateeVariadicBuiltin,
 		resultsPropName: "arrayIterateeVariadicBuiltin",
 		content_keywords: ["parseInt"],
+	},
+	{
+		// Retrieval determinism. Motivating incident (2026-08-09): four check
+		// registrations passed an inline arrow as `fn`, so `fn.name` was empty
+		// and the Check Evidence Contract's name-based resolver could not find
+		// a detector file for any of them — they were the last four ids nobody
+		// could satisfy. Retrieval hostility bit the harness's own tooling
+		// before it ever met a small model. Advisory: this is a legibility
+		// cost, not a correctness bug, and the fix is one word.
+		id: "anonymous_registration",
+		phase: "post",
+		name: "Anonymous Registration",
+		description:
+			"Detects a registry entry that pairs a greppable string `id`/`name` key with an ANONYMOUS function implementation (`fn: (x) => …`, `handler: function (…)`). The key is what every other file references, but the implementation cannot be reached from it in one hop — not by grep, not by an embedding search, and not by an agent asking 'where is X implemented'. Measured 2026-08-09: 23 findings across 2288 files (0.26%), all genuine.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Give the implementation a name and reference it: `fn: checkSomething` instead of `fn: (content, filePath) => …`. One word restores the id → implementation edge for every retrieval path (grep, index, embedding search, and the harness's own name-based resolvers).",
+		fn: checkAnonymousRegistration,
+		resultsPropName: "anonymousRegistration",
 	},
 	{
 		id: "payload_field_casing",

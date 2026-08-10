@@ -12,6 +12,7 @@
 // scrub and reasoning is the one field we always redact.
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 import { redactPii, scrubSecrets } from "../lib/secrets.js";
 
 interface ThinkingCursor {
@@ -19,14 +20,62 @@ interface ThinkingCursor {
 	offset: number;
 }
 
+/** Narrow a parsed `thinking-cursor.json` value to a `ThinkingCursor`.
+ *  Returns null when the value isn't a JSON object or either field is the
+ *  wrong type — the caller falls back to a fresh cursor either way. */
+function parseThinkingCursor(value: unknown): ThinkingCursor | null {
+	if (!isJsonObject(value)) return null;
+	const { path, offset } = value;
+	if (typeof path !== "string" || typeof offset !== "number") return null;
+	return { path, offset };
+}
+
 function readCursor(cursorPath: string): ThinkingCursor {
 	try {
-		const c = JSON.parse(readFileSync(cursorPath, "utf-8")) as ThinkingCursor;
-		if (typeof c.path === "string" && typeof c.offset === "number") return c;
+		const cursor = parseThinkingCursor(JSON.parse(readFileSync(cursorPath, "utf-8")));
+		if (cursor) return cursor;
 	} catch (e) {
 		void e; // missing/corrupt cursor → start fresh
 	}
 	return { path: "", offset: 0 };
+}
+
+/** Narrow a transcript JSONL line to an assistant record's `message` object,
+ *  or null when the line isn't a recognized `{type: "assistant", message}`
+ *  record. Shared by the thinking-block extractor and the latest-model
+ *  reader below — both need the same "is this an assistant line" gate. */
+function parseAssistantMessage(value: unknown): JsonObject | null {
+	if (!isJsonObject(value) || value.type !== "assistant") return null;
+	const message = value.message;
+	return isJsonObject(message) ? message : null;
+}
+
+/** Extract every non-empty `thinking` string from an assistant record's
+ *  content blocks. Returns null when the line isn't a recognized assistant
+ *  record, or an array (possibly empty) of the thinking strings found —
+ *  non-object/non-thinking entries in `content` are skipped, not fatal. */
+function parseAssistantThinkingBlocks(value: unknown): string[] | null {
+	const message = parseAssistantMessage(value);
+	if (!message) return null;
+	const content = message.content;
+	if (!Array.isArray(content)) return null;
+	const blocks: string[] = [];
+	for (const entry of content) {
+		if (!isJsonObject(entry)) continue;
+		if (entry.type === "thinking" && typeof entry.thinking === "string" && entry.thinking) {
+			blocks.push(entry.thinking);
+		}
+	}
+	return blocks;
+}
+
+/** Narrow an assistant record's `message.model` field to a string, or null
+ *  when the line isn't a recognized assistant record or `model` isn't a
+ *  string. */
+function parseAssistantModel(value: unknown): string | null {
+	const message = parseAssistantMessage(value);
+	if (!message) return null;
+	return typeof message.model === "string" ? message.model : null;
 }
 
 /**
@@ -53,15 +102,8 @@ export function extractNewThinking(transcriptPath: string, cursorPath: string): 
 		for (const line of buf.toString("utf-8").split("\n")) {
 			if (!line.trim()) continue;
 			try {
-				const obj = JSON.parse(line) as {
-					type?: string;
-					message?: { content?: Array<{ type?: string; thinking?: string }> };
-				};
-				if (obj.type === "assistant") {
-					for (const block of obj.message?.content ?? []) {
-						if (block?.type === "thinking" && block.thinking) parts.push(block.thinking);
-					}
-				}
+				const blocks = parseAssistantThinkingBlocks(JSON.parse(line));
+				if (blocks) parts.push(...blocks);
 			} catch (e) {
 				void e; // a truncated final line is normal — skip it
 			}
@@ -117,8 +159,8 @@ export function latestTranscriptModel(transcriptPath: string): string | null {
 		for (const line of buf.toString("utf-8").split("\n")) {
 			if (!line.includes('"model"')) continue;
 			try {
-				const o = JSON.parse(line) as { type?: string; message?: { model?: string } };
-				if (o.type === "assistant" && o.message?.model) model = o.message.model;
+				const parsedModel = parseAssistantModel(JSON.parse(line));
+				if (parsedModel) model = parsedModel;
 			} catch (e) {
 				void e;
 			}

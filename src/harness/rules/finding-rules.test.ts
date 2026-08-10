@@ -132,6 +132,30 @@ describe("loadFindingRules", () => {
 		writeFileSync(join(cwd, ".interlinked", "findings-rules.overrides.json"), "{ bad", "utf-8");
 		expect(loadFindingRules(cwd).map((r) => r.id)).toEqual(["finding-r"]);
 	});
+
+	it("P1: loads rules when the pristine file parses to a proper JSON object", () => {
+		writeRules([baseRule({ id: "finding-shape-ok" })]);
+		expect(loadFindingRules(cwd).map((r) => r.id)).toEqual(["finding-shape-ok"]);
+	});
+
+	it("N1: treats a top-level JSON array in the pristine file as invalid shape, not a rules object", () => {
+		// Hardening regression: `typeof parsed === "object"` is also true for
+		// arrays, so a rules array written directly at the top level (instead of
+		// wrapped in `{ version, rules: [...] }`) must still yield no rules
+		// rather than being read as a keyed record.
+		writeFileSync(findingRulesPath(cwd), JSON.stringify([baseRule({ id: "top-level-array" })]), "utf-8");
+		expect(loadFindingRules(cwd)).toEqual([]);
+	});
+
+	it("N2: treats a top-level JSON array in the overrides file as invalid shape, rules load unaffected", () => {
+		writeRules([baseRule({ id: "finding-unaffected" })]);
+		writeFileSync(
+			join(cwd, ".interlinked", "findings-rules.overrides.json"),
+			JSON.stringify(["not", "an", "object"]),
+			"utf-8",
+		);
+		expect(loadFindingRules(cwd).map((r) => r.id)).toEqual(["finding-unaffected"]);
+	});
 });
 
 describe("getFindingRulesWatchPaths", () => {

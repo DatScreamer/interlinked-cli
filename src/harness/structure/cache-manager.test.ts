@@ -167,6 +167,40 @@ describe("CatalogMeta", () => {
 		);
 		expect(readCatalogMeta(TEST_CWD)).toBeNull();
 	});
+
+	it("P1: round-trips a valid extractor_versions map", () => {
+		ensureCacheDir(TEST_CWD);
+		const meta = makeCatalogMeta({ extractor_versions: { public_api: 3, env: 1 } });
+		writeFileSync(
+			join(getCacheDir(TEST_CWD), "catalog-meta.json"),
+			JSON.stringify(meta),
+			"utf-8",
+		);
+		expect(readCatalogMeta(TEST_CWD)).toEqual(meta);
+	});
+
+	it("N1: returns null when a required string field is missing", () => {
+		ensureCacheDir(TEST_CWD);
+		const bad: Record<string, unknown> = { ...makeCatalogMeta() };
+		delete bad.cli_version;
+		writeFileSync(
+			join(getCacheDir(TEST_CWD), "catalog-meta.json"),
+			JSON.stringify(bad),
+			"utf-8",
+		);
+		expect(readCatalogMeta(TEST_CWD)).toBeNull();
+	});
+
+	it("N2: returns null when extractor_versions holds a non-number value", () => {
+		ensureCacheDir(TEST_CWD);
+		const bad = { ...makeCatalogMeta(), extractor_versions: { public_api: "not-a-number" } };
+		writeFileSync(
+			join(getCacheDir(TEST_CWD), "catalog-meta.json"),
+			JSON.stringify(bad),
+			"utf-8",
+		);
+		expect(readCatalogMeta(TEST_CWD)).toBeNull();
+	});
 });
 
 describe("CategoryCache", () => {
@@ -184,6 +218,30 @@ describe("CategoryCache", () => {
 	it("returns null for wrong schema version", () => {
 		ensureCacheDir(TEST_CWD);
 		const bad = { schema_version: 2, items: [] };
+		writeFileSync(join(getCacheDir(TEST_CWD), "public_api.json"), JSON.stringify(bad), "utf-8");
+		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
+	});
+
+	it("P1: round-trips an empty items array", () => {
+		writeCategoryCache(TEST_CWD, "public_api", { schema_version: 1, items: [] });
+		expect(readCategoryCache(TEST_CWD, "public_api")).toEqual({ schema_version: 1, items: [] });
+	});
+
+	it("N1: returns null when an item is missing a required field", () => {
+		ensureCacheDir(TEST_CWD);
+		const catalog = makeCategoryCatalog();
+		const item: Record<string, unknown> = { ...catalog.items[0] };
+		delete item.local_id;
+		const bad = { schema_version: 1, items: [item] };
+		writeFileSync(join(getCacheDir(TEST_CWD), "public_api.json"), JSON.stringify(bad), "utf-8");
+		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
+	});
+
+	it("N2: returns null when an item's provenance is not a recognized value", () => {
+		ensureCacheDir(TEST_CWD);
+		const catalog = makeCategoryCatalog();
+		const item = { ...catalog.items[0], provenance: "guessed" };
+		const bad = { schema_version: 1, items: [item] };
 		writeFileSync(join(getCacheDir(TEST_CWD), "public_api.json"), JSON.stringify(bad), "utf-8");
 		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
 	});
@@ -208,6 +266,25 @@ describe("Baseline", () => {
 		const result = readBaseline(TEST_CWD);
 		expect(result).toEqual({ schema_version: 1, entries: [] });
 	});
+
+	it("N1: falls back to default when an entry is missing a required field", () => {
+		ensureCacheDir(TEST_CWD);
+		const baseline = makeBaselineFile();
+		const entry: Record<string, unknown> = { ...baseline.entries[0] };
+		delete entry.context_hash;
+		const bad = { schema_version: 1, entries: [entry] };
+		writeFileSync(join(getCacheDir(TEST_CWD), "baseline.json"), JSON.stringify(bad), "utf-8");
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
+
+	it("N2: falls back to default when required_companion_files holds a non-string", () => {
+		ensureCacheDir(TEST_CWD);
+		const baseline = makeBaselineFile();
+		const entry = { ...baseline.entries[0], required_companion_files: [42] };
+		const bad = { schema_version: 1, entries: [entry] };
+		writeFileSync(join(getCacheDir(TEST_CWD), "baseline.json"), JSON.stringify(bad), "utf-8");
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
 });
 
 describe("AdoptionReport", () => {
@@ -219,6 +296,32 @@ describe("AdoptionReport", () => {
 	});
 
 	it("returns null when file does not exist", () => {
+		expect(readAdoptionReport(TEST_CWD)).toBeNull();
+	});
+
+	it("N1: returns null when a category key is missing", () => {
+		ensureCacheDir(TEST_CWD);
+		const report = makeAdoptionReport();
+		const categories: Record<string, unknown> = { ...report.categories };
+		delete categories.packages;
+		const bad = { schema_version: 1, categories };
+		writeFileSync(
+			join(getCacheDir(TEST_CWD), "adoption-report.json"),
+			JSON.stringify(bad),
+			"utf-8",
+		);
+		expect(readAdoptionReport(TEST_CWD)).toBeNull();
+	});
+
+	it("N2: returns null when a category value is not a number", () => {
+		ensureCacheDir(TEST_CWD);
+		const report = makeAdoptionReport();
+		const bad = { schema_version: 1, categories: { ...report.categories, packages: "1.0" } };
+		writeFileSync(
+			join(getCacheDir(TEST_CWD), "adoption-report.json"),
+			JSON.stringify(bad),
+			"utf-8",
+		);
 		expect(readAdoptionReport(TEST_CWD)).toBeNull();
 	});
 });

@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { CoverageRatchetConfig } from "./check-policy.js";
 import { detectPartialReport, type PartialReportVerdict } from "./coverage-partial-report.js";
 
@@ -114,15 +115,35 @@ export function emptyBaseline(): CoverageBaseline {
 // I/O
 // ===========================================
 
+/**
+ * Narrow a parsed `coverage-baseline.json` into the domain shape. Rejects
+ * the whole file for an invalid top-level shape (same as the pre-fix
+ * behavior), but a malformed INDIVIDUAL file entry is dropped rather than
+ * discarding every other file's high-water mark — a single hand-edited or
+ * partially-written entry must not reset the whole ratchet. This is the
+ * READ side only; `saveBaseline`'s write shape is unchanged.
+ */
+function parseCoverageBaseline(value: unknown): CoverageBaseline | null {
+	if (!isJsonObject(value)) return null;
+	if (value.version !== 1) return null;
+	if (!isJsonObject(value.files)) return null;
+	const files: Record<string, { lines_pct: number; branches_pct: number }> = {};
+	for (const [file, stats] of Object.entries(value.files)) {
+		if (!isJsonObject(stats)) continue;
+		const { lines_pct, branches_pct } = stats;
+		if (typeof lines_pct !== "number" || typeof branches_pct !== "number") continue;
+		files[file] = { lines_pct, branches_pct };
+	}
+	const updatedAt = typeof value.updated_at === "string" ? value.updated_at : new Date(0).toISOString();
+	return { version: 1, updated_at: updatedAt, files };
+}
+
 export function loadBaseline(interlinkedDir: string): CoverageBaseline {
 	const path = baselinePath(interlinkedDir);
 	if (!existsSync(path)) return emptyBaseline();
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8"));
-		if (!raw || typeof raw !== "object" || raw.version !== 1 || !raw.files) {
-			return emptyBaseline();
-		}
-		return raw as CoverageBaseline;
+		const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		return parseCoverageBaseline(raw) ?? emptyBaseline();
 	} catch {
 		return emptyBaseline();
 	}

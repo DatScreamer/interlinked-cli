@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 
 interface ToolBreakdownRecord {
 	tool: string;
@@ -29,6 +30,56 @@ interface LatencyRecord {
 	checks_ran?: string[] | null;
 	checks_timing_ms?: number | null;
 	tool_breakdown?: ToolBreakdownRecord[] | null;
+}
+
+/**
+ * Parse one already-`JSON.parse`d latency.jsonl line into a `LatencyRecord`,
+ * or null when the line isn't a JSON object at all (a bare array/string/
+ * number/null — the daemon writer never emits these, but a truncated or
+ * hand-edited log line could parse to one). Unlike a full field-by-field
+ * reconstruction, a wrong-TYPED field degrades to that field's safe empty
+ * value here rather than rejecting the whole record — every consumer below
+ * already re-validates each field defensively (`typeof`/`Array.isArray` in
+ * `addBreakdownTimings`/`addChecksRanTimings`/the aggregation loop), so this
+ * only needs to guarantee the SHAPE the rest of the file assumes.
+ *
+ * Before this gate, a line that parsed to `null` (`JSON.parse("null")`) was
+ * pushed into `records` unchecked and crashed the aggregation loop the
+ * moment it read `.hook_event` off it — not caught by the per-line try/catch,
+ * which only wraps the parse+push, not later use.
+ */
+function parseLatencyRecord(value: unknown): LatencyRecord | null {
+	if (!isJsonObject(value)) return null;
+	const {
+		schema,
+		kind,
+		ts,
+		hook_event,
+		tool_name,
+		session_id,
+		agent_source,
+		decision,
+		checks_ran,
+		checks_timing_ms,
+		tool_breakdown,
+	} = value;
+	return {
+		...(typeof schema === "string" ? { schema } : {}),
+		...(typeof kind === "string" ? { kind } : {}),
+		...(typeof ts === "string" ? { ts } : {}),
+		hook_event: typeof hook_event === "string" || hook_event === null ? hook_event : null,
+		tool_name: typeof tool_name === "string" || tool_name === null ? tool_name : null,
+		session_id: typeof session_id === "string" || session_id === null ? session_id : null,
+		agent_source: typeof agent_source === "string" || agent_source === null ? agent_source : null,
+		...(typeof decision === "string" ? { decision } : {}),
+		// Element-level validation is deliberately NOT done here (see
+		// addBreakdownTimings/addChecksRanTimings) — they already skip
+		// malformed entries one-by-one, and duplicating that here would risk
+		// the two checks drifting apart.
+		checks_ran: Array.isArray(checks_ran) ? checks_ran : null,
+		checks_timing_ms: typeof checks_timing_ms === "number" ? checks_timing_ms : null,
+		tool_breakdown: Array.isArray(tool_breakdown) ? tool_breakdown : null,
+	};
 }
 
 export interface LatencyPercentiles {
@@ -105,7 +156,8 @@ export function computeLatencyReport(
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 		try {
-			records.push(JSON.parse(trimmed) as LatencyRecord);
+			const record = parseLatencyRecord(JSON.parse(trimmed));
+			if (record) records.push(record);
 		} catch (e) {
 			// Malformed line — skip silently. Latency log is append-only and
 			// occasionally contains a partial trailing line if the daemon was

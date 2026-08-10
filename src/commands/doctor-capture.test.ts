@@ -101,4 +101,50 @@ describe("thinkingCaptureCheck", () => {
 		mkdirSync(join(d, ".interlinked", "activity.jsonl"), { recursive: true });
 		expect(thinkingCaptureCheck(d).status).toBe("warn");
 	});
+
+	// -- parseToolUseStartSample (via thinkingCaptureCheck) — malformed lines --
+
+	it("P1: counts a well-formed tool_use_start line with a thinking string", () => {
+		const d = setup([start(1, "reasoning a"), start(2, "reasoning b")]);
+		const r = thinkingCaptureCheck(d);
+		expect(r.status).toBe("pass");
+		expect(r.message).toMatch(/2\/2/);
+	});
+
+	it("N1: skips a line that parses to a JSON array instead of an object", () => {
+		const d = mkdtempSync(join(tmpdir(), "doctor-capture-"));
+		dirs.push(d);
+		mkdirSync(join(d, ".interlinked"), { recursive: true });
+		const lines = [JSON.stringify(["not", "an", "object"]), JSON.stringify(start(1, "reasoning a"))];
+		writeFileSync(join(d, ".interlinked", "activity.jsonl"), `${lines.join("\n")}\n`);
+		const r = thinkingCaptureCheck(d);
+		// Only the second (valid) line is counted; the array line contributes nothing.
+		expect(r.status).toBe("pass");
+		expect(r.message).toMatch(/1\/1/);
+	});
+
+	it("N2: skips a line that parses to a bare JSON null", () => {
+		const d = mkdtempSync(join(tmpdir(), "doctor-capture-"));
+		dirs.push(d);
+		mkdirSync(join(d, ".interlinked"), { recursive: true });
+		const lines = ["null", JSON.stringify(start(1, "reasoning a"))];
+		writeFileSync(join(d, ".interlinked", "activity.jsonl"), `${lines.join("\n")}\n`);
+		const r = thinkingCaptureCheck(d);
+		expect(r.status).toBe("pass");
+		expect(r.message).toMatch(/1\/1/);
+	});
+
+	it("N3: skips a tool_use_start record whose type field is the wrong type", () => {
+		const d = mkdtempSync(join(tmpdir(), "doctor-capture-"));
+		dirs.push(d);
+		mkdirSync(join(d, ".interlinked"), { recursive: true });
+		const lines = [
+			JSON.stringify({ ...start(1, "reasoning a"), type: 42 }),
+			JSON.stringify(start(2, "reasoning b")),
+		];
+		writeFileSync(join(d, ".interlinked", "activity.jsonl"), `${lines.join("\n")}\n`);
+		const r = thinkingCaptureCheck(d);
+		expect(r.status).toBe("pass");
+		expect(r.message).toMatch(/1\/1/);
+	});
 });

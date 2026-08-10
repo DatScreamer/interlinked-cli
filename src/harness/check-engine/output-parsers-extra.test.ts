@@ -187,6 +187,48 @@ describe("parseCargoJson", () => {
 			ruleId: undefined,
 		});
 	});
+
+	it("P1: a non-JSON line interleaved between two valid compiler-message lines is skipped, not fatal", () => {
+		const lines = [
+			JSON.stringify({
+				reason: "compiler-message",
+				message: {
+					level: "warning",
+					spans: [{ file_name: "a.rs", line_start: 1, column_start: 1 }],
+					message: "first",
+				},
+			}),
+			"Compiling foo v0.1.0 (/path/to/foo)",
+			JSON.stringify({
+				reason: "compiler-message",
+				message: {
+					level: "error",
+					spans: [{ file_name: "b.rs", line_start: 2, column_start: 2 }],
+					message: "second",
+				},
+			}),
+		];
+		const results = parseCargoJson(lines.join("\n"), "cargo-clippy");
+		expect(results).toHaveLength(2);
+		expect(results.map((r) => r.file)).toEqual(["a.rs", "b.rs"]);
+	});
+
+	it("N1: a numeric nested code.code is not leaked into ruleId", () => {
+		const lines = [
+			JSON.stringify({
+				reason: "compiler-message",
+				message: {
+					level: "error",
+					spans: [{ file_name: "a.rs", line_start: 1, column_start: 1 }],
+					message: "boom",
+					code: { code: 42 },
+				},
+			}),
+		];
+		const results = parseCargoJson(lines.join("\n"), "cargo-check");
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).ruleId).toBeUndefined();
+	});
 });
 
 describe("parseGolangciLintJson", () => {
@@ -203,5 +245,27 @@ describe("parseGolangciLintJson", () => {
 		const results = parseGolangciLintJson(payload);
 		expect(nonNull(results[0])).toMatchObject({ file: "", line: 0 });
 		expect(nonNull(results[0]).column).toBeUndefined();
+	});
+
+	it("P1: processes multiple issues through the field-by-field validator", () => {
+		const payload = JSON.stringify({
+			Issues: [
+				{ FromLinter: "govet", Text: "bad1", Pos: { Filename: "a.go", Line: 1, Column: 1 } },
+				{ FromLinter: "staticcheck", Text: "bad2", Pos: { Filename: "b.go", Line: 2, Column: 2 } },
+			],
+		});
+		const results = parseGolangciLintJson(payload);
+		expect(results).toHaveLength(2);
+		expect(results.map((r) => r.ruleId)).toEqual(["govet", "staticcheck"]);
+		expect(results.map((r) => r.file)).toEqual(["a.go", "b.go"]);
+	});
+
+	it("N1: a numeric FromLinter is not leaked into ruleId (stays string | undefined)", () => {
+		const payload = JSON.stringify({
+			Issues: [{ FromLinter: 42, Text: "bad", Pos: { Filename: "a.go", Line: 1 } }],
+		});
+		const results = parseGolangciLintJson(payload);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).ruleId).toBeUndefined();
 	});
 });

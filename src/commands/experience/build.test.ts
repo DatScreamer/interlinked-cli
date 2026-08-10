@@ -864,6 +864,19 @@ describe("collectionJoinFrom — per-field type guards", () => {
 		});
 		expect(ix).toStrictEqual({ episode: 0 });
 	});
+
+	it("N1: does not treat an array-shaped action as an object (isJsonObject excludes arrays)", () => {
+		const ix = buildSingleToolUseIx({
+			toolInput: {},
+			collection: { action: ["path", "command"] },
+		});
+		expect(ix).toStrictEqual({ episode: 0 });
+	});
+
+	it("N2: does not treat an array-shaped observation as an object (isJsonObject excludes arrays)", () => {
+		const ix = buildSingleToolResultIx({ observation: [1234] });
+		expect(ix).toStrictEqual({ episode: 0 });
+	});
 });
 
 describe("annotateCall — command source precedence and pattern gating", () => {

@@ -7,6 +7,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 
 export type ReconciliationState = "open" | "touched" | "acked";
 
@@ -72,23 +73,43 @@ function applyTxn(
  *  tolerate torn tails — the fold simply skips them). */
 const VALID_ACTIONS = new Set(["touched", "acked", "reopened", "reanchored"]);
 
-/** Type/shape validation — a bad `action` must NOT silently fold to
- *  "touched" and falsely close a finding (round-2 #9). */
-function isValidTxn(txn: Partial<ReconciliationTxn>): txn is ReconciliationTxn {
-	return (
-		typeof txn.finding_id === "string" &&
-		txn.finding_id.length > 0 &&
-		typeof txn.action === "string" &&
-		VALID_ACTIONS.has(txn.action) &&
-		typeof txn.by === "string"
-	);
+/**
+ * Type/shape validation — a bad `action` must NOT silently fold to "touched"
+ * and falsely close a finding (round-2 #9).
+ *
+ * Returns a CONSTRUCTED txn rather than asserting `txn is ReconciliationTxn`,
+ * so the compiler checks the literal against the interface: adding a required
+ * field fails to compile here instead of going unvalidated. The predecessor
+ * predicate never checked `ts` (found by `type_predicate_drift`), so a row
+ * without it narrowed to a full txn and the fold read `.ts` as `undefined`.
+ * Every writer goes through `appendReconciliationTxn`, which takes a fully
+ * typed txn, so no on-disk row is lost to this tightening.
+ */
+function parseTxn(value: unknown): ReconciliationTxn | null {
+	if (!isJsonObject(value)) return null;
+	const { finding_id, action, by, reason, file, line, ts } = value;
+	if (typeof finding_id !== "string" || finding_id.length === 0) return null;
+	if (typeof action !== "string" || !VALID_ACTIONS.has(action)) return null;
+	if (typeof by !== "string") return null;
+	if (typeof ts !== "string") return null;
+	if (reason !== undefined && typeof reason !== "string") return null;
+	if (file !== undefined && typeof file !== "string") return null;
+	if (line !== undefined && typeof line !== "number") return null;
+	return {
+		finding_id,
+		action: action as ReconciliationTxn["action"],
+		by,
+		ts,
+		...(reason !== undefined ? { reason } : {}),
+		...(file !== undefined ? { file } : {}),
+		...(line !== undefined ? { line } : {}),
+	};
 }
 
 /** Parse one sidecar line; null for malformed/torn or semantically invalid. */
 function parseTxnLine(line: string): ReconciliationTxn | null {
 	try {
-		const parsed = JSON.parse(line) as Partial<ReconciliationTxn>;
-		return isValidTxn(parsed) ? parsed : null;
+		return parseTxn(JSON.parse(line));
 	} catch {
 		return null;
 	}

@@ -20,6 +20,7 @@ import { liftOutcomeEvidence } from "./outcome-evidence.js";
 import type { ProjectGraph } from "./project-graph.js";
 import type { ReservationManager } from "./reservations.js";
 import type { RouteMap } from "./route-map.js";
+import { baselineCallKey, consumeBaselineSnapshot } from "./evaluator/baseline-effect-guard.js";
 import type { SessionTracker } from "./session-state.js";
 import type {
 	CheckResultEntry,
@@ -199,13 +200,35 @@ function runEvaluator(
 		);
 	}
 	if (event.phase === "post-tool") {
-		return Promise.resolve(
-			evaluatePostToolUse(harnessEvent, ctx.rules, ctx.session, ctx.reservations, ctx.cohort),
+		const decision = evaluatePostToolUse(
+			harnessEvent,
+			ctx.rules,
+			ctx.session,
+			ctx.reservations,
+			ctx.cohort,
 		);
+		return Promise.resolve(withBaselineEffectWarning(harnessEvent, decision));
 	}
 	// Phases we don't yet wire produce a no-op allow so adapters can still
 	// install hooks for them without crashing the pipeline.
 	return Promise.resolve({ decision: "allow" });
+}
+
+/**
+ * Effect-arm bridge for the UNIFIED path (Cursor and friends), which does not
+ * run the server's pre/post pipelines. Same shared helpers as the socket path,
+ * so both runners get identical semantics from one implementation.
+ */
+function withBaselineEffectWarning(event: HarnessEvent, decision: HarnessDecision): HarnessDecision {
+	if (event.dry_run) return decision;
+	const key = baselineCallKey({
+		toolUseId: event.tool_use_id,
+		sessionId: event.session_id,
+		timestamp: event.timestamp,
+	});
+	const warning = consumeBaselineSnapshot(key, event.cwd ?? process.cwd());
+	if (!warning) return decision;
+	return { ...decision, warnings: [...(decision.warnings ?? []), warning] };
 }
 
 async function runWithBudget(

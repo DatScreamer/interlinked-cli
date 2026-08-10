@@ -34,6 +34,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import type { ScanFinding } from "./types.js";
 
 const PENDING_DIR_PARTS = [".interlinked", "scanner", "pending"] as const;
@@ -108,6 +109,54 @@ export interface WriteReviewArgs {
 	findings: ScanFinding[];
 }
 
+function parseScanFinding(value: unknown): ScanFinding | null {
+	if (!isJsonObject(value)) return null;
+	const { label, start, end, text, source } = value;
+	if (typeof label !== "string") return null;
+	if (typeof start !== "number") return null;
+	if (typeof end !== "number") return null;
+	if (typeof text !== "string") return null;
+	if (typeof source !== "string") return null;
+	const score = value.score;
+	return { label, start, end, text, source, score: typeof score === "number" ? score : undefined };
+}
+
+/** All-or-nothing: one malformed finding invalidates the whole array, matching
+ *  the fail-closed posture of the unchecked cast this replaces (a torn/foreign
+ *  file is rejected wholesale, not partially trusted). */
+function parseScanFindings(value: unknown): ScanFinding[] | null {
+	if (!Array.isArray(value)) return null;
+	const findings: ScanFinding[] = [];
+	for (const entry of value) {
+		const finding = parseScanFinding(entry);
+		if (!finding) return null;
+		findings.push(finding);
+	}
+	return findings;
+}
+
+/**
+ * Defensively narrow a parsed `<key>.review.json` body to a `ReviewPayload`,
+ * or null for a torn/foreign file. The file is single-writer (`writeReview`
+ * below is the only producer), but a validator earns its keep here anyway:
+ * it's the only thing standing between a corrupted or hand-edited pending
+ * file and every field-typed read the CLI does downstream.
+ */
+export function parseReviewPayload(value: unknown): ReviewPayload | null {
+	if (!isJsonObject(value)) return null;
+	const { timestamp, url, prompt, tool_name, body, redacted_body, findings, cache_key } = value;
+	if (typeof timestamp !== "string") return null;
+	if (typeof url !== "string") return null;
+	if (typeof prompt !== "string") return null;
+	if (typeof tool_name !== "string") return null;
+	if (typeof body !== "string") return null;
+	if (typeof redacted_body !== "string") return null;
+	if (typeof cache_key !== "string") return null;
+	const parsedFindings = parseScanFindings(findings);
+	if (!parsedFindings) return null;
+	return { timestamp, url, prompt, tool_name, body, redacted_body, findings: parsedFindings, cache_key };
+}
+
 /** Persist a review record for the user to inspect via `interlinked scanner
  *  review`. Returns the relative path on success, undefined on failure. */
 export function writeReview(args: WriteReviewArgs): string | undefined {
@@ -142,7 +191,12 @@ export function readReview(cwd: string, key: string): ReviewPayload | undefined 
 	if (!existsSync(abs)) return undefined;
 	try {
 		const raw = readFileSync(abs, "utf-8");
-		return JSON.parse(raw) as ReviewPayload;
+		const payload = parseReviewPayload(JSON.parse(raw));
+		if (!payload) {
+			process.stderr.write(`[interlinked:scanner] malformed review payload ${abs}\n`);
+			return undefined;
+		}
+		return payload;
 	} catch (err) {
 		process.stderr.write(
 			`[interlinked:scanner] cannot read review ${abs}: ${formatErr(err)}\n`,
@@ -224,6 +278,33 @@ export interface WriteDecisionArgs {
 	actor: DecisionPayload["actor"];
 }
 
+function isReviewDecision(value: unknown): value is ReviewDecision {
+	return value === "allow" || value === "redact" || value === "block";
+}
+
+function parseDecisionActor(value: unknown): DecisionPayload["actor"] | null {
+	if (!isJsonObject(value)) return null;
+	const { user, host, tty } = value;
+	if (typeof user !== "string") return null;
+	if (typeof host !== "string") return null;
+	if (tty !== null && typeof tty !== "string") return null;
+	return { user, host, tty };
+}
+
+/** Defensively narrow a parsed `<key>.decision.json` body to a
+ *  `DecisionPayload`, or null for a torn/foreign file — same rationale as
+ *  `parseReviewPayload` above. */
+export function parseDecisionPayload(value: unknown): DecisionPayload | null {
+	if (!isJsonObject(value)) return null;
+	const { decision, timestamp, cache_key, actor } = value;
+	if (!isReviewDecision(decision)) return null;
+	if (typeof timestamp !== "string") return null;
+	if (typeof cache_key !== "string") return null;
+	const parsedActor = parseDecisionActor(actor);
+	if (!parsedActor) return null;
+	return { decision, timestamp, cache_key, actor: parsedActor };
+}
+
 export function writeDecision(args: WriteDecisionArgs): string | undefined {
 	if (!ensureDir(args.cwd)) return undefined;
 	const payload: DecisionPayload = {
@@ -253,7 +334,12 @@ export function readDecision(cwd: string, key: string): DecisionPayload | undefi
 	if (!existsSync(abs)) return undefined;
 	try {
 		const raw = readFileSync(abs, "utf-8");
-		return JSON.parse(raw) as DecisionPayload;
+		const payload = parseDecisionPayload(JSON.parse(raw));
+		if (!payload) {
+			process.stderr.write(`[interlinked:scanner] malformed decision payload ${abs}\n`);
+			return undefined;
+		}
+		return payload;
 	} catch (err) {
 		// A corrupt decision file should not pin the user — fall through to a
 		// fresh review. Surface the parse error so the operator sees it.

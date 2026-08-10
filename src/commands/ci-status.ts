@@ -11,7 +11,7 @@
 import { execFileSync } from "node:child_process";
 import type { Command } from "commander";
 import { c } from "../lib/formatter.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject } from "../lib/json-types.js";
 import { getOutputMode, output } from "../lib/output.js";
 
 export interface CiRun {
@@ -68,25 +68,49 @@ export class GhCliFetcher implements CiStatusFetcher {
 				encoding: "utf-8",
 				timeout: 15_000,
 			});
-			const parsed = JSON.parse(raw);
+			// `parsed` stays `unknown` (not JSON.parse's implicit `any`) until the
+			// Array.isArray guard narrows it -- every element is then re-validated
+			// by parseCiRun below, so this is a shape gate, not a value trust.
+			const parsed: unknown = JSON.parse(raw);
 			if (!Array.isArray(parsed)) return [];
-			return parsed.filter(isCiRun);
+			return parsed.map(parseCiRun).filter((r): r is CiRun => r !== null);
 		} catch {
 			return [];
 		}
 	}
 }
 
-function isCiRun(value: unknown): value is CiRun {
-	if (!value || typeof value !== "object") return false;
-	const v = value as JsonObject;
-	return (
-		typeof v.databaseId === "number" &&
-		typeof v.workflowName === "string" &&
-		typeof v.status === "string" &&
-		typeof v.name === "string" &&
-		typeof v.createdAt === "string"
-	);
+/**
+ * Parse one `gh run list --json` row into a `CiRun`, or null.
+ *
+ * Returns a CONSTRUCTED object rather than asserting `value is CiRun`: the
+ * literal is checked against `CiRun` by the compiler, so a field added to the
+ * interface fails to compile here instead of silently going unvalidated. The
+ * predecessor predicate never checked `conclusion` (found by
+ * `type_predicate_drift`), so a row missing it still narrowed to `CiRun` and
+ * callers read `.conclusion` as `string | null` when it was `undefined`.
+ */
+function parseCiRun(value: unknown): CiRun | null {
+	if (!isJsonObject(value)) return null;
+	const { databaseId, workflowName, status, conclusion, name, headBranch, createdAt, url } = value;
+	if (typeof databaseId !== "number" || typeof workflowName !== "string") return null;
+	if (typeof status !== "string" || typeof name !== "string") return null;
+	if (typeof createdAt !== "string") return null;
+	// `gh` reports a null conclusion for a run still in progress — a legitimate
+	// value, distinct from the field being absent entirely.
+	if (conclusion !== null && typeof conclusion !== "string") return null;
+	if (headBranch !== undefined && typeof headBranch !== "string") return null;
+	if (url !== undefined && typeof url !== "string") return null;
+	return {
+		databaseId,
+		workflowName,
+		status,
+		conclusion,
+		name,
+		createdAt,
+		...(headBranch !== undefined ? { headBranch } : {}),
+		...(url !== undefined ? { url } : {}),
+	};
 }
 
 export interface WorkflowStats {

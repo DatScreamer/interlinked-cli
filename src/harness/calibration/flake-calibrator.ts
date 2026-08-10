@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import {
 	createEProcess,
 	type EProcessConfig,
@@ -40,8 +41,9 @@ function load(cwd: string): EProcessState {
 	try {
 		const p = statePath(cwd);
 		if (!existsSync(p)) return createEProcess();
-		const raw = JSON.parse(readFileSync(p, "utf-8")) as Partial<EProcessState>;
+		const raw: unknown = JSON.parse(readFileSync(p, "utf-8"));
 		if (
+			isJsonObject(raw) &&
 			typeof raw.logE === "number" &&
 			typeof raw.n === "number" &&
 			typeof raw.positives === "number"

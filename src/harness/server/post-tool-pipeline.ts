@@ -17,6 +17,10 @@ import { join } from "node:path";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import { runPostToolScan } from "../content-scanner/post-scan.js";
 import { evaluatePostToolUse } from "../evaluator.js";
+import {
+	baselineCallKey,
+	consumeBaselineSnapshot,
+} from "../evaluator/baseline-effect-guard.js";
 import { runFailureChannels } from "../failure-channels.js";
 import type { ToolBreakdownEntry } from "../quality-checks.js";
 import { shouldSkipPath } from "../skip-paths.js";
@@ -310,6 +314,19 @@ function emitAllCleanSummary(
  * the final `HarnessDecision` (allow / block, plus warnings / summary /
  * check_results / timing).
  */
+/** Effect arm: append the loosening warning when this call moved a water-line. */
+function appendBaselineEffect(event: HarnessEvent, decision: HarnessDecision, cwd: string): void {
+	if (event.dry_run) return;
+	const key = baselineCallKey({
+		toolUseId: event.tool_use_id,
+		sessionId: event.session_id,
+		timestamp: event.timestamp,
+	});
+	const warning = consumeBaselineSnapshot(key, cwd);
+	if (!warning) return;
+	decision.warnings = [...(decision.warnings ?? []), warning];
+}
+
 export async function runPostToolPipeline(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -442,6 +459,10 @@ export async function runPostToolPipeline(
 	// Emit a positive summary line when all checks pass (the detailed warnings
 	// carry the signal otherwise).
 	emitAllCleanSummary(postDecision, rules, checksRan, elapsedMs);
+	// Effect-based baseline integrity: compare the water-lines against the
+	// pre-call snapshot. Warn-only — the loosening is already reversible (undo
+	// record) and inert (trusted value), so blocking adds nothing here.
+	appendBaselineEffect(event, postDecision, CWD);
 
 	return postDecision;
 }

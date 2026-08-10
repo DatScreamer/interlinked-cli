@@ -37,7 +37,7 @@ import { gzipSync } from "node:zlib";
 import type { Command, OptionValues } from "commander";
 import { getDataDir } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 /** Record types that participate in the audit hash chain (mirror audit-chain.ts). */
 const CHAINED_TYPES = new Set(["guard_block", "guard_warn", "guard_allow", "session_end"]);
@@ -69,13 +69,37 @@ function archiveManifestPath(cwd: string = process.cwd()): string {
 	return join(archiveDirPath(cwd), "manifest.json");
 }
 
+/** One manifest segment. Written exclusively by `compactCommand` below (a
+ *  single in-repo writer, unlike the multi-writer activity/collection logs),
+ *  so an entry that doesn't match this shape is corruption rather than a
+ *  legitimately-optional legacy field — the whole manifest falls back to
+ *  empty rather than silently serving a partial segment list to `audit
+ *  verify`, which reads segments in manifest order to walk the hash chain. */
+function parseArchiveSegment(value: unknown): ArchiveSegment | null {
+	if (!isJsonObject(value)) return null;
+	const { seq, file, bytes, gz_bytes, records, created_at } = value;
+	if (typeof seq !== "number" || typeof file !== "string") return null;
+	if (typeof bytes !== "number" || typeof gz_bytes !== "number") return null;
+	if (typeof records !== "number" || typeof created_at !== "string") return null;
+	return { seq, file, bytes, gz_bytes, records, created_at };
+}
+
+function parseArchiveManifest(value: unknown): ArchiveManifest | null {
+	if (!isJsonObject(value) || !Array.isArray(value.segments)) return null;
+	const segments: ArchiveSegment[] = [];
+	for (const entry of value.segments) {
+		const seg = parseArchiveSegment(entry);
+		if (!seg) return null;
+		segments.push(seg);
+	}
+	return { version: 1, segments };
+}
+
 export function loadArchiveManifest(cwd: string = process.cwd()): ArchiveManifest {
 	const path = archiveManifestPath(cwd);
 	if (!existsSync(path)) return { version: 1, segments: [] };
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as ArchiveManifest;
-		if (!parsed || !Array.isArray(parsed.segments)) return { version: 1, segments: [] };
-		return parsed;
+		return parseArchiveManifest(JSON.parse(readFileSync(path, "utf-8"))) ?? { version: 1, segments: [] };
 	} catch {
 		return { version: 1, segments: [] };
 	}
@@ -108,8 +132,9 @@ function planCut(
 		const line = buf.toString("utf-8", lineStart, i).trim();
 		if (line) {
 			try {
-				const rec = JSON.parse(line) as { type?: unknown; hash?: unknown };
+				const rec = JSON.parse(line);
 				if (
+					isJsonObject(rec) &&
 					typeof rec.type === "string" &&
 					CHAINED_TYPES.has(rec.type) &&
 					typeof rec.hash === "string"

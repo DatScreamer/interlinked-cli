@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { c, header, kvLine, table } from "../lib/formatter.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import { getSocketPath } from "./harness.js";
 
@@ -98,6 +98,55 @@ export async function skillLeaveCommand(
 	});
 }
 
+/** Boundary parsers for the harness's `SkillList` reply — a `JSON.stringify`d
+ *  array the daemon writes into `additional_context`. Field access below
+ *  (`s.skills.length`, `sk.expires_at`, …) would throw on a shape mismatch if
+ *  this were an unchecked `as SkillListSession[]`, so every level is
+ *  validated and the array fails closed as a whole on the first bad entry —
+ *  matching the existing "malformed skill list" error for JSON syntax
+ *  errors, just extended to shape errors too. */
+function parseActiveSkillRecord(value: unknown): ActiveSkillRecord | null {
+	if (!isJsonObject(value)) return null;
+	const { name, entered_at, expires_at, source } = value;
+	if (typeof name !== "string") return null;
+	if (typeof entered_at !== "number") return null;
+	if (typeof expires_at !== "number") return null;
+	if (source !== "cli" && source !== "hook" && source !== "manual") return null;
+	return { name, entered_at, expires_at, source };
+}
+
+function parseSkillListSession(value: unknown): SkillListSession | null {
+	if (!isJsonObject(value)) return null;
+	const { session_id, agent_name, skills } = value;
+	if (typeof session_id !== "string") return null;
+	if (typeof agent_name !== "string") return null;
+	if (!Array.isArray(skills)) return null;
+	// Array.isArray narrows to `any[]`; re-type explicitly so `entry` stays
+	// `unknown` through the loop instead of silently `any`.
+	const rawSkills: unknown[] = skills;
+	const parsedSkills: ActiveSkillRecord[] = [];
+	for (const entry of rawSkills) {
+		const rec = parseActiveSkillRecord(entry);
+		if (!rec) return null;
+		parsedSkills.push(rec);
+	}
+	return { session_id, agent_name, skills: parsedSkills };
+}
+
+function parseSkillListSessions(value: unknown): SkillListSession[] | null {
+	if (!Array.isArray(value)) return null;
+	// Array.isArray narrows to `any[]`; re-type explicitly (same reasoning as
+	// parseSkillListSession above).
+	const rawSessions: unknown[] = value;
+	const sessions: SkillListSession[] = [];
+	for (const entry of rawSessions) {
+		const session = parseSkillListSession(entry);
+		if (!session) return null;
+		sessions.push(session);
+	}
+	return sessions;
+}
+
 export async function skillListCommand(
 	opts: { session?: string; json?: boolean },
 ): Promise<void> {
@@ -118,13 +167,21 @@ export async function skillListCommand(
 	const raw = reply.additional_context;
 	let parsed: SkillListSession[] = [];
 	if (typeof raw === "string" && raw.length > 0) {
+		let json: unknown;
 		try {
-			parsed = JSON.parse(raw) as SkillListSession[];
+			json = JSON.parse(raw);
 		} catch {
 			outputError(mode, "harness returned malformed skill list");
 			process.exitCode = 1;
 			return;
 		}
+		const sessions = parseSkillListSessions(json);
+		if (!sessions) {
+			outputError(mode, "harness returned malformed skill list");
+			process.exitCode = 1;
+			return;
+		}
+		parsed = sessions;
 	}
 
 	output(mode, parsed, {

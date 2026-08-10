@@ -434,6 +434,78 @@ describe("loadManifest — a malformed file must read as absent, never as empty"
 	});
 });
 
+// ---------------------------------------------------------------------------
+// parseManifestShell (loadManifest's boundary parser, replacing an unchecked
+// `JSON.parse(...) as MutationManifest` cast). Exercised through loadManifest
+// — the parser is not exported, matching this file's own convention for
+// loadManifest's other internal helpers (cachedManifest, isAlreadyCanonical).
+// ---------------------------------------------------------------------------
+
+describe("loadManifest — top-level shell parsing (parseManifestShell)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "mut-shell-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("P1: tolerates a missing/malformed top-level scalar by defaulting instead of rejecting the whole manifest", () => {
+		// The old unchecked cast trusted EVERY field, not just version+files. A
+		// real manifest.json is written only by this codebase's own writers, so
+		// this leniency is a defensive backstop, not something a real file needs
+		// — but it must not regress: a manifest a real writer produced years ago,
+		// before a field existed, must still load.
+		writeFileSync(
+			mutationManifestPath(dir),
+			JSON.stringify({ version: 1, files: {}, generation: "not-a-number", engine: 7 }),
+		);
+		const loaded = loadManifest(dir);
+		expect(loaded).not.toBeNull();
+		expect(loaded?.generation).toBe(0);
+		expect(loaded?.engine).toBe("");
+		expect(loaded?.authoritativeAt).toBe("");
+	});
+
+	it("P2: passes well-typed scalars and fileProvenance through unchanged", () => {
+		writeFileSync(
+			mutationManifestPath(dir),
+			JSON.stringify({
+				version: 1,
+				generation: 3,
+				authoritativeAt: "2026-01-01T00:00:00Z",
+				engine: "stryker",
+				engineVersion: "1.2.3",
+				dependencyGraphVersion: "g1",
+				environmentHash: "env1",
+				files: {},
+				fileProvenance: { "src/a.ts": { at: "t0", scope: "import_graph", testCount: 2, surface: "per_edit" } },
+			}),
+		);
+		const loaded = loadManifest(dir);
+		expect(loaded?.generation).toBe(3);
+		expect(loaded?.engine).toBe("stryker");
+		expect(loaded?.fileProvenance?.["src/a.ts"]?.testCount).toBe(2);
+	});
+
+	it("N1: rejects a manifest whose files field is present but not an object (previously only checked for truthiness)", () => {
+		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 1, files: "oops" }));
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("N2: rejects a manifest whose files field is an array (arrays are typeof 'object' but not a keyed record)", () => {
+		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 1, files: [] }));
+		expect(loadManifest(dir)).toBeNull();
+	});
+
+	it("N3: ignores a malformed fileProvenance rather than rejecting the manifest", () => {
+		writeFileSync(mutationManifestPath(dir), JSON.stringify({ version: 1, files: {}, fileProvenance: "oops" }));
+		const loaded = loadManifest(dir);
+		expect(loaded).not.toBeNull();
+		expect(loaded?.fileProvenance).toBeUndefined();
+	});
+});
+
 describe("changedSymbols — what counts as changed decides what counts as new", () => {
 	const entry = (symbolId: string, symbolHash: string) =>
 		new Map([[symbolId, { symbolId, qualifiedName: "fn", symbolHash }]]);

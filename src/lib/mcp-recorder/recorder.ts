@@ -8,6 +8,7 @@
 import { buildCollectionRecord } from "../collection/builder.js";
 import type { CollectionRecord } from "../collection/types.js";
 import { appendCollection } from "../collection/writer.js";
+import { isJsonObject } from "../json-types.js";
 import type { JsonObject } from "../json-types.js";
 import type {
     JsonRpcId,
@@ -417,9 +418,6 @@ function attachOptionalRecordFields(
     if (captured.payload_preview !== undefined) record.payload_preview = captured.payload_preview;
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function normalizeJsonRpcId(value: unknown): JsonRpcId {
     if (typeof value === "string" || typeof value === "number" || value === null) {

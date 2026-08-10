@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { observeFlakeOutcome } from "./flake-calibrator.js";
 
@@ -52,5 +52,36 @@ describe("observeFlakeOutcome", () => {
 
 	it("never throws on a fresh cwd with no prior state", () => {
 		expect(() => observeFlakeOutcome(cwd, false)).not.toThrow();
+	});
+
+	it("N1: treats a non-object state file (top-level array) as absent, starting fresh", () => {
+		mkdirSync(dirname(statePath()), { recursive: true });
+		writeFileSync(statePath(), JSON.stringify([1, 2, 3]), "utf-8");
+		expect(() => observeFlakeOutcome(cwd, false)).not.toThrow();
+		const state = JSON.parse(readFileSync(statePath(), "utf-8"));
+		// A fresh e-process folded one observation: n=1, not carried over from
+		// the array (which has no logE/n/positives fields to misread).
+		expect(state.n).toBe(1);
+		expect(state.positives).toBe(0);
+	});
+
+	it("N2: treats a state file with a non-numeric field as absent, starting fresh", () => {
+		mkdirSync(dirname(statePath()), { recursive: true });
+		writeFileSync(statePath(), JSON.stringify({ logE: "bad", n: 5, positives: 1 }), "utf-8");
+		expect(() => observeFlakeOutcome(cwd, false)).not.toThrow();
+		const state = JSON.parse(readFileSync(statePath(), "utf-8"));
+		expect(state.n).toBe(1);
+	});
+
+	it("P1: resumes accumulating from a valid persisted state", () => {
+		mkdirSync(dirname(statePath()), { recursive: true });
+		writeFileSync(
+			statePath(),
+			JSON.stringify({ logE: -0.5, n: 3, positives: 0 }),
+			"utf-8",
+		);
+		observeFlakeOutcome(cwd, false);
+		const state = JSON.parse(readFileSync(statePath(), "utf-8"));
+		expect(state.n).toBe(4); // resumed from 3, not reset to 1
 	});
 });

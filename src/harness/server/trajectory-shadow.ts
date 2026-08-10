@@ -15,6 +15,7 @@
 // data + the content hashes the harness already computed.
 
 import { createState, evaluateTrajectory } from "../trajectory/index.js";
+import { seedReadsFromSession } from "../trajectory/rehydrate.js";
 import type { ToolEvent, TrajectoryState, Verdict } from "../trajectory/types.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 
@@ -38,7 +39,18 @@ export function peekTrajectoryState(session: string): TrajectoryState | null {
 	return stateBySession.get(session) ?? null;
 }
 
-function getState(session: string): TrajectoryState {
+/**
+ * Live engine state for a session, created on first sight.
+ *
+ * `filesRead` rehydrates a session that outlived the previous daemon (red-team
+ * F4): this map is runtime-only, so a restart zeroes it mid-session and every
+ * pre-restart read is forgotten while the edit history continues — which fired
+ * `reb_blind_edit_unread_file` on files the agent had read. The session's own
+ * `files_read` survives in `<id>.live.json`, so seeding from it restores the
+ * fact the rules need. Seeding happens ONLY on creation; a warm state is never
+ * overwritten.
+ */
+function getState(session: string, filesRead?: readonly string[]): TrajectoryState {
 	const existing = stateBySession.get(session);
 	if (existing) return existing;
 	if (stateBySession.size >= SESSION_CAP) {
@@ -46,6 +58,7 @@ function getState(session: string): TrajectoryState {
 		if (oldest !== undefined) stateBySession.delete(oldest);
 	}
 	const fresh = createState(session);
+	if (filesRead && filesRead.length > 0) seedReadsFromSession(fresh, filesRead);
 	stateBySession.set(session, fresh);
 	return fresh;
 }
@@ -108,6 +121,8 @@ export function trajectoryShadowWarnings(
 	event: HarnessEvent,
 	decision: HarnessDecision,
 	config: TrajectoryShadowConfig,
+	/** Session reads that survived a daemon restart; seeds a fresh state (F4). */
+	filesRead?: readonly string[],
 ): string[] {
 	try {
 		if (config?.trajectory_shadow?.enabled !== true) return [];
@@ -121,7 +136,7 @@ export function trajectoryShadowWarnings(
 		)
 			return [];
 		if (!event.session_id) return [];
-		const state = getState(event.session_id);
+		const state = getState(event.session_id, filesRead);
 		return evaluateTrajectory(state, toToolEvent(event, decision)).map(formatTrajectoryVerdict);
 	} catch {
 		return []; // fail-open: shadow telemetry never disrupts the tool loop
@@ -134,8 +149,10 @@ export function mergeTrajectoryShadow(
 	event: HarnessEvent,
 	decision: HarnessDecision,
 	config: TrajectoryShadowConfig,
+	/** Session reads that survived a daemon restart; seeds a fresh state (F4). */
+	filesRead?: readonly string[],
 ): void {
-	const warnings = trajectoryShadowWarnings(event, decision, config);
+	const warnings = trajectoryShadowWarnings(event, decision, config, filesRead);
 	if (warnings.length === 0) return;
 	decision.warnings = [...(decision.warnings ?? []), ...warnings];
 }

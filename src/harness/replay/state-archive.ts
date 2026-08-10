@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import { sanitizeSessionId } from "../session-paths.js";
 
 /** The six ratchet water-line files (audited 2026-07-24: only large-files +
@@ -40,10 +40,41 @@ export interface HarnessStateSnapshot {
 	baselines: Record<string, string | null>;
 }
 
-interface PointerRow {
+function isBaselinesRecord(value: unknown): value is Record<string, string | null> {
+	return (
+		isJsonObject(value) && Object.values(value).every((v) => v === null || typeof v === "string")
+	);
+}
+
+/** Validate a decompressed state-archive blob. Exported for direct testing —
+ *  `loadStateSnapshot` is the only production caller. */
+export function parseHarnessStateSnapshot(value: unknown): HarnessStateSnapshot | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema !== "state-snapshot.v1") return null;
+	const liveSnapshot = value.live_snapshot ?? null;
+	if (liveSnapshot !== null && !isJsonObject(liveSnapshot)) return null;
+	if (!isBaselinesRecord(value.baselines)) return null;
+	return {
+		schema: "state-snapshot.v1",
+		live_snapshot: liveSnapshot,
+		baselines: value.baselines,
+	};
+}
+
+export interface PointerRow {
 	seq: number | null;
 	sha: string;
 	ts: string;
+}
+
+/** Validate one pointer-index line. Exported for direct testing. */
+export function parsePointerRow(value: unknown): PointerRow | null {
+	if (!isJsonObject(value)) return null;
+	const { sha, ts } = value;
+	if (typeof sha !== "string" || typeof ts !== "string") return null;
+	const seq = value.seq ?? null;
+	if (seq !== null && typeof seq !== "number") return null;
+	return { seq, sha, ts };
 }
 
 function stateDir(cwd: string): string {
@@ -109,8 +140,8 @@ export function loadStateSnapshot(
 	for (const line of readFileSync(path, "utf-8").split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			const row = JSON.parse(line) as PointerRow;
-			if (row && row.seq === seq && typeof row.sha === "string") sha = row.sha;
+			const row = parsePointerRow(JSON.parse(line));
+			if (row && row.seq === seq) sha = row.sha;
 		} catch (err) {
 			void err; // torn/foreign line — skipping is this reader's contract
 		}
@@ -119,8 +150,9 @@ export function loadStateSnapshot(
 	const blobPath = join(stateDir(cwd), "blobs", `${sha}.json.gz`);
 	if (!existsSync(blobPath)) return null;
 	try {
-		const parsed = JSON.parse(gunzipSync(readFileSync(blobPath)).toString("utf-8")) as HarnessStateSnapshot;
-		return parsed && parsed.schema === "state-snapshot.v1" ? parsed : null;
+		return parseHarnessStateSnapshot(
+			JSON.parse(gunzipSync(readFileSync(blobPath)).toString("utf-8")),
+		);
 	} catch (err) {
 		void err; // corrupt blob — treat as absent rather than throwing on restore probes
 		return null;

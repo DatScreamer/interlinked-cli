@@ -1027,4 +1027,86 @@ describe("createServerBridge", () => {
 		const calledWith = fsMock.existsSync.mock.calls.map((c) => String(c[0]));
 		expect(calledWith.some((p) => p.includes(".interlinked"))).toBe(true);
 	});
+
+	describe("parseSharedBridgeFields / parseLocalBridgeFields — wrong-typed fields", () => {
+		it("P1: a well-typed shared config resolves normally (control)", async () => {
+			fsMock.existsSync.mockImplementation((p: string) => p.endsWith("config.json"));
+			fsMock.readFileSync.mockReturnValue(
+				JSON.stringify({ server_url: "https://shared.example" }),
+			);
+			const b = createServerBridge("/repo");
+			expect(b).toBeInstanceOf(ServerBridge);
+			b?.shutdown();
+		});
+
+		it("N1: a non-string server_url in config.json is treated as absent, not coerced", async () => {
+			fsMock.existsSync.mockImplementation((p: string) => p.endsWith("config.json"));
+			fsMock.readFileSync.mockReturnValue(JSON.stringify({ server_url: 12345 }));
+			// No local override either → no valid string URL anywhere → null.
+			expect(createServerBridge("/repo")).toBeNull();
+		});
+
+		it("N2: config.json parsing to a non-object JSON value (array) is treated as absent", async () => {
+			fsMock.existsSync.mockImplementation((p: string) => p.endsWith("config.json"));
+			fsMock.readFileSync.mockReturnValue("[1,2,3]");
+			expect(createServerBridge("/repo")).toBeNull();
+		});
+
+		/** The `workspace_id` field the constructed bridge sends in its callTool
+		 *  envelope — the one network-observable proof of what `workspaceId`
+		 *  actually resolved to (the class has no getter for it). */
+		async function observedWorkspaceId(b: ServerBridge): Promise<unknown> {
+			let body: Record<string, unknown> | undefined;
+			stubFetch(
+				withHealthOk((url, init) => {
+					if (url.endsWith("/api/ui/call") && init?.body) body = JSON.parse(String(init.body));
+					return json({ result: {} });
+				}),
+			);
+			await b.healthCheck();
+			await b.releaseFile("a.ts", "alice");
+			return body?.workspace_id;
+		}
+
+		it("N3: a non-string active-server workspace_id falls back to the top-level one, not coerced", async () => {
+			// The original `activeServer.workspace_id || workspaceId` had no type
+			// check, so a wrong-typed (but truthy) 99 would win over "ws-top".
+			fsMock.existsSync.mockReturnValue(true);
+			fsMock.readFileSync.mockImplementation((p: string) => {
+				if (p.endsWith("config.local.json")) {
+					return JSON.stringify({
+						workspace_id: "ws-top",
+						active_server: "staging",
+						servers: { staging: { server_url: "https://staging.example", workspace_id: 99 } },
+					});
+				}
+				return JSON.stringify({});
+			});
+			const b = createServerBridge("/repo");
+			expect(b).toBeInstanceOf(ServerBridge);
+			expect(await observedWorkspaceId(nonNull(b))).toBe("ws-top");
+			b?.shutdown();
+		});
+
+		it("N4: an active-server entry with workspace_id but no server_url overrides neither field", async () => {
+			// Matches the original `if (activeServer?.server_url) { ... }` nesting:
+			// a workspace_id-only entry (no server_url) must not flip workspaceId
+			// on its own — only an entry that ALSO supplies server_url may do so.
+			fsMock.existsSync.mockReturnValue(true);
+			fsMock.readFileSync.mockImplementation((p: string) => {
+				if (p.endsWith("config.local.json")) {
+					return JSON.stringify({
+						workspace_id: "ws-top",
+						active_server: "staging",
+						servers: { staging: { workspace_id: "ws-staging" } }, // no server_url
+					});
+				}
+				return JSON.stringify({ server_url: "https://shared.example" });
+			});
+			const b = createServerBridge("/repo");
+			expect(b).toBeInstanceOf(ServerBridge);
+			expect(await observedWorkspaceId(nonNull(b))).toBe("ws-top");
+			b?.shutdown();
+		});
+	});
 });

@@ -81,6 +81,7 @@ import { daemonPathsFor, isDaemonSocketServing, liveForeignDaemonPid } from "./s
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
 import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/runtime.js";
+import { guardTallySnapshot } from "./guard-tally.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { TrigramIndex } from "./trigram-index.js";
 import { createTsgoRunner } from "./tsgo-runner.js";
@@ -394,6 +395,7 @@ function refreshStatuslineSnapshot(): void {
 		indexFiles,
 		serverBridgeConnected: serverBridge !== null,
 		daemonPid: process.pid,
+		guardTally: guardTallySnapshot(),
 	});
 }
 

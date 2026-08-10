@@ -8,6 +8,7 @@
 // (scanJsonlTail); a stopped scan is surfaced in diagnostics, never silent.
 
 import { join } from "node:path";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import {
 	scanJsonlTail,
 	type TailScanBudget,
@@ -162,16 +163,16 @@ function loadCollectionJoin(
 	return joins;
 }
 
-function collectionJoinFrom(rec: Record<string, unknown>): CollectionJoin {
+function collectionJoinFrom(rec: JsonObject): CollectionJoin {
 	const join: CollectionJoin = {};
 	if (typeof rec.seq === "number") join.seq = rec.seq;
 	if (typeof rec.tool_class === "string")
 		join.tool_class = rec.tool_class as IxAnnotations["tool_class"];
 	if (rec.outcome === "ok" || rec.outcome === "error") join.outcome = rec.outcome;
-	const action = rec.action as Record<string, unknown> | null | undefined;
+	const action = isJsonObject(rec.action) ? rec.action : null;
 	if (action && typeof action.path === "string") join.file = action.path;
 	if (action && typeof action.command === "string") join.command = action.command;
-	const obs = rec.observation as Record<string, unknown> | null | undefined;
+	const obs = isJsonObject(rec.observation) ? rec.observation : null;
 	if (obs && typeof obs.duration_ms === "number") join.duration_ms = obs.duration_ms;
 	return join;
 }

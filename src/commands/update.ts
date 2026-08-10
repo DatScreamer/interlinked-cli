@@ -9,9 +9,28 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { c } from "../lib/formatter.js";
+import { isJsonObject } from "../lib/json-types.js";
 import type { SkillRefreshSummary } from "./skill-refresh.js";
 
 export const INTERLINKED_CLI_REPO_URL = "https://github.com/QuentinCody/interlinked-cli.git";
+
+/** package.json, narrowed to the two fields this file actually reads:
+ *  `name` (identifies the interlinked-cli checkout while walking up from the
+ *  running binary) and `version` (the self-update result line). Replaces two
+ *  bare `JSON.parse(...)` results read as `any` with no shape check at all. */
+interface PackageJsonUsed {
+	name?: string;
+	version?: string;
+}
+
+function parsePackageJsonUsed(value: unknown): PackageJsonUsed | null {
+	if (!isJsonObject(value)) return null;
+	const { name, version } = value;
+	return {
+		...(typeof name === "string" ? { name } : {}),
+		...(typeof version === "string" ? { version } : {}),
+	};
+}
 
 export function getManagedSourceRoot(home = homedir()): string {
 	return join(home, ".interlinked", "interlinked-cli");
@@ -28,8 +47,8 @@ function resolveCliRoot(): string | null {
 		let dir = dirname(binPath);
 		for (let i = 0; i < 5; i++) {
 			if (existsSync(join(dir, "package.json"))) {
-				const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
-				if (pkg.name === "interlinked-cli") return dir;
+				const pkg = parsePackageJsonUsed(JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")));
+				if (pkg?.name === "interlinked-cli") return dir;
 			}
 			dir = dirname(dir);
 		}
@@ -284,8 +303,8 @@ export async function updateCommand(opts: { json?: boolean; force?: boolean }): 
 
 function getInstalledVersion(cliRoot: string): string {
 	try {
-		const pkg = JSON.parse(readFileSync(join(cliRoot, "package.json"), "utf-8"));
-		return pkg.version || "unknown";
+		const pkg = parsePackageJsonUsed(JSON.parse(readFileSync(join(cliRoot, "package.json"), "utf-8")));
+		return pkg?.version || "unknown";
 	} catch {
 		return "unknown";
 	}

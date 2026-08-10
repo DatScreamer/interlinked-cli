@@ -20,7 +20,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 /** Top-level payload keys the pipeline already consumes somewhere (adapter,
  *  legacy conversion, normalizers, or the writers). A key listed here is
@@ -121,15 +121,61 @@ function emptyCensus(): PayloadKeyCensus {
 	return { schema: "payload-keys.v1", entries: {} };
 }
 
+/**
+ * Narrow one parsed census entry. NOTE the boundary this draws: the entry's
+ * OWN fields (`unconsumed`, `first_seen`, `last_seen`) have a fixed shape we
+ * control (we wrote them), so they're validated field-by-field like any
+ * other self-written baseline. `shapes` is keyed by the runner PAYLOAD's own
+ * field names — genuinely arbitrary, by this module's whole purpose — so
+ * only its VALUE type (always a shape-description string) is checked; the
+ * key names themselves are deliberately left unconstrained.
+ */
+function parsePayloadKeyEntry(value: unknown): PayloadKeyEntry | null {
+	if (!isJsonObject(value)) return null;
+	const { unconsumed, shapes, first_seen, last_seen } = value;
+	if (!Array.isArray(unconsumed) || !unconsumed.every((k): k is string => typeof k === "string")) {
+		return null;
+	}
+	if (typeof first_seen !== "string") return null;
+	if (typeof last_seen !== "string") return null;
+	if (shapes === undefined) {
+		return { unconsumed, first_seen, last_seen };
+	}
+	if (!isJsonObject(shapes)) return null;
+	const parsedShapes: Record<string, string> = {};
+	for (const [key, shape] of Object.entries(shapes)) {
+		if (typeof shape !== "string") return null;
+		parsedShapes[key] = shape;
+	}
+	// `exactOptionalPropertyTypes` is on: `shapes?: T` means the key is either
+	// `T` or ABSENT, never `undefined` explicitly — so the two return shapes
+	// above must be separate object literals, not one with `shapes: T |
+	// undefined`.
+	return { unconsumed, shapes: parsedShapes, first_seen, last_seen };
+}
+
+/** Narrow a parsed `payload-keys.json`. A malformed individual entry (one
+ *  runner+event) is dropped rather than discarding the whole census — this
+ *  file is best-effort analytics, not a gate, so losing one entry to a
+ *  hand-edit is preferable to losing every entry over it. */
+function parsePayloadKeyCensus(value: unknown): PayloadKeyCensus | null {
+	if (!isJsonObject(value)) return null;
+	if (!isJsonObject(value.entries)) return null;
+	const entries: Record<string, PayloadKeyEntry> = {};
+	for (const [key, raw] of Object.entries(value.entries)) {
+		const entry = parsePayloadKeyEntry(raw);
+		if (entry) entries[key] = entry;
+	}
+	return { schema: "payload-keys.v1", entries };
+}
+
 /** Read the census; a missing / corrupt file reads as empty. */
 export function loadCensus(cwd: string): PayloadKeyCensus {
 	try {
 		const path = censusPath(cwd);
 		if (!existsSync(path)) return emptyCensus();
-		// SAFETY: our own file; the shape is validated by the guards below.
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<PayloadKeyCensus>;
-		if (!parsed || typeof parsed !== "object" || !parsed.entries) return emptyCensus();
-		return { schema: "payload-keys.v1", entries: parsed.entries };
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		return parsePayloadKeyCensus(parsed) ?? emptyCensus();
 	} catch (err) {
 		void err; // unreadable census — start fresh rather than fail the hook
 		return emptyCensus();
@@ -244,9 +290,8 @@ export interface RecordPayloadKeysArgs {
 export function recordPayloadKeys(args: RecordPayloadKeysArgs): void {
 	try {
 		const { raw, cwd } = args;
-		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
-		// SAFETY: guarded above as a non-array object; only its key list is read.
-		const keys = unconsumedKeys(raw as JsonObject);
+		if (!isJsonObject(raw)) return;
+		const keys = unconsumedKeys(raw);
 		// NOTE: no early return on an empty key list. A payload with nothing
 		// unconsumed is exactly the case that must still reach the merge, so a
 		// PREVIOUSLY reported key that has since been wired up gets pruned.
@@ -255,9 +300,7 @@ export function recordPayloadKeys(args: RecordPayloadKeysArgs): void {
 		const observation: PayloadObservation = {
 			key: `${args.runner}/${args.nativeEvent}`,
 			keys,
-			// SAFETY: guarded above as a non-array object; describeShapes reads
-			// types and member names only, never values.
-			shapes: describeShapes(raw as JsonObject, keys),
+			shapes: describeShapes(raw, keys),
 			now: args.now ?? new Date().toISOString(),
 		};
 		const next = mergeObservation(loadCensus(cwd), observation);

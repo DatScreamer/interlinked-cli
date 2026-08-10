@@ -196,6 +196,23 @@ describe("readActiveMode", () => {
 		writeFileSync(join(tmp, "config.json"), "{ not json ");
 		expect(readActiveMode(tmp)).toBeNull();
 	});
+
+	// parseActiveMode boundary parser (internal): the value must be a JSON
+	// object before its `mode` field is read at all.
+	it("P1: accepts an object whose mode field is a string", () => {
+		writeFileSync(join(tmp, "config.json"), JSON.stringify({ mode: "solo" }));
+		expect(readActiveMode(tmp)).toBe("solo");
+	});
+
+	it("N1: rejects a non-object top-level value (JSON array)", () => {
+		writeFileSync(join(tmp, "config.json"), JSON.stringify(["not", "an", "object"]));
+		expect(readActiveMode(tmp)).toBeNull();
+	});
+
+	it("N2: rejects a bare JSON null top-level value", () => {
+		writeFileSync(join(tmp, "config.json"), "null");
+		expect(readActiveMode(tmp)).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -278,6 +295,20 @@ describe("readProtocolStatus", () => {
 		writeStatus({ protocol: "framed" });
 		expect(readProtocolStatus(tmp)?.protocol).toBe("framed");
 	});
+
+	// parseHarnessProtocolStatus boundary parser (internal): the value must be
+	// a JSON object before `protocol` (or any other field) is read at all —
+	// the malformed-JSON case above never reaches this guard since JSON.parse
+	// itself throws first.
+	it("N4: rejects a non-object top-level value (JSON array)", () => {
+		writeFileSync(getProtocolStatusPath(tmp), JSON.stringify([1, 2, 3]));
+		expect(readProtocolStatus(tmp)).toBeNull();
+	});
+
+	it("N5: rejects a bare JSON null top-level value", () => {
+		writeFileSync(getProtocolStatusPath(tmp), "null");
+		expect(readProtocolStatus(tmp)).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -340,6 +371,23 @@ describe("readLastLatencyTimestamp", () => {
 		// readFileSync throws EISDIR, hitting the outer catch.
 		mkdirSync(join(tmp, "logs", "latency.jsonl"), { recursive: true });
 		expect(readLastLatencyTimestamp(tmp)).toBeNull();
+	});
+
+	// parseLatencyRecordTs boundary parser (internal): a syntactically valid
+	// JSON line whose top-level value isn't an object must be skipped like any
+	// other line with no usable ts, not treated as a parse failure.
+	it("P1: accepts a record whose ts is a string, ignoring unrelated extra fields", () => {
+		writeLatency(
+			`${JSON.stringify({ ts: "2026-06-06T06:00:00Z", extra: { nested: true } })}\n`,
+		);
+		expect(readLastLatencyTimestamp(tmp)).toBe("2026-06-06T06:00:00Z");
+	});
+
+	it("N3: skips a syntactically valid but non-object line (JSON array), finding an earlier valid ts", () => {
+		writeLatency(
+			`${JSON.stringify({ ts: "2026-06-06T04:00:00Z" })}\n${JSON.stringify([1, 2, 3])}\n`,
+		);
+		expect(readLastLatencyTimestamp(tmp)).toBe("2026-06-06T04:00:00Z");
 	});
 });
 

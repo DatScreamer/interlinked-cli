@@ -54,6 +54,48 @@ describe("loadSkippedTestsBaseline", () => {
 		const dir = makeRoot(JSON.stringify({ version: 1, max_skipped: 1 }));
 		expect(loadSkippedTestsBaseline(dir)).toEqual({ version: 1, max_skipped: 1, files: {} });
 	});
+
+	it("N1: drops a malformed individual grandfather entry but keeps valid ones", () => {
+		// Pre-fix, `raw.files as Record<string, number>` trusted every
+		// per-file ceiling unchecked — a non-number ceiling would have reached
+		// baseline_integrity_gate's numeric comparison directly instead of
+		// being dropped.
+		const dir = makeRoot(
+			JSON.stringify({
+				version: 1,
+				max_skipped: 0,
+				files: { "src/good.test.ts": 3, "src/bad.test.ts": "not-a-number" },
+			}),
+		);
+		const baseline = loadSkippedTestsBaseline(dir);
+		expect(baseline?.files).toEqual({ "src/good.test.ts": 3 });
+		expect(baseline?.files["src/bad.test.ts"]).toBeUndefined();
+	});
+
+	it("N2: treats an array files field as absent instead of reading fields off it", () => {
+		// Pre-fix, `typeof raw.files === "object" && !Array.isArray(raw.files)`
+		// already excluded arrays inline — this pins that isJsonObject
+		// preserves the same exclusion after the rewrite.
+		const dir = makeRoot(
+			JSON.stringify({ version: 1, max_skipped: 0, files: ["not", "a", "record"] }),
+		);
+		expect(loadSkippedTestsBaseline(dir)).toEqual({ version: 1, max_skipped: 0, files: {} });
+	});
+
+	it("P1: keeps multiple valid grandfather entries", () => {
+		const dir = makeRoot(
+			JSON.stringify({
+				version: 1,
+				max_skipped: 0,
+				files: { "a.test.ts": 4, "b.test.ts": 1 },
+			}),
+		);
+		expect(loadSkippedTestsBaseline(dir)).toEqual({
+			version: 1,
+			max_skipped: 0,
+			files: { "a.test.ts": 4, "b.test.ts": 1 },
+		});
+	});
 });
 
 describe("maxSkippedFor", () => {

@@ -274,6 +274,44 @@ describe("verifyAuditChain", () => {
 		expect(res.guard_events).toBe(0);
 	});
 
+	it("N1: treats a line that parses to valid JSON but not a keyed object (array/number) as unchained, not a crash", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH });
+		const e2 = makeEntry({ previousHash: e1.hash as string, ts: "2026-05-26T10:00:01.000Z" });
+		const dir = join(tmp, ".interlinked");
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			activityPath,
+			`${JSON.stringify(e1)}\n[1,2,3]\n42\n${JSON.stringify(e2)}\n`,
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		// The array/number lines count toward total_events (they parsed fine)
+		// but never toward guard_events — they can't carry a chained `type`.
+		expect(res.total_events).toBe(4);
+		expect(res.guard_events).toBe(2);
+		expect(res.chained_events).toBe(2);
+	});
+
+	it("P1: a record carrying only the fields computeEntryHash expects still chains and hashes byte-identically", () => {
+		// Pins that narrowing the parsed JSON via isJsonObject is a pure
+		// pass-through: every field on the original record — not just the
+		// ones this module happens to read — survives into the hash input.
+		const e1: Record<string, unknown> = {
+			ts: "2026-05-26T10:00:00.000Z",
+			type: "guard_block",
+			previousHash: GENESIS_HASH,
+			extra_field_untouched_by_any_reader: { nested: [1, 2, 3] },
+		};
+		e1.hash = computeEntryHash(e1);
+		writeJsonl(activityPath, [e1]);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+		expect(res.chained_events).toBe(1);
+		expect(res.last_hash).toBe(e1.hash);
+	});
+
 	it("treats a chained record with a missing previousHash as a mismatch and reports '(missing)'", () => {
 		const record = { type: "guard_allow", hash: "a".repeat(64) };
 		writeJsonl(activityPath, [record]);

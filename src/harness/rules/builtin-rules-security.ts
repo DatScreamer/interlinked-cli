@@ -179,6 +179,40 @@ export const SECURITY_AND_SAFETY_RULES: GuardRule[] = [
 		category: "process-safety",
 	},
 	{
+		// Red-team F2 (2026-08-09): measured ALLOWED before this rule existed.
+		// This is the hole UNDER the supply-chain guard rather than beside it —
+		// installs are default-deny across ten ecosystems, and a piped download
+		// runs arbitrary remote code with no manifest, registry, allowlist entry
+		// or version pin. `block`, not `warn`: an unreviewed remote payload is
+		// the classic dropper stage, and the legitimate form (download, read,
+		// then run) costs one extra step. Sinks are shells/interpreters only, so
+		// `curl … | jq` and `| grep` stay untouched. The same pattern is mirrored
+		// in the cold/inline path via dcgCheckRemoteExecution.
+		id: "builtin-remote-code-execution",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "block",
+		patterns: [
+			{
+				field: "command",
+				regex:
+					"\\b(curl|wget|fetch)\\b[^|]*\\|\\s*(sudo\\s+)?((ba|z|k|da)?sh|python3?|perl|ruby|node|php)\\b",
+			},
+			{
+				field: "command",
+				regex:
+					"\\b((ba|z|k|da)?sh|python3?|perl|ruby|node|php)\\b\\s*<\\(\\s*[^)]*\\b(curl|wget|fetch)\\b",
+			},
+		],
+		reason:
+			"Remote code execution: a download piped into a shell/interpreter runs unreviewed remote code and bypasses the package allowlist entirely (no manifest, no registry, no version pin)",
+		suggestion:
+			"Download to a file, read it, then run it deliberately; or install the dependency through its package manager so the supply-chain gate can screen it",
+		severity: "critical",
+		category: "supply-chain",
+	},
+	{
 		id: "builtin-cron-persistence",
 		enabled: true,
 		trigger: "PreToolUse",

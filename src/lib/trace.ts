@@ -4,7 +4,7 @@
 // Exports local activity to a standard trace format and imports back.
 
 import { parseDuration } from "./activity-utils.js";
-import type { JsonObject } from "./json-types.js";
+import { isJsonObject, type JsonObject } from "./json-types.js";
 import {
 	appendLocalActivity,
 	type LocalActivityEvent,
@@ -93,33 +93,70 @@ export interface ImportTraceResult {
 	skipped: number;
 }
 
+/** The subset of `TraceSpan` an import actually reads (`span_id`/`duration_ms`
+ *  are export-only — importTrace never consumes them). `attributes` defaults
+ *  to `{}` rather than rejecting the span: the old code read `span.attributes
+ *  .agent` unconditionally, which THREW on a span missing `attributes`
+ *  entirely and crashed the whole import; defaulting fixes that crash while
+ *  keeping every other field the span does supply. */
+interface ImportedSpan {
+	trace_id?: string;
+	name: string;
+	timestamp: string;
+	attributes: JsonObject;
+}
+
+/** Validate one candidate span from an imported trace document/JSONL line.
+ *  Replaces a bare `JSON.parse(...)` pushed straight into a `TraceSpan[]`
+ *  with zero verification — `name`/`timestamp` are required because the
+ *  import loop constructs `LocalActivityEvent.type`/`.ts` from them
+ *  unconditionally. */
+function parseImportedSpan(value: unknown): ImportedSpan | null {
+	if (!isJsonObject(value)) return null;
+	const { name, timestamp } = value;
+	if (typeof name !== "string" || typeof timestamp !== "string") return null;
+	const trace_id = typeof value.trace_id === "string" ? value.trace_id : undefined;
+	const attributes = isJsonObject(value.attributes) ? value.attributes : {};
+	return { name, timestamp, attributes, ...(trace_id !== undefined ? { trace_id } : {}) };
+}
+
+/** Pull the candidate span array out of a parsed JSON document: the
+ *  `interlinked-trace` envelope, or a bare array of spans. Null when `data`
+ *  isn't either shape. */
+function extractDocumentSpans(doc: unknown): unknown[] | null {
+	if (isJsonObject(doc) && doc.format === "interlinked-trace" && Array.isArray(doc.spans)) {
+		return doc.spans;
+	}
+	return Array.isArray(doc) ? doc : null;
+}
+
+/** Parse the raw import payload into validated spans — a JSON document first
+ *  (envelope or bare array), falling back to line-by-line JSONL. */
+function parseImportedSpans(data: string): ImportedSpan[] {
+	try {
+		const rawSpans = extractDocumentSpans(JSON.parse(data));
+		return rawSpans ? rawSpans.map(parseImportedSpan).filter((s): s is ImportedSpan => s !== null) : [];
+	} catch (_err) {
+		/* intentional: input isn't a JSON document — fall back to JSONL line-by-line parsing */
+		const spans: ImportedSpan[] = [];
+		for (const line of data.split("\n").filter(Boolean)) {
+			try {
+				const span = parseImportedSpan(JSON.parse(line));
+				if (span) spans.push(span);
+			} catch (_lineErr) {
+				/* intentional: skip a malformed JSONL line rather than fail the whole import */
+			}
+		}
+		return spans;
+	}
+}
+
 /**
  * Import trace spans into the local activity log.
  * Deduplicates by timestamp + agent + type.
  */
 export function importTrace(data: string, cwd?: string): ImportTraceResult {
-	let spans: TraceSpan[] = [];
-
-	// Try JSON document first
-	try {
-		const doc = JSON.parse(data);
-		if (doc.format === "interlinked-trace" && Array.isArray(doc.spans)) {
-			spans = doc.spans;
-		} else if (Array.isArray(doc)) {
-			spans = doc;
-		}
-	} catch (_err) {
-		/* intentional: input isn't a JSON document — fall back to JSONL line-by-line parsing */
-		const lines = data.split("\n").filter(Boolean);
-		for (const line of lines) {
-			try {
-				spans.push(JSON.parse(line));
-			} catch (_lineErr) {
-				/* intentional: skip a malformed JSONL line rather than fail the whole import */
-			}
-		}
-	}
-
+	const spans = parseImportedSpans(data);
 	if (spans.length === 0) {
 		return { imported: 0, skipped: 0 };
 	}
@@ -132,12 +169,19 @@ export function importTrace(data: string, cwd?: string): ImportTraceResult {
 	let skipped = 0;
 
 	for (const span of spans) {
+		// `||` (not `??`), matching the pre-fix fallback exactly: an EMPTY
+		// string attribute also falls back to the default, not just an absent
+		// one — only the wrong-TYPE case is new (the old cast let a non-string
+		// attribute value flow into these `string | null` fields untyped).
+		const agent = typeof span.attributes.agent === "string" ? span.attributes.agent : "";
+		const tool = typeof span.attributes.tool === "string" ? span.attributes.tool : "";
+		const summary = typeof span.attributes.summary === "string" ? span.attributes.summary : "";
 		const event: LocalActivityEvent = {
 			ts: span.timestamp,
-			agent: (span.attributes.agent as string) || "unknown",
+			agent: agent || "unknown",
 			type: span.name,
-			tool: (span.attributes.tool as string) || null,
-			summary: (span.attributes.summary as string) || null,
+			tool: tool || null,
+			summary: summary || null,
 			session: span.trace_id || null,
 		};
 

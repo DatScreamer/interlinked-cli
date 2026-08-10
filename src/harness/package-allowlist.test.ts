@@ -63,6 +63,119 @@ describe("loadAllowlist", () => {
 		expect(al.lockfile_snapshots).toEqual({});
 		expect(al.packages.npm.lodash).toBeDefined();
 	});
+
+	it("P1: keeps a fully-populated entry, including the optional reason/version_range/license fields", () => {
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(
+			target,
+			JSON.stringify({
+				version: 1,
+				packages: {
+					npm: {
+						wrangler: {
+							approved_at: "2026-06-27T22:48:29.109Z",
+							approved_by: "qcody",
+							reason: "cloud worker",
+							version_range: "^4.0.0",
+							license: "MIT OR Apache-2.0",
+						},
+					},
+				},
+				lockfile_snapshots: {
+					"package-lock.json": {
+						sha256: "a".repeat(64),
+						approved_at: "2026-08-02",
+						approved_by: "qcody",
+						reason: "routine snapshot",
+					},
+				},
+			}),
+		);
+		const al = loadAllowlist(workspace);
+		expect(al.packages.npm.wrangler).toEqual({
+			approved_at: "2026-06-27T22:48:29.109Z",
+			approved_by: "qcody",
+			reason: "cloud worker",
+			version_range: "^4.0.0",
+			license: "MIT OR Apache-2.0",
+		});
+		expect(al.lockfile_snapshots["package-lock.json"]).toEqual({
+			sha256: "a".repeat(64),
+			approved_at: "2026-08-02",
+			approved_by: "qcody",
+			reason: "routine snapshot",
+		});
+	});
+
+	it("N1: drops a package entry missing a required field (approved_by) rather than admitting a half-formed grant", () => {
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(
+			target,
+			JSON.stringify({
+				version: 1,
+				packages: { npm: { evil: { approved_at: "2026-06-27" } } },
+			}),
+		);
+		const al = loadAllowlist(workspace);
+		expect(al.packages.npm.evil).toBeUndefined();
+		expect(
+			isPackageAllowed(al, "npm", { kind: "registry", name: "evil" }).allowed,
+		).toBe(false);
+	});
+
+	it("N2: coerces a wrong-typed version_range to absent instead of letting it reach matchesVersionRange", () => {
+		// Before this fix, a non-string version_range (e.g. a JSON number,
+		// possible via hand-edits to the committed allowlist) survived the
+		// blind copy and reached `matchesVersionRange`, whose `range.trim()`
+		// throws on anything but a string at runtime — despite AllowlistEntry's
+		// compile-time `version_range?: string`. The malformed field must be
+		// coerced to absent (the documented "no pin ⇒ any version" contract),
+		// not crash the install-time gate.
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(
+			target,
+			JSON.stringify({
+				version: 1,
+				packages: {
+					npm: {
+						pkg: { approved_at: "2026-06-27", approved_by: "x", version_range: 42 },
+					},
+				},
+			}),
+		);
+		const al = loadAllowlist(workspace);
+		expect(al.packages.npm.pkg).toEqual({ approved_at: "2026-06-27", approved_by: "x" });
+		const spec: PackageSpec = { kind: "registry", name: "pkg", version: "1.2.3" };
+		expect(() => isPackageAllowed(al, "npm", spec)).not.toThrow();
+		expect(isPackageAllowed(al, "npm", spec).allowed).toBe(true);
+	});
+
+	it("N3: ignores an ecosystem block that is a JSON array instead of a keyed object", () => {
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(target, JSON.stringify({ version: 1, packages: { npm: ["not", "an", "object"] } }));
+		const al = loadAllowlist(workspace);
+		expect(al.packages.npm).toEqual({});
+	});
+
+	it("N4: drops a lockfile snapshot missing its sha256 rather than letting matchSnapshot compare against undefined", () => {
+		const target = allowlistPath(workspace);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(
+			target,
+			JSON.stringify({
+				version: 1,
+				lockfile_snapshots: {
+					"package-lock.json": { approved_at: "2026-08-02", approved_by: "qcody" },
+				},
+			}),
+		);
+		const al = loadAllowlist(workspace);
+		expect(al.lockfile_snapshots["package-lock.json"]).toBeUndefined();
+	});
 });
 
 describe("saveAllowlist + loadAllowlist roundtrip", () => {

@@ -20,6 +20,7 @@
 //   *** Delete File: path        (no body)
 //   *** End Patch
 
+import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 
 export type ApplyPatchOp = "add" | "update" | "delete";
@@ -55,7 +56,7 @@ export function looksLikeApplyPatch(raw: string): boolean {
  * reconstructor (the complexity gate and the coverage gate) so they can never
  * drift on which field carries the patch.
  */
-export function extractApplyPatchRaw(toolInput: Record<string, unknown>): string {
+export function extractApplyPatchRaw(toolInput: JsonObject): string {
 	return (
 		(typeof toolInput.command === "string" && toolInput.command) ||
 		(typeof toolInput.patch === "string" && toolInput.patch) ||

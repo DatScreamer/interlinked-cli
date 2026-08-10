@@ -8,8 +8,9 @@
 
 import { createConnection, type Socket } from "node:net";
 import { basename } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
-import type { AgentSource, HarnessDecision, HarnessEvent } from "./types.js";
+import type { AgentSource, HarnessDecision, HarnessEvent, ResolvedTarget } from "./types.js";
 import type { UnifiedAction, UnifiedHookEvent } from "./unified-event.js";
 
 export const LEGACY_HARNESS_SOCKET_BASENAME = "harness.sock";
@@ -44,6 +45,46 @@ export function isLegacyHarnessSocket(socketPath: string): boolean {
 	return basename(socketPath) === LEGACY_HARNESS_SOCKET_BASENAME;
 }
 
+const RESOLVED_TARGET_KINDS = new Set<ResolvedTarget["kind"]>([
+	"file", "table", "url", "branch", "recipient", "package",
+]);
+
+function parseResolvedTarget(value: unknown): ResolvedTarget | null {
+	if (!isJsonObject(value)) return null;
+	const kind = value.kind;
+	const v = value.value;
+	if (typeof kind !== "string" || !RESOLVED_TARGET_KINDS.has(kind as ResolvedTarget["kind"])) return null;
+	return typeof v === "string" ? { kind: kind as ResolvedTarget["kind"], value: v } : null;
+}
+
+/** Replaces `JSON.parse(line) as HarnessDecision` (unchecked ~24-field cast).
+ *  Validates `decision` + the only other fields this bridge's one consumer
+ *  reads (grep-verified: adapters/*.ts + last-check-writer.ts); the rest are
+ *  never read off a legacy decision and are left unset, not deep-validated. */
+function parseHarnessDecision(value: unknown): HarnessDecision | null {
+	if (!isJsonObject(value)) return null;
+	const { decision } = value;
+	if (decision !== "allow" && decision !== "block" && decision !== "ask") return null;
+	const reason = typeof value.reason === "string" ? value.reason : undefined;
+	const rule_id = typeof value.rule_id === "string" ? value.rule_id : undefined;
+	const additional_context =
+		typeof value.additional_context === "string" ? value.additional_context : undefined;
+	const warnings = Array.isArray(value.warnings)
+		? value.warnings.filter((w): w is string => typeof w === "string")
+		: undefined;
+	const resolved_targets = Array.isArray(value.resolved_targets)
+		? value.resolved_targets.map(parseResolvedTarget).filter((t): t is ResolvedTarget => t !== null)
+		: undefined;
+	return {
+		decision,
+		...(reason !== undefined ? { reason } : {}),
+		...(rule_id !== undefined ? { rule_id } : {}),
+		...(additional_context !== undefined ? { additional_context } : {}),
+		...(warnings !== undefined ? { warnings } : {}),
+		...(resolved_targets !== undefined ? { resolved_targets } : {}),
+	};
+}
+
 export function callLegacyHarness(
 	socketPath: string,
 	event: UnifiedHookEvent,
@@ -76,7 +117,8 @@ export function callLegacyHarness(
 			if (newlineIdx === -1) return;
 			const line = buffer.slice(0, newlineIdx);
 			try {
-				const parsed = JSON.parse(line) as HarnessDecision;
+				const parsed = parseHarnessDecision(JSON.parse(line));
+				if (!parsed) throw new Error("malformed legacy harness decision");
 				finish(() => resolve(parsed));
 			} catch (err) {
 				finish(() =>
@@ -441,9 +483,6 @@ function asJsonObject(value: unknown): JsonObject | null {
 	return isJsonObject(value) ? value : null;
 }
 
-function isJsonObject(value: unknown): value is JsonObject {
-	return value != null && typeof value === "object" && !Array.isArray(value);
-}
 
 function readString(value: unknown): string | null {
 	return typeof value === "string" ? value : null;

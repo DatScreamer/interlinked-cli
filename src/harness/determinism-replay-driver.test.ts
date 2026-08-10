@@ -179,4 +179,26 @@ describe("determinism-replay-driver main()", () => {
 		// Nothing was written to stdout on the failure path.
 		expect(stdoutCapture).toHaveLength(0);
 	});
+
+	it("N1: logs and exits non-zero when the corpus is valid JSON but not an array (parseCorpus rejects)", async () => {
+		// Well-formed JSON, wrong top-level shape: an object instead of an array.
+		await runDriverWith([Buffer.from(JSON.stringify({ path: "x.ts", content: "X" }), "utf-8")]);
+
+		expect(mRunPipeline).not.toHaveBeenCalled();
+		expect(consoleErrArgs).toHaveLength(1);
+		expect(nonNull(consoleErrArgs[0])[0]).toBeInstanceOf(Error);
+		expect(exitCodes).toEqual([1]);
+		expect(stdoutCapture).toHaveLength(0);
+	});
+
+	it("N2: logs and exits non-zero when a corpus item is missing a required field (parseCorpus rejects)", async () => {
+		// Array shape is right, but the item lacks `content` (typeof check fails).
+		await runDriverWith([Buffer.from(JSON.stringify([{ path: "x.ts" }]), "utf-8")]);
+
+		expect(mRunPipeline).not.toHaveBeenCalled();
+		expect(consoleErrArgs).toHaveLength(1);
+		expect(nonNull(consoleErrArgs[0])[0]).toBeInstanceOf(Error);
+		expect(exitCodes).toEqual([1]);
+		expect(stdoutCapture).toHaveLength(0);
+	});
 });

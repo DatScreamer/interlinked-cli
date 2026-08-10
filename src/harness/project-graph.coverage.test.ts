@@ -173,6 +173,62 @@ describe("ProjectGraph constructor / loadTsconfigPaths", () => {
 		const graph = new ProjectGraph("/proj");
 		expect(graph.isInitialized).toBe(false);
 	});
+
+	it("N1: a malformed alias target no longer crashes indexing", () => {
+		// Pre-fix, `paths` was cast to Record<string, string[]> with zero runtime
+		// validation, so a target that isn't actually a string (here `42`) reached
+		// `target.replace("/*", "")` inside resolveImportPath and threw
+		// `TypeError: target.replace is not a function` — uncaught, since
+		// indexFile has no try/catch around resolveImportPath (only
+		// loadTsconfigPaths itself is wrapped, and this throw happens later, on
+		// the next file indexed). The fix rejects the whole paths map at load
+		// time instead of trusting the cast.
+		addFile("/proj/tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@bad/*": [42] } } }));
+		addFile("/proj/src/index.ts", `import { x } from '@bad/thing';`);
+		const graph = new ProjectGraph("/proj");
+		expect(() => graph.updateFile("/proj/src/index.ts")).not.toThrow();
+		expect(nonNull(graph.getDependencies("/proj/src/index.ts")[0]).toFile).toBe("");
+	});
+
+	it("N2: ignores a non-object paths field instead of reading fields off it", () => {
+		addFile("/proj/tsconfig.json", JSON.stringify({ compilerOptions: { paths: "not-an-object" } }));
+		const graph = new ProjectGraph("/proj");
+		graph.updateFile("/proj/a.ts", `import { y } from 'some-lib';`);
+		expect(nonNull(graph.getDependencies("/proj/a.ts")[0]).toFile).toBe("");
+	});
+
+	it("N3: ignores a non-object compilerOptions field instead of reading fields off it", () => {
+		addFile("/proj/tsconfig.json", JSON.stringify({ compilerOptions: "not-an-object" }));
+		const graph = new ProjectGraph("/proj");
+		graph.updateFile("/proj/a.ts", `import { y } from 'some-lib';`);
+		expect(nonNull(graph.getDependencies("/proj/a.ts")[0]).toFile).toBe("");
+	});
+
+	it("N4: a top-level `null` tsconfig.json is rejected without relying on the outer catch", () => {
+		// Pre-fix, `config.compilerOptions` had no `?.` on `config` itself, so a
+		// legally-parsed `null` (JSON.parse("null") === null) would throw
+		// reading `.compilerOptions` off null — only saved by the surrounding
+		// try/catch happening to catch it too. The fix rejects `null` explicitly
+		// via isJsonObject before any property access.
+		addFile("/proj/tsconfig.json", "null");
+		const graph = new ProjectGraph("/proj");
+		expect(() => graph.updateFile("/proj/a.ts", `import { y } from 'some-lib';`)).not.toThrow();
+		expect(nonNull(graph.getDependencies("/proj/a.ts")[0]).toFile).toBe("");
+	});
+
+	it("P1: accepts an alias with multiple valid string targets", () => {
+		addFile(
+			"/proj/tsconfig.json",
+			JSON.stringify({
+				compilerOptions: { paths: { "@root": ["./src/app.ts", "./src/other.ts"] } },
+			}),
+		);
+		addFile("/proj/src/app.ts", "export const x = 1;");
+		addFile("/proj/src/index.ts", `import { x } from '@root';`);
+		const graph = new ProjectGraph("/proj");
+		graph.updateFile("/proj/src/index.ts");
+		expect(nonNull(graph.getDependencies("/proj/src/index.ts")[0]).toFile).toBe("/proj/src/app.ts");
+	});
 });
 
 // ---------------------------------------------------------------------------

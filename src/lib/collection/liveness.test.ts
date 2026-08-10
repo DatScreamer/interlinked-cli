@@ -138,4 +138,26 @@ describe("getCollectionLiveness", () => {
 			"stale",
 		);
 	});
+
+	// lastRecordTsFromTail — direct boundary-parser coverage (replaces
+	// `JSON.parse(line) as { ts?: unknown }`).
+	it("P1: reads ts off the last well-formed record", () => {
+		writeCollection([record(tsAgo(4_000))]);
+		const live = getCollectionLiveness(dir, { now: NOW });
+		expect(live.status).toBe("live");
+		expect(live.lastRecordTs).toBe(tsAgo(4_000));
+	});
+
+	it("N1: a syntactically-valid but non-object last line (bare JSON array) is not a record — walks back to the previous real record instead of giving up", () => {
+		writeCollection([record(tsAgo(2_000)), JSON.stringify([1, 2, 3])]);
+		const live = getCollectionLiveness(dir, { now: NOW });
+		expect(live.status).toBe("live");
+		expect(live.lastRecordTs).toBe(tsAgo(2_000));
+	});
+
+	it("N2: a bare JSON number as the only line yields 'unreadable', not a crash", () => {
+		writeCollection(["42"]);
+		const live = getCollectionLiveness(dir, { now: NOW });
+		expect(live.status).toBe("unreadable");
+	});
 });

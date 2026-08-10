@@ -1044,6 +1044,72 @@ describe("update — JSON mode suppresses human chrome on every soft-failure", (
 });
 
 // ===========================================
+// parsePackageJsonUsed boundary parser (module-private — driven indirectly,
+// matching this file's black-box style for every other internal helper).
+// ===========================================
+
+describe("update — package.json boundary parser", () => {
+	it("P1: extra unrecognised fields (e.g. bin, scripts) do not block resolution", async () => {
+		// resolveCliRoot only reads `name`; a real package.json carries many more
+		// fields (bin, scripts, dependencies, …) that the parser must ignore
+		// rather than choke on.
+		mocks.readFileSync.mockImplementation((p: unknown) => {
+			const path = String(p);
+			if (path === `${CLI_ROOT}/package.json`) {
+				return JSON.stringify({
+					name: "interlinked-cli",
+					version: "1.2.3",
+					bin: { interlinked: "dist/index.js" },
+					scripts: { build: "tsup" },
+				});
+			}
+			return "{}";
+		});
+
+		await updateCommand({});
+
+		expect(logText()).toContain("Updated to Interlinked CLI v1.2.3");
+	});
+
+	it("N1: a package.json that parses to a non-object (e.g. a bare array) is treated as unresolved", async () => {
+		// resolveCliRoot's package.json is syntactically valid JSON but not an
+		// object — the old `JSON.parse(...) as {...}` cast would have read
+		// `.name` as `undefined` off the array too, so this pins the SAME
+		// outcome (falls through to the managed-checkout bootstrap) via the
+		// parser's isJsonObject guard instead of an unchecked property read.
+		mocks.readFileSync.mockImplementation((p: unknown) => {
+			const path = String(p);
+			if (path === `${CLI_ROOT}/package.json`) return JSON.stringify(["not", "an", "object"]);
+			if (path === `${HOME}/.interlinked/interlinked-cli/package.json`) {
+				return JSON.stringify({ name: "interlinked-cli", version: "9.9.9" });
+			}
+			return "{}";
+		});
+
+		await updateCommand({});
+
+		// Fell through to the managed-checkout bootstrap (Repo URL line only
+		// prints for a managed checkout) rather than resolving CLI_ROOT.
+		expect(logText()).toContain(`Repo URL:  ${INTERLINKED_CLI_REPO_URL}`);
+		expect(logText()).toContain("Updated to Interlinked CLI v9.9.9");
+	});
+
+	it("N2: getInstalledVersion falls back to 'unknown' when version is present but the wrong type", async () => {
+		mocks.readFileSync.mockImplementation((p: unknown) => {
+			const path = String(p);
+			if (path === `${CLI_ROOT}/package.json`) {
+				return JSON.stringify({ name: "interlinked-cli", version: 20260101 });
+			}
+			return "{}";
+		});
+
+		await updateCommand({});
+
+		expect(logText()).toContain("Updated to Interlinked CLI vunknown");
+	});
+});
+
+// ===========================================
 // getInstalledVersion fallback.
 // ===========================================
 

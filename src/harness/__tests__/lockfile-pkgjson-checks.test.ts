@@ -491,4 +491,30 @@ describe("checkLockfileClassificationDrift", () => {
 		writeFileSync(manifestPath, JSON.stringify({ dependencies: { commander: "12.1.0" } }));
 		expect(checkLockfileClassificationDrift(manifestPath).drifted).toBe(false);
 	});
+
+	it("is a no-op when the lock root's `packages` key is missing entirely", () => {
+		const manifestPath = join(tmpDir, "package.json");
+		writeFileSync(manifestPath, JSON.stringify({ dependencies: { commander: "12.1.0" } }));
+		writeFileSync(join(tmpDir, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
+		expect(checkLockfileClassificationDrift(manifestPath).drifted).toBe(false);
+	});
+
+	it("skips a dependency section whose value is a string instead of an object", () => {
+		// A hand-edited or corrupted manifest can put a non-object where a section
+		// belongs; the parser must skip it rather than throwing on `Object.keys`.
+		const manifestPath = writePair(
+			{ dependencies: "not-an-object", optionalDependencies: { typescript: "5.9.3" } },
+			{ optionalDependencies: { typescript: "5.9.3" } },
+		);
+		const drift = checkLockfileClassificationDrift(manifestPath);
+		expect(drift.drifted).toBe(false);
+		expect(drift.mismatches).toEqual([]);
+	});
+
+	it("is a no-op when the manifest itself is not an object", () => {
+		const manifestPath = join(tmpDir, "package.json");
+		writeFileSync(manifestPath, JSON.stringify(["not", "an", "object"]));
+		writeFileSync(join(tmpDir, "package-lock.json"), JSON.stringify({ packages: { "": {} } }));
+		expect(checkLockfileClassificationDrift(manifestPath).drifted).toBe(false);
+	});
 });

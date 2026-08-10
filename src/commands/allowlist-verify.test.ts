@@ -185,4 +185,18 @@ describe("verifyAllowlistCommand — fixed-name manifests walked recursively (ed
 		expect(out).toMatch(/could not parse package\.json/);
 		expect(process.exitCode).toBe(1);
 	});
+
+	it("N1: reports a package.json that parses as valid JSON but is a JSON array, not an object", () => {
+		writeFileSync(join(workspace, "package.json"), JSON.stringify(["not", "an", "object"]));
+		const out = capture(() => verifyAllowlistCommand({ cwd: workspace }));
+		expect(out).toMatch(/package\.json is not a JSON object/);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("N2: ignores a dependencies field that is not a keyed object rather than crashing", () => {
+		writeFileSync(join(workspace, "package.json"), JSON.stringify({ dependencies: "not-an-object" }));
+		const out = capture(() => verifyAllowlistCommand({ cwd: workspace }));
+		expect(out).toMatch(/clean|all approved/i);
+		expect(process.exitCode ?? 0).toBe(0);
+	});
 });

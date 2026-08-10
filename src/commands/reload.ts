@@ -16,6 +16,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installAllHooks, writeHookScript } from "../lib/hooks.js";
+import { isJsonObject } from "../lib/json-types.js";
 import { detectClients } from "../lib/settings.js";
 import { harnessRestartCommand } from "./harness.js";
 import { refreshClientSkills } from "./skill-refresh.js";
@@ -38,8 +39,9 @@ export function findCliRoot(startDir?: string): string | null {
  *  mid-edit package.json must read as "not the CLI root", never throw). */
 function packageNameAt(pkgPath: string): string | null {
 	try {
-		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { name?: string };
-		return typeof pkg.name === "string" ? pkg.name : null;
+		const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		if (!isJsonObject(parsed)) return null;
+		return typeof parsed.name === "string" ? parsed.name : null;
 	} catch {
 		return null;
 	}
@@ -267,6 +269,16 @@ export async function reloadCommand(opts: ReloadOptions): Promise<void> {
 		`  Hook script: ${hookChanged ? `CHANGED ${hookBefore} → ${hookAfter}` : `unchanged (${hookAfter})`}${clients.length > 0 ? ` — wiring refreshed for ${clients.join(", ")}` : ""}`,
 	);
 	skillRefresh.outputLines.forEach(say);
+
+	// TODO(statusline-refresh): `reload` should also regenerate the installed
+	// statusline script. Found 2026-08-10: the installed copy had drifted two
+	// weeks behind source, so segments shipped since (the "N blocked / N
+	// caught" work segment, the caps segment) never rendered even though the
+	// snapshot carried their data — a stale renderer looks exactly like an
+	// absent feature. Deferred here because `writeStatuslineScript` writes
+	// under the real HOME and this command's --json integrity tests sandbox it;
+	// wiring it needs that function to create its own directory first. Manual
+	// regeneration meanwhile: scratch/refresh-statusline.mts.
 
 	const restart = await daemonStep({
 		cwd,

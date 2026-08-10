@@ -132,6 +132,32 @@ describe("findCliRoot", () => {
 		expect(findCliRoot(nested)).toBeNull();
 	});
 
+	it("N1: ignores a package.json that parses to a non-object (an array) instead of throwing", () => {
+		// packageNameAt narrows with isJsonObject before reading `.name` — an
+		// array is `typeof "object"` but must not be treated as the manifest.
+		writeFileSync(join(dir, "package.json"), JSON.stringify(["not", "an", "object"]));
+		const nested = join(dir, "arr");
+		mkdirSync(nested);
+		expect(findCliRoot(nested)).toBeNull();
+	});
+
+	it("N2: ignores a package.json that parses to `null` instead of throwing", () => {
+		// Regression for the pre-fix shape: `(JSON.parse(raw) as {name?:string}).name`
+		// on `null` throws a TypeError that only the outer try/catch caught;
+		// isJsonObject now rejects it explicitly, before any property read.
+		writeFileSync(join(dir, "package.json"), "null");
+		const nested = join(dir, "nul");
+		mkdirSync(nested);
+		expect(findCliRoot(nested)).toBeNull();
+	});
+
+	it("P1: reads the name field from a well-formed package.json (positive control)", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "interlinked-cli" }));
+		const nested = join(dir, "ok");
+		mkdirSync(nested);
+		expect(findCliRoot(nested)).toBe(dir);
+	});
+
 	it("returns null after exhausting the walk-up hop budget without a match", () => {
 		let deep = dir;
 		for (let i = 0; i < 13; i++) {

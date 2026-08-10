@@ -174,9 +174,28 @@ export function isRequest(msg: RpcMessage): msg is RpcRequest {
 	return typeof (msg as RpcRequest).method === "string";
 }
 
-/** Type-narrowing predicate: true when the message carries an error. */
+/**
+ * Type-narrowing predicate: true when the message carries a WELL-FORMED error.
+ *
+ * Every required field of `RpcError` is checked, including `id` and the nested
+ * `error` members. Before 2026-08-09 this tested only that `error` was a
+ * non-null object, so `{ error: {} }` off the wire narrowed to `RpcError` and
+ * callers then read `.id` / `.error.code` as `string` when both were
+ * `undefined` — `parseWireMessage` widens an untrusted object into `RpcMessage`
+ * by assertion, which makes this predicate the only real gate. Found by the
+ * `type_predicate_drift` check.
+ *
+ * Tightening is safe for our own traffic: `makeError` is the sole producer and
+ * always populates all four fields.
+ */
 export function isError(msg: RpcMessage): msg is RpcError {
-	return typeof (msg as RpcError).error === "object" && (msg as RpcError).error !== null;
+	if (typeof (msg as RpcError).id !== "string") return false;
+	const err: unknown = (msg as RpcError).error;
+	if (typeof err !== "object" || err === null) return false;
+	const { code, message, recoverable } = err as Partial<RpcError["error"]>;
+	return (
+		typeof code === "string" && typeof message === "string" && typeof recoverable === "boolean"
+	);
 }
 
 /** Construct a well-formed RpcError. */

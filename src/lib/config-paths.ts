@@ -4,12 +4,12 @@
 // ===========================================
 // Pure path-resolution helpers split out of config.ts to keep the main
 // module under the per-file line cap. Leaf module: depends only on node
-// built-ins + the (type-only) LocalConfig shape; imports nothing back from
-// config.ts at runtime.
+// built-ins + the shared JsonObject boundary type; imports nothing back
+// from config.ts at runtime.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LocalConfig } from "./config.js";
+import { isJsonObject } from "./json-types.js";
 
 const CONFIG_DIR = ".interlinked";
 const SHARED_CONFIG = "config.json";
@@ -38,8 +38,9 @@ export function getDataDir(cwd: string = process.cwd()): string {
 	const localConfigPath = getLocalConfigPath(cwd);
 	if (existsSync(localConfigPath)) {
 		try {
-			const local = JSON.parse(readFileSync(localConfigPath, "utf-8")) as LocalConfig;
-			if (local.data_dir) return local.data_dir;
+			const parsed = JSON.parse(readFileSync(localConfigPath, "utf-8"));
+			const dataDir = isJsonObject(parsed) ? parsed.data_dir : undefined;
+			if (typeof dataDir === "string" && dataDir) return dataDir;
 		} catch (_err) {
 			/* intentional: corrupt local config — fall through to default data dir */
 		}

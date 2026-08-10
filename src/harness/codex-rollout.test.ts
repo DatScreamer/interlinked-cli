@@ -85,3 +85,71 @@ describe("parseCodexRolloutText", () => {
 		expect(r.find((x) => x.category === "tool_result")?.text).toContain(sk);
 	});
 });
+
+// parseCodexEntry / parseCodexPayload — direct boundary-parser coverage
+// (replaces `JSON.parse(line) as CodexEntry`), exercised through
+// parseCodexRolloutText, the module's only entry point.
+describe("parseCodexEntry / parseCodexPayload boundary parsing", () => {
+	const meta = { timestamp: "2026-07-18T00:00:00Z", type: "session_meta", payload: { session_id: "s3", cwd: "/r" } };
+
+	it("P1: a well-formed entry with every string payload field intact round-trips", () => {
+		const doc = [
+			meta,
+			{
+				timestamp: "2026-07-18T00:00:01Z",
+				type: "response_item",
+				payload: { type: "custom_tool_call", name: "exec", call_id: "call_9", id: "ctc_9", arguments: "{}" },
+			},
+		].map((e) => JSON.stringify(e)).join("\n");
+		const tool = parseCodexRolloutText(doc).find((r) => r.category === "tool_use");
+		expect(tool?.tool_name).toBe("exec");
+		expect(tool?.tool_use_id).toBe("call_9");
+	});
+
+	it("N1: a numeric timestamp is dropped (not flowed into TimelineRecord.ts unchecked) — the record is skipped instead of corrupted", () => {
+		const doc = [
+			meta,
+			{ timestamp: 12345, type: "response_item", payload: { type: "message", role: "user", content: "hi" } },
+		].map((e) => JSON.stringify(e)).join("\n");
+		const recs = parseCodexRolloutText(doc);
+		expect(recs.some((r) => r.category === "user_prompt")).toBe(false);
+	});
+
+	it("N2: a non-string top-level type is treated as absent, not passed through untyped", () => {
+		const doc = [
+			meta,
+			{ timestamp: "2026-07-18T00:00:01Z", type: 42, payload: { type: "message", role: "user", content: "hi" } },
+		].map((e) => JSON.stringify(e)).join("\n");
+		// type !== "response_item" (it's absent) -> entryRecords' response_item
+		// branch never triggers, so no user_prompt record is produced.
+		expect(parseCodexRolloutText(doc).some((r) => r.category === "user_prompt")).toBe(false);
+	});
+
+	it("N3: a non-object payload does not crash — the entry is treated as payload-less", () => {
+		const doc = [meta, { timestamp: "2026-07-18T00:00:01Z", type: "response_item", payload: "not-an-object" }]
+			.map((e) => JSON.stringify(e))
+			.join("\n");
+		expect(() => parseCodexRolloutText(doc)).not.toThrow();
+		expect(parseCodexRolloutText(doc)).toEqual([]);
+	});
+
+	it("N4: a line that parses to a bare JSON array or number produces no records and does not crash", () => {
+		const doc = [JSON.stringify(meta), "[1,2,3]", "42", "null"].join("\n");
+		expect(() => parseCodexRolloutText(doc)).not.toThrow();
+		expect(parseCodexRolloutText(doc)).toEqual([]);
+	});
+
+	it("N5: a wrongly-typed payload string field (numeric name) is dropped, not forwarded as tool_name", () => {
+		const doc = [
+			meta,
+			{
+				timestamp: "2026-07-18T00:00:01Z",
+				type: "response_item",
+				payload: { type: "custom_tool_call", name: 999, call_id: "call_x" },
+			},
+		].map((e) => JSON.stringify(e)).join("\n");
+		const tool = parseCodexRolloutText(doc).find((r) => r.category === "tool_use");
+		expect(tool?.tool_name).toBeUndefined();
+		expect(tool?.tool_use_id).toBe("call_x");
+	});
+});

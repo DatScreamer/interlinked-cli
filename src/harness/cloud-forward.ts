@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAuthToken } from "../lib/auth.js";
 import { type CloudVerdict, evaluateRemote } from "../lib/cloud-governor.js";
+import { isJsonObject } from "../lib/json-types.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
 // Static file-config for the cloud governor. The bearer is NO LONGER stored
@@ -23,21 +24,16 @@ function loadCloudConfig(cwd: string): CloudGovernorSettings | null {
 	try {
 		const path = join(cwd, ".interlinked", "config.local.json");
 		const raw = readFileSync(path, "utf8");
-		const parsed = JSON.parse(raw) as { cloud_governor?: unknown };
+		const parsed = JSON.parse(raw);
+		if (!isJsonObject(parsed)) return null;
 		const cg = parsed.cloud_governor;
-		if (!cg || typeof cg !== "object") return null;
-		const candidate = cg as {
-			enabled?: unknown;
-			url?: unknown;
-			timeout_ms?: unknown;
-		};
-		if (typeof candidate.enabled !== "boolean") return null;
-		if (typeof candidate.url !== "string") return null;
+		if (!isJsonObject(cg)) return null;
+		if (typeof cg.enabled !== "boolean") return null;
+		if (typeof cg.url !== "string") return null;
 		cachedConfig = {
-			enabled: candidate.enabled,
-			url: candidate.url,
-			timeout_ms:
-				typeof candidate.timeout_ms === "number" ? candidate.timeout_ms : undefined,
+			enabled: cg.enabled,
+			url: cg.url,
+			timeout_ms: typeof cg.timeout_ms === "number" ? cg.timeout_ms : undefined,
 		};
 		return cachedConfig;
 	} catch {

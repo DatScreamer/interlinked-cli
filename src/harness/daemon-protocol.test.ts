@@ -8,6 +8,7 @@ import {
 	methodForPhase,
 	PROTOCOL_VERSION,
 	type RpcError,
+	type RpcMessage,
 	type RpcRequest,
 	type RpcResponse,
 	splitFrames,
@@ -108,6 +109,43 @@ describe("makeError", () => {
 	it("honors an explicit recoverable=false", () => {
 		const e = makeError("x", "schema_mismatch", "nope", false);
 		expect(e.error.recoverable).toBe(false);
+	});
+});
+
+// isError regression (2026-08-09): the predicate tested only that `error` was a
+// non-null object, so every other required field of RpcError went unchecked.
+// `parseWireMessage` widens untrusted input into RpcMessage by assertion, which
+// makes this predicate the only gate standing between the wire and callers that
+// read `.id` and `.error.code` as strings.
+describe("isError — validates every required field of RpcError", () => {
+	const wire = (v: unknown): RpcMessage => v as RpcMessage;
+
+	it("accepts what makeError produces", () => {
+		expect(isError(makeError("r-1", "timeout", "took too long"))).toBe(true);
+	});
+
+	it("rejects an error object missing code/message/recoverable", () => {
+		expect(isError(wire({ id: "r-1", error: {} }))).toBe(false);
+	});
+
+	it("rejects a non-string id", () => {
+		expect(isError(wire({ error: { code: "timeout", message: "m", recoverable: true } }))).toBe(
+			false,
+		);
+		expect(
+			isError(wire({ id: 7, error: { code: "timeout", message: "m", recoverable: true } })),
+		).toBe(false);
+	});
+
+	it("rejects a non-boolean recoverable", () => {
+		expect(
+			isError(wire({ id: "r-1", error: { code: "timeout", message: "m", recoverable: "yes" } })),
+		).toBe(false);
+	});
+
+	it("still rejects a plain response that carries no error", () => {
+		expect(isError(wire({ id: "r-1", result: { ok: true } }))).toBe(false);
+		expect(isError(wire({ id: "r-1", error: null }))).toBe(false);
 	});
 });
 

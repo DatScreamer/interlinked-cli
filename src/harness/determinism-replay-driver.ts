@@ -12,6 +12,7 @@
 // same-process repeat cannot. This same driver is the cloud-Sandbox rung's entry
 // point (run it there, diff against local — the real cross-machine test).
 
+import { isJsonObject } from "../lib/json-types.js";
 import { type CorpusItem, canonicalizeFindings, runInlinePipeline } from "./determinism-conformance.js";
 
 async function readStdin(): Promise<string> {
@@ -22,8 +23,27 @@ async function readStdin(): Promise<string> {
 	return Buffer.concat(chunks).toString("utf-8");
 }
 
+/** Validate the stdin payload: a JSON array of `{ path, content }`. Exported
+ *  for direct testing. Not a persisted-artifact reader (stdin is piped fresh
+ *  by the caller each run), so the campaign's replay obligation doesn't apply
+ *  — see scratch/fleet-r2/CONTRACT.md. */
+export function parseCorpus(value: unknown): CorpusItem[] | null {
+	if (!Array.isArray(value)) return null;
+	const items: CorpusItem[] = [];
+	for (const entry of value) {
+		if (!isJsonObject(entry)) return null;
+		const { path, content } = entry;
+		if (typeof path !== "string" || typeof content !== "string") return null;
+		items.push({ path, content });
+	}
+	return items;
+}
+
 async function main(): Promise<void> {
-	const corpus = JSON.parse(await readStdin()) as CorpusItem[];
+	const corpus = parseCorpus(JSON.parse(await readStdin()));
+	if (!corpus) {
+		throw new Error("stdin corpus must be a JSON array of { path: string; content: string }");
+	}
 	const canon = corpus.map((item) =>
 		canonicalizeFindings(runInlinePipeline(item.content, item.path)),
 	);

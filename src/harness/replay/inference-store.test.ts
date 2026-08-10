@@ -10,6 +10,7 @@ import {
 	envelopeForToolUseId,
 	type InferenceEnvelope,
 	loadEnvelopes,
+	parseInferenceEnvelope,
 	pendingEnvelopePath,
 } from "./inference-store.js";
 
@@ -81,5 +82,41 @@ describe("inference-store", () => {
 		const b = envelope({ request_index: 2, tool_use_ids: ["toolu_b1", "toolu_b2"] });
 		expect(envelopeForToolUseId([a, b], "toolu_b2")?.request_index).toBe(2);
 		expect(envelopeForToolUseId([a, b], "toolu_zzz")).toBeNull();
+	});
+});
+
+describe("parseInferenceEnvelope", () => {
+	it("P1: accepts a well-formed envelope", () => {
+		const e = envelope();
+		expect(parseInferenceEnvelope(e)).toEqual(e);
+	});
+
+	it("P2: accepts an empty tool_use_ids array and a null session_id/seq", () => {
+		const e = envelope({ tool_use_ids: [], session_id: null, seq: null });
+		expect(parseInferenceEnvelope(e)).toEqual(e);
+	});
+
+	it("N1: rejects the wrong schema tag", () => {
+		expect(parseInferenceEnvelope(envelope({ schema: "other.v1" as "inference-envelope.v1" }))).toBeNull();
+	});
+
+	it("N2: rejects a provider other than anthropic", () => {
+		expect(
+			parseInferenceEnvelope(envelope({ provider: "openai" as "anthropic" })),
+		).toBeNull();
+	});
+
+	it("N3: rejects a non-string-array tool_use_ids", () => {
+		const raw = { ...envelope(), tool_use_ids: ["ok", 42] };
+		expect(parseInferenceEnvelope(raw)).toBeNull();
+	});
+
+	it("N4: rejects a non-object request body", () => {
+		const raw = { ...envelope(), request: "not-an-object" };
+		expect(parseInferenceEnvelope(raw)).toBeNull();
+	});
+
+	it("N5: rejects a non-object line (array)", () => {
+		expect(parseInferenceEnvelope(["inference-envelope.v1"])).toBeNull();
 	});
 });

@@ -484,5 +484,41 @@ describe("harness mode — config resilience on switch", () => {
 		// Other keys survive the spread.
 		expect(config.default_project).toBe("synthetic-project");
 	});
+
+	it("P1: preserves an existing string mode across an unrelated read (still current behavior)", async () => {
+		writeSharedConfigFile({ version: 1, server_url: "http://localhost:8787", mode: "quality" });
+		await captureStdio(() => harnessModeCommand("budget", { json: true }));
+		const config = readSharedConfig();
+		expect(config.mode).toBe("budget"); // the switch overwrites mode, as designed
+		expect(config.server_url).toBe("http://localhost:8787");
+	});
+
+	it("N1: a top-level JSON array config.json falls back to defaults instead of spreading numeric-string keys", async () => {
+		// Before the isJsonObject gate, `{...parsed}` on an array spread its
+		// indices ("0","1","2") into the returned SharedConfig, and THAT got
+		// persisted back to the committed config.json on this write.
+		writeFileSync(join(workDir, ".interlinked", "config.json"), JSON.stringify(["a", "b", "c"]));
+		const captured = await captureStdio(() => harnessModeCommand("ci", { json: true }));
+		const parsed = JSON.parse(captured.stdout) as { ok: boolean; mode: string };
+		expect(parsed.ok).toBe(true);
+		expect(parsed.mode).toBe("ci");
+		const config = readSharedConfig();
+		expect(config.mode).toBe("ci");
+		expect(config.server_url).toBe("http://localhost:8787");
+		expect(config["0"]).toBeUndefined();
+		expect(config["1"]).toBeUndefined();
+		expect(config["2"]).toBeUndefined();
+	});
+
+	it("N2: a bare JSON null config.json falls back to defaults without throwing", async () => {
+		writeFileSync(join(workDir, ".interlinked", "config.json"), "null");
+		const captured = await captureStdio(() => harnessModeCommand("ci", { json: true }));
+		const parsed = JSON.parse(captured.stdout) as { ok: boolean; mode: string };
+		expect(parsed.ok).toBe(true);
+		expect(parsed.mode).toBe("ci");
+		const config = readSharedConfig();
+		expect(config.mode).toBe("ci");
+		expect(config.server_url).toBe("http://localhost:8787");
+	});
 });
 

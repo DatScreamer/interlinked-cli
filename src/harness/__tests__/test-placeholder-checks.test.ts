@@ -35,15 +35,24 @@ describe("checkFocusedTests", () => {
 		expect(checkFocusedTests(code, "foo.test.ts").length).toBe(1);
 	});
 
-	it("ignores matches inside a comment", () => {
+	it("N1: ignores matches inside a comment", () => {
 		const code =
 			'// it.only("was disabled", () => {});\nit("real", () => { expect(1).toBe(1); });';
 		expect(checkFocusedTests(code, "foo.test.ts")).toEqual([]);
 	});
 
-	it("ignores matches inside a string literal", () => {
+	it("N2: ignores matches inside a string literal", () => {
 		const code =
 			'const msg = "use it.only to focus";\nit("real", () => { expect(1).toBe(1); });';
+		expect(checkFocusedTests(code, "foo.test.ts")).toEqual([]);
+	});
+
+	it("N3: does not flag a call whose name merely contains 'fit' as a substring", () => {
+		// Word-boundary near miss: \bfit\s*\( must not match inside a longer
+		// identifier like "benefit(" — the "f" of "fit" has no boundary when
+		// preceded by another word character.
+		const code =
+			'function computeBenefit(x) { return benefit(x); }\nit("real", () => { expect(1).toBe(1); });';
 		expect(checkFocusedTests(code, "foo.test.ts")).toEqual([]);
 	});
 

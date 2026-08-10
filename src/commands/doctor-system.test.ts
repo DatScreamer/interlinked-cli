@@ -17,12 +17,41 @@ vi.mock("node:os", () => ({
 
 import {
 	bytesToGb,
+	checkCliResolvable,
 	checkCpuCores,
 	checkFreeMemoryGb,
 	checkOrphanHarnessCount,
 	formatGb,
 	runSystemChecks,
 } from "./doctor-system.js";
+
+// Red-team F5 (docs/design/red-team-findings-2026-08-09.md): `interlinked`
+// vanished from PATH mid-session while ~/.local/bin/interlinked still existed.
+// Every operator flow that shells out to the CLI — including fleet unit
+// verification — silently lost its verb, with no probe to catch it.
+describe("checkCliResolvable", () => {
+	it("P1: fails when the CLI does not resolve on PATH", () => {
+		const r = checkCliResolvable({ resolvedPath: null, linkTargetExists: true });
+		expect(r.status).toBe("fail");
+		expect(r.message).toContain("PATH");
+	});
+
+	it("P2: fails when it resolves but its link target is missing", () => {
+		const r = checkCliResolvable({ resolvedPath: "/u/.local/bin/interlinked", linkTargetExists: false });
+		expect(r.status).toBe("fail");
+	});
+
+	it("N1: passes when it resolves and the target exists", () => {
+		const r = checkCliResolvable({ resolvedPath: "/u/.local/bin/interlinked", linkTargetExists: true });
+		expect(r.status).toBe("pass");
+		expect(r.message).toContain("/u/.local/bin/interlinked");
+	});
+
+	it("N2: names the repair command when it fails, so the fix is one paste", () => {
+		const r = checkCliResolvable({ resolvedPath: null, linkTargetExists: false });
+		expect(r.message).toContain("npm run build");
+	});
+});
 
 describe("checkCpuCores", () => {
 	it("passes when at least 4 cores are available", () => {
@@ -303,7 +332,7 @@ describe("runSystemChecks (mocked os/child_process — exercises countOrphanHarn
 		});
 	});
 
-	it("builds the full three-check array in order (cpu, memory, orphans)", () => {
+	it("builds the full four-check array in order (cpu, memory, orphans, cli)", () => {
 		cpusMock.mockReset().mockReturnValue(new Array(8));
 		freememMock.mockReset().mockReturnValue(8 * 1024 ** 3);
 		execSyncMock.mockReturnValue("");
@@ -323,6 +352,14 @@ describe("runSystemChecks (mocked os/child_process — exercises countOrphanHarn
 				name: "Orphan harness daemons",
 				status: "pass",
 				message: "0 orphans — auto-reaper working as expected",
+			},
+			// The CLI probe (red-team F5) runs last. Under the mocked execSync
+			// `command -v` yields "", so it reports the not-on-PATH failure —
+			// asserted by shape, since its message embeds a repair hint.
+			{
+				name: "interlinked CLI on PATH",
+				status: "fail",
+				message: expect.stringContaining("does not resolve on PATH"),
 			},
 		]);
 	});

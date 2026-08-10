@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEventRecord, CollectionRecord } from "./collection/types.js";
 import {
 	countJsonlLines,
+	parseCollectionOrAgentEvent,
+	parseLocalActivityEvent,
 	readCollectionActivity,
 	readRecentLines,
 } from "./local-activity-collection.js";
@@ -760,5 +762,191 @@ describe("countJsonlLines", () => {
 		const dir = join(tmp, "a-directory.jsonl");
 		mkdirSync(dir);
 		expect(countJsonlLines(dir)).toBe(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// parseCollectionOrAgentEvent — direct boundary-parser coverage
+// ---------------------------------------------------------------------------
+// readCollectionActivity's own describe blocks above already exercise this
+// parser end-to-end (including the two "legacy line" fixtures with most
+// fields entirely absent). These add DIRECT positive/negative cases per the
+// boundary-parsers campaign contract.
+
+describe("parseCollectionOrAgentEvent", () => {
+	it("P1: accepts a well-formed tool_event and keeps its used fields", () => {
+		const parsed = parseCollectionOrAgentEvent({
+			kind: "tool_event",
+			ts: "2026-08-01T00:00:00Z",
+			phase: "post",
+			outcome: "ok",
+			agent_name: "alpha",
+			provider: "claude",
+			provider_tool: "Bash",
+			action: { command: "ls" },
+			session_id: "s1",
+			cwd: "/repo",
+			tool_use_id: "tu_1",
+		});
+		expect(parsed).toEqual({
+			ts: "2026-08-01T00:00:00Z",
+			phase: "post",
+			outcome: "ok",
+			agent_name: "alpha",
+			provider: "claude",
+			provider_tool: "Bash",
+			action: { command: "ls" },
+			session_id: "s1",
+			cwd: "/repo",
+			tool_use_id: "tu_1",
+		});
+	});
+
+	it("P2: accepts a well-formed agent_event and keeps its used fields", () => {
+		const parsed = parseCollectionOrAgentEvent({
+			kind: "agent_event",
+			ts: "2026-08-01T00:00:00Z",
+			event: "subagent_stop",
+			agent_name: "alpha",
+			agent_type: "reviewer",
+			session_id: "s1",
+			subagent_id: "sub_1",
+		});
+		expect(parsed).toEqual({
+			ts: "2026-08-01T00:00:00Z",
+			event: "subagent_stop",
+			agent_type: "reviewer",
+			session_id: "s1",
+			agent_name: "alpha",
+			subagent_id: "sub_1",
+		});
+	});
+
+	it("P3: a tool_event with agent_name entirely absent still parses (real-world drift)", () => {
+		// The hand-written hook-runtime collection writer omits agent_name on
+		// most rows — measured against the live .interlinked/collection.jsonl
+		// tail. A stricter parser that required the key would drop ~88% of
+		// real tool_event rows.
+		const parsed = parseCollectionOrAgentEvent({
+			kind: "tool_event",
+			ts: "2026-08-01T00:00:00Z",
+			phase: "post",
+		});
+		expect(parsed).not.toBeNull();
+		expect(parsed && "agent_name" in parsed).toBe(false);
+	});
+
+	it("N1: rejects a non-object value", () => {
+		expect(parseCollectionOrAgentEvent(["not", "an", "object"])).toBeNull();
+		expect(parseCollectionOrAgentEvent("a string")).toBeNull();
+		expect(parseCollectionOrAgentEvent(null)).toBeNull();
+	});
+
+	it("N2: rejects a record with no ts (or a non-string ts)", () => {
+		expect(parseCollectionOrAgentEvent({ kind: "tool_event", phase: "post" })).toBeNull();
+		expect(parseCollectionOrAgentEvent({ kind: "tool_event", ts: 12345 })).toBeNull();
+	});
+
+	it("N3: rejects an agent_event whose event value is not one of the three known names", () => {
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "agent_event",
+				ts: "2026-08-01T00:00:00Z",
+				event: "subagent_paused",
+			}),
+		).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// parseLocalActivityEvent — direct boundary-parser coverage
+// ---------------------------------------------------------------------------
+
+describe("parseLocalActivityEvent", () => {
+	it("P1: a minimal record with only the 3 required fields parses intact", () => {
+		expect(parseLocalActivityEvent({ ts: "2026-08-01T00:00:00Z", agent: "alpha", type: "prompt" })).toEqual({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "prompt",
+		});
+	});
+
+	it("P2: a richly-populated record keeps every field, including nested tokens/attribution", () => {
+		const parsed = parseLocalActivityEvent({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			tool: "Bash",
+			summary: "ls -la",
+			session: "s1",
+			cwd: "/repo",
+			duration_ms: 120,
+			scrubbed: true,
+			files_modified: ["a.ts", "b.ts"],
+			schema_version: 5,
+			guard_decision: "block",
+			guard_warnings: ["one", "two"],
+			tokens: { input: 10, output: 20 },
+			attribution: { agent_lines: 3, human_lines: 1 },
+			tool_input: { some: "blob" },
+		});
+		expect(parsed).toMatchObject({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			tool: "Bash",
+			summary: "ls -la",
+			session: "s1",
+			cwd: "/repo",
+			duration_ms: 120,
+			scrubbed: true,
+			files_modified: ["a.ts", "b.ts"],
+			schema_version: 5,
+			guard_decision: "block",
+			guard_warnings: ["one", "two"],
+			tokens: { input: 10, output: 20 },
+			attribution: { agent_lines: 3, human_lines: 1 },
+			tool_input: { some: "blob" },
+		});
+	});
+
+	it("P3: guard_decision:\"warn\" (a real value outside the declared union) drops only that field", () => {
+		// Measured on the live .interlinked/activity.jsonl tail: 310/20000 rows
+		// carry guard_decision:"warn", which local-activity-types.ts does not
+		// declare. The row must still be accepted.
+		const parsed = parseLocalActivityEvent({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			guard_decision: "warn",
+		});
+		expect(parsed).not.toBeNull();
+		expect(parsed && "guard_decision" in parsed).toBe(false);
+	});
+
+	it("P4: a wrongly-typed optional field is dropped, not fatal to the row", () => {
+		const parsed = parseLocalActivityEvent({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			tokens: "not-an-object",
+			duration_ms: "not-a-number",
+			files_modified: "not-an-array",
+		});
+		expect(parsed).toEqual({ ts: "2026-08-01T00:00:00Z", agent: "alpha", type: "tool_use" });
+	});
+
+	it("N1: rejects a record missing ts", () => {
+		expect(parseLocalActivityEvent({ agent: "alpha", type: "tool_use" })).toBeNull();
+	});
+
+	it("N2: rejects a record whose agent is not a string", () => {
+		expect(parseLocalActivityEvent({ ts: "2026-08-01T00:00:00Z", agent: 42, type: "tool_use" })).toBeNull();
+	});
+
+	it("N3: rejects a non-object value", () => {
+		expect(parseLocalActivityEvent(["not", "an", "object"])).toBeNull();
+		expect(parseLocalActivityEvent(null)).toBeNull();
+		expect(parseLocalActivityEvent(5)).toBeNull();
 	});
 });

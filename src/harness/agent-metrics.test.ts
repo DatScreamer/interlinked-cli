@@ -144,4 +144,40 @@ describe("summarizeAgentTranscript — negative (must not fire / must stay empty
 		const m = summarizeAgentTranscript(assistant({ ts: "2026-08-07T22:00:00.000Z" }));
 		expect(m.duration_ms).toBeNull();
 	});
+
+	it("N7: a bare JSON array line is skipped (object-shape gate on the entry itself)", () => {
+		const text = [JSON.stringify(["not", "an", "entry"]), assistant({ usage: { output_tokens: 3 } })].join(
+			"\n",
+		);
+		const m = summarizeAgentTranscript(text);
+		expect(m.transcript_entries).toBe(1);
+		expect(m.tokens.output).toBe(3);
+	});
+
+	it("N8: a non-object element inside content is skipped without crashing or counting", () => {
+		const text = JSON.stringify({
+			type: "assistant",
+			timestamp: "2026-08-07T22:00:00.000Z",
+			uuid: "u4",
+			// SAFETY: deliberately malformed content elements — a bare array and a
+			// string sit alongside a real tool_use block.
+			message: { role: "assistant", content: [["nested", "array"], "bare string", toolUse("Bash", "toolu_y")] },
+		});
+		const m = summarizeAgentTranscript(text);
+		expect(m.tool_calls).toBe(1);
+		expect(m.tools).toEqual({ Bash: 1 });
+	});
+
+	it("N9: an array-valued usage is rejected (object-shape gate), not coerced into a turn", () => {
+		const text = JSON.stringify({
+			type: "assistant",
+			timestamp: "2026-08-07T22:00:00.000Z",
+			uuid: "u5",
+			// SAFETY: usage deliberately shaped as an array, not an object.
+			message: { role: "assistant", usage: [1, 2, 3], content: [] },
+		});
+		const m = summarizeAgentTranscript(text);
+		expect(m.assistant_turns).toBe(0);
+		expect(m.tokens).toEqual(empty.tokens);
+	});
 });

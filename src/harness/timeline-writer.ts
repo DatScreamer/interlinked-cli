@@ -15,6 +15,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { TimelineRecord } from "./transcript-record.js";
 
 export const TIMELINE_FILENAME = "timeline.jsonl";
@@ -59,6 +60,21 @@ export function appendTimelineRecords(records: TimelineRecord[], cwd: string): v
 	}
 }
 
+/** One JSONL line's dedup key (`uuid#seq`), or null when the line is corrupt
+ *  or its `uuid`/`seq` fields are missing or the wrong type. Never throws. */
+function parseTimelineDedupKey(line: string): string | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return null;
+	}
+	if (!isJsonObject(parsed)) return null;
+	const { uuid, seq } = parsed;
+	if (typeof uuid !== "string" || typeof seq !== "number") return null;
+	return `${uuid}#${seq}`;
+}
+
 /** The dedup keys already present in the timeline log, for idempotent
  *  append/rebuild. Empty set if the log is missing/unreadable. Never throws. */
 export function existingTimelineKeys(cwd: string): Set<string> {
@@ -68,14 +84,8 @@ export function existingTimelineKeys(cwd: string): Set<string> {
 	try {
 		for (const line of readFileSync(path, "utf-8").split("\n")) {
 			if (!line.trim()) continue;
-			try {
-				// SAFETY: a timeline line is our own JSONL; we read only the two
-				// dedup-key fields and guard their presence below.
-				const r = JSON.parse(line) as { uuid?: string; seq?: number };
-				if (typeof r.uuid === "string" && typeof r.seq === "number") keys.add(`${r.uuid}#${r.seq}`);
-			} catch (err) {
-				void err; // skip a corrupt line
-			}
+			const key = parseTimelineDedupKey(line);
+			if (key !== null) keys.add(key);
 		}
 	} catch (err) {
 		void err;

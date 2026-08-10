@@ -133,8 +133,19 @@ describe("loadCloudConfig (via forwardCloudPreToolUse)", () => {
 	});
 
 	it("treats a null cloud_governor as no-config (cg === null → null)", async () => {
-		// typeof null === "object", so this specifically exercises the `!cg` arm.
+		// isJsonObject rejects null explicitly (typeof null === "object" alone
+		// would not have been enough).
 		readFileSyncMock.mockReturnValue(configFileWith(null));
+		const result = await forwardCloudPreToolUse(makeEvent(), ALLOW_LOCAL, CWD);
+		expect(result).toBe(ALLOW_LOCAL);
+		expect(evaluateRemoteMock).not.toHaveBeenCalled();
+	});
+
+	it("N: treats an array cloud_governor as no-config (isJsonObject rejects arrays, not just non-objects)", async () => {
+		// typeof [] === "object", so a check that only excluded non-objects would
+		// let an array through to the enabled/url checks; isJsonObject rejects it
+		// up front instead.
+		readFileSyncMock.mockReturnValue(configFileWith([1, 2, 3]));
 		const result = await forwardCloudPreToolUse(makeEvent(), ALLOW_LOCAL, CWD);
 		expect(result).toBe(ALLOW_LOCAL);
 		expect(evaluateRemoteMock).not.toHaveBeenCalled();

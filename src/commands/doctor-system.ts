@@ -11,6 +11,7 @@
 // without monkey-patching `os` or `child_process`.
 
 import { execSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { cpus, freemem } from "node:os";
 
 export type CheckStatus = "pass" | "fail" | "warn";
@@ -121,6 +122,64 @@ export function checkOrphanHarnessCount(orphanCount: number): SystemCheckResult 
 	};
 }
 
+/** What the CLI-resolvability probe observed about the `interlinked` verb. */
+export interface CliResolution {
+	/** Path `which interlinked` returned, or null when it resolves nowhere. */
+	resolvedPath: string | null;
+	/** Whether the resolved entry's target actually exists (symlinks rot). */
+	linkTargetExists: boolean;
+}
+
+const CLI_REPAIR_HINT =
+	"Repair: (cd <interlinked-cli> && npm run build) then re-link, e.g. " +
+	"ln -sf <interlinked-cli>/dist/index.js ~/.local/bin/interlinked";
+
+/**
+ * The `interlinked` verb must resolve on PATH and point at a real build.
+ *
+ * Red-team F5 (2026-08-09): the CLI vanished from PATH mid-session while
+ * `~/.local/bin/interlinked` still existed. Nothing noticed — every operator
+ * flow that shells out to `interlinked` (fleet unit verification included)
+ * silently lost its verb, and a dangling symlink looks fine to `ls`.
+ */
+export function checkCliResolvable(res: CliResolution): SystemCheckResult {
+	const name = "interlinked CLI on PATH";
+	if (!res.resolvedPath) {
+		return {
+			name,
+			status: "fail",
+			message: `'interlinked' does not resolve on PATH — shell-outs to the CLI will fail. ${CLI_REPAIR_HINT}`,
+		};
+	}
+	if (!res.linkTargetExists) {
+		return {
+			name,
+			status: "fail",
+			message: `'interlinked' resolves to ${res.resolvedPath} but its target is missing (dangling link). ${CLI_REPAIR_HINT}`,
+		};
+	}
+	return { name, status: "pass", message: `resolves to ${res.resolvedPath}` };
+}
+
+/** Observe the live PATH state of the `interlinked` verb (shell + fs, no logic). */
+export function observeCliResolution(): CliResolution {
+	let resolvedPath: string | null = null;
+	try {
+		resolvedPath = execSync("command -v interlinked", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+	} catch {
+		resolvedPath = null; // non-zero exit = not on PATH
+	}
+	if (!resolvedPath) return { resolvedPath: null, linkTargetExists: false };
+	// realpathSync throws on a dangling link (ENOENT) — that IS the failure this
+	// probe reports, so it must never escape as an exception and take the whole
+	// doctor run down with it.
+	try {
+		return { resolvedPath, linkTargetExists: existsSync(realpathSync.native(resolvedPath)) };
+	} catch {
+		return { resolvedPath, linkTargetExists: false };
+	}
+}
+
 /**
  * Inspect the CPU + memory state, plus list orphan harness daemons
  * (interlinked-cli/dist/harness/server processes whose ppid ≤ 1).
@@ -134,6 +193,7 @@ export function runSystemChecks(): SystemCheckResult[] {
 	results.push(checkCpuCores(cpus().length));
 	results.push(checkFreeMemoryGb(freemem()));
 	results.push(checkOrphanHarnessCount(countOrphanHarnesses()));
+	results.push(checkCliResolvable(observeCliResolution()));
 	return results;
 }
 

@@ -328,6 +328,80 @@ describe("skillListCommand", () => {
 });
 
 // =============================================================================
+// parseSkillListSessions / parseSkillListSession / parseActiveSkillRecord —
+// boundary validation of the harness's SkillList reply (valid JSON, but
+// possibly the wrong shape — distinct from the JSON-syntax-error case above,
+// which the pre-existing "errors on malformed skill list JSON" test covers).
+// =============================================================================
+
+describe("skillListCommand — skill-list boundary parsers (valid JSON, wrong shape)", () => {
+	it("P1: accepts a well-formed session list (positive control)", async () => {
+		const sessions = [
+			{
+				session_id: "s1",
+				agent_name: "a1",
+				skills: [{ name: "x", entered_at: 0, expires_at: 1000, source: "manual" }],
+			},
+		];
+		wireSuccessfulReply({ additional_context: JSON.stringify(sessions) });
+		await skillListCommand({ json: true });
+		const parsed = JSON.parse(logs.join("\n"));
+		expect(parsed).toEqual(sessions);
+	});
+
+	it("N1: rejects a top-level object instead of an array", async () => {
+		wireSuccessfulReply({ additional_context: JSON.stringify({ not: "an array" }) });
+		await skillListCommand({});
+		expect(errs.join("\n")).toContain("malformed skill list");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("N2: rejects a session missing the skills array", async () => {
+		const sessions = [{ session_id: "s1", agent_name: "a1" }];
+		wireSuccessfulReply({ additional_context: JSON.stringify(sessions) });
+		await skillListCommand({});
+		expect(errs.join("\n")).toContain("malformed skill list");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("N3: rejects a skill record with an unrecognized source value", async () => {
+		const sessions = [
+			{
+				session_id: "s1",
+				agent_name: "a1",
+				skills: [{ name: "x", entered_at: 0, expires_at: 1000, source: "bogus" }],
+			},
+		];
+		wireSuccessfulReply({ additional_context: JSON.stringify(sessions) });
+		await skillListCommand({});
+		expect(errs.join("\n")).toContain("malformed skill list");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("N4: rejects a skill record whose entered_at is a string, not a number", async () => {
+		const sessions = [
+			{
+				session_id: "s1",
+				agent_name: "a1",
+				skills: [{ name: "x", entered_at: "zero", expires_at: 1000, source: "cli" }],
+			},
+		];
+		wireSuccessfulReply({ additional_context: JSON.stringify(sessions) });
+		await skillListCommand({});
+		expect(errs.join("\n")).toContain("malformed skill list");
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("N5: rejects a session missing session_id (previously passed through verbatim by the unchecked cast)", async () => {
+		const sessions = [{ agent_name: "a1", skills: [] }];
+		wireSuccessfulReply({ additional_context: JSON.stringify(sessions) });
+		await skillListCommand({ json: true });
+		expect(errs.join("\n")).toContain("malformed skill list");
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+// =============================================================================
 // parseTtl — exercised via skillEnter (valid units) + invalid paths
 // =============================================================================
 

@@ -21,6 +21,27 @@ const roots: string[] = [];
 afterEach(() => {
 	for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
+
+// `repoWithFindings` calls `ingestReviewReport` → `upsertFinding` →
+// `recordFinding`, which mirrors every finding into
+// `~/.interlinked/findings-corpus.jsonl` unless `INTERLINKED_HOME` redirects it.
+// A tmp `cwd` is NOT enough: cwd governs only the per-repo corpus, while the
+// global mirror resolves its own path and swallows every error, so the leak is
+// silent and the test still passes. Measured 2026-08-09: this file alone
+// appended 16 rows to the real user corpus per run. Same fix as
+// `src/commands/findings.test.ts`.
+let prevInterlinkedHome: string | undefined;
+beforeEach(() => {
+	prevInterlinkedHome = process.env.INTERLINKED_HOME;
+	const fakeHome = mkdtempSync(join(tmpdir(), "recon-fake-home-"));
+	roots.push(fakeHome);
+	process.env.INTERLINKED_HOME = fakeHome;
+});
+afterEach(() => {
+	if (prevInterlinkedHome === undefined) delete process.env.INTERLINKED_HOME;
+	else process.env.INTERLINKED_HOME = prevInterlinkedHome;
+});
+
 beforeEach(() => resetReviewReconcileCacheForTesting());
 
 function repoWithFindings(): string {

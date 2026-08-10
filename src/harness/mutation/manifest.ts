@@ -8,6 +8,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import { isTestPath } from "../coverage-test-selector.js";
 import { normalizeFindingPath } from "../findings/provenance.js";
 import type { SymbolHashEntry } from "./identity.js";
@@ -146,6 +147,52 @@ function cachedManifest(path: string, mtimeMs: number, size: number): MutationMa
 	return hit ? manifestCache.manifest : null;
 }
 
+/**
+ * Validate + construct a manifest's top-level shell from parsed JSON.
+ *
+ * `version` and `files` are the only hard requirements — the exact two
+ * fields the unchecked `as MutationManifest` cast this replaces already
+ * gated (`raw.version !== 1 || !raw.files`), now checked for real
+ * (object-shaped, not merely truthy). Every other scalar defaults rather
+ * than rejects the whole manifest: a real manifest.json is written
+ * EXCLUSIVELY by this codebase's own writers (`emptyManifest` /
+ * `applyMeasuredRun` / `stampProvenance`), so those fields are always
+ * well-typed in practice — the defaults are a backstop a real on-disk file
+ * never exercises, never a silent rejection of a file the old code would
+ * have accepted.
+ *
+ * `files`' and `fileProvenance`'s own VALUE shapes (SymbolRecord /
+ * MutantRecord, MeasurementProvenance) are deliberately trusted, not
+ * deep-validated field-by-field: `healManifestFiles` (called right after
+ * this by `loadManifest`) already treats shape drift inside `files` as
+ * missing per-file records, which every downstream consumer reads as "no
+ * baseline" rather than crashing. Duplicating deep validation here would
+ * risk this campaign's own known failure mode (silently dropping real rows)
+ * on a manifest this repo runs its own per-edit mutation BLOCK gate against.
+ */
+function parseManifestShell(value: unknown): MutationManifest | null {
+	if (!isJsonObject(value)) return null;
+	if (value.version !== 1) return null;
+	if (!isJsonObject(value.files)) return null;
+	return {
+		version: 1,
+		generation: typeof value.generation === "number" ? value.generation : 0,
+		authoritativeAt: typeof value.authoritativeAt === "string" ? value.authoritativeAt : "",
+		engine: typeof value.engine === "string" ? value.engine : "",
+		engineVersion: typeof value.engineVersion === "string" ? value.engineVersion : "",
+		dependencyGraphVersion:
+			typeof value.dependencyGraphVersion === "string" ? value.dependencyGraphVersion : "",
+		environmentHash: typeof value.environmentHash === "string" ? value.environmentHash : "",
+		...(typeof value.sourceRevision === "string" ? { sourceRevision: value.sourceRevision } : {}),
+		// SAFETY: object-shape checked above; per-symbol/per-mutant fields are
+		// trusted, not deep-validated — see docstring above.
+		files: value.files as Record<string, Record<StableId, SymbolRecord>>,
+		...(isJsonObject(value.fileProvenance)
+			? { fileProvenance: value.fileProvenance as Record<string, MeasurementProvenance> }
+			: {}),
+	};
+}
+
 export function loadManifest(dir: string): MutationManifest | null {
 	const path = mutationManifestPath(dir);
 	if (!existsSync(path)) return null;
@@ -153,16 +200,12 @@ export function loadManifest(dir: string): MutationManifest | null {
 		const stat = statSync(path);
 		const hit = cachedManifest(path, stat.mtimeMs, stat.size);
 		if (hit) return hit;
-		const raw = JSON.parse(readFileSync(path, "utf-8"));
-		if (!raw || typeof raw !== "object" || raw.version !== 1 || !raw.files) return null;
-		// SAFETY: version + files presence checked on the line above; deeper shape
-		// errors surface as missing per-file records, which every consumer treats
-		// as "no baseline" rather than crashing.
-		const parsed = raw as MutationManifest; // SAFETY: see guard above
+		const shell = parseManifestShell(JSON.parse(readFileSync(path, "utf-8")));
+		if (shell === null) return null;
 		// Repo root = the parent of the `.interlinked` dir this manifest lives in
 		// (every caller passes `resolve(cwd, ".interlinked")` as `dir` — see
 		// `normalizeManifestKey`'s docstring).
-		const manifest: MutationManifest = { ...parsed, files: healManifestFiles(parsed.files, dirname(dir)) };
+		const manifest: MutationManifest = { ...shell, files: healManifestFiles(shell.files, dirname(dir)) };
 		manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
 		return manifest;
 	} catch {

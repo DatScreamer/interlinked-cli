@@ -89,6 +89,66 @@ describe("loadMutationBaseline / saveMutationBaseline round trip", () => {
 		);
 		expect(loadMutationBaseline(tmp)).toEqual(emptyMutationBaseline());
 	});
+
+	it("N1: drops a malformed individual file entry but keeps valid ones", () => {
+		// Pre-fix, `raw as MutationBaseline` trusted every per-file entry
+		// unchecked — a corrupted or hand-edited entry for one file would have
+		// silently propagated a non-numeric score into the ratchet comparison
+		// instead of just losing that one file's high-water mark.
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({
+				version: 1,
+				updated_at: "2026-04-22",
+				files: {
+					"src/good.ts": { score: 0.9, killed: 27 },
+					"src/bad.ts": { score: "not-a-number", killed: 5 },
+				},
+			}),
+			"utf-8",
+		);
+		const result = loadMutationBaseline(tmp);
+		expect(result.files).toEqual({ "src/good.ts": { score: 0.9, killed: 27 } });
+		expect(result.files["src/bad.ts"]).toBeUndefined();
+	});
+
+	it("N2: drops a non-object file entry while keeping the rest", () => {
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({
+				version: 1,
+				updated_at: "2026-04-22",
+				files: { "src/good.ts": { score: 0.9, killed: 27 }, "src/bad.ts": "oops" },
+			}),
+			"utf-8",
+		);
+		expect(loadMutationBaseline(tmp).files).toEqual({
+			"src/good.ts": { score: 0.9, killed: 27 },
+		});
+	});
+
+	it("N3: rejects the whole baseline when files is an array instead of a record", () => {
+		// Pre-fix, the guard was `!raw.files` — a truthy check. An array is
+		// truthy, so it sailed straight through to `raw as MutationBaseline`
+		// with `.files` actually holding an array, not a Record.
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({ version: 1, updated_at: "x", files: ["not", "a", "record"] }),
+			"utf-8",
+		);
+		expect(loadMutationBaseline(tmp)).toEqual(emptyMutationBaseline());
+	});
+
+	it("P1: defaults updated_at when missing, keeping valid file entries", () => {
+		writeFileSync(
+			mutationBaselinePath(tmp),
+			JSON.stringify({ version: 1, files: { "src/foo.ts": { score: 0.75, killed: 3 } } }),
+			"utf-8",
+		);
+		const result = loadMutationBaseline(tmp);
+		expect(result.files).toEqual({ "src/foo.ts": { score: 0.75, killed: 3 } });
+		expect(typeof result.updated_at).toBe("string");
+	});
 });
 
 describe("loadMutationReport — Stryker shape normalization", () => {

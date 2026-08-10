@@ -133,6 +133,26 @@ describe("loadRules — Phase C mode preset enablement", () => {
 		expect(() => loadRules(tmp)).not.toThrow();
 	});
 
+	// `readActiveModePreset` narrows the parsed JSON with `isJsonObject`
+	// before reading `.mode` instead of an `as { mode?: unknown }` cast. Both
+	// of these are cases the OLD cast already converged to "no override" for
+	// (a top-level array/primitive has no `.mode` property; `null` threw and
+	// was caught by the same try/catch) — pinned here so the narrowing stays
+	// behavior-preserving rather than merely "doesn't crash".
+	it("N1: a top-level JSON array in config.json is treated as no-mode, not a crash", () => {
+		writeFileSync(join(tmp, ".interlinked", "config.json"), "[1,2,3]");
+		expect(() => loadRules(tmp)).not.toThrow();
+		const config = loadRules(tmp);
+		expect(config.rules.length).toBeGreaterThan(0);
+	});
+
+	it("N2: a top-level JSON null in config.json is treated as no-mode, not a crash", () => {
+		writeFileSync(join(tmp, ".interlinked", "config.json"), "null");
+		expect(() => loadRules(tmp)).not.toThrow();
+		const config = loadRules(tmp);
+		expect(config.rules.length).toBeGreaterThan(0);
+	});
+
 	it("unknown mode strings migrate to quality (safe default)", () => {
 		writeSharedConfig("strict-banana");
 		const config = loadRules(tmp);

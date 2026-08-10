@@ -373,7 +373,7 @@ describe("statusline snapshot rows", () => {
 		return undefined;
 	}
 
-	it("emits exactly the 27 documented keys, in order, terminated by a newline", () => {
+	it("emits exactly the 31 documented keys, in order, terminated by a newline", () => {
 		const text = write(emptyConfig());
 		const keys = text.replace(/\n$/, "").split("\n").map((l) => l.slice(0, l.indexOf("=")));
 		expect(keys).toEqual([
@@ -388,6 +388,12 @@ describe("statusline snapshot rows", () => {
 			"tool_checks_enabled",
 			"inline_checks_enabled",
 			"checks_enabled",
+			// Guard activity since daemon start — what the harness DID, as
+			// opposed to how big it is (2026-08-10).
+			"guard_blocked",
+			"guard_warned",
+			"guard_asked",
+			"guard_last_block_rule",
 			"reservations_count",
 			"index_status",
 			"index_files",

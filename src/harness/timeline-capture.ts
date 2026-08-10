@@ -19,6 +19,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { resolveTranscriptPath } from "./thinking-capture.js";
 import { appendTimelineRecords, existingTimelineKeys, recordKey } from "./timeline-writer.js";
 import { parseTranscriptText, type TimelineRecord } from "./transcript-record.js";
@@ -31,9 +32,10 @@ interface Cursor {
 
 function readCursor(cursorPath: string): Cursor {
 	try {
-		// SAFETY: our own cursor JSON; both fields are guarded before use.
-		const c = JSON.parse(readFileSync(cursorPath, "utf-8")) as { path?: string; offset?: number };
-		if (typeof c.path === "string" && typeof c.offset === "number") return { path: c.path, offset: c.offset };
+		const parsed: unknown = JSON.parse(readFileSync(cursorPath, "utf-8"));
+		if (isJsonObject(parsed) && typeof parsed.path === "string" && typeof parsed.offset === "number") {
+			return { path: parsed.path, offset: parsed.offset };
+		}
 	} catch (err) {
 		void err; // missing/corrupt cursor → start fresh
 	}

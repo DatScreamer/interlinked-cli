@@ -26,7 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { getDataDir } from "./config.js";
-import type { JsonObject } from "./json-types.js";
+import { isJsonObject, type JsonObject } from "./json-types.js";
 
 export const GENESIS_HASH = "0".repeat(64);
 // Record types that participate in the hash chain. Originally guard_* only;
@@ -175,7 +175,15 @@ export function verifyAuditChain(cwd: string = process.cwd()): AuditVerifyResult
 
 		let record: GuardChainEntry;
 		try {
-			record = JSON.parse(raw) as GuardChainEntry;
+			const parsed: unknown = JSON.parse(raw);
+			// Non-object JSON (array, string, number, null) can never carry a
+			// recognized `type`, so treat it the same as a syntax error rather
+			// than assert an object shape onto it. `record` still holds every
+			// field `parsed` had — no field is picked or reconstructed — so
+			// `computeEntryHash` below hashes the exact same bytes it always
+			// did; this only rejects shapes that could never chain anyway.
+			if (!isJsonObject(parsed)) continue;
+			record = parsed;
 		} catch {
 			// Malformed JSONL line: a transcript writer crashed mid-write or
 			// something corrupted the file. The chain itself doesn't reach

@@ -212,7 +212,9 @@ describe("runPool — N workers pulling one queue", () => {
 		await runPool([1, 2, 3, 4, 5], 3, async (n) => {
 			seen.push(n);
 		});
-		expect(seen.sort()).toEqual([1, 2, 3, 4, 5]);
+		// Numeric comparator: the default sort is lexicographic, so a queue of ten
+		// or more items would compare [10, 9] as [10, 9] and pass or fail by luck.
+		expect(seen.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
 	});
 
 	it("N1: more lanes than items does not spawn idle workers or throw", async () => {

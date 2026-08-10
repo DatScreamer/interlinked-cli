@@ -7,7 +7,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { allocRunId, appendLedgerRow, type LedgerRow, loadLedger } from "./eval-ledger.js";
+import {
+	allocRunId,
+	appendLedgerRow,
+	type LedgerRow,
+	loadLedger,
+	parseLedgerRow,
+} from "./eval-ledger.js";
 
 const cleanups: string[] = [];
 afterEach(() => {
@@ -56,5 +62,67 @@ describe("appendLedgerRow / loadLedger", () => {
 
 	it("returns [] for an unknown run", () => {
 		expect(loadLedger(tempCwd(), "run-none")).toEqual([]);
+	});
+});
+
+describe("parseLedgerRow", () => {
+	function full() {
+		return {
+			schema: "replay-eval.v1" as const,
+			run_id: "run-a",
+			ts: "2026-07-24T15:00:00.000Z",
+			mode: "off_policy" as const,
+			reference: { session_id: "sess", seq: 1, tool_use_id: "toolu_1", model: "vendor-model-v6" },
+			candidate: { model: "candidate-x", decode: "default" },
+			scores: {
+				action_match: { same_tool: true, same_input: true, match: true },
+				structural: { kind: "ast" as const, comparable: true, distance: 0, normalized: 0 },
+			},
+			reference_tool: "Bash",
+		};
+	}
+
+	it("P1: accepts a fully-populated row", () => {
+		const row = full();
+		expect(parseLedgerRow(row)).toEqual(row);
+	});
+
+	it("P2: accepts a null structural score and an absent reference_tool", () => {
+		const { reference_tool, ...rest } = full();
+		void reference_tool;
+		const row = { ...rest, scores: { ...rest.scores, structural: null } };
+		expect(parseLedgerRow(row)).toEqual({ ...row, reference_tool: null });
+	});
+
+	it("N1: rejects the wrong schema tag", () => {
+		expect(parseLedgerRow({ ...full(), schema: "other.v1" })).toBeNull();
+	});
+
+	it("N2: rejects a non-boolean action_match field", () => {
+		const row = full();
+		const bad = {
+			...row,
+			scores: { ...row.scores, action_match: { same_tool: "yes", same_input: true, match: true } },
+		};
+		expect(parseLedgerRow(bad)).toBeNull();
+	});
+
+	it("N3: rejects a structural score with an unknown kind", () => {
+		const row = full();
+		const bad = {
+			...row,
+			scores: { ...row.scores, structural: { ...row.scores.structural, kind: "diff" } },
+		};
+		expect(parseLedgerRow(bad)).toBeNull();
+	});
+
+	it("N4: rejects a missing candidate.model", () => {
+		const row = full();
+		const bad = { ...row, candidate: { decode: "default" } };
+		expect(parseLedgerRow(bad)).toBeNull();
+	});
+
+	it("N5: rejects a non-object line (array)", () => {
+		expect(parseLedgerRow(["replay-eval.v1"])).toBeNull();
 	});
 });

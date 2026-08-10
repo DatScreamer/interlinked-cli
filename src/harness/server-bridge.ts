@@ -9,6 +9,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { scrubEgressPayload } from "../lib/secrets.js";
 import type { CoordinationResponse } from "./auto-coordinate.js";
@@ -387,6 +388,62 @@ async function fetchWithTimeout(
 // Factory
 // ===========================================
 
+/** The three `config.json` fields this bridge reads (server URL + workspace/
+ *  project defaults) — `config.json` carries a wider shape than this module
+ *  needs. Fields with the wrong runtime type read as absent rather than
+ *  flowing an untyped value into `ServerBridgeConfig`. */
+function parseSharedBridgeFields(value: unknown): {
+	serverUrl: string | undefined;
+	workspaceKey: string | undefined;
+	projectKey: string | undefined;
+} {
+	if (!isJsonObject(value)) {
+		return { serverUrl: undefined, workspaceKey: undefined, projectKey: undefined };
+	}
+	return {
+		serverUrl: typeof value.server_url === "string" ? value.server_url : undefined,
+		workspaceKey: typeof value.default_workspace_key === "string" ? value.default_workspace_key : undefined,
+		projectKey: typeof value.default_project === "string" ? value.default_project : undefined,
+	};
+}
+
+/** One entry of `config.local.json`'s `servers` map, narrowed field-by-field. */
+function parseLocalServerEntry(value: unknown): { serverUrl: string | undefined; workspaceId: string | undefined } {
+	if (!isJsonObject(value)) return { serverUrl: undefined, workspaceId: undefined };
+	return {
+		serverUrl: typeof value.server_url === "string" ? value.server_url : undefined,
+		workspaceId: typeof value.workspace_id === "string" ? value.workspace_id : undefined,
+	};
+}
+
+/** The `config.local.json` fields this bridge reads: top-level auth/workspace
+ *  defaults, plus the active-server override (falls back to "production").
+ *  An override applies only when non-empty — matches the original `||` checks. */
+function parseLocalBridgeFields(value: unknown): {
+	authToken: string | undefined;
+	workspaceId: string | undefined;
+	activeServerUrl: string | undefined;
+} {
+	if (!isJsonObject(value)) {
+		return { authToken: undefined, workspaceId: undefined, activeServerUrl: undefined };
+	}
+	const authToken = typeof value.access_token === "string" ? value.access_token : undefined;
+	let workspaceId = typeof value.workspace_id === "string" ? value.workspace_id : undefined;
+	let activeServerUrl: string | undefined;
+
+	const activeKey = typeof value.active_server === "string" ? value.active_server : "production";
+	const servers = value.servers;
+	if (isJsonObject(servers)) {
+		const activeServer = parseLocalServerEntry(servers[activeKey]);
+		// workspaceId only overrides when server_url is also present (matches original nesting).
+		if (activeServer.serverUrl) {
+			activeServerUrl = activeServer.serverUrl;
+			if (activeServer.workspaceId) workspaceId = activeServer.workspaceId;
+		}
+	}
+	return { authToken, workspaceId, activeServerUrl };
+}
+
 /**
  * Create a ServerBridge from CLI config.
  * Returns null if no server URL is configured.
@@ -405,10 +462,10 @@ export function createServerBridge(cwd: string = process.cwd()): ServerBridge | 
 
 		if (existsSync(sharedPath)) {
 			try {
-				const shared = JSON.parse(readFileSync(sharedPath, "utf-8"));
-				serverUrl = shared.server_url;
-				workspaceKey = shared.default_workspace_key;
-				projectKey = shared.default_project;
+				const shared = parseSharedBridgeFields(JSON.parse(readFileSync(sharedPath, "utf-8")));
+				serverUrl = shared.serverUrl;
+				workspaceKey = shared.workspaceKey;
+				projectKey = shared.projectKey;
 			} catch (e) {
 				void e;
 			}
@@ -416,17 +473,10 @@ export function createServerBridge(cwd: string = process.cwd()): ServerBridge | 
 
 		if (existsSync(localPath)) {
 			try {
-				const local = JSON.parse(readFileSync(localPath, "utf-8"));
-				authToken = local.access_token;
-				workspaceId = local.workspace_id;
-
-				// Multi-server support
-				const activeKey = local.active_server || "production";
-				const activeServer = local.servers?.[activeKey];
-				if (activeServer?.server_url) {
-					serverUrl = activeServer.server_url;
-					workspaceId = activeServer.workspace_id || workspaceId;
-				}
+				const local = parseLocalBridgeFields(JSON.parse(readFileSync(localPath, "utf-8")));
+				authToken = local.authToken;
+				workspaceId = local.workspaceId;
+				if (local.activeServerUrl) serverUrl = local.activeServerUrl;
 			} catch (e) {
 				void e;
 			}

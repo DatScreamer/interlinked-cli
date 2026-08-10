@@ -15,7 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import {
 	type ReservationCache,
 	type ReservationTxn,
@@ -98,8 +98,8 @@ export function rebuildReservationCacheAt(cwd: string, cutoffTs: string): Reserv
 	for (const line of readFileSync(path, "utf-8").split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			// SAFETY: field-checked in txnForLogEvent before any use.
-			const row = JSON.parse(line) as JsonObject;
+			const row = JSON.parse(line);
+			if (!isJsonObject(row)) continue;
 			if (typeof row.ts !== "string" || row.ts > cutoffTs) continue;
 			const txn = txnForLogEvent(row);
 			if (txn) txns.push(txn);

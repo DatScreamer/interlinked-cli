@@ -11,6 +11,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import {
 	appendBeacon,
 	beaconUrlFromFeedUrl,
@@ -71,16 +72,10 @@ export function readSponsorSettingsFromConfig(
 		return { enabled: false, feedUrl: DEFAULT_FEED_URL, telemetry: false, installId: "" };
 	}
 	try {
-		const cfg = JSON.parse(raw) as {
-			install_id?: unknown;
-			sponsor?: {
-				enabled?: unknown;
-				feed_url?: unknown;
-				telemetry?: unknown;
-			};
-		};
-		const installId = typeof cfg.install_id === "string" ? cfg.install_id : "";
-		const sponsor = cfg.sponsor;
+		const parsed: unknown = JSON.parse(raw);
+		if (!isJsonObject(parsed)) return null;
+		const installId = typeof parsed.install_id === "string" ? parsed.install_id : "";
+		const sponsor = isJsonObject(parsed.sponsor) ? parsed.sponsor : undefined;
 		return {
 			enabled: sponsor?.enabled === true,
 			feedUrl:

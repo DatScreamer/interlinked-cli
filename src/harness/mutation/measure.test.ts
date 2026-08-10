@@ -31,7 +31,6 @@ vi.mock("./identity.js", async (importOriginal) => {
 const {
 	buildMeasureOverlays,
 	buildScopedMeasureOverlays,
-	configuredRunnerEndpoints,
 	MAX_MEASURE_OVERLAYS,
 	measureFile,
 	recordMeasurement,
@@ -224,37 +223,6 @@ describe("buildScopedMeasureOverlays", () => {
 		expect(result.overlays.length).toBe(MAX_MEASURE_OVERLAYS);
 		expect(result.overlays.some((o) => o.path === "src/a.ts")).toBe(true);
 		expect(result.overlays.some((o) => o.path === "src/a.test.ts")).toBe(true);
-	});
-});
-
-describe("configuredRunnerEndpoints", () => {
-	it("P1: reads runner_url + runner_urls + token from the local rules file", () => {
-		const files = new Map([
-			[
-				"/repo/.interlinked/guard-rules.local.json",
-				JSON.stringify({
-					per_edit_mutation: { runner_url: "http://a/", runner_urls: ["http://b/"], token: "tok" },
-				}),
-			],
-		]);
-		const cfg = configuredRunnerEndpoints("/repo", (p) => files.get(p) ?? null);
-		expect(cfg.endpoints).toEqual(["http://a/", "http://b/"]);
-		expect(cfg.token).toBe("tok");
-	});
-
-	it("N1: returns no endpoints when the local rules file is absent", () => {
-		expect(configuredRunnerEndpoints("/repo", () => null).endpoints).toEqual([]);
-	});
-
-	it("N2: returns no endpoints when the local rules file is malformed JSON", () => {
-		const cfg = configuredRunnerEndpoints("/repo", () => "{not json");
-		expect(cfg.endpoints).toEqual([]);
-	});
-
-	it("N3: valid JSON with no `per_edit_mutation` key yields no endpoints and no token", () => {
-		const files = new Map([["/repo/.interlinked/guard-rules.local.json", JSON.stringify({ other: true })]]);
-		const cfg = configuredRunnerEndpoints("/repo", (p) => files.get(p) ?? null);
-		expect(cfg).toEqual({ endpoints: [] });
 	});
 });
 

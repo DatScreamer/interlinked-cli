@@ -527,6 +527,27 @@ describe("evaluateEventLine — protocol counter + latency + snapshot durability
 		expect(h.sessions.serialize).not.toHaveBeenCalled();
 	});
 
+	it("P1: skips the snapshot-peek fields but still allows when the line is a valid JSON object", async () => {
+		const h = makeHarness();
+		const loop = createEventLoop(h.deps);
+
+		const decision = await loop.evaluateEventLine(preEvent(), "raw");
+
+		expect(decision).toEqual(ALLOW);
+		expect(mWriteSnap).toHaveBeenCalledWith("/repo", "s1", { snap: true });
+	});
+
+	it("N1: a line that parses to a non-object JSON value (array) never throws and skips the peek", async () => {
+		const h = makeHarness();
+		const loop = createEventLoop(h.deps);
+
+		const decision = await loop.evaluateEventLine("[1,2,3]", "raw");
+
+		expect(decision).toEqual({ decision: "allow" });
+		expect(mWriteSnap).not.toHaveBeenCalled();
+		expect(h.sessions.serialize).not.toHaveBeenCalled();
+	});
+
 	it("swallows a malformed line during the up-front session_id parse (catch void e)", async () => {
 		const h = makeHarness();
 		const loop = createEventLoop(h.deps);

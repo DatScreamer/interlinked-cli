@@ -103,6 +103,13 @@ describe("verifyWire", () => {
 		const keys = makeKeys();
 		expect(verifyWire(makeWire(keys, makePayload()), { pubkeyB64: "!!notakey!!" })).toBeNull();
 	});
+
+	it("N2: rejects a wire that parses to valid JSON but is not a keyed object (array/string/number/null)", () => {
+		expect(verifyWire("[1,2,3]")).toBeNull();
+		expect(verifyWire('"just a string"')).toBeNull();
+		expect(verifyWire("42")).toBeNull();
+		expect(verifyWire("null")).toBeNull();
+	});
 });
 
 describe("rotation", () => {
@@ -298,6 +305,70 @@ describe("beacons", () => {
 	it("swallows write errors instead of throwing (missing parent dir)", () => {
 		const missingDir = join(dir, "does", "not", "exist");
 		expect(() => appendBeacon(missingDir, beacon)).not.toThrow();
+	});
+});
+
+describe("flushBeacons — per-row shape validation (parseSponsorBeacon)", () => {
+	it("P1: forwards a well-shaped buffered row through to the POST body untouched", async () => {
+		const row = {
+			kind: "click",
+			creative: "alpha",
+			campaign: "friends",
+			window: 12,
+			install_id: "inst-9",
+			ts: "2026-06-12T00:00:00Z",
+		};
+		writeFileSync(join(dir, BEACON_FILE), `${JSON.stringify(row)}\n`);
+		const calls: Array<{ url: string; body: string }> = [];
+		const fetchImpl = (async (url: unknown, init?: { body?: unknown }) => {
+			calls.push({ url: String(url), body: String(init?.body ?? "") });
+			return { ok: true } as Response;
+		}) as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
+		expect(JSON.parse(calls[0]?.body ?? "{}").beacons).toEqual([row]);
+	});
+
+	it("N1: drops a row whose `kind` is not impression/click rather than forwarding it", async () => {
+		writeFileSync(
+			join(dir, BEACON_FILE),
+			`${JSON.stringify({
+				kind: "bogus",
+				creative: "alpha",
+				campaign: "friends",
+				window: 1,
+				install_id: "inst-1",
+				ts: "2026-06-12T00:00:00Z",
+			})}\n`,
+		);
+		const fetchImpl = (async () => {
+			throw new Error("should not be called: nothing valid to send");
+		}) as unknown as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
+	});
+
+	it("N2: drops a row missing a required string field (no `creative`)", async () => {
+		writeFileSync(
+			join(dir, BEACON_FILE),
+			`${JSON.stringify({
+				kind: "impression",
+				campaign: "friends",
+				window: 1,
+				install_id: "inst-1",
+				ts: "2026-06-12T00:00:00Z",
+			})}\n`,
+		);
+		const fetchImpl = (async () => {
+			throw new Error("should not be called: nothing valid to send");
+		}) as unknown as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
+	});
+
+	it("N3: drops a row that parses to a JSON array instead of a keyed object", async () => {
+		writeFileSync(join(dir, BEACON_FILE), "[1,2,3]\n");
+		const fetchImpl = (async () => {
+			throw new Error("should not be called: nothing valid to send");
+		}) as unknown as typeof fetch;
+		expect(await flushBeacons(dir, "https://w.example/v1/beacon", fetchImpl)).toBe(true);
 	});
 });
 

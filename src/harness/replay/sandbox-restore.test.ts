@@ -112,4 +112,22 @@ describe("rebuildReservationCacheAt", () => {
 	it("returns an empty cache when the log is missing", () => {
 		expect(rebuildReservationCacheAt(fixture(), "2026-07-24T23:59:59Z").size).toBe(0);
 	});
+
+	it("N1: an array-shaped line (valid JSON, not an object) is skipped, not thrown", () => {
+		const dir = fixture();
+		writeLog(dir, [
+			["not", "an", "object"],
+			{ ts: "2026-07-24T10:00:00Z", action: "grant", file: "a.ts", agent_name: "alice", cohort: "local", expires_at: "2026-07-24T10:05:00Z" },
+		]);
+		expect(() => rebuildReservationCacheAt(dir, "2026-07-24T23:59:59Z")).not.toThrow();
+		const cache = rebuildReservationCacheAt(dir, "2026-07-24T23:59:59Z");
+		expect([...cache.keys()]).toEqual(["a.ts"]);
+	});
+
+	it("N2: a bare-string JSON line is skipped, not thrown", () => {
+		const dir = fixture();
+		writeLog(dir, ["just-a-string" as unknown as object]);
+		expect(() => rebuildReservationCacheAt(dir, "2026-07-24T23:59:59Z")).not.toThrow();
+		expect(rebuildReservationCacheAt(dir, "2026-07-24T23:59:59Z").size).toBe(0);
+	});
 });

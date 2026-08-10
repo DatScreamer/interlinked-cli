@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import { nonNull } from "../../lib/non-null.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ExportedSymbol, ImportEdge, StructuralCheckResult } from "../types.js";
@@ -357,7 +357,8 @@ export function checkHallucinatedImports(
 		const pkgPath = join(dir, "package.json");
 		if (existsSync(pkgPath)) {
 			try {
-				pkgJson = JSON.parse(readFileSync(pkgPath, "utf-8"));
+				const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+				if (isJsonObject(parsed)) pkgJson = parsed;
 			} catch {
 				/* intentional: best-effort parse — unreadable/malformed
 				 * package.json is treated as absent. */
@@ -379,8 +380,8 @@ export function checkHallucinatedImports(
 		"optionalDependencies",
 	]) {
 		const deps = pkgJson[field];
-		if (deps && typeof deps === "object") {
-			for (const name of Object.keys(deps as JsonObject)) {
+		if (isJsonObject(deps)) {
+			for (const name of Object.keys(deps)) {
 				allDeps.add(name);
 			}
 		}
@@ -439,9 +440,9 @@ export function checkCrossPackageImports(
 				// Only flag if this package.json is between the two files, not the project root
 				let isProjectRoot = false;
 				try {
-					const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+					const pkg: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
 					// Project roots typically have "private: true" or workspaces
-					if (pkg.private || pkg.workspaces) isProjectRoot = true;
+					if (isJsonObject(pkg) && (pkg.private || pkg.workspaces)) isProjectRoot = true;
 				} catch {
 					/* intentional: best-effort parse — a malformed
 					 * package.json leaves isProjectRoot=false and the

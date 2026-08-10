@@ -275,6 +275,48 @@ function readStatusFile(cwd: string): string | null {
 	}
 }
 
+const AUDIT_ACTIONS = new Set<AuditAction>([
+	"enable",
+	"disable",
+	"toggle",
+	"no_change",
+	"review_allow",
+	"review_redact",
+	"review_block",
+	"review_skip",
+]);
+
+function isAuditAction(v: unknown): v is AuditAction {
+	return typeof v === "string" && AUDIT_ACTIONS.has(v as AuditAction);
+}
+
+function parseAuditActor(value: unknown): AuditEntry["actor"] | null {
+	if (!isPlainObject(value)) return null;
+	const { user, host, tty, via } = value;
+	if (typeof user !== "string") return null;
+	if (typeof host !== "string") return null;
+	if (tty !== null && typeof tty !== "string") return null;
+	if (via !== "cli") return null;
+	return { user, host, tty, via };
+}
+
+/** Boundary parser for one line of `content-scanner.audit.jsonl`. Returns
+ *  null (never throws) so a single malformed row can be skipped without
+ *  losing the rest of the tail — same "non-critical, skip it" contract the
+ *  caller already had for JSON syntax errors. */
+function parseAuditEntry(value: unknown): AuditEntry | null {
+	if (!isPlainObject(value)) return null;
+	const { ts, action, from, to, actor, reason } = value;
+	if (typeof ts !== "string") return null;
+	if (!isAuditAction(action)) return null;
+	if (from !== undefined && typeof from !== "boolean") return null;
+	if (to !== undefined && typeof to !== "boolean") return null;
+	if (reason !== null && typeof reason !== "string") return null;
+	const parsedActor = parseAuditActor(actor);
+	if (!parsedActor) return null;
+	return { ts, action, from, to, actor: parsedActor, reason };
+}
+
 function readLastAudit(cwd: string, n: number): AuditEntry[] {
 	const path = getAuditLogPath(cwd);
 	if (!existsSync(path)) return [];
@@ -284,7 +326,9 @@ function readLastAudit(cwd: string, n: number): AuditEntry[] {
 		const entries: AuditEntry[] = [];
 		for (const line of tail) {
 			try {
-				entries.push(JSON.parse(line) as AuditEntry);
+				const value: unknown = JSON.parse(line);
+				const entry = parseAuditEntry(value);
+				if (entry) entries.push(entry);
 			} catch (_) {
 				// intentional: a single malformed audit row is non-critical; skip it
 			}

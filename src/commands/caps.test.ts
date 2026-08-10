@@ -114,6 +114,31 @@ describe("capsSetAction", () => {
 		expect(code).toBe(0);
 		expect(capsFile().max_cyclomatic).toBe(15);
 	});
+
+	it("P1: merges into an existing metric-caps.json that parses to a real object", async () => {
+		writeFileSync(join(cwd, ".interlinked", "metric-caps.json"), JSON.stringify({ max_lines: 400 }));
+		const code = await capsSetAction("cyclomatic", "15", {}, { cwd });
+		expect(code).toBe(0);
+		expect(capsFile()).toEqual({ version: 1, max_lines: 400, max_cyclomatic: 15 });
+	});
+
+	it("N1: overwrites cleanly when metric-caps.json parses to a JSON array (valid JSON, wrong shape)", async () => {
+		// Regression: the old `JSON.parse(...) as Record<string, unknown>` cast
+		// admitted the array as-is, so spreading it leaked its numeric-index
+		// entries (`{0:1,1:2,2:3}`) into the written file instead of taking the
+		// documented "{} — overwrite cleanly" path.
+		writeFileSync(join(cwd, ".interlinked", "metric-caps.json"), JSON.stringify([1, 2, 3]));
+		const code = await capsSetAction("cyclomatic", "15", {}, { cwd });
+		expect(code).toBe(0);
+		expect(capsFile()).toEqual({ version: 1, max_cyclomatic: 15 });
+	});
+
+	it("N2: overwrites cleanly when metric-caps.json parses to a bare JSON string (valid JSON, wrong shape)", async () => {
+		writeFileSync(join(cwd, ".interlinked", "metric-caps.json"), JSON.stringify("oops"));
+		const code = await capsSetAction("cyclomatic", "15", {}, { cwd });
+		expect(code).toBe(0);
+		expect(capsFile()).toEqual({ version: 1, max_cyclomatic: 15 });
+	});
 });
 
 describe("capsExplainAction", () => {

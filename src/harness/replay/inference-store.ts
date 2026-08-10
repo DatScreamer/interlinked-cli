@@ -10,7 +10,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 
 export interface InferenceEnvelope {
 	schema: "inference-envelope.v1";
@@ -53,6 +53,50 @@ export function appendEnvelope(replayDir: string, envelope: InferenceEnvelope): 
 	appendFileSync(path, `${JSON.stringify(envelope)}\n`);
 }
 
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((e): e is string => typeof e === "string");
+}
+
+/** Validate one envelope line (`pending.jsonl` or a stamped per-session file).
+ *  Exported for direct testing. `request`/`response`/`request_headers` stay
+ *  at the `JsonObject` boundary — they are the EXACT, arbitrarily-shaped
+ *  Anthropic API bodies (open-shaped by design; see module header). */
+export function parseInferenceEnvelope(value: unknown): InferenceEnvelope | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema !== "inference-envelope.v1") return null;
+	if (value.provider !== "anthropic") return null;
+	const { request_index, ts_request, ts_response, latency_ms, request_sha256 } = value;
+	if (typeof request_index !== "number") return null;
+	if (typeof ts_request !== "string" || typeof ts_response !== "string") return null;
+	if (typeof latency_ms !== "number") return null;
+	if (typeof request_sha256 !== "string") return null;
+	const { request_headers, request, response } = value;
+	if (!isJsonObject(request_headers) || !isJsonObject(request) || !isJsonObject(response)) {
+		return null;
+	}
+	if (!isStringArray(value.tool_use_ids)) return null;
+	const sessionId = value.session_id ?? null;
+	if (sessionId !== null && typeof sessionId !== "string") return null;
+	const seq = value.seq ?? null;
+	if (seq !== null && typeof seq !== "number") return null;
+
+	return {
+		schema: "inference-envelope.v1",
+		request_index,
+		ts_request,
+		ts_response,
+		latency_ms,
+		provider: "anthropic",
+		request_headers,
+		request,
+		response,
+		tool_use_ids: value.tool_use_ids,
+		request_sha256,
+		session_id: sessionId,
+		seq,
+	};
+}
+
 /** Load every parseable envelope from a JSONL file. Tolerant: unparseable or
  *  wrong-schema lines are skipped (a torn tail write must not poison reads). */
 export function loadEnvelopes(path: string): InferenceEnvelope[] {
@@ -61,8 +105,8 @@ export function loadEnvelopes(path: string): InferenceEnvelope[] {
 	for (const line of readFileSync(path, "utf-8").split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			const parsed = JSON.parse(line) as InferenceEnvelope;
-			if (parsed && parsed.schema === "inference-envelope.v1") out.push(parsed);
+			const parsed = parseInferenceEnvelope(JSON.parse(line));
+			if (parsed) out.push(parsed);
 		} catch (err) {
 			void err; // torn tail / foreign line — skipping is this reader's contract
 		}

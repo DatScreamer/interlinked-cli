@@ -34,6 +34,27 @@ describe("isValidSandboxJobRequest", () => {
 		}
 	});
 
+	// riskTier regression (2026-08-09): declared required, validated by nothing.
+	// It selects which oracles run and how hard, so an absent or bogus tier
+	// reaching Worker triage is a privilege decision made on undefined.
+	it("accepts every declared risk tier", () => {
+		for (const riskTier of ["trivial", "lite", "full"] as const) {
+			expect(isValidSandboxJobRequest({ ...base, riskTier })).toBe(true);
+		}
+	});
+
+	it("rejects a request with no riskTier at all", () => {
+		const { riskTier: _omitted, ...noTier } = base;
+		expect(isValidSandboxJobRequest(noTier)).toBe(false);
+	});
+
+	it("rejects a riskTier outside the declared union", () => {
+		expect(isValidSandboxJobRequest({ ...base, riskTier: "none" })).toBe(false);
+		expect(isValidSandboxJobRequest({ ...base, riskTier: "trivial " })).toBe(false);
+		expect(isValidSandboxJobRequest({ ...base, riskTier: 0 })).toBe(false);
+		expect(isValidSandboxJobRequest({ ...base, riskTier: { tier: "full" } })).toBe(false);
+	});
+
 	it("rejects malformed overlays and missing required fields", () => {
 		expect(isValidSandboxJobRequest({ ...base, overlays: "nope" })).toBe(false);
 		expect(isValidSandboxJobRequest({ ...base, overlays: [{ path: "x" }] })).toBe(false);

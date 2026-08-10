@@ -14,6 +14,7 @@
 
 import { createRequire } from "node:module";
 import type * as TS from "typescript";
+import type { JsonObject } from "../../../lib/json-types.js";
 
 let tsCache: typeof TS | null | undefined;
 
@@ -99,10 +100,10 @@ export interface RoutedStructuralScore extends StructuralDistance {
 
 interface ScorableAction {
 	tool: string | null;
-	input: Record<string, unknown> | null;
+	input: JsonObject | null;
 }
 
-function editText(tool: string, input: Record<string, unknown> | null): string | null {
+function editText(tool: string, input: JsonObject | null): string | null {
 	if (!input) return null;
 	if (tool === "Edit" && typeof input.new_string === "string") return input.new_string;
 	if (tool === "Write" && typeof input.content === "string") return input.content;

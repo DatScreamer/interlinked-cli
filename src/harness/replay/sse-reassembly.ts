@@ -16,7 +16,7 @@
 // path, and capture must never break forwarding. Unknown events are ignored;
 // unparseable tool input is kept raw under `input_raw`.
 
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 
 export interface SseReassembler {
 	push(chunk: string): void;
@@ -24,10 +24,10 @@ export interface SseReassembler {
 	finish(): JsonObject | null;
 }
 
+// Rule 3 (scratch/fleet-r2/CONTRACT.md): route the local narrower through the
+// one canonical predicate instead of hand-rolling the object/array check.
 function asObject(value: unknown): JsonObject | null {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonObject)
-		: null;
+	return isJsonObject(value) ? value : null;
 }
 
 /** Append one string delta onto a block field (text/thinking/signature). */
@@ -74,8 +74,18 @@ function closeBlock(
 	if (buf === undefined) return;
 	const block = blocks.get(index) ?? {};
 	blocks.set(index, block);
+	if (buf.trim() === "") {
+		block.input = {};
+		jsonBuf.delete(index);
+		return;
+	}
 	try {
-		block.input = buf.trim() === "" ? {} : (JSON.parse(buf) as JsonObject);
+		const parsed = JSON.parse(buf);
+		// A tool_use `input` is always a JSON object by API contract; a
+		// same-shaped-but-wrong value (string/array/number) is treated the
+		// same as a parse failure — keep the raw fragment, don't fake an object.
+		if (isJsonObject(parsed)) block.input = parsed;
+		else block.input_raw = buf;
 	} catch (err) {
 		void err; // keep the raw fragment — capture must not lose data on bad JSON
 		block.input_raw = buf;

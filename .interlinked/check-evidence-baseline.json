@@ -3,17 +3,5 @@
 	"enforced": [
 		"cases"
 	],
-	"exempt": [
-		"accumulating_spread",
-		"c_include_guard",
-		"c_sprintf_usage",
-		"c_unsafe_functions",
-		"catch_and_log",
-		"disabled_tests",
-		"focused_tests",
-		"hardcoded_timeout",
-		"nested_ternaries",
-		"target_blank_no_rel",
-		"throw_literal"
-	]
+	"exempt": []
 }

@@ -26,6 +26,7 @@ import {
 import { c } from "../lib/formatter.js";
 import { readGuardDisable } from "../lib/guard-state.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
+import { isJsonObject } from "../lib/json-types.js";
 import {
 	defaultSettingsPaths,
 	stripMalformedRules,
@@ -33,6 +34,19 @@ import {
 } from "../lib/settings-validator.js";
 import { runSystemChecks } from "./doctor-system.js";
 import { isHarnessRunning } from "./harness.js";
+
+/**
+ * Pull the `mode` field out of a parsed config.json value, or undefined when
+ * the value isn't an object or `mode` isn't a string (including a
+ * non-object top-level shape like an array or `null`, which the previous
+ * unchecked cast let through as "no throw, mode stays undefined" only by
+ * accident — a `null` config.json used to throw on `.mode` and rely on the
+ * outer catch; this makes "no usable mode" an explicit return instead).
+ */
+function parseConfiguredMode(value: unknown): string | undefined {
+	if (!isJsonObject(value)) return undefined;
+	return typeof value.mode === "string" ? value.mode : undefined;
+}
 
 /**
  * Build the full version sentinel the hook script SHOULD carry, given the
@@ -48,8 +62,7 @@ function expectedHookVersion(cwd: string): string {
 	let modeName: HarnessMode = DEFAULT_HARNESS_MODE;
 	if (existsSync(sharedConfigPath)) {
 		try {
-			const parsed = JSON.parse(readFileSync(sharedConfigPath, "utf-8")) as { mode?: unknown };
-			const raw = typeof parsed.mode === "string" ? parsed.mode : undefined;
+			const raw = parseConfiguredMode(JSON.parse(readFileSync(sharedConfigPath, "utf-8")));
 			modeName = migrateLegacyMode(raw, undefined);
 		} catch (err) {
 			// Malformed config.json — fall back to the default mode and let

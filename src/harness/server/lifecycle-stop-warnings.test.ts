@@ -1213,6 +1213,15 @@ describe("checkReviewFindings", () => {
 			"./review-reconcile-phase.js"
 		);
 		const cwd = mkdtempSync(join(tmpdir(), "stop-review-"));
+		// `ingestReviewReport` → `recordFinding` mirrors into
+		// `~/.interlinked/findings-corpus.jsonl` unless INTERLINKED_HOME redirects
+		// it. The tmp `cwd` covers only the per-repo corpus; the global mirror
+		// resolves its own path and swallows every error, so the leak is silent
+		// and this test passed while appending a row to the real user corpus on
+		// every run (measured 2026-08-09). Same fix as `src/commands/findings.test.ts`.
+		const fakeHome = mkdtempSync(join(tmpdir(), "stop-review-home-"));
+		const prevInterlinkedHome = process.env.INTERLINKED_HOME;
+		process.env.INTERLINKED_HOME = fakeHome;
 		try {
 			resetReviewReconcileCacheForTesting();
 			writeFileSync(
@@ -1241,6 +1250,9 @@ describe("checkReviewFindings", () => {
 		} finally {
 			resetReviewReconcileCacheForTesting();
 			rmSync(cwd, { recursive: true, force: true });
+			rmSync(fakeHome, { recursive: true, force: true });
+			if (prevInterlinkedHome === undefined) delete process.env.INTERLINKED_HOME;
+			else process.env.INTERLINKED_HOME = prevInterlinkedHome;
 		}
 	});
 });

@@ -479,6 +479,36 @@ describe("doctorCommand", () => {
 		expect(captured()).toContain("[pass] Hook version -- v1.2.3+mode-quality (current)");
 	});
 
+	it("P1: expectedHookVersion reads a valid string mode from config.json", async () => {
+		seedHealthyFs();
+		fsState.content.set(SHARED_CFG, JSON.stringify({ mode: "ci" }));
+		mockMigrateLegacyMode.mockReturnValue("ci");
+		await run();
+		// Proves the string was actually read out of config.json and reached
+		// migrateLegacyMode -- the mismatch vs the "quality"-stamped hook (from
+		// seedHealthyFs) surfaces as a warn naming "mode-ci" as expected.
+		expect(mockMigrateLegacyMode).toHaveBeenCalledWith("ci", undefined);
+		expect(captured()).toContain(
+			"[warn] Hook version -- Installed v1.2.3+mode-quality, expected v1.2.3+mode-ci",
+		);
+	});
+
+	it("N1: expectedHookVersion treats a top-level JSON array as no usable mode", async () => {
+		seedHealthyFs();
+		fsState.content.set(SHARED_CFG, JSON.stringify(["not", "an", "object"]));
+		await run();
+		expect(mockMigrateLegacyMode).toHaveBeenCalledWith(undefined, undefined);
+		expect(captured()).toContain("[pass] Hook version -- v1.2.3+mode-quality (current)");
+	});
+
+	it("N2: expectedHookVersion treats a bare JSON null as no usable mode (no throw)", async () => {
+		seedHealthyFs();
+		fsState.content.set(SHARED_CFG, "null");
+		await run();
+		expect(mockMigrateLegacyMode).toHaveBeenCalledWith(undefined, undefined);
+		expect(captured()).toContain("[pass] Hook version -- v1.2.3+mode-quality (current)");
+	});
+
 	it("warns when the hook script cannot be read for the version check", async () => {
 		seedHealthyFs();
 		fsState.throwOnReadFile.add(HOOK_PATH);

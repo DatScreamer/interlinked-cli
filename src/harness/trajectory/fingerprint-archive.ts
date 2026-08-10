@@ -22,6 +22,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import { type BlockFingerprint, pruneExpired } from "./block-fingerprint.js";
 import type { WorkaroundSignal } from "./block-fingerprint-session.js";
 
@@ -35,6 +36,69 @@ interface ArchivedFingerprint {
 interface ArchiveShape {
 	fingerprints: ArchivedFingerprint[];
 	signals: WorkaroundSignal[];
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry): entry is string => typeof entry === "string");
+}
+
+function parseArchivedFingerprint(value: unknown): ArchivedFingerprint | null {
+	if (!isJsonObject(value)) return null;
+	const { ruleId, shingles, target, atMs } = value;
+	if (typeof ruleId !== "string") return null;
+	if (!isStringArray(shingles)) return null;
+	if (target !== null && typeof target !== "string") return null;
+	if (typeof atMs !== "number") return null;
+	return { ruleId, shingles, target, atMs };
+}
+
+function parseWorkaroundSignal(value: unknown): WorkaroundSignal | null {
+	if (!isJsonObject(value)) return null;
+	const { detector, ruleId } = value;
+	if (typeof detector !== "string") return null;
+	if (typeof ruleId !== "string") return null;
+	return { detector, ruleId };
+}
+
+/** Filters (rather than all-or-nothing rejects) malformed elements — this
+ *  archive is a best-effort durability bonus, never a correctness dependency
+ *  (see the fail-open note atop this file), so keeping the entries that DO
+ *  validate serves that goal better than discarding a whole session's armed
+ *  set over one bad row. */
+function parseArchivedFingerprintList(value: unknown): ArchivedFingerprint[] {
+	if (!Array.isArray(value)) return [];
+	const out: ArchivedFingerprint[] = [];
+	for (const entry of value) {
+		const parsed = parseArchivedFingerprint(entry);
+		if (parsed) out.push(parsed);
+	}
+	return out;
+}
+
+function parseWorkaroundSignalList(value: unknown): WorkaroundSignal[] {
+	if (!Array.isArray(value)) return [];
+	const out: WorkaroundSignal[] = [];
+	for (const entry of value) {
+		const parsed = parseWorkaroundSignal(entry);
+		if (parsed) out.push(parsed);
+	}
+	return out;
+}
+
+/**
+ * Defensively narrow a parsed archive file body to an `ArchiveShape`. Missing
+ * or non-array `fingerprints`/`signals` degrade to `[]` (matching the old
+ * `shape.fingerprints ?? []` / `shape.signals ?? []` defaults so an archive
+ * written by an older version of `persistArmedFingerprints` still loads);
+ * only a non-object top level (or a JSON.parse throw, handled by the caller)
+ * is a hard rejection.
+ */
+function parseArchiveShape(value: unknown): ArchiveShape | null {
+	if (!isJsonObject(value)) return null;
+	return {
+		fingerprints: parseArchivedFingerprintList(value.fingerprints),
+		signals: parseWorkaroundSignalList(value.signals),
+	};
 }
 
 /** Per-session archive file. session_id is sanitized to a safe basename. */
@@ -78,14 +142,15 @@ export function loadArmedFingerprints(
 	try {
 		const p = archivePath(cwd, sessionId);
 		if (!existsSync(p)) return null;
-		const shape = JSON.parse(readFileSync(p, "utf-8")) as ArchiveShape;
-		const hydrated: BlockFingerprint[] = (shape.fingerprints ?? []).map((f) => ({
+		const shape = parseArchiveShape(JSON.parse(readFileSync(p, "utf-8")));
+		if (!shape) return null;
+		const hydrated: BlockFingerprint[] = shape.fingerprints.map((f) => ({
 			ruleId: f.ruleId,
 			shingles: new Set(f.shingles),
 			target: f.target,
 			atMs: f.atMs,
 		}));
-		return { fingerprints: pruneExpired(hydrated, nowMs), signals: shape.signals ?? [] };
+		return { fingerprints: pruneExpired(hydrated, nowMs), signals: shape.signals };
 	} catch (err) {
 		void err; // a corrupt archive must not brick detection — fall back to in-memory
 		return null;

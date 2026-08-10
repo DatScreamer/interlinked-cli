@@ -33,6 +33,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { harnessNow } from "./replay/harness-clock.js";
 
 /** Directory under the project root where all persisted state lives. */
@@ -258,10 +259,23 @@ export function recordCoverageDischarge(
 /** Narrow an unknown parsed JSONL row to a deferred CoverageObligation for one
  *  session. Obligations stay SESSION-scoped: "who deferred" is a per-session
  *  fact the Stop nudge reports per session. */
-function isCoverageObligationFor(value: unknown, sessionId: string): value is CoverageObligation {
-	if (typeof value !== "object" || value === null) return false;
-	const row = value as Record<string, unknown>;
-	return row.kind === "coverage" && typeof row.file === "string" && row.session_id === sessionId;
+function parseCoverageObligationFor(value: unknown, sessionId: string): CoverageObligation | null {
+	if (!isJsonObject(value)) return null;
+	const { kind, file, reason, estimated_suite_ms, budget_ms, session_id, timestamp } = value;
+	if (kind !== "coverage" || session_id !== sessionId) return null;
+	if (typeof file !== "string") return null;
+	if (reason !== "budget_exceeded") return null;
+	if (typeof estimated_suite_ms !== "number" || typeof budget_ms !== "number") return null;
+	if (typeof timestamp !== "string") return null;
+	return {
+		kind: "coverage",
+		file,
+		reason,
+		estimated_suite_ms,
+		budget_ms,
+		session_id: sessionId,
+		timestamp,
+	};
 }
 
 /** Narrow a parsed row to a coverage DISCHARGE — deliberately NOT
@@ -270,10 +284,13 @@ function isCoverageObligationFor(value: unknown, sessionId: string): value is Co
  *  an observed coverage run, a different agent) did the measuring. Filtering by
  *  session kept the Stop warning alive after the promised relief actually
  *  happened (finding 2026-06). */
-function isCoverageDischarge(value: unknown): value is CoverageDischarge {
-	if (typeof value !== "object" || value === null) return false;
-	const row = value as Record<string, unknown>;
-	return row.kind === "coverage_discharge" && typeof row.file === "string";
+function parseCoverageDischarge(value: unknown): CoverageDischarge | null {
+	if (!isJsonObject(value)) return null;
+	const { kind, file, session_id, timestamp } = value;
+	if (kind !== "coverage_discharge") return null;
+	if (typeof file !== "string") return null;
+	if (typeof session_id !== "string" || typeof timestamp !== "string") return null;
+	return { kind: "coverage_discharge", file, session_id, timestamp };
 }
 
 /**
@@ -301,11 +318,13 @@ export function readOpenCoverageObligations(
 		if (!line.trim()) continue;
 		try {
 			const parsed: unknown = JSON.parse(line);
-			if (isCoverageObligationFor(parsed, sessionId)) {
-				byFile.set(parsed.file, parsed);
-			} else if (isCoverageDischarge(parsed)) {
-				byFile.delete(parsed.file);
+			const obligation = parseCoverageObligationFor(parsed, sessionId);
+			if (obligation) {
+				byFile.set(obligation.file, obligation);
+				continue;
 			}
+			const discharge = parseCoverageDischarge(parsed);
+			if (discharge) byFile.delete(discharge.file);
 		} catch {
 			// intentional: skip torn JSONL lines (a process died mid-write).
 		}

@@ -210,4 +210,95 @@ describe("importTrace", () => {
 		expect(result.imported).toBe(1);
 		expect(result.skipped).toBe(0);
 	});
+
+	// parseImportedSpan — direct boundary-parser coverage (via importTrace,
+	// its only entry point).
+	it("P1: accepts a span missing span_id/duration_ms — importTrace never reads them", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: { agent: "a1" } }],
+		};
+		const result = importTrace(JSON.stringify(doc));
+		expect(result.imported).toBe(1);
+	});
+
+	it("N1: drops a span missing timestamp, keeping the rest of the batch", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [
+				{ name: "no-timestamp", attributes: {} },
+				{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: {} },
+			],
+		};
+		const result = importTrace(JSON.stringify(doc));
+		expect(result.imported).toBe(1);
+	});
+
+	it("N2: drops a span missing name, keeping the rest of the batch", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [
+				{ timestamp: "2025-01-01T10:00:00Z", attributes: {} },
+				{ name: "tool_use", timestamp: "2025-01-01T10:00:01Z", attributes: {} },
+			],
+		};
+		const result = importTrace(JSON.stringify(doc));
+		expect(result.imported).toBe(1);
+	});
+
+	it("N3: a span missing attributes entirely no longer crashes the whole import (was an uncaught TypeError)", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z" }],
+		};
+		expect(() => importTrace(JSON.stringify(doc))).not.toThrow();
+		const result = importTrace(JSON.stringify(doc));
+		expect(result.imported).toBe(1);
+	});
+
+	it("N4: a wrongly-typed attributes.agent (a number) falls back to \"unknown\" instead of flowing through untyped", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: { agent: 12345 } }],
+		};
+		const jsonl: string[] = [];
+		mockAppendLocal.mockImplementation((e) => jsonl.push(JSON.stringify(e)));
+		importTrace(JSON.stringify(doc));
+		expect(jsonl[0]).toContain('"agent":"unknown"');
+	});
+
+	it("N5: an empty-string attributes.agent also falls back to \"unknown\" (matches the pre-fix `||` fallback, not just absent)", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: { agent: "" } }],
+		};
+		const jsonl: string[] = [];
+		mockAppendLocal.mockImplementation((e) => jsonl.push(JSON.stringify(e)));
+		importTrace(JSON.stringify(doc));
+		expect(jsonl[0]).toContain('"agent":"unknown"');
+	});
+
+	it("N6: rejects a JSON document that parses but isn't an object (a bare number) — no crash, imports nothing", () => {
+		mockReadLocal.mockReturnValue([]);
+		const result = importTrace("42");
+		expect(result).toEqual({ imported: 0, skipped: 0 });
+	});
 });

@@ -511,6 +511,37 @@ describe("checkHallucinatedImports", () => {
 		expect(res[0]?.check).toBe("hallucinated_imports");
 	});
 
+	it("N1: treats a top-level non-object package.json as absent (isJsonObject guard)", () => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		// The file parses successfully (valid JSON) but the top level is an array,
+		// not a package.json object — isJsonObject rejects it, so pkgJson stays
+		// null and the function bails out early instead of reading fields off an
+		// array.
+		mockFs.readFileSync.mockReturnValue(JSON.stringify(["not", "an", "object"]));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "left-pad", toFile: "" as unknown as string })],
+		});
+		expect(checkHallucinatedImports(FILE, REL, graph)).toEqual([]);
+	});
+
+	it("N2: an array-valued dependency field is never read as a dependency map (isJsonObject guard)", () => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		// dependencies is a JSON array (truthy, typeof "object", but not a keyed
+		// record). The old `deps && typeof deps === "object"` guard let this
+		// through and ran `Object.keys(arr)`, which yields numeric-index strings
+		// ("0", "1", ...) — so a bare specifier literally named "0" would have
+		// been silently treated as declared via index collision. isJsonObject
+		// rejects the array outright, so a hallucinated import named "0" is
+		// correctly flagged instead of hidden.
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ dependencies: ["left-pad"] }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "0", toFile: "" as unknown as string })],
+		});
+		const res = checkHallucinatedImports(FILE, REL, graph);
+		expect(res).toHaveLength(1);
+		expect(res[0]?.check).toBe("hallucinated_imports");
+	});
+
 	it.each([
 		[".", "relative dot"],
 		["./util", "relative path"],
@@ -676,6 +707,20 @@ describe("checkCrossPackageImports", () => {
 		});
 		const res = checkCrossPackageImports(importer, "pkgs/app/a.ts", graph);
 		// parse threw => isProjectRoot stays false => boundary is flagged.
+		expect(res).toHaveLength(1);
+		expect(res[0]?.check).toBe("cross_package_imports");
+	});
+
+	it("N1: still flags the boundary when the package.json parses to a non-object (isJsonObject guard)", () => {
+		const importer = "/proj/pkgs/app/a.ts";
+		mockFs.existsSync.mockImplementation((p) => p === "/proj/pkgs/package.json");
+		// Valid JSON, but the top level is an array — isJsonObject rejects it, so
+		// `pkg.private` / `pkg.workspaces` are never read off a non-record value.
+		mockFs.readFileSync.mockReturnValue(JSON.stringify(["not", "an", "object"]));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "../../lib/x", toFile: "/proj/lib/x.ts" })],
+		});
+		const res = checkCrossPackageImports(importer, "pkgs/app/a.ts", graph);
 		expect(res).toHaveLength(1);
 		expect(res[0]?.check).toBe("cross_package_imports");
 	});

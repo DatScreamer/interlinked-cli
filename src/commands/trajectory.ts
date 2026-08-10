@@ -19,8 +19,8 @@ import {
 	runSequenceDetectorsForPhase,
 } from "../harness/sequence-checks/index.js";
 import { SessionTracker } from "../harness/session-state.js";
-import type { HarnessEvent, SessionTrajectory } from "../harness/types.js";
-import type { JsonObject } from "../lib/json-types.js";
+import type { AgentSource, HarnessEvent, SessionTrajectory } from "../harness/types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 interface CommonOpts {
 	cwd?: string;
@@ -156,6 +156,43 @@ function summarizeValue(v: unknown): string | null {
 	return null;
 }
 
+/** Boundary parser for one line of a replayed events.jsonl. Only the four
+ *  identity fields the tracker/dispatcher key on are validated; the rest of
+ *  `HarnessEvent` is a wide, evolving wire shape shared across five agent
+ *  runners (see `harness/types/events.ts`) that downstream code already
+ *  reads defensively, and `trajectory replay`'s whole purpose is accepting
+ *  real captured logs — including ones carrying fields this build doesn't
+ *  know about — so it is carried through unchanged rather than re-validated
+ *  field-by-field. `agent_source` is checked as a string, not narrowed to
+ *  the `AgentSource` literal union: real wire events already carry values
+ *  outside it (`interlinked skill` posts `agent_source: "cli"`), so a strict
+ *  union check would reject legitimate captured rows. */
+function parseHarnessEvent(value: unknown, lineNumber: number): HarnessEvent {
+	if (!isJsonObject(value)) {
+		throw new Error(`line ${lineNumber}: not a JSON object`);
+	}
+	const { hook_event, session_id, agent_source, timestamp } = value;
+	if (typeof hook_event !== "string") {
+		throw new Error(`line ${lineNumber}: missing/invalid hook_event`);
+	}
+	if (typeof session_id !== "string") {
+		throw new Error(`line ${lineNumber}: missing/invalid session_id`);
+	}
+	if (typeof agent_source !== "string") {
+		throw new Error(`line ${lineNumber}: missing/invalid agent_source`);
+	}
+	if (typeof timestamp !== "string") {
+		throw new Error(`line ${lineNumber}: missing/invalid timestamp`);
+	}
+	return {
+		...value,
+		hook_event,
+		session_id,
+		agent_source: agent_source as AgentSource,
+		timestamp,
+	};
+}
+
 /**
  * Replay an events.jsonl through the dispatcher. For each event, the
  * trajectory is updated via `SessionTracker.recordEvent`; the dispatcher
@@ -174,11 +211,13 @@ export async function trajectoryReplayCommand(opts: ReplayOpts): Promise<void> {
 		.map((l) => l.trim())
 		.filter((l) => l.length > 0);
 	const events: HarnessEvent[] = lines.map((line, i) => {
+		let parsed: unknown;
 		try {
-			return JSON.parse(line) as HarnessEvent;
+			parsed = JSON.parse(line);
 		} catch {
 			throw new Error(`line ${i + 1}: invalid JSON`);
 		}
+		return parseHarnessEvent(parsed, i + 1);
 	});
 
 	const tracker = new SessionTracker();

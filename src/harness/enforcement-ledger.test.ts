@@ -147,4 +147,52 @@ describe("updateEnforcementLedger", () => {
 		writeFileSync(enforcementLedgerPath(dir), "{ not json");
 		expect(loadEnforcementLedger(dir)).toMatchObject({ blocked: 0, cursor: 0 });
 	});
+
+	// `loadEnforcementLedger` narrows the parsed JSON with `isJsonObject`
+	// before reading fields instead of an `as Partial<EnforcementLedger>`
+	// cast. A stored ledger that is valid JSON but not a keyed object (an
+	// array, or a bare primitive) already converged to all-zero counters
+	// under the old per-field `nonNegative`/typeof checks — pinned here so
+	// the narrowing stays equivalent rather than merely "doesn't throw".
+	it("N1: a top-level JSON array in the stored ledger degrades to empty counters", () => {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(enforcementLedgerPath(dir), "[1,2,3]");
+		expect(loadEnforcementLedger(dir)).toEqual({
+			version: 1,
+			since: "",
+			cursor: 0,
+			blocked: 0,
+			caught: 0,
+			evaluated: 0,
+		});
+	});
+
+	it("N2: a top-level JSON null in the stored ledger degrades to empty counters", () => {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(enforcementLedgerPath(dir), "null");
+		expect(loadEnforcementLedger(dir)).toEqual({
+			version: 1,
+			since: "",
+			cursor: 0,
+			blocked: 0,
+			caught: 0,
+			evaluated: 0,
+		});
+	});
+
+	it("P1: a well-formed stored ledger still round-trips its exact values", () => {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			enforcementLedgerPath(dir),
+			JSON.stringify({ version: 1, since: "2026-08-01T00:00:00Z", cursor: 10, blocked: 2, caught: 3, evaluated: 5 }),
+		);
+		expect(loadEnforcementLedger(dir)).toEqual({
+			version: 1,
+			since: "2026-08-01T00:00:00Z",
+			cursor: 10,
+			blocked: 2,
+			caught: 3,
+			evaluated: 5,
+		});
+	});
 });

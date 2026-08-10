@@ -98,6 +98,27 @@ describe("readSponsorSettingsFromConfig", () => {
 		writeFileSync(join(dir, "config.local.json"), "{nope");
 		expect(readSponsorSettingsFromConfig(dir)).toBeNull();
 	});
+
+	it("N2: returns null when the config's top level is valid JSON but not a keyed object", () => {
+		writeFileSync(join(dir, "config.local.json"), "[1,2,3]");
+		expect(readSponsorSettingsFromConfig(dir)).toBeNull();
+		writeFileSync(join(dir, "config.local.json"), "42");
+		expect(readSponsorSettingsFromConfig(dir)).toBeNull();
+	});
+
+	it("N3: treats a non-object `sponsor` field the same as a missing one (disabled, no crash)", () => {
+		writeFileSync(
+			join(dir, "config.local.json"),
+			JSON.stringify({ install_id: "inst-9", sponsor: "not-an-object" }),
+		);
+		const s = readSponsorSettingsFromConfig(dir);
+		expect(s).toEqual({
+			enabled: false,
+			feedUrl: DEFAULT_FEED_URL,
+			telemetry: true,
+			installId: "inst-9",
+		});
+	});
 });
 
 describe("startSponsorRuntime", () => {

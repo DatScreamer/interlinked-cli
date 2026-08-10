@@ -470,5 +470,60 @@ describe("trajectory commands", () => {
 			const parsed = JSON.parse(consoleLogs.join("\n").trim());
 			expect(parsed.events_replayed).toBe(1);
 		});
+
+		// parseHarnessEvent boundary — the JSONL line is syntactically valid
+		// JSON (distinct from the "invalid JSON" test above) but fails or
+		// passes the identity-field shape check.
+		it("N1: rejects (with a line number) a line missing session_id", async () => {
+			const path = writeEvents("missing-session-id.jsonl", [
+				JSON.stringify({
+					hook_event: "PreToolUse",
+					agent_source: "claude",
+					timestamp: "2026-05-27T00:00:00Z",
+				}),
+			]);
+			await expect(trajectoryReplayCommand({ file: path, cwd: dir })).rejects.toThrow(
+				/line 1: missing\/invalid session_id/,
+			);
+		});
+
+		it("N2: rejects (with a line number) a line whose hook_event is the wrong type", async () => {
+			const path = writeEvents("wrong-type-hook-event.jsonl", [
+				JSON.stringify({
+					hook_event: 42,
+					session_id: "s",
+					agent_source: "claude",
+					timestamp: "2026-05-27T00:00:00Z",
+				}),
+			]);
+			await expect(trajectoryReplayCommand({ file: path, cwd: dir })).rejects.toThrow(
+				/line 1: missing\/invalid hook_event/,
+			);
+		});
+
+		it("N3: rejects a line that parses to a non-object (e.g. a bare JSON array)", async () => {
+			const path = writeEvents("non-object-line.jsonl", ["[1,2,3]"]);
+			await expect(trajectoryReplayCommand({ file: path, cwd: dir })).rejects.toThrow(
+				/line 1: not a JSON object/,
+			);
+		});
+
+		it("P1: accepts a real agent_source value outside the AgentSource literal union", async () => {
+			// `interlinked skill enter/leave/list` post events with
+			// agent_source: "cli" (see commands/skill.ts) — outside the 5-value
+			// AgentSource union — so a captured log replayed here must not
+			// reject a real row on that account.
+			const path = writeEvents("cli-agent-source.jsonl", [
+				JSON.stringify({
+					hook_event: "SkillEnter",
+					session_id: "s",
+					agent_source: "cli",
+					timestamp: "2026-05-27T00:00:00Z",
+				}),
+			]);
+			await trajectoryReplayCommand({ file: path, cwd: dir, json: true });
+			const parsed = JSON.parse(consoleLogs.join("\n").trim());
+			expect(parsed.events_replayed).toBe(1);
+		});
 	});
 });

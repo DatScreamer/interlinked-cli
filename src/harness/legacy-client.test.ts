@@ -290,6 +290,99 @@ describe("callLegacyHarness", () => {
 			socket.emit("data", Buffer.from(`${JSON.stringify({ decision: "allow" })}\n`)),
 		).not.toThrow();
 	});
+
+	// parseHarnessDecision — direct boundary-parser coverage (replaces
+	// `JSON.parse(line) as HarnessDecision`), exercised through the only
+	// public entry point that calls it.
+	it("P1: keeps every field this bridge's consumer reads (reason/warnings/rule_id/additional_context/resolved_targets)", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		const decision = {
+			decision: "ask",
+			reason: "confirm?",
+			warnings: ["w1", "w2"],
+			rule_id: "rule-9",
+			additional_context: "extra context",
+			resolved_targets: [{ kind: "file", value: "src/a.ts" }],
+		};
+		socket.emit("data", Buffer.from(`${JSON.stringify(decision)}\n`));
+		await expect(promise).resolves.toEqual(decision);
+	});
+
+	it("N1: a response line that parses as JSON but has no valid decision field rejects instead of silently resolving", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		// Old cast behavior: this "resolved" with `decision: undefined`, which
+		// every adapter's `=== "block"` / `=== "ask"` check then silently read
+		// as an implicit allow. The new parser rejects the whole line instead.
+		socket.emit("data", Buffer.from(`${JSON.stringify({ reason: "no decision field" })}\n`));
+		await expect(promise).rejects.toThrow("malformed legacy harness decision");
+	});
+
+	it("N2: an unrecognized decision literal rejects (not just a missing field)", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		socket.emit("data", Buffer.from(`${JSON.stringify({ decision: "maybe" })}\n`));
+		await expect(promise).rejects.toThrow("malformed legacy harness decision");
+	});
+
+	it("N3: drops a resolved_targets entry with an unrecognized kind, keeping the valid ones", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		socket.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					decision: "ask",
+					resolved_targets: [
+						{ kind: "file", value: "a.ts" },
+						{ kind: "not-a-real-kind", value: "b.ts" },
+					],
+				})}\n`,
+			),
+		);
+		const resolved = await promise;
+		expect(resolved.resolved_targets).toEqual([{ kind: "file", value: "a.ts" }]);
+	});
+
+	it("N4: drops non-string entries from warnings, keeping the strings", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		socket.emit(
+			"data",
+			Buffer.from(`${JSON.stringify({ decision: "allow", warnings: ["ok", 42, "also-ok"] })}\n`),
+		);
+		const resolved = await promise;
+		expect(resolved.warnings).toEqual(["ok", "also-ok"]);
+	});
+
+	it("N5: drops fields this bridge never reads (e.g. check_results) rather than forwarding them untyped", async () => {
+		const promise = callLegacyHarness("/repo/harness.sock", makePreEditEvent(), {
+			timeout_ms: 250,
+		});
+		const socket = lastSocket as FakeSocket;
+		socket.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					decision: "allow",
+					check_results: [{ source: "quality", name: "x" }],
+				})}\n`,
+			),
+		);
+		const resolved = await promise;
+		expect(resolved).toEqual({ decision: "allow" });
+	});
 });
 
 // ===========================================================================

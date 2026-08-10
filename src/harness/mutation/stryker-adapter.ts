@@ -6,6 +6,7 @@
 // compute the char offset + original lexeme from the mutant's 1-based line:col
 // span. Pure + defensive (malformed files/mutants are skipped, not thrown).
 
+import { isJsonObject } from "../../lib/json-types.js";
 import type { MutantStatus, RawMutant, TestRunResult } from "./types.js";
 
 export interface AdaptedMutant {
@@ -28,10 +29,6 @@ export interface AdaptedFile {
 	file: string;
 	content: string;
 	mutants: AdaptedMutant[];
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object";
 }
 
 function str(v: unknown): string | null {
@@ -77,7 +74,7 @@ interface Position {
 }
 
 function parsePosition(v: unknown): Position | null {
-	if (!isRecord(v)) return null;
+	if (!isJsonObject(v)) return null;
 	const line = num(v.line);
 	const column = num(v.column);
 	return line !== null && column !== null ? { line, column } : null;
@@ -86,11 +83,11 @@ function parsePosition(v: unknown): Position | null {
 function parseMutants(file: string, content: string, raws: unknown[]): AdaptedMutant[] {
 	const out: AdaptedMutant[] = [];
 	for (const raw of raws) {
-		if (!isRecord(raw)) continue;
+		if (!isJsonObject(raw)) continue;
 		const mutator = str(raw.mutatorName);
 		const replacement = str(raw.replacement);
 		const status = str(raw.status);
-		const location = isRecord(raw.location) ? raw.location : null;
+		const location = isJsonObject(raw.location) ? raw.location : null;
 		const start = location ? parsePosition(location.start) : null;
 		const end = location ? parsePosition(location.end) : null;
 		if (mutator === null || replacement === null || status === null || !start || !end) continue;
@@ -106,10 +103,10 @@ function parseMutants(file: string, content: string, raws: unknown[]): AdaptedMu
 
 /** Parse a Stryker JSON report into per-file adapted mutants, or null if unrecognisable. */
 export function strykerToAdapted(report: unknown): AdaptedFile[] | null {
-	if (!isRecord(report) || !isRecord(report.files)) return null;
+	if (!isJsonObject(report) || !isJsonObject(report.files)) return null;
 	const out: AdaptedFile[] = [];
 	for (const [file, fileResult] of Object.entries(report.files)) {
-		if (!isRecord(fileResult)) continue;
+		if (!isJsonObject(fileResult)) continue;
 		const content = str(fileResult.source);
 		if (content === null || !Array.isArray(fileResult.mutants)) continue;
 		out.push({ file, content, mutants: parseMutants(file, content, fileResult.mutants) });

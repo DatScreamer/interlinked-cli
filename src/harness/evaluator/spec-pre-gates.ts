@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { relative } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
 import { getSharedSpecLedger } from "../server/spec-ledger-phase.js";
 import { extractSpecFacts } from "../spec/extract-facts.js";
 import type { SpecLedger } from "../spec/ledger.js";
@@ -43,7 +44,7 @@ interface EditShape {
 /** Projected post-write content, or null when it can't be computed safely. */
 export function projectAfterContent(
 	toolName: string,
-	toolInput: Record<string, unknown>,
+	toolInput: JsonObject,
 	before: string,
 ): string | null {
 	if (toolName === "Write") {

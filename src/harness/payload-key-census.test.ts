@@ -213,4 +213,57 @@ describe("mergeObservation / loadCensus", () => {
 	it("N6: a missing census file loads as empty", () => {
 		expect(loadCensus(dir)).toEqual({ schema: "payload-keys.v1", entries: {} });
 	});
+
+	it("N9: drops a malformed individual entry but keeps valid ones", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: {
+					"good/Event": { unconsumed: ["x"], first_seen: NOW, last_seen: NOW },
+					"bad/Event": { unconsumed: "not-an-array", first_seen: NOW, last_seen: NOW },
+				},
+			}),
+		);
+		const census = loadCensus(dir);
+		expect(Object.keys(census.entries)).toEqual(["good/Event"]);
+	});
+
+	it("N10: treats a non-object entries field as empty instead of trusting it", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({ schema: "payload-keys.v1", entries: ["not", "a", "record"] }),
+		);
+		expect(loadCensus(dir)).toEqual({ schema: "payload-keys.v1", entries: {} });
+	});
+
+	it("P11: a malformed entry no longer crashes a follow-up merge", () => {
+		// Pre-fix, `existing.unconsumed.filter(...)` inside mergeObservation threw
+		// on a corrupted (non-array) `unconsumed` field, since loadCensus trusted
+		// the whole entries map unchecked. Post-fix the malformed entry is
+		// dropped at load time, so the follow-up observation is treated as a
+		// brand-new entry instead of crashing.
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: {
+					"claude-code/Stop": { unconsumed: "not-an-array", first_seen: NOW, last_seen: NOW },
+				},
+			}),
+		);
+		expect(() =>
+			recordPayloadKeys({
+				runner: "claude-code",
+				nativeEvent: "Stop",
+				raw: { odd: 1 },
+				cwd: dir,
+				now: LATER,
+			}),
+		).not.toThrow();
+		expect(read().entries["claude-code/Stop"]?.unconsumed).toEqual(["odd"]);
+	});
 });

@@ -21,7 +21,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import { sanitizeSessionId } from "../session-paths.js";
 import { recordStateSnapshot } from "./state-archive.js";
 
@@ -35,6 +35,36 @@ export interface TreeSnapshotRecord {
 	tree: string;
 	commit: string;
 	ts: string;
+}
+
+function isSnapshotPhase(value: unknown): value is "pre" | "post" {
+	return value === "pre" || value === "post";
+}
+
+/** Validate one snapshot-index line. Exported for direct testing. */
+export function parseTreeSnapshotRecord(value: unknown): TreeSnapshotRecord | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema !== "tree-snapshot.v1") return null;
+	if (value.backend !== "git") return null;
+	if (!isSnapshotPhase(value.phase)) return null;
+	const { session_id, tree, commit, ts } = value;
+	if (typeof session_id !== "string" || typeof tree !== "string") return null;
+	if (typeof commit !== "string" || typeof ts !== "string") return null;
+	const seq = value.seq ?? null;
+	if (seq !== null && typeof seq !== "number") return null;
+	const toolUseId = value.tool_use_id ?? null;
+	if (toolUseId !== null && typeof toolUseId !== "string") return null;
+	return {
+		schema: "tree-snapshot.v1",
+		session_id,
+		seq,
+		tool_use_id: toolUseId,
+		phase: value.phase,
+		backend: "git",
+		tree,
+		commit,
+		ts,
+	};
 }
 
 const REF_PREFIX = "refs/interlinked/replay/";
@@ -134,8 +164,8 @@ export function loadSnapshotIndex(cwd: string): TreeSnapshotRecord[] {
 	for (const line of readFileSync(path, "utf-8").split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			const parsed = JSON.parse(line) as TreeSnapshotRecord;
-			if (parsed && parsed.schema === "tree-snapshot.v1") out.push(parsed);
+			const parsed = parseTreeSnapshotRecord(JSON.parse(line));
+			if (parsed) out.push(parsed);
 		} catch (err) {
 			void err; // torn/foreign line — skipping is this reader's contract
 		}

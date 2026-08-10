@@ -30,6 +30,24 @@ export interface JsonObject {
 }
 
 /**
+ * The ONE narrowing point for foreign JSON. Every boundary parser should reach
+ * for this rather than hand-rolling `typeof v === "object" && v !== null &&
+ * !Array.isArray(v)` — six files had independently written that same line
+ * before this was extracted (2026-08-09).
+ *
+ * Arrays are rejected: a JSON array is `typeof "object"` but is not a keyed
+ * record, and a parser that accepts one reads `value.someField` as `undefined`
+ * instead of failing.
+ *
+ * Note this predicate is exempt from `type_predicate_drift` by construction —
+ * `JsonObject` declares only an index signature, so it has no required named
+ * properties that a guard could leave unchecked.
+ */
+export function isJsonObject(value: unknown): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
  * A recursive JSON value. Prefer `JsonObject` for most parameters; use
  * `JsonValue` only when you really need the strict recursive shape
  * (e.g. serialisers that need to refuse non-JSON inputs at compile

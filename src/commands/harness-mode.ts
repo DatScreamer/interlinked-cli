@@ -34,6 +34,7 @@ import {
 	writeSharedConfig,
 } from "../lib/config.js";
 import { writeHookScript } from "../lib/hooks.js";
+import { isJsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 
 export interface HarnessModeOptions {
@@ -196,6 +197,8 @@ export async function harnessModeCommand(
 	);
 }
 
+const DEFAULT_SHARED_CONFIG: SharedConfig = { version: 1, server_url: "http://localhost:8787" };
+
 /** Read shared config with a clean object fallback so the spread above
  *  always has a defined source. Distinct from readSharedConfig because that
  *  helper returns null when no file exists, which would make the spread
@@ -203,17 +206,35 @@ export async function harnessModeCommand(
 function readSharedConfigSafe(cwd: string): SharedConfig {
 	const sharedPath = getSharedConfigPath(cwd);
 	if (!existsSync(sharedPath)) {
-		return { version: 1, server_url: "http://localhost:8787" };
+		return DEFAULT_SHARED_CONFIG;
 	}
 	try {
-		const parsed = JSON.parse(readFileSync(sharedPath, "utf-8")) as SharedConfig;
-		// Defensive: ensure version + server_url are populated downstream.
+		const raw = JSON.parse(readFileSync(sharedPath, "utf-8"));
+		// A malformed config.json whose top level is an array/string/number
+		// (not a JSON object) would otherwise spread numeric-string keys into
+		// the merged result below, and that garbage gets persisted back to the
+		// COMMITTED config.json on the next `writeSharedConfig` call. Reject
+		// it here and fall back to defaults instead.
+		if (!isJsonObject(raw)) {
+			return DEFAULT_SHARED_CONFIG;
+		}
+		// Per-field validation of the rest of SharedConfig's shape
+		// (pii_patterns/skip_paths/harness/...) is intentionally not done here:
+		// this helper's job is lossless round-trip ("preserve whatever else was
+		// in the file"), and readers that need a specific field narrow it
+		// themselves at their own read site (see readCurrentMode's `mode`
+		// narrowing above). Only version + server_url are guaranteed. The
+		// `unknown` hop is required because `JsonObject`'s index signature and
+		// SharedConfig's named fields don't structurally overlap enough for a
+		// direct cast -- this is now a GATED cast (isJsonObject already ruled
+		// out arrays/primitives/null above), not a blind one.
+		const parsed = raw as unknown as SharedConfig;
 		return {
 			...parsed,
 			version: 1,
-			server_url: parsed.server_url || "http://localhost:8787",
+			server_url: parsed.server_url || DEFAULT_SHARED_CONFIG.server_url,
 		};
 	} catch {
-		return { version: 1, server_url: "http://localhost:8787" };
+		return DEFAULT_SHARED_CONFIG;
 	}
 }

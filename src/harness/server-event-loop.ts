@@ -14,6 +14,7 @@
 // over `server.ts` `let`s) is what lets the loop live in its own file
 // without behavior change — startup order and side effects are identical.
 
+import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { appendCheckResults } from "./check-results-sink.js";
 import { forwardCloudPreToolUse } from "./cloud-forward.js";
@@ -23,6 +24,7 @@ import { readLiveSnapshot, writeLiveSnapshot } from "./live-snapshot.js";
 import { liftOutcomeEvidence } from "./outcome-evidence.js";
 import { runWithClock } from "./replay/harness-clock.js";
 import { maybeRecordReplaySnapshots, phaseForHookEvent } from "./replay/tree-snapshot.js";
+import { recordGuardDecision } from "./guard-tally.js";
 import { buildLatencyRecord } from "./server/latency-record.js";
 import { handleLifecycleEvent } from "./server/lifecycle-events.js";
 import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
@@ -181,7 +183,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 				// reproduces a still-armed refusal through another channel. Never
 				// alters the decision — surfaced once at Stop.
 				observeBlockWorkaround(session, event, local, event.cwd ?? CWD, Date.now());
-				mergeTrajectoryShadow(event, local, ctx.rules);
+				mergeTrajectoryShadow(event, local, ctx.rules, [...(session.files_read ?? [])]);
 				writeCollectionRecord(event, local);
 				return forwardCloudPreToolUse(event, local);
 			}
@@ -189,7 +191,11 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			if (isPostToolUse(event)) {
 				try {
 					const decision = await runPostToolPipeline(ctx, event, session);
-					mergeTrajectoryShadow(event, decision, ctx.rules);
+					// `session.files_read` survives a daemon restart (it is in the
+					// live snapshot); the trajectory engine's own read map does not.
+					// Passing it seeds a state created after a restart, so reads from
+					// before it are not forgotten mid-session (red-team F4).
+					mergeTrajectoryShadow(event, decision, ctx.rules, [...(session.files_read ?? [])]);
 					writeCollectionRecord(event, decision);
 					// Fire-and-forget faithful per-call record for the viz BASELINE filmstrip.
 					// Runs AFTER the decision is returned to the hook — never blocks the tool loop.
@@ -274,11 +280,13 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		let toolUseIdForSnap: string | null = null;
 		let replayClockMs: number | null = null;
 		try {
-			const parsed: JsonObject = JSON.parse(line);
-			if (typeof parsed.session_id === "string") sessionIdForSnap = parsed.session_id;
-			if (typeof parsed.hook_event === "string") hookEventForSnap = parsed.hook_event;
-			if (typeof parsed.tool_use_id === "string") toolUseIdForSnap = parsed.tool_use_id;
-			replayClockMs = replayClockFor(parsed);
+			const parsed: unknown = JSON.parse(line);
+			if (isJsonObject(parsed)) {
+				if (typeof parsed.session_id === "string") sessionIdForSnap = parsed.session_id;
+				if (typeof parsed.hook_event === "string") hookEventForSnap = parsed.hook_event;
+				if (typeof parsed.tool_use_id === "string") toolUseIdForSnap = parsed.tool_use_id;
+				replayClockMs = replayClockFor(parsed);
+			}
 		} catch (e) {
 			void e;
 		}
@@ -289,6 +297,9 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 					? await runWithClock(replayClockMs, () => processEvent(line))
 					: await processEvent(line);
 			recordProtocolEvent(protocol);
+			// Statusline substrate: what the harness actually DID this run.
+			// O(1); read on the 10s snapshot tick, never on the hook path.
+			recordGuardDecision(decision);
 			try {
 				appendLatencyLog(INTERLINKED_DIR, buildLatencyRecord(line, decision));
 			} catch (e) {

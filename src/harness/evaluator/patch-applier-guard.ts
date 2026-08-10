@@ -27,6 +27,7 @@
 // into `src/` from inline strings is the same evasion.
 
 import { basename } from "node:path";
+import { stripCommentsAndStrings } from "../checks/shared-text-utils.js";
 
 /** Script extensions this guard inspects. Non-scripts cannot execute a write,
  *  so they are not a channel. */
@@ -71,7 +72,13 @@ export function detectPatchApplier(
 	filePath: string,
 ): PatchApplierEvidence | null {
 	if (!SCRIPT_EXT_RE.test(filePath)) return null;
-	const write = WRITE_CALL_RE.exec(content);
+	// Red-team F3: match the WRITE CALL against comment- and string-stripped
+	// source. A write call quoted inside a string is data, not a write — this
+	// guard blocked a probe script that only carried write-shaped payloads, and
+	// any review tool or security fixture that quotes offending code hits the
+	// same wire. The repo TARGET still matches raw content: a real applier's
+	// destination is normally a string literal, which stripping would erase.
+	const write = WRITE_CALL_RE.exec(stripCommentsAndStrings(content));
 	if (!write) return null;
 	const target = REPO_TARGET_RE.exec(content);
 	if (!target) return null;

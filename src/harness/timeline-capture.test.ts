@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -114,6 +114,41 @@ describe("captureTimeline (live drain)", () => {
 		captureTimeline(event, bare);
 		expect(existsSync(timelinePath(bare))).toBe(false);
 		rmSync(bare, { recursive: true, force: true });
+	});
+
+	describe("readCursor (via captureTimeline) — malformed cursor file", () => {
+		function cursorPath(): string {
+			return join(cwd, ".interlinked", "timeline-cursor.json");
+		}
+		function seedCursor(raw: string): void {
+			mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+			writeFileSync(cursorPath(), raw);
+		}
+
+		it("P1: a valid matching cursor resumes from its recorded offset (incremental drain)", () => {
+			captureTimeline(stopEvent(cwd, transcript), cwd); // writes a real cursor
+			appendFileSync(transcript, assistantLine("u3", "2026-06-28T10:00:02.000Z", "third message"));
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+			expect(timelineTexts(cwd)).toEqual(["first message", "second message", "third message"]);
+		});
+
+		it("N1: a cursor whose fields carry the wrong type degrades to a fresh full read (no throw)", () => {
+			seedCursor(JSON.stringify({ path: 123, offset: "not-a-number" }));
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+			expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
+		});
+
+		it("N2: a cursor that parses to a non-object JSON value degrades the same way", () => {
+			seedCursor("null");
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+			expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
+		});
+
+		it("N3: unparseable cursor JSON degrades the same way", () => {
+			seedCursor("{ not json");
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+			expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
+		});
 	});
 });
 

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendEnvelope, type InferenceEnvelope } from "./inference-store.js";
-import { assembleTrace, loadTrace } from "./trace-assembler.js";
+import { assembleTrace, loadTrace, parseTraceStep } from "./trace-assembler.js";
 
 const cleanups: string[] = [];
 afterEach(() => {
@@ -347,5 +347,60 @@ describe("assembleTrace", () => {
 		assembleTrace(dir, SESSION);
 		const step = loadTrace(dir, SESSION)[0];
 		expect(step?.state_ref).toBe(`state/${SESSION}.jsonl#seq=9`);
+	});
+});
+
+describe("parseTraceStep", () => {
+	const full = {
+		schema: "replay-trace.v1",
+		key: { session_id: SESSION, seq: 1, tool_use_id: "toolu_a", ts: "2026-08-10T00:00:00Z" },
+		observation_ref: "inference/sess.jsonl#seq=1",
+		action: { tool: "Bash", input: { command: "ls" } },
+		result: { outcome: "ok", observation: { stdout: "x" } },
+		pre_tree: "tree-pre",
+		post_tree: "tree-post",
+		state_ref: "state/sess.jsonl#seq=1",
+	};
+
+	it("P1: accepts a fully-populated step", () => {
+		expect(parseTraceStep(full)).toEqual(full);
+	});
+
+	it("P2: accepts a degraded step (null action/result/refs, missing tool_use_id/seq)", () => {
+		const degraded = {
+			schema: "replay-trace.v1",
+			key: { session_id: SESSION, seq: null, tool_use_id: null, ts: "t" },
+			observation_ref: null,
+			action: null,
+			result: null,
+			pre_tree: null,
+			post_tree: null,
+			state_ref: null,
+		};
+		expect(parseTraceStep(degraded)).toEqual(degraded);
+	});
+
+	it("N1: rejects the wrong schema tag", () => {
+		expect(parseTraceStep({ ...full, schema: "other.v1" })).toBeNull();
+	});
+
+	it("N2: rejects a non-object action (rejects the whole step, not just the field)", () => {
+		expect(parseTraceStep({ ...full, action: "not-an-object" })).toBeNull();
+	});
+
+	it("N3: rejects a result missing the required string outcome", () => {
+		expect(
+			parseTraceStep({ ...full, result: { observation: null } }),
+		).toBeNull();
+	});
+
+	it("N4: rejects a key missing session_id", () => {
+		expect(
+			parseTraceStep({ ...full, key: { seq: 1, tool_use_id: "t", ts: "t" } }),
+		).toBeNull();
+	});
+
+	it("N5: rejects a non-object line (array)", () => {
+		expect(parseTraceStep(["replay-trace.v1"])).toBeNull();
 	});
 });

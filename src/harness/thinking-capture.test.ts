@@ -101,6 +101,73 @@ describe("extractNewThinking", () => {
 	});
 });
 
+describe("extractNewThinking — parseThinkingCursor boundary parser", () => {
+	it("P1: resumes from a well-formed persisted cursor object at a nonzero offset", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		const firstLine = `${asstThinking("skip me")}\n`;
+		writeFileSync(tp, `${firstLine}${asstThinking("read me")}\n`);
+		writeFileSync(cp, JSON.stringify({ path: tp, offset: firstLine.length }));
+		const out = extractNewThinking(tp, cp) ?? "";
+		expect(out).toContain("read me");
+		expect(out).not.toContain("skip me");
+	});
+
+	it("N1: a cursor file that is a bare JSON array is ignored, re-reading from the start", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		writeFileSync(tp, `${asstThinking("recovered")}\n`);
+		writeFileSync(cp, JSON.stringify([1, 2, 3]));
+		expect(extractNewThinking(tp, cp)).toContain("recovered");
+	});
+
+	it("N2: a cursor with offset stored as a numeric string is ignored, re-reading from the start", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		writeFileSync(tp, `${asstThinking("also recovered")}\n`);
+		writeFileSync(cp, JSON.stringify({ path: tp, offset: "0" }));
+		expect(extractNewThinking(tp, cp)).toContain("also recovered");
+	});
+});
+
+describe("extractNewThinking — parseAssistantThinkingBlocks boundary parser", () => {
+	it("P1: ignores non-object entries within an otherwise valid content array", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		const line = JSON.stringify({
+			type: "assistant",
+			message: { content: ["not-a-block", 42, { type: "thinking", thinking: "kept" }] },
+		});
+		writeFileSync(tp, `${line}\n`);
+		expect(extractNewThinking(tp, cp)).toBe("kept");
+	});
+
+	it("N1: a content field that is not an array contributes no thinking (no throw)", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		const line = JSON.stringify({ type: "assistant", message: { content: "not-an-array" } });
+		writeFileSync(tp, `${line}\n${asstThinking("still found")}\n`);
+		expect(extractNewThinking(tp, cp)).toBe("still found");
+	});
+
+	it("N2: a non-string thinking field is excluded even though the block type matches (old code coerced it in)", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		const line = JSON.stringify({
+			type: "assistant",
+			message: { content: [{ type: "thinking", thinking: 12345 }] },
+		});
+		writeFileSync(tp, `${line}\n`);
+		expect(extractNewThinking(tp, cp)).toBeNull();
+	});
+});
+
 describe("resolveTranscriptPath", () => {
 	it("prefers an explicit path that exists", () => {
 		const d = tmp();
@@ -143,5 +210,26 @@ describe("latestTranscriptModel", () => {
 		const tp = join(d, "x.jsonl");
 		writeFileSync(tp, `${JSON.stringify({ type: "user" })}\n`);
 		expect(latestTranscriptModel(tp)).toBeNull();
+	});
+
+	// parseAssistantModel boundary parser (internal).
+	it("P1: ignores a non-assistant record's model-shaped field", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		writeFileSync(
+			tp,
+			`${JSON.stringify({ type: "user", message: { model: "should-be-ignored" } })}\n${JSON.stringify({ type: "assistant", message: { model: "real-model", content: [] } })}\n`,
+		);
+		expect(latestTranscriptModel(tp)).toBe("real-model");
+	});
+
+	it("N1: a non-string model field on an assistant record is ignored, keeping the prior valid model (old code coerced the number in)", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		writeFileSync(
+			tp,
+			`${JSON.stringify({ type: "assistant", message: { model: "first-model", content: [] } })}\n${JSON.stringify({ type: "assistant", message: { model: 42, content: [] } })}\n`,
+		);
+		expect(latestTranscriptModel(tp)).toBe("first-model");
 	});
 });

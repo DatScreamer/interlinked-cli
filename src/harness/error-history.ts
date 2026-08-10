@@ -4,6 +4,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 import { harnessNow } from "./replay/harness-clock.js";
 import type { ErrorMemoryConfig, ErrorRecord, ModuleRole, StructuralCheckResult } from "./types.js";
@@ -14,6 +15,70 @@ const MAX_DIFF_CONTEXT_CHARS = 2000;
 const MAX_FIX_CONTEXT_CHARS = 1000;
 /** Milliseconds per second (for age-cutoff calculations). */
 const MS_PER_SECOND = 1000;
+
+function isModuleRole(v: unknown): v is ModuleRole {
+	return v === "leaf" || v === "internal" || v === "hub" || v === "root";
+}
+
+function isRecordSeverity(v: unknown): v is ErrorRecord["severity"] {
+	return v === "error" || v === "warning";
+}
+
+function isStringArray(v: unknown): v is string[] {
+	return Array.isArray(v) && v.every((entry): entry is string => typeof entry === "string");
+}
+
+/**
+ * Defensively narrow one persisted JSONL line to an `ErrorRecord`, or null for
+ * a torn / foreign / legacy row. `load()` folds the non-null results in and
+ * silently skips the rest — malformed error-history bookkeeping must never
+ * crash the harness (`[[feedback_safety_continuity]]`). Every required field
+ * is checked; the return is a CONSTRUCTED literal, so a field added to
+ * `ErrorRecord` fails to compile here instead of silently under-validating.
+ */
+export function parseErrorRecord(value: unknown): ErrorRecord | null {
+	if (!isJsonObject(value)) return null;
+	const {
+		timestamp,
+		session_id,
+		agent_name,
+		file,
+		file_role,
+		check_name,
+		severity,
+		message,
+		diff_context,
+	} = value;
+	if (typeof timestamp !== "string") return null;
+	if (typeof session_id !== "string") return null;
+	if (typeof agent_name !== "string") return null;
+	if (typeof file !== "string") return null;
+	if (!isModuleRole(file_role)) return null;
+	if (typeof check_name !== "string") return null;
+	if (!isRecordSeverity(severity)) return null;
+	if (typeof message !== "string") return null;
+	if (typeof diff_context !== "string") return null;
+
+	return {
+		timestamp,
+		session_id,
+		agent_name,
+		file,
+		file_role,
+		check_name,
+		severity,
+		message,
+		diff_context,
+		affected_files: isStringArray(value.affected_files) ? value.affected_files : undefined,
+		fix_context: typeof value.fix_context === "string" ? value.fix_context : undefined,
+		line_start: typeof value.line_start === "number" ? value.line_start : undefined,
+		line_end: typeof value.line_end === "number" ? value.line_end : undefined,
+		co_edited_files: isStringArray(value.co_edited_files) ? value.co_edited_files : undefined,
+		pre_error_sequence: isStringArray(value.pre_error_sequence)
+			? value.pre_error_sequence
+			: undefined,
+	};
+}
 
 export class ErrorHistory {
 	private records: ErrorRecord[] = [];
@@ -193,7 +258,8 @@ export class ErrorHistory {
 			for (const line of raw.split("\n")) {
 				if (!line.trim()) continue;
 				try {
-					const record = JSON.parse(line) as ErrorRecord;
+					const record = parseErrorRecord(JSON.parse(line));
+					if (!record) continue;
 					if (new Date(record.timestamp).getTime() < cutoff) continue;
 					this.records.push(record);
 					this.indexRecord(record);

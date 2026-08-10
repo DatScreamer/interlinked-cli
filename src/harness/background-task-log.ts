@@ -19,6 +19,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
 import type { HarnessEvent } from "./types.js";
 
@@ -76,6 +77,23 @@ export function parseBackgroundTasks(value: unknown): BackgroundTask[] {
 	return out;
 }
 
+/** One log row's `id`/`status` pair, or null when the line is corrupt, isn't a
+ *  JSON object, or its `id` isn't a string. A non-string `status` normalizes
+ *  to null rather than leaking the wrong-typed value into the status map.
+ *  Never throws. */
+function parseStatusRow(line: string): { id: string; status: string | null } | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return null;
+	}
+	if (!isJsonObject(parsed)) return null;
+	const id = parsed.id;
+	if (typeof id !== "string") return null;
+	return { id, status: typeof parsed.status === "string" ? parsed.status : null };
+}
+
 /** Last recorded status per task id, read off the log's tail. */
 export function lastStatuses(cwd: string): Map<string, string | null> {
 	const seen = new Map<string, string | null>();
@@ -92,13 +110,8 @@ export function lastStatuses(cwd: string): Map<string, string | null> {
 		if (offset > 0) text = text.slice(text.indexOf("\n") + 1);
 		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
-			try {
-				// SAFETY: our own log line; both fields are guarded before use.
-				const row = JSON.parse(line) as Partial<BackgroundTaskRecord>;
-				if (typeof row.id === "string") seen.set(row.id, row.status ?? null);
-			} catch (err) {
-				void err; // truncated line — keep scanning
-			}
+			const row = parseStatusRow(line);
+			if (row) seen.set(row.id, row.status);
 		}
 	} catch (err) {
 		void err; // unreadable log — treat every task as newly seen

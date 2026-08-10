@@ -12,6 +12,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 import { extractInterfaceBodies } from "./project-graph/interface-bodies.js";
 import { parseExports } from "./project-graph/parser-exports.js";
@@ -464,7 +465,6 @@ export class ProjectGraph {
 				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
 			);
 			for (const entry of entries) {
-				if (entry.name.startsWith(".") && SKIP_DIRS.has(entry.name)) continue;
 				if (SKIP_DIRS.has(entry.name)) continue;
 
 				const fullPath = join(dir, entry.name);
@@ -491,9 +491,9 @@ export class ProjectGraph {
 			const raw = readFileSync(tsconfigPath, "utf-8");
 			// Strip single-line comments (tsconfig allows them)
 			const cleaned = raw.replace(/\/\/.*$/gm, "");
-			const config = JSON.parse(cleaned);
-			const paths = config.compilerOptions?.paths;
-			if (paths && typeof paths === "object") {
+			const config: unknown = JSON.parse(cleaned);
+			const paths = isJsonObject(config) && isJsonObject(config.compilerOptions) ? config.compilerOptions.paths : undefined;
+			if (isJsonObject(paths) && Object.values(paths).every((t) => Array.isArray(t) && t.every((s): s is string => typeof s === "string"))) {
 				this.tsconfigPaths = paths as Record<string, string[]>;
 			}
 		} catch (err) {

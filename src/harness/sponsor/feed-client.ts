@@ -16,6 +16,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import {
 	activeCreatives,
 	feedIsLive,
@@ -63,19 +64,20 @@ export interface VerifyOptions {
 export function verifyWire(wireJson: string, opts: VerifyOptions = {}): SponsorFeed | null {
 	let wire: SponsorWire;
 	try {
-		const parsed = JSON.parse(wireJson) as {
-			key_id?: unknown;
-			payload_b64?: unknown;
-			sig?: unknown;
-		};
+		const parsed: unknown = JSON.parse(wireJson);
+		// Fail-closed: anything that isn't a keyed JSON object (array, string,
+		// number, null) is rejected here, same as a missing/wrong-typed field —
+		// no render, never a guess.
+		if (!isJsonObject(parsed)) return null;
+		const { key_id, payload_b64, sig } = parsed;
 		if (
-			typeof parsed.key_id !== "string" ||
-			typeof parsed.payload_b64 !== "string" ||
-			typeof parsed.sig !== "string"
+			typeof key_id !== "string" ||
+			typeof payload_b64 !== "string" ||
+			typeof sig !== "string"
 		) {
 			return null;
 		}
-		wire = { key_id: parsed.key_id, payload_b64: parsed.payload_b64, sig: parsed.sig };
+		wire = { key_id, payload_b64, sig };
 	} catch {
 		return null;
 	}
@@ -241,6 +243,24 @@ export function appendBeacon(interlinkedDir: string, beacon: SponsorBeacon): voi
 }
 
 /**
+ * Validate one buffered beacon row. Returns null for anything that isn't a
+ * well-shaped `SponsorBeacon` — a row that parses as JSON but carries the
+ * wrong field types (or an unknown `kind`) is dropped, same as a row that
+ * fails `JSON.parse` outright, rather than forwarded to the Worker verbatim.
+ */
+function parseSponsorBeacon(value: unknown): SponsorBeacon | null {
+	if (!isJsonObject(value)) return null;
+	const { kind, creative, campaign, window, install_id, ts } = value;
+	if (kind !== "impression" && kind !== "click") return null;
+	if (typeof creative !== "string") return null;
+	if (typeof campaign !== "string") return null;
+	if (typeof window !== "number" || !Number.isFinite(window)) return null;
+	if (typeof install_id !== "string") return null;
+	if (typeof ts !== "string") return null;
+	return { kind, creative, campaign, window, install_id, ts };
+}
+
+/**
  * POST all buffered beacons as one batch; truncate the buffer on success.
  * Returns false (and keeps the buffer) on any failure — beacons are
  * fire-and-forget telemetry, never load-bearing.
@@ -261,7 +281,10 @@ export async function flushBeacons(
 	for (const line of raw.split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			beacons.push(JSON.parse(line) as SponsorBeacon);
+			const beacon = parseSponsorBeacon(JSON.parse(line));
+			if (beacon) beacons.push(beacon);
+			// else: parsed but wrong-shaped — drop it rather than wedge the
+			// buffer forever (same treatment as a JSON syntax error below).
 		} catch (e) {
 			// Unparseable row: drop it rather than wedge the buffer forever.
 			void e;

@@ -13,6 +13,7 @@ import { loadStateSnapshot } from "./state-archive.js";
 import {
 	loadSnapshotIndex,
 	maybeRecordReplaySnapshots,
+	parseTreeSnapshotRecord,
 	phaseForHookEvent,
 	recordTreeSnapshot,
 	restoreTree,
@@ -197,5 +198,48 @@ describe("restoreTree", () => {
 		restoreTree(dir, tree, dest);
 		expect(readFileSync(join(dest, "a.txt"), "utf-8")).toBe("a\nmodified\n");
 		expect(readFileSync(join(dest, "untracked.txt"), "utf-8")).toBe("new\n");
+	});
+});
+
+describe("parseTreeSnapshotRecord", () => {
+	const valid = {
+		schema: "tree-snapshot.v1",
+		session_id: "sess-g2",
+		seq: 7,
+		tool_use_id: "toolu_7",
+		phase: "post",
+		backend: "git",
+		tree: "a".repeat(40),
+		commit: "b".repeat(40),
+		ts: "2026-08-10T00:00:00Z",
+	};
+
+	it("P1: accepts a well-formed row", () => {
+		expect(parseTreeSnapshotRecord(valid)).toEqual(valid);
+	});
+
+	it("P2: accepts null seq and null tool_use_id (degraded capture)", () => {
+		const row = { ...valid, seq: null, tool_use_id: null };
+		expect(parseTreeSnapshotRecord(row)).toEqual(row);
+	});
+
+	it("N1: rejects the wrong schema tag", () => {
+		expect(parseTreeSnapshotRecord({ ...valid, schema: "other.v1" })).toBeNull();
+	});
+
+	it("N2: rejects a backend other than git", () => {
+		expect(parseTreeSnapshotRecord({ ...valid, backend: "hg" })).toBeNull();
+	});
+
+	it("N3: rejects a phase outside pre/post", () => {
+		expect(parseTreeSnapshotRecord({ ...valid, phase: "during" })).toBeNull();
+	});
+
+	it("N4: rejects a non-string tree", () => {
+		expect(parseTreeSnapshotRecord({ ...valid, tree: 12345 })).toBeNull();
+	});
+
+	it("N5: rejects a non-object line (array)", () => {
+		expect(parseTreeSnapshotRecord(["tree-snapshot.v1"])).toBeNull();
 	});
 });

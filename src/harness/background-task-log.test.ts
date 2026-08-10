@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -112,6 +112,33 @@ describe("recordBackgroundTasks", () => {
 	});
 
 	it("N6: a missing log reads as no known statuses", () => {
+		expect(lastStatuses(dir).size).toBe(0);
+	});
+});
+
+describe("lastStatuses — malformed rows (parseStatusRow)", () => {
+	function seedRawLines(lines: string[]): void {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		appendFileSync(backgroundTaskLogPath(dir), `${lines.join("\n")}\n`);
+	}
+
+	it("P5: reads back a valid row's id and status", () => {
+		record([{ id: "b1", status: "running" }]);
+		expect(lastStatuses(dir).get("b1")).toBe("running");
+	});
+
+	it("N7: a row with a non-string id is skipped entirely", () => {
+		seedRawLines([JSON.stringify({ id: 42, status: "running" })]);
+		expect(lastStatuses(dir).size).toBe(0);
+	});
+
+	it("N8: a row with a non-string status normalizes to null rather than leaking the raw value", () => {
+		seedRawLines([JSON.stringify({ id: "b9", status: 7 })]);
+		expect(lastStatuses(dir).get("b9")).toBeNull();
+	});
+
+	it("N9: a non-object line (array/number/null) is skipped without throwing", () => {
+		seedRawLines(["[1,2,3]", "42", "null"]);
 		expect(lastStatuses(dir).size).toBe(0);
 	});
 });

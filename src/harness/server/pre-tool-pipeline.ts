@@ -25,6 +25,10 @@ import { runCommitBaselineGate } from "../evaluator/commit-baseline-gate.js";
 import { runCommitLaunderingGate } from "../evaluator/commit-laundering-gate.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import {
+	baselineCallKey,
+	rememberBaselineSnapshot,
+} from "../evaluator/baseline-effect-guard.js";
+import {
 	appendShadowLog,
 	buildEvidenceEnvelope,
 	callClassifier,
@@ -320,6 +324,23 @@ export async function runPreToolPipeline(
 ): Promise<HarnessDecision> {
 	const { rules } = ctx;
 	const CWD = ctx.cwd;
+	// --- Effect arm: remember the water-lines BEFORE anything can return ---
+	// Must run at the entry, not the exit: the pipeline has many early returns
+	// (guard blocks, fast-path allows), and a snapshot taken at the tail is
+	// skipped for exactly the commands most worth watching. Snapshotting a call
+	// that later blocks is harmless — the entry is bounded and simply expires
+	// unconsumed. Dry runs never snapshot (CLAUDE.md: a dry run must not move
+	// the gate). Pairs with consumeBaselineSnapshot in the post-tool pipeline.
+	if (!event.dry_run) {
+		rememberBaselineSnapshot(
+			baselineCallKey({
+				toolUseId: event.tool_use_id,
+				sessionId: event.session_id,
+				timestamp: event.timestamp,
+			}),
+			CWD,
+		);
+	}
 	// Resolve graph for the file being edited (supports cross-repo edits)
 	const filePath = resolveEventFilePath(event);
 	const activeGraph = getGraphForFile(ctx, filePath || CWD);

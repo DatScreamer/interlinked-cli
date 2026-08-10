@@ -152,6 +152,16 @@ describe("_resolvePackageDeps / _loadPackageDeps — malformed package.json", ()
 		);
 		expect(out).toEqual([]);
 	});
+
+	it("N1: treats a non-object (`null`) package.json as unusable rather than reading fields off it", () => {
+		writeFileSync(join(tmp, "package.json"), "null");
+		expect(() =>
+			checkExtraneousDependencies('import foo from "not-a-real-dep";\n', join(tmp, "index.ts")),
+		).not.toThrow();
+		expect(
+			checkExtraneousDependencies('import foo from "not-a-real-dep";\n', join(tmp, "index.ts")),
+		).toEqual([]);
+	});
 });
 
 describe("findWorkspaceRootFor — parent package.json without a `workspaces` field", () => {
@@ -167,6 +177,17 @@ describe("findWorkspaceRootFor — parent package.json without a `workspaces` fi
 
 	it("keeps walking past a parent package.json that has no `workspaces` field", () => {
 		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "root-no-ws" }));
+		const pkgDir = join(tmp, "packages", "foo");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "foo" }));
+		expect(findWorkspaceRootFor(join(pkgDir, "package.json"))).toBe(pkgDir);
+	});
+
+	it("N1: keeps walking past a parent package.json that parses to `null`", () => {
+		// isJsonObject(null) is false, so `json.workspaces` is never read off a
+		// non-object value — the walk treats it the same as "no workspaces field"
+		// rather than relying on the surrounding catch to swallow a TypeError.
+		writeFileSync(join(tmp, "package.json"), "null");
 		const pkgDir = join(tmp, "packages", "foo");
 		mkdirSync(pkgDir, { recursive: true });
 		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "foo" }));
@@ -196,6 +217,26 @@ describe("checkPhantomDependencies — early-return edge cases", () => {
 
 	it("returns [] when `dependencies` is present but not an object (malformed field)", () => {
 		writeFileSync(join(tmp, "package.json"), JSON.stringify({ dependencies: "not-an-object" }));
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("N1: does not throw when package.json parses to `null`", () => {
+		// Pre-fix, `pkg.dependencies` ran AFTER the try/catch closed, so a
+		// legally-parsed `null` (JSON.parse("null") === null, valid JSON)
+		// threw a TypeError uncaught instead of returning [].
+		writeFileSync(join(tmp, "package.json"), "null");
+		expect(() => checkPhantomDependencies(join(tmp, "package.json"))).not.toThrow();
+		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
+	});
+
+	it("N2: returns [] when `dependencies` is an array instead of a keyed object", () => {
+		// Pre-fix, `typeof deps !== "object"` admitted arrays (typeof [] ===
+		// "object"), so Object.keys would have read back numeric-index
+		// strings ("0", "1", ...) as fake dependency names.
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ dependencies: ["not", "an", "object"] }),
+		);
 		expect(checkPhantomDependencies(join(tmp, "package.json"))).toEqual([]);
 	});
 

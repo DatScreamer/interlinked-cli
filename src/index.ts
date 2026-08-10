@@ -20,6 +20,7 @@ import { registerFindingsCommands } from "./commands/findings.js";
 import { handleImplicitEntry } from "./commands/first-run.js";
 import { registerIndexCommand } from "./commands/index-cmd.js";
 import { registerSpecCommands } from "./commands/spec.js";
+import { isJsonObject } from "./lib/json-types.js";
 import { registerActivityCommands } from "./registrars/activity.js";
 import { registerAdoptCommands } from "./registrars/adopt.js";
 import { registerCapsCommands } from "./registrars/caps.js";
@@ -43,8 +44,9 @@ const program = new Command();
 function resolveVersion(): string {
 	try {
 		const pkgPath = new URL("../package.json", import.meta.url);
-		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-		return pkg.version || "0.0.0";
+		const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		const version = isJsonObject(parsed) ? parsed.version : undefined;
+		return typeof version === "string" && version.length > 0 ? version : "0.0.0";
 	} catch {
 		return "0.0.0";
 	}

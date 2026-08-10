@@ -464,6 +464,98 @@ describe("scanner status — malformed / unreadable audit log", () => {
 });
 
 // =============================================================================
+// parseAuditEntry — boundary validation of syntactically-valid-but-wrong-shape
+// rows (distinct from the JSON-syntax-error cases above: these lines parse
+// fine but fail the `AuditEntry` shape check that replaced the old blind
+// `JSON.parse(line) as AuditEntry` cast).
+// =============================================================================
+
+describe("scanner status — parseAuditEntry boundary (valid JSON, wrong shape)", () => {
+	it("N1: skips a line whose action is not a recognized AuditAction", async () => {
+		const ts = "2026-05-04T00:00:00.000Z";
+		const actor = { user: "u", host: "h", tty: null, via: "cli" as const };
+		writeFileSync(
+			auditPath(),
+			`${JSON.stringify({ ts, action: "not_a_real_action", actor, reason: null })}\n` +
+				`${JSON.stringify({ ts, action: "enable", from: false, to: true, actor, reason: null })}\n`,
+		);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as { last_audit: Array<{ action: string }> };
+		expect(parsed.last_audit).toHaveLength(1);
+		expect(parsed.last_audit[0]?.action).toBe("enable");
+	});
+
+	it("N2: skips a line missing the actor object entirely", async () => {
+		const ts = "2026-05-04T00:01:00.000Z";
+		writeFileSync(auditPath(), `${JSON.stringify({ ts, action: "enable", reason: null })}\n`);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as { last_audit: unknown[] };
+		expect(parsed.last_audit).toHaveLength(0);
+	});
+
+	it("N3: skips a line whose actor.via is not the literal 'cli'", async () => {
+		const ts = "2026-05-04T00:02:00.000Z";
+		const actor = { user: "u", host: "h", tty: null, via: "web" };
+		writeFileSync(auditPath(), `${JSON.stringify({ ts, action: "enable", actor, reason: null })}\n`);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as { last_audit: unknown[] };
+		expect(parsed.last_audit).toHaveLength(0);
+	});
+
+	it("N4: skips a line whose ts field is not a string", async () => {
+		const actor = { user: "u", host: "h", tty: null, via: "cli" as const };
+		writeFileSync(
+			auditPath(),
+			`${JSON.stringify({ ts: 12345, action: "enable", actor, reason: null })}\n`,
+		);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as { last_audit: unknown[] };
+		expect(parsed.last_audit).toHaveLength(0);
+	});
+
+	it("P1: accepts a review entry with from/to both omitted", async () => {
+		const ts = "2026-05-04T00:03:00.000Z";
+		const actor = { user: "u", host: "h", tty: "/dev/ttys1", via: "cli" as const };
+		writeFileSync(
+			auditPath(),
+			`${JSON.stringify({ ts, action: "review_block", actor, reason: "flagged" })}\n`,
+		);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as {
+			last_audit: Array<{ action: string; reason: string | null; from?: boolean }>;
+		};
+		expect(parsed.last_audit).toHaveLength(1);
+		expect(parsed.last_audit[0]?.action).toBe("review_block");
+		expect(parsed.last_audit[0]?.reason).toBe("flagged");
+		expect(parsed.last_audit[0]?.from).toBeUndefined();
+	});
+
+	it("P2: accepts every AuditAction value the writer can produce", async () => {
+		const ts = "2026-05-04T00:04:00.000Z";
+		const actor = { user: "u", host: "h", tty: null, via: "cli" as const };
+		const actions = [
+			"enable",
+			"disable",
+			"toggle",
+			"no_change",
+			"review_allow",
+			"review_redact",
+			"review_block",
+			"review_skip",
+		];
+		writeFileSync(
+			auditPath(),
+			actions.map((action) => JSON.stringify({ ts, action, actor, reason: null })).join("\n") + "\n",
+		);
+		await scannerStatusCommand({ json: true });
+		const parsed = JSON.parse(logged()) as { last_audit: Array<{ action: string }> };
+		// readLastAudit tails to the last 5 rows.
+		expect(parsed.last_audit).toHaveLength(5);
+		expect(parsed.last_audit.map((e) => e.action)).toEqual(actions.slice(-5));
+	});
+});
+
+// =============================================================================
 // resolveTty — stdout.isTTY true (audit entry captures a tty value)
 // =============================================================================
 

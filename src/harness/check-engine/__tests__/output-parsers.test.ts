@@ -254,6 +254,28 @@ describe("parseSemgrepJson", () => {
 		expect(results).toHaveLength(1);
 		expect(nonNull(results[0]).file).toBe("");
 	});
+
+	it("P1: processes a batch of well-formed findings through the field-by-field validator, in order", () => {
+		const payload = JSON.stringify({
+			results: [
+				{ check_id: "rule.a", path: "/proj/a.ts", start: { line: 1, col: 1 }, extra: { message: "first" } },
+				{ check_id: "rule.b", path: "/proj/b.ts", start: { line: 2, col: 2 }, extra: { message: "second" } },
+			],
+		});
+		const results = parseSemgrepJson(payload, "/proj");
+		expect(results).toHaveLength(2);
+		expect(results.map((r) => r.ruleId)).toEqual(["rule.a", "rule.b"]);
+		expect(results.map((r) => r.file)).toEqual(["a.ts", "b.ts"]);
+	});
+
+	it("N1: a non-object entry in results[] is dropped, not pushed as a garbage finding", () => {
+		const payload = JSON.stringify({
+			results: ["not-an-object", { check_id: "real.rule", path: "/proj/a.ts", start: { line: 1, col: 1 } }],
+		});
+		const results = parseSemgrepJson(payload, "/proj");
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).ruleId).toBe("real.rule");
+	});
 });
 
 describe("parseGitleaksJson", () => {
@@ -364,6 +386,26 @@ describe("parseNpmAuditJson", () => {
 		});
 		const r = parseNpmAuditJson(payload);
 		expect(r?.detail).toBe("3 high, 5 low");
+	});
+
+	it("P1: extra unrecognized buckets on vulnerabilities (e.g. 'info') do not affect the four tracked buckets", () => {
+		const payload = JSON.stringify({
+			metadata: { vulnerabilities: { critical: 1, high: 1, moderate: 1, low: 1, info: 99, total: 4 } },
+		});
+		const r = parseNpmAuditJson(payload);
+		expect(r).toMatchObject({ total: 4, critical: 1, high: 1, moderate: 1, low: 1 });
+	});
+
+	it("N1: a string-typed critical count is treated as 0, not string-concatenated into a garbage total", () => {
+		// Under the pre-fix `(v.critical || 0) + ...` arithmetic, a string
+		// operand forces `+` to concatenate instead of add, and the leaked
+		// `critical: v.critical || 0` would keep the raw string (violating the
+		// `critical: number` contract). The validator now types-checks first.
+		const payload = JSON.stringify({
+			metadata: { vulnerabilities: { critical: "2", high: 3, moderate: 0, low: 0 } },
+		});
+		const r = parseNpmAuditJson(payload);
+		expect(r).toMatchObject({ total: 3, critical: 0, high: 3, detail: "3 high" });
 	});
 });
 
@@ -528,6 +570,28 @@ describe("parseShellcheckJson", () => {
 		const results = parseShellcheckJson(payload);
 		expect(results).toHaveLength(1);
 		expect(nonNull(results[0])).toMatchObject({ file: "", message: "" });
+	});
+
+	it("P1: filters style/info while stringifying both string- and number-typed 'code' fields for survivors", () => {
+		const payload = JSON.stringify({
+			comments: [
+				{ file: "a.sh", line: 1, level: "style", code: 9999, message: "ignored" },
+				{ file: "a.sh", line: 2, level: "error", code: 2086, message: "numeric code" },
+				{ file: "a.sh", line: 3, level: "warning", code: "1234", message: "string code" },
+			],
+		});
+		const results = parseShellcheckJson(payload);
+		expect(results).toHaveLength(2);
+		expect(results.map((r) => r.ruleId)).toEqual(["SC2086", "SC1234"]);
+	});
+
+	it("N1: a non-number non-string 'code' (e.g. an array) does not leak into ruleId", () => {
+		const payload = JSON.stringify({
+			comments: [{ file: "a.sh", line: 1, level: "warning", code: [1, 2], message: "m" }],
+		});
+		const results = parseShellcheckJson(payload);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).ruleId).toBeUndefined();
 	});
 });
 
@@ -898,6 +962,27 @@ describe("parseOxlintJson", () => {
 	it("returns [] on malformed JSON", () => {
 		expect(parseOxlintJson("not json")).toEqual([]);
 	});
+
+	it("P1: only labels[0]'s span is used when a diagnostic carries multiple labels", () => {
+		const payload = JSON.stringify({
+			diagnostics: [
+				{
+					message: "m",
+					filename: "a.ts",
+					labels: [{ span: { line: 5, column: 1 } }, { span: { line: 99, column: 99 } }],
+				},
+			],
+		});
+		const results = parseOxlintJson(payload);
+		expect(nonNull(results[0])).toMatchObject({ line: 5, column: 1 });
+	});
+
+	it("N1: a numeric 'code' field is not leaked into ruleId (must stay string | undefined)", () => {
+		const payload = JSON.stringify({ diagnostics: [{ message: "m", code: 1234, filename: "a.ts" }] });
+		const results = parseOxlintJson(payload);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).ruleId).toBeUndefined();
+	});
 });
 
 describe("parseKnipJson", () => {
@@ -969,6 +1054,22 @@ describe("parseKnipJson", () => {
 	it("returns [] when neither files nor issues is present, and on malformed JSON", () => {
 		expect(parseKnipJson(JSON.stringify({}))).toEqual([]);
 		expect(parseKnipJson("not json")).toEqual([]);
+	});
+
+	it("P1: a well-formed export entry is kept even when a sibling entry in the same array is malformed", () => {
+		const payload = JSON.stringify({
+			issues: [{ file: "x.ts", exports: [{ line: 3 }, { name: "keepMe", line: 4 }] }],
+		});
+		const results = parseKnipJson(payload);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0])).toMatchObject({ message: "unused export: keepMe", line: 4 });
+	});
+
+	it("N1: a malformed 'unlisted' entry (neither string nor {name}) is dropped, not stringified", () => {
+		const payload = JSON.stringify({ issues: [{ file: "x.ts", unlisted: [42, { name: "good-dep" }] }] });
+		const results = parseKnipJson(payload);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).message).toBe("unlisted dependency: good-dep");
 	});
 });
 

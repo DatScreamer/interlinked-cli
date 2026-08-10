@@ -95,6 +95,23 @@ describe("lastAssistantText", () => {
 		expect(lastAssistantText("")).toBeNull();
 		expect(lastAssistantText(userLine("u1", "just a prompt"))).toBeNull();
 	});
+
+	describe("malformed lines (must not crash)", () => {
+		it("P1: a trailing non-object JSON line (array) is skipped, still finds the earlier entry", () => {
+			const text = assistantLine({ uuid: "a1", text: "first answer" }) + "[1,2,3]\n";
+			expect(lastAssistantText(text)).toBe("first answer");
+		});
+
+		it("N1: null/number/array lines interleaved before a valid entry never throw", () => {
+			const text =
+				assistantLine({ uuid: "a1", text: "first answer" }) +
+				"[1,2,3]\n" +
+				"42\n" +
+				"null\n" +
+				assistantLine({ uuid: "a2", text: "second answer" });
+			expect(lastAssistantText(text)).toBe("second answer");
+		});
+	});
 });
 
 describe("scrubFinalMessage", () => {

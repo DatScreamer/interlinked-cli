@@ -7,6 +7,8 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
+import type { JsonObject } from "../../lib/json-types.js";
 
 /** Mapping from manifest filename to candidate lockfile names. */
 export const LOCKFILE_MAP: Record<string, string[]> = {
@@ -159,36 +161,72 @@ export interface LockfileClassificationDrift {
 	mismatches: { name: string; manifestSection: DepSection; lockSection: DepSection | "absent" }[];
 }
 
-/** Parse a JSON file, or null on any read / parse error (best-effort). */
-function readJson(path: string): Record<string, unknown> | null {
+/** A dependency-section map (name -> declared spec), narrowed from unknown JSON. */
+export type DependencySections = Partial<Record<DepSection, JsonObject>>;
+
+/** True when `value` is a non-null, non-array JSON object. */
+
+/** Parse a JSON file to an unnarrowed value, or null on any read / parse error (best-effort). */
+function readJsonValue(path: string): unknown | null {
 	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+		return JSON.parse(readFileSync(path, "utf-8"));
 	} catch {
 		return null;
 	}
 }
 
+/** Pull the three known dependency sections out of an object, skipping any that aren't objects. */
+function sectionsFrom(obj: JsonObject): DependencySections {
+	const result: DependencySections = {};
+	for (const section of DEP_SECTIONS) {
+		const block = obj[section];
+		if (isJsonObject(block)) result[section] = block;
+	}
+	return result;
+}
+
+/** Parse a manifest (package.json) value into its dependency sections, or null if not an object. */
+function parseManifestSections(value: unknown): DependencySections | null {
+	if (!isJsonObject(value)) return null;
+	return sectionsFrom(value);
+}
+
 /**
- * The section `name` sits in within a manifest or lock-root object, or null when
+ * Parse a package-lock.json value down to `packages[""]`'s dependency sections.
+ * Returns null for a v1 lockfile (no `packages` map) or any other malformed shape —
+ * both are treated as "nothing to compare against", matching the pre-existing
+ * "no root entry" no-op behavior.
+ */
+function parseLockRootSections(value: unknown): DependencySections | null {
+	if (!isJsonObject(value)) return null;
+	const packages = value.packages;
+	if (!isJsonObject(packages)) return null;
+	const root = packages[""];
+	if (!isJsonObject(root)) return null;
+	return sectionsFrom(root);
+}
+
+/**
+ * The section `name` sits in within parsed dependency sections, or null when
  * absent. optionalDependencies takes precedence over dependencies (npm treats a
  * dep listed as optional as optional even if also a regular dependency), so both
  * sides are classified the same way and compare consistently.
  */
-function sectionOf(obj: Record<string, unknown>, name: string): DepSection | null {
+function sectionOf(sections: DependencySections, name: string): DepSection | null {
 	const order: DepSection[] = ["optionalDependencies", "dependencies", "devDependencies"];
 	for (const section of order) {
-		const block = obj[section];
-		if (block && typeof block === "object" && name in (block as object)) return section;
+		const block = sections[section];
+		if (block && name in block) return section;
 	}
 	return null;
 }
 
-/** Every dependency name declared anywhere in a manifest/lock-root object. */
-function declaredNames(obj: Record<string, unknown>): Set<string> {
+/** Every dependency name declared anywhere in a parsed dependency-sections map. */
+function declaredNames(sections: DependencySections): Set<string> {
 	const names = new Set<string>();
 	for (const section of DEP_SECTIONS) {
-		const block = obj[section];
-		if (block && typeof block === "object") for (const k of Object.keys(block as object)) names.add(k);
+		const block = sections[section];
+		if (block) for (const k of Object.keys(block)) names.add(k);
 	}
 	return names;
 }
@@ -207,18 +245,17 @@ export function checkLockfileClassificationDrift(manifestPath: string): Lockfile
 	const lockPath = resolve(dirname(manifestPath), "package-lock.json");
 	if (!existsSync(lockPath)) return clean;
 
-	const manifest = readJson(manifestPath);
-	const lock = readJson(lockPath);
-	if (!manifest || !lock) return clean;
-	const lockRoot = (lock.packages as Record<string, unknown> | undefined)?.[""];
-	if (!lockRoot || typeof lockRoot !== "object") return clean; // v1 lock — no root entry
+	const manifestValue = readJsonValue(manifestPath);
+	const lockValue = readJsonValue(lockPath);
+	const manifestSections = parseManifestSections(manifestValue);
+	const lockSections = parseLockRootSections(lockValue);
+	if (!manifestSections || !lockSections) return clean; // malformed manifest, or v1 lock (no root entry)
 
-	const root = lockRoot as Record<string, unknown>;
 	const mismatches: LockfileClassificationDrift["mismatches"] = [];
-	for (const name of declaredNames(manifest)) {
-		const manifestSection = sectionOf(manifest, name);
+	for (const name of declaredNames(manifestSections)) {
+		const manifestSection = sectionOf(manifestSections, name);
 		if (!manifestSection) continue;
-		const lockSection = sectionOf(root, name) ?? "absent";
+		const lockSection = sectionOf(lockSections, name) ?? "absent";
 		if (manifestSection !== lockSection) {
 			mismatches.push({ name, manifestSection, lockSection });
 		}

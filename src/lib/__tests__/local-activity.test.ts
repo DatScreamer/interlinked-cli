@@ -550,6 +550,34 @@ describe("readLocalActivity — legacy activity.jsonl fallback", () => {
 		);
 		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["lead"]);
 	});
+
+	// --- parseLocalActivityEvent boundary parser, exercised at this call site ---
+
+	it("P: extra fields the LocalActivityEvent interface does not declare do not break the row", () => {
+		// Real activity.jsonl carries write-side-only fields this interface
+		// never declared (hash/previousHash on guard-chain records, turn_id,
+		// tool_outcome — confirmed unread by every reader of this log). They
+		// must not prevent the well-formed ts/agent/type row from parsing.
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({
+				ts: "2026-04-22T10:00:00Z",
+				agent: "ok",
+				type: "x",
+				hash: "a".repeat(64),
+				turn_id: "t1",
+				tool_outcome: "success",
+			}),
+		]);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["ok"]);
+	});
+
+	it("N: a syntactically-valid line missing a required field (agent) is skipped, not partially served", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "2026-04-22T10:00:00Z", type: "x" }), // no agent
+			JSON.stringify({ ts: "2026-04-22T10:00:01Z", agent: "ok", type: "x" }),
+		]);
+		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["ok"]);
+	});
 });
 
 // ---------------------------------------------------------------------------

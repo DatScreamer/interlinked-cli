@@ -5,6 +5,7 @@
 // Extracted from verify.ts and evaluator.ts so both can reuse them.
 
 import { relative } from "node:path";
+import { isJsonObject } from "../../lib/json-types.js";
 import { nonNull } from "../../lib/non-null.js";
 import type { AuditResult, CheckResult } from "./types.js";
 
@@ -97,21 +98,48 @@ export function parseEslintOutput(output: string): CheckResult[] {
 // -------------------------------------------
 // JSON format: { results: [{ path, start: { line, col }, check_id, extra: { message } }] }
 
+interface SemgrepFinding {
+	checkId: string | undefined;
+	path: string | undefined;
+	line: number | undefined;
+	col: number | undefined;
+	message: string | undefined;
+}
+
+function parseSemgrepFinding(value: unknown): SemgrepFinding | null {
+	if (!isJsonObject(value)) return null;
+	const start = isJsonObject(value.start) ? value.start : undefined;
+	const extra = isJsonObject(value.extra) ? value.extra : undefined;
+	return {
+		checkId: typeof value.check_id === "string" ? value.check_id : undefined,
+		path: typeof value.path === "string" ? value.path : undefined,
+		line: start && typeof start.line === "number" ? start.line : undefined,
+		col: start && typeof start.col === "number" ? start.col : undefined,
+		message: extra && typeof extra.message === "string" ? extra.message : undefined,
+	};
+}
+
+function pushSemgrepFinding(entry: unknown, projectRoot: string, results: CheckResult[]): void {
+	const finding = parseSemgrepFinding(entry);
+	if (!finding) return;
+	results.push({
+		tool: "semgrep",
+		severity: "warning",
+		file: relative(projectRoot, finding.path || ""),
+		line: finding.line || 0,
+		column: finding.col,
+		message: `${finding.checkId || "unknown"}: ${finding.message || ""}`.trim(),
+		ruleId: finding.checkId,
+	});
+}
+
 export function parseSemgrepJson(output: string, projectRoot: string): CheckResult[] {
 	try {
 		const parsed = JSON.parse(output);
+		if (!isJsonObject(parsed)) return [];
+		const rawResults = Array.isArray(parsed.results) ? parsed.results : [];
 		const results: CheckResult[] = [];
-		for (const finding of parsed.results || []) {
-			results.push({
-				tool: "semgrep",
-				severity: "warning",
-				file: relative(projectRoot, finding.path || ""),
-				line: finding.start?.line || 0,
-				column: finding.start?.col,
-				message: `${finding.check_id || "unknown"}: ${finding.extra?.message || ""}`.trim(),
-				ruleId: finding.check_id,
-			});
-		}
+		for (const entry of rawResults) pushSemgrepFinding(entry, projectRoot, results);
 		return results;
 	} catch {
 		return [];
@@ -149,15 +177,36 @@ export function parseGitleaksJson(output: string): CheckResult[] {
 // -------------------------------------------
 // JSON format: { metadata: { vulnerabilities: { critical, high, moderate, low } } }
 
+interface NpmAuditVulnerabilities {
+	critical: number;
+	high: number;
+	moderate: number;
+	low: number;
+}
+
+function parseNpmAuditVulnerabilities(value: unknown): NpmAuditVulnerabilities | null {
+	if (!isJsonObject(value)) return null;
+	const metadata = value.metadata;
+	if (!isJsonObject(metadata)) return null;
+	const v = metadata.vulnerabilities;
+	if (!isJsonObject(v)) return null;
+	return {
+		critical: typeof v.critical === "number" ? v.critical : 0,
+		high: typeof v.high === "number" ? v.high : 0,
+		moderate: typeof v.moderate === "number" ? v.moderate : 0,
+		low: typeof v.low === "number" ? v.low : 0,
+	};
+}
+
 export function parseNpmAuditJson(output: string): AuditResult | null {
 	try {
 		const parsed = JSON.parse(output);
-		const v = parsed.metadata?.vulnerabilities;
+		const v = parseNpmAuditVulnerabilities(parsed);
 		if (!v) return null;
-		const total = (v.critical || 0) + (v.high || 0) + (v.moderate || 0) + (v.low || 0);
+		const total = v.critical + v.high + v.moderate + v.low;
 		if (total === 0) return null;
 
-		const counts = [];
+		const counts: string[] = [];
 		if (v.critical) counts.push(`${v.critical} critical`);
 		if (v.high) counts.push(`${v.high} high`);
 		if (v.moderate) counts.push(`${v.moderate} moderate`);
@@ -166,10 +215,10 @@ export function parseNpmAuditJson(output: string): AuditResult | null {
 		return {
 			tool: "npm audit",
 			total,
-			critical: v.critical || 0,
-			high: v.high || 0,
-			moderate: v.moderate || 0,
-			low: v.low || 0,
+			critical: v.critical,
+			high: v.high,
+			moderate: v.moderate,
+			low: v.low,
 			detail: counts.join(", "),
 		};
 	} catch {
@@ -229,36 +278,65 @@ export {
 	parseGccOutput,
 	parseGoBuildOutput,
 	parseGolangciLintJson,
+	parseKnipJson,
 	parseMypyOutput,
 	parseOsvScannerJson,
 	parseRuffFormatOutput,
 	parseRuffJson,
 } from "./output-parsers-extra.js";
 
-
 // -------------------------------------------
 // oxlint (oxlint --format=json)
 // -------------------------------------------
 // JSON format: { diagnostics: [{ message, code, severity, filename, labels: [{ span: { line, column } }] }] }
 
+interface OxlintDiagnostic {
+	message: string;
+	code: string | undefined;
+	severity: string | undefined;
+	filename: string;
+	line: number;
+	column: number | undefined;
+}
+
+function parseOxlintDiagnostic(value: unknown): OxlintDiagnostic | null {
+	if (!isJsonObject(value)) return null;
+	const labels = Array.isArray(value.labels) ? value.labels : [];
+	const firstLabel = labels[0];
+	const label = isJsonObject(firstLabel) ? firstLabel : undefined;
+	const span = label && isJsonObject(label.span) ? label.span : undefined;
+	return {
+		message: typeof value.message === "string" ? value.message : "",
+		code: typeof value.code === "string" ? value.code : undefined,
+		severity: typeof value.severity === "string" ? value.severity : undefined,
+		filename: typeof value.filename === "string" ? value.filename : "",
+		line: span && typeof span.line === "number" ? span.line : 0,
+		column: span && typeof span.column === "number" ? span.column : undefined,
+	};
+}
+
+function pushOxlintDiagnostic(entry: unknown, results: CheckResult[]): void {
+	const d = parseOxlintDiagnostic(entry);
+	if (!d) return;
+	results.push({
+		tool: "oxlint",
+		severity: d.severity === "error" ? "error" : "warning",
+		file: d.filename,
+		line: d.line,
+		column: d.column,
+		message: d.message,
+		ruleId: d.code,
+	});
+}
+
 export function parseOxlintJson(output: string): CheckResult[] {
 	try {
 		const parsed = JSON.parse(output);
+		if (!isJsonObject(parsed)) return [];
 		const diagnostics = parsed.diagnostics;
 		if (!Array.isArray(diagnostics)) return [];
 		const results: CheckResult[] = [];
-		for (const d of diagnostics) {
-			const span = d.labels?.[0]?.span;
-			results.push({
-				tool: "oxlint",
-				severity: d.severity === "error" ? "error" : "warning",
-				file: d.filename || "",
-				line: span?.line || 0,
-				column: span?.column,
-				message: d.message || "",
-				ruleId: d.code,
-			});
-		}
+		for (const entry of diagnostics) pushOxlintDiagnostic(entry, results);
 		return results;
 	} catch {
 		return [];
@@ -268,91 +346,48 @@ export function parseOxlintJson(output: string): CheckResult[] {
 // -------------------------------------------
 // knip (knip --reporter json)
 // -------------------------------------------
-// JSON: { files: string[], issues: [{ file, exports: [{name,line}], types: [{name,line}], dependencies: [], unlisted: [] }] }
-
-export function parseKnipJson(output: string): CheckResult[] {
-	try {
-		const parsed = JSON.parse(output);
-		const results: CheckResult[] = [];
-
-		// Unused files
-		if (Array.isArray(parsed.files)) {
-			for (const file of parsed.files) {
-				results.push({
-					tool: "knip",
-					severity: "warning",
-					file,
-					line: 0,
-					message: "unused file — not imported by any other module",
-					ruleId: "unused-file",
-				});
-			}
-		}
-
-		// Per-file issues
-		if (Array.isArray(parsed.issues)) {
-			for (const issue of parsed.issues) {
-				const file = issue.file || "";
-				for (const exp of issue.exports || []) {
-					results.push({
-						tool: "knip",
-						severity: "warning",
-						file,
-						line: exp.line || 0,
-						message: `unused export: ${exp.name}`,
-						ruleId: "unused-export",
-					});
-				}
-				for (const t of issue.types || []) {
-					results.push({
-						tool: "knip",
-						severity: "warning",
-						file,
-						line: t.line || 0,
-						message: `unused type export: ${t.name}`,
-						ruleId: "unused-type",
-					});
-				}
-				for (const dep of issue.unlisted || []) {
-					results.push({
-						tool: "knip",
-						severity: "warning",
-						file,
-						line: 0,
-						message: `unlisted dependency: ${dep.name || dep}`,
-						ruleId: "unlisted-dep",
-					});
-				}
-			}
-		}
-
-		return results;
-	} catch {
-		return [];
-	}
-}
+// Implementation moved to output-parsers-extra.ts (line-cap extraction) and
+// re-exported above alongside the other secondary parsers.
 
 // -------------------------------------------
 // ShellCheck (shellcheck --format=json1)
 // -------------------------------------------
 // JSON1 format: { comments: [{ file, line, column, level, code, message }] }
 
+// Return type is inferred (not a named interface) to keep this file under
+// its line cap — see output-parsers-extra.ts for the named-type convention.
+function parseShellcheckComment(value: unknown) {
+	if (!isJsonObject(value)) return null;
+	const code =
+		typeof value.code === "number" || typeof value.code === "string" ? value.code : undefined;
+	return {
+		level: typeof value.level === "string" ? value.level : undefined,
+		file: typeof value.file === "string" ? value.file : "",
+		line: typeof value.line === "number" ? value.line : 0,
+		column: typeof value.column === "number" ? value.column : undefined,
+		message: typeof value.message === "string" ? value.message : "",
+		code,
+	};
+}
+
 export function parseShellcheckJson(output: string): CheckResult[] {
 	try {
 		const parsed = JSON.parse(output);
+		if (!isJsonObject(parsed)) return [];
 		const comments = parsed.comments;
 		if (!Array.isArray(comments)) return [];
 		const results: CheckResult[] = [];
-		for (const c of comments) {
-			const level = c.level as string;
-			if (level === "style" || level === "info") continue;
+		for (const entry of comments) {
+			const c = parseShellcheckComment(entry);
+			if (!c) continue;
+			if (c.level === "style" || c.level === "info") continue;
 			results.push({
 				tool: "shellcheck",
-				severity: level === "error" ? "error" : "warning",
-				file: c.file || "",
-				line: c.line || 0,
+				severity: c.level === "error" ? "error" : "warning",
+				file: c.file,
+				line: c.line,
 				column: c.column,
-				message: c.message || "",
+				message: c.message,
 				ruleId: c.code ? `SC${c.code}` : undefined,
 			});
 		}

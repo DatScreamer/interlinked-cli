@@ -472,6 +472,94 @@ describe("searchCommand — ripgrep engine", () => {
 });
 
 // ===========================================
+// rg --json message boundary parsers
+// (parseRipgrepMatch / parseRipgrepContext / parseRipgrepSearchedFiles)
+// ===========================================
+
+describe("searchCommand — rg --json message boundary parsers", () => {
+	it("P1: a well-formed match line yields file/line/column/text (positive control)", () => {
+		withRipgrep(
+			`${rgMatchAt({ path: "/repo/a.ts", lineNumber: 4, text: "needle", col: 2 })}\n${rgSummary(1)}`,
+		);
+		searchCommand("needle", { json: true });
+		const matches = loggedJson().matches as Array<Record<string, unknown>>;
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(4);
+		expect(nonNull(matches[0]).column).toBe(2);
+	});
+
+	it("N1: a match line whose data.line_number is a string (not a number) is skipped", () => {
+		const badMatch = JSON.stringify({
+			type: "match",
+			data: { path: { text: "/repo/a.ts" }, line_number: "4", lines: { text: "needle\n" } },
+		});
+		withRipgrep(`${badMatch}\n${rgSummary(1)}`);
+		searchCommand("needle", { json: true });
+		expect(loggedJson().total).toBe(0);
+	});
+
+	it("N2: a match line whose data.path.text is missing is skipped", () => {
+		const badMatch = JSON.stringify({
+			type: "match",
+			data: { path: {}, line_number: 1, lines: { text: "needle\n" } },
+		});
+		withRipgrep(`${badMatch}\n${rgSummary(1)}`);
+		searchCommand("needle", { json: true });
+		expect(loggedJson().total).toBe(0);
+	});
+
+	it("N3: a context line with a non-object data.lines is skipped, not attached and not thrown", () => {
+		const stdout = [
+			rgMatch("/repo/a.ts", 1, "needle"),
+			JSON.stringify({
+				type: "context",
+				data: { path: { text: "/repo/a.ts" }, line_number: 2, lines: "not-an-object" },
+			}),
+			rgSummary(1),
+		].join("\n");
+		withRipgrep(stdout);
+		searchCommand("needle", { json: true });
+		const matches = loggedJson().matches as Array<Record<string, unknown>>;
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).context_after).toEqual([]);
+	});
+
+	it("N4: a summary line whose data.stats.searches is a string falls back to 0", () => {
+		const stdout = [
+			rgMatch("/repo/a.ts", 1, "needle"),
+			JSON.stringify({ type: "summary", data: { stats: { searches: "lots" } } }),
+		].join("\n");
+		withRipgrep(stdout);
+		searchCommand("needle", { json: true });
+		expect(loggedJson().searched_files).toBe(0);
+	});
+
+	it("P2: a non-numeric submatch start is treated as absent (column undefined, not thrown)", () => {
+		const badSubmatch = JSON.stringify({
+			type: "match",
+			data: {
+				path: { text: "/repo/a.ts" },
+				line_number: 1,
+				lines: { text: "needle\n" },
+				submatches: [{ start: "not-a-number" }],
+			},
+		});
+		withRipgrep(`${badSubmatch}\n${rgSummary(1)}`);
+		searchCommand("needle", { json: true });
+		const matches = loggedJson().matches as Array<Record<string, unknown>>;
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).column).toBeUndefined();
+	});
+
+	it("N5: a bare-JSON-primitive line (e.g. `true`) is skipped like an unrecognized type", () => {
+		const stdout = ["true", rgMatch("/repo/a.ts", 1, "needle"), rgSummary(1)].join("\n");
+		withRipgrep(stdout);
+		searchCommand("needle", { json: true });
+		expect(loggedJson().total).toBe(1);
+	});
+});
+
+// ===========================================
 // Native fs engine
 // ===========================================
 

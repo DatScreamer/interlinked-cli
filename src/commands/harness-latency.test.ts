@@ -168,6 +168,46 @@ describe("computeLatencyReport — parsing & grouping", () => {
 		expect(computeLatencyReport(CWD).total_events).toBe(2);
 	});
 
+	it("P1: parses a well-formed record with every field present", () => {
+		writeLog([sample()]);
+		const report = computeLatencyReport(CWD);
+		expect(report.total_events).toBe(1);
+		expect(report.by_hook_event.PostToolUse).toBe(1);
+	});
+
+	it("N1: a line that parses to a bare JSON null is skipped instead of crashing", () => {
+		// Before the isJsonObject gate, `JSON.parse("null") as LatencyRecord`
+		// was pushed unchecked; the aggregation loop's `r.hook_event` access
+		// then threw on the null row (not caught -- that try/catch only wraps
+		// the parse+push, not later use), crashing the whole report.
+		fsState.files.set(
+			DEFAULT_LOG,
+			[JSON.stringify(sample()), "null", JSON.stringify(sample())].join("\n") + "\n",
+		);
+		expect(() => computeLatencyReport(CWD)).not.toThrow();
+		const report = computeLatencyReport(CWD);
+		expect(report.total_events).toBe(2); // the null line contributes nothing
+	});
+
+	it("N2: a line that parses to a top-level JSON array is skipped", () => {
+		fsState.files.set(
+			DEFAULT_LOG,
+			[JSON.stringify(sample()), JSON.stringify(["not", "a", "record"])].join("\n") + "\n",
+		);
+		const report = computeLatencyReport(CWD);
+		expect(report.total_events).toBe(1);
+	});
+
+	it("N3: a session_id of the wrong type is folded to null rather than reaching .slice() as a non-string", () => {
+		// The human-readable renderer calls session_id.slice(0, 36) with no
+		// per-use typeof guard; a non-string session_id must not reach it.
+		writeLog([sample({ session_id: 12345, checks_timing_ms: 500 })]);
+		const report = computeLatencyReport(CWD);
+		// session_id coerced to null -> excluded from session stats (same as
+		// the pre-existing "ignores records with no session_id" behavior).
+		expect(report.slowest_sessions).toEqual([]);
+	});
+
 	it("groups counts by hook_event and buckets a null hook_event under 'unknown'", () => {
 		writeLog([
 			sample({ hook_event: "PreToolUse" }),

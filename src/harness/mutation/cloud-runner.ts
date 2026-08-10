@@ -9,6 +9,7 @@
 // unrecognized report THROWS — the gate turns that into an honest not-measured
 // allow, never a forged clean pass (spec §12).
 
+import { isJsonObject } from "../../lib/json-types.js";
 import type { MutationRunner } from "./gate.js";
 import { strykerToAdapted } from "./stryker-adapter.js";
 import type { TestRunResult } from "./types.js";
@@ -151,7 +152,7 @@ function extractMessage(raw: string): string {
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed === "string") return parsed;
-		if (isRecord(parsed)) {
+		if (isJsonObject(parsed)) {
 			for (const key of ["error", "message", "detail", "reason"]) {
 				const value = parsed[key];
 				if (typeof value === "string" && value.trim() !== "") return value;
@@ -179,15 +180,11 @@ function headersFor(config: CloudRunnerConfig): Record<string, string> {
 	return headers;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object";
-}
-
 /** Parse the optional overlay test-run signal from the Worker response (spec §7).
  *  Absent / malformed ⇒ undefined — a mutants-only response gates neither red/green
  *  nor RED-witness, exactly as before the Worker started reporting it. */
 function parseTestRun(body: unknown): TestRunResult | undefined {
-	if (!isRecord(body) || !isRecord(body.testRun)) return undefined;
+	if (!isJsonObject(body) || !isJsonObject(body.testRun)) return undefined;
 	const overlayGreen = body.testRun.overlayGreen;
 	if (typeof overlayGreen !== "boolean") return undefined;
 	const witness = body.testRun.redWitnessSatisfied;

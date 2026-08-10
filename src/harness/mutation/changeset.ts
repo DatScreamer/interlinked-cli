@@ -7,6 +7,9 @@
 // so this normalizes the runner-specific tool_input into that shape. Reads
 // `unknown` input through type predicates (no casts).
 
+import { isJsonObject } from "../../lib/json-types.js";
+import type { JsonObject } from "../../lib/json-types.js";
+
 export interface PatchEdit {
 	oldString: string;
 	newString: string;
@@ -22,22 +25,18 @@ export interface ChangeSet {
 	ops: FileOp[];
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object";
-}
-
 function str(v: unknown): string | null {
 	return typeof v === "string" ? v : null;
 }
 
-function writeOp(input: Record<string, unknown>): ChangeSet | null {
+function writeOp(input: JsonObject): ChangeSet | null {
 	const path = str(input.file_path);
 	const content = str(input.content);
 	if (path === null || content === null) return null;
 	return { ops: [{ kind: "write", path, content }] };
 }
 
-function editOp(input: Record<string, unknown>): ChangeSet | null {
+function editOp(input: JsonObject): ChangeSet | null {
 	const path = str(input.file_path);
 	const oldString = str(input.old_string);
 	const newString = str(input.new_string);
@@ -49,7 +48,7 @@ function parseEdits(value: unknown): PatchEdit[] | null {
 	if (!Array.isArray(value)) return null;
 	const edits: PatchEdit[] = [];
 	for (const raw of value) {
-		if (!isRecord(raw)) return null;
+		if (!isJsonObject(raw)) return null;
 		const oldString = str(raw.old_string);
 		const newString = str(raw.new_string);
 		if (oldString === null || newString === null) return null;
@@ -58,7 +57,7 @@ function parseEdits(value: unknown): PatchEdit[] | null {
 	return edits;
 }
 
-function multiEditOp(input: Record<string, unknown>): ChangeSet | null {
+function multiEditOp(input: JsonObject): ChangeSet | null {
 	const path = str(input.file_path);
 	const edits = parseEdits(input.edits);
 	if (path === null || edits === null) return null;
@@ -67,7 +66,7 @@ function multiEditOp(input: Record<string, unknown>): ChangeSet | null {
 
 /** Normalize a Claude Code tool_input into a ChangeSet, or null for non-mutating tools. */
 export function normalizeChangeSet(toolName: string, toolInput: unknown): ChangeSet | null {
-	if (!isRecord(toolInput)) return null;
+	if (!isJsonObject(toolInput)) return null;
 	switch (toolName) {
 		case "Write":
 			return writeOp(toolInput);

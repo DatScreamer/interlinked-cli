@@ -53,6 +53,14 @@ export interface StatuslineSnapshotInput {
 	specFactsTotal?: number | undefined;
 	/** Ingested review findings still open (neither touched nor acked). */
 	reviewFindingsOpen?: number | undefined;
+	/**
+	 * Guard activity since daemon start — blocks, warnings, asks. Optional so a
+	 * caller that has not wired the tally still writes a valid snapshot (the
+	 * fields render as zeros and the segment hides itself).
+	 */
+	guardTally?:
+		| { blocked: number; warned: number; asked: number; lastBlockRule: string | null }
+		| undefined;
 }
 
 interface PersistedConfigShape {
@@ -151,6 +159,13 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		`tool_checks_enabled=${checks.tools}`,
 		`inline_checks_enabled=${checks.inline}`,
 		`checks_enabled=${checks.tools + checks.inline}`,
+		// What the harness actually DID since this daemon started. The counts
+		// above describe the harness's SIZE, which a human learns once; these
+		// change every few tool calls and are the product's visible value.
+		`guard_blocked=${input.guardTally?.blocked ?? 0}`,
+		`guard_warned=${input.guardTally?.warned ?? 0}`,
+		`guard_asked=${input.guardTally?.asked ?? 0}`,
+		`guard_last_block_rule=${input.guardTally?.lastBlockRule ?? ""}`,
 		`reservations_count=${input.reservationsCount}`,
 		`index_status=${input.indexStatus}`,
 		`index_files=${input.indexFiles}`,

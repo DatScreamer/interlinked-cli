@@ -105,6 +105,9 @@ export function evaluatePostToolUse(
 	// bumped tool_call_count, so the synthesized source carries the correct
 	// at_step. Independent of output_scanning — gated on taint_tracking only.
 	recordBashProvenanceIfFetching(event, rules, session);
+	// Effect-based baseline integrity runs one layer up, in evaluator-unified.ts:
+	// it needs BOTH phases (pre-call snapshot, post-call compare), which this
+	// post-only entry point cannot see. See evaluator/baseline-effect-guard.ts.
 
 	return {
 		decision: "allow",

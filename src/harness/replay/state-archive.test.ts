@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	BASELINE_FILES,
 	loadStateSnapshot,
+	parseHarnessStateSnapshot,
+	parsePointerRow,
 	recordStateSnapshot,
 } from "./state-archive.js";
 
@@ -88,5 +90,93 @@ describe("recordStateSnapshot / loadStateSnapshot", () => {
 			log: (m) => logs.push(m),
 		});
 		expect(logs.length).toBeGreaterThan(0);
+	});
+});
+
+describe("parsePointerRow", () => {
+	it("P1: accepts a well-formed row with a numeric seq", () => {
+		expect(parsePointerRow({ seq: 3, sha: "abc123", ts: "2026-08-10T00:00:00Z" })).toEqual({
+			seq: 3,
+			sha: "abc123",
+			ts: "2026-08-10T00:00:00Z",
+		});
+	});
+
+	it("P2: accepts a null seq (never-recorded step)", () => {
+		expect(parsePointerRow({ seq: null, sha: "abc123", ts: "t" })).toEqual({
+			seq: null,
+			sha: "abc123",
+			ts: "t",
+		});
+	});
+
+	it("N1: rejects a non-object value (array)", () => {
+		expect(parsePointerRow(["abc123", 3])).toBeNull();
+	});
+
+	it("N2: rejects a missing sha", () => {
+		expect(parsePointerRow({ seq: 1, ts: "t" })).toBeNull();
+	});
+
+	it("N3: rejects a non-string ts", () => {
+		expect(parsePointerRow({ seq: 1, sha: "abc", ts: 12345 })).toBeNull();
+	});
+
+	it("N4: rejects a non-numeric, non-null seq", () => {
+		expect(parsePointerRow({ seq: "3", sha: "abc", ts: "t" })).toBeNull();
+	});
+});
+
+describe("parseHarnessStateSnapshot", () => {
+	it("P1: accepts a well-formed snapshot with populated baselines", () => {
+		const snapshot = parseHarnessStateSnapshot({
+			schema: "state-snapshot.v1",
+			live_snapshot: { tool_call_count: 2 },
+			baselines: { "metric-caps.json": "{}", "coverage-baseline.json": null },
+		});
+		expect(snapshot).toEqual({
+			schema: "state-snapshot.v1",
+			live_snapshot: { tool_call_count: 2 },
+			baselines: { "metric-caps.json": "{}", "coverage-baseline.json": null },
+		});
+	});
+
+	it("P2: accepts a null live_snapshot", () => {
+		const snapshot = parseHarnessStateSnapshot({
+			schema: "state-snapshot.v1",
+			live_snapshot: null,
+			baselines: {},
+		});
+		expect(snapshot?.live_snapshot).toBeNull();
+	});
+
+	it("N1: rejects the wrong schema tag", () => {
+		expect(
+			parseHarnessStateSnapshot({ schema: "other.v1", live_snapshot: null, baselines: {} }),
+		).toBeNull();
+	});
+
+	it("N2: rejects a non-object top level (string)", () => {
+		expect(parseHarnessStateSnapshot("not an object")).toBeNull();
+	});
+
+	it("N3: rejects a baselines value that is not string-or-null", () => {
+		expect(
+			parseHarnessStateSnapshot({
+				schema: "state-snapshot.v1",
+				live_snapshot: null,
+				baselines: { "x.json": 42 },
+			}),
+		).toBeNull();
+	});
+
+	it("N4: rejects an array-shaped live_snapshot (arrays are not JsonObject)", () => {
+		expect(
+			parseHarnessStateSnapshot({
+				schema: "state-snapshot.v1",
+				live_snapshot: ["not", "an", "object"],
+				baselines: {},
+			}),
+		).toBeNull();
 	});
 });

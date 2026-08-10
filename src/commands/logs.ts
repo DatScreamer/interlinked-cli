@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { formatActivitySummary, parseDuration } from "../lib/activity-utils.js";
 import { getDataDir } from "../lib/config.js";
 import { c, shortTimestamp } from "../lib/formatter.js";
+import { isJsonObject } from "../lib/json-types.js";
 import { readLocalActivity } from "../lib/local-activity.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 
@@ -47,6 +48,32 @@ interface LogEvent {
 	session?: string | null;
 	hook?: string | null;
 	[key: string]: unknown;
+}
+
+/**
+ * Parse one already-`JSON.parse`d activity.jsonl line into a `LogEvent`, or
+ * null when it isn't an object or is missing one of the three required
+ * fields (`ts`/`agent`/`type`). Every OTHER key is preserved verbatim via
+ * the spread -- `formatEvent` reads `event.tokens` / `event.duration_ms`
+ * through `LogEvent`'s own index signature, so a literal that only carried
+ * the named fields would silently drop them from the live --follow render.
+ */
+function parseLogEvent(value: unknown): LogEvent | null {
+	if (!isJsonObject(value)) return null;
+	const { ts, agent, type, tool, summary, session, hook } = value;
+	if (typeof ts !== "string" || typeof agent !== "string" || typeof type !== "string") {
+		return null;
+	}
+	return {
+		...value,
+		ts,
+		agent,
+		type,
+		tool: typeof tool === "string" || tool === null ? tool : null,
+		summary: typeof summary === "string" || summary === null ? summary : null,
+		session: typeof session === "string" || session === null ? session : null,
+		hook: typeof hook === "string" || hook === null ? hook : null,
+	};
 }
 
 function getActivityPath(cwd: string): string {
@@ -144,8 +171,8 @@ async function tailFollow(activityPath: string, opts: LogsOptions): Promise<void
 			const lines = buffer.toString("utf-8").split("\n").filter(Boolean);
 			for (const line of lines) {
 				try {
-					const event = JSON.parse(line) as LogEvent;
-					if (matchesFilters(event, opts)) {
+					const event = parseLogEvent(JSON.parse(line));
+					if (event && matchesFilters(event, opts)) {
 						console.log(formatEvent(event, raw));
 					}
 				} catch (_) {

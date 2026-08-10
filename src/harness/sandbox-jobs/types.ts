@@ -77,6 +77,14 @@ const VALID_KINDS: ReadonlySet<string> = new Set<SandboxJobKind>([
 	"miri",
 ]);
 
+/** Every member of `SandboxRiskTier`. Kept adjacent to the type so adding a
+ *  tier without admitting it here shows up in one diff. */
+const VALID_RISK_TIERS: ReadonlySet<string> = new Set<SandboxRiskTier>([
+	"trivial",
+	"lite",
+	"full",
+]);
+
 /**
  * Validate an INBOUND request shape (used Worker-side before dispatch). The
  * load-bearing check is that the request cannot smuggle executable intent:
@@ -89,6 +97,12 @@ export function isValidSandboxJobRequest(v: unknown): v is SandboxJobRequest {
 	const r = v as Record<string, unknown>;
 	if (r.schemaVersion !== 1) return false;
 	if (typeof r.kind !== "string" || !VALID_KINDS.has(r.kind)) return false;
+	// riskTier decides which oracles run and how hard, so an unvalidated one is
+	// a privilege question, not a hygiene one: before 2026-08-09 this field was
+	// declared required and checked by nothing, so a request could arrive with
+	// riskTier absent (or `"trivial "`, or an object) and reach the Worker's
+	// triage. Found by the `type_predicate_drift` check.
+	if (typeof r.riskTier !== "string" || !VALID_RISK_TIERS.has(r.riskTier)) return false;
 	if (typeof r.file !== "string" || typeof r.sessionId !== "string") return false;
 	if (typeof r.timeoutMs !== "number" || !Number.isFinite(r.timeoutMs)) return false;
 	if (!Array.isArray(r.overlays)) return false;

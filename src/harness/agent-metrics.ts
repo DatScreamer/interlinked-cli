@@ -23,7 +23,7 @@
 // so the writer and every consumer see one definition; re-exported here
 // because this module is where they are produced.
 import type { AgentTokenTotals, AgentTranscriptMetrics } from "../lib/collection/types.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 export type { AgentTokenTotals, AgentTranscriptMetrics };
 
@@ -86,18 +86,17 @@ function foldContentBlock(block: JsonObject, m: AgentTranscriptMetrics): void {
 /** Fold one assistant transcript entry (usage, model, content blocks). */
 function foldAssistantEntry(message: JsonObject, m: AgentTranscriptMetrics): void {
 	const usage = message.usage;
-	if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+	if (isJsonObject(usage)) {
 		m.assistant_turns += 1;
-		// SAFETY: guarded above as a non-array object; addUsage type-checks every field.
-		addUsage(m.tokens, usage as JsonObject);
+		addUsage(m.tokens, usage);
 	}
 	const model = message.model;
 	if (typeof model === "string" && model && !m.models.includes(model)) m.models.push(model);
 	const content = message.content;
 	if (!Array.isArray(content)) return;
 	for (const raw of content) {
-		// SAFETY: transcript content is untyped JSON; foldContentBlock guards every read.
-		if (raw && typeof raw === "object") foldContentBlock(raw as JsonObject, m);
+		// transcript content is untyped JSON; foldContentBlock guards every field it reads.
+		if (isJsonObject(raw)) foldContentBlock(raw, m);
 	}
 }
 
@@ -127,21 +126,23 @@ export function summarizeAgentTranscript(jsonlText: string): AgentTranscriptMetr
 	for (const line of jsonlText.split("\n")) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
-		let entry: JsonObject;
+		let parsed: unknown;
 		try {
-			// SAFETY: transcript line is untyped JSON; every field read below is guarded.
-			entry = JSON.parse(trimmed) as JsonObject;
+			parsed = JSON.parse(trimmed);
 		} catch (err) {
 			void err; // truncated / non-JSON line — skip it
 			continue;
 		}
-		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		// Transcript lines are untyped JSON (provider-specific shapes); every
+		// field read below is individually type-checked, so this is only a
+		// structural gate (reject non-object rows), not a full schema.
+		if (!isJsonObject(parsed)) continue;
+		const entry = parsed;
 		m.transcript_entries += 1;
 		foldTimestamp(entry.timestamp, m);
 		const message = entry.message;
-		if (entry.type === "assistant" && message && typeof message === "object" && !Array.isArray(message)) {
-			// SAFETY: guarded above as a non-array object; every field read inside is type-checked.
-			foldAssistantEntry(message as JsonObject, m);
+		if (entry.type === "assistant" && isJsonObject(message)) {
+			foldAssistantEntry(message, m);
 		}
 	}
 	m.duration_ms = spanMs(m.first_ts, m.last_ts);

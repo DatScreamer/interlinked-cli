@@ -31,6 +31,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 
 /** Close a descriptor without letting a close failure mask the read result. */
 function closeQuietly(fd: number): void {
@@ -81,17 +82,18 @@ export function loadEnforcementLedger(interlinkedDir: string): EnforcementLedger
 	const path = enforcementLedgerPath(interlinkedDir);
 	if (!existsSync(path)) return { ...EMPTY_LEDGER };
 	try {
-		// SAFETY: the cast asserts nothing about the contents — every field is
-		// re-validated below by `nonNegative` / a typeof check, so a hand-edited
-		// or truncated file degrades to zeroes rather than propagating junk.
-		const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<EnforcementLedger>;
+		// Every field is re-validated below by `nonNegative` / a typeof check
+		// (never trusted from a type annotation), so a hand-edited or truncated
+		// file degrades to zeroes rather than propagating junk.
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (!isJsonObject(parsed)) return { ...EMPTY_LEDGER };
 		return {
 			version: 1,
-			since: typeof raw.since === "string" ? raw.since : "",
-			cursor: nonNegative(raw.cursor),
-			blocked: nonNegative(raw.blocked),
-			caught: nonNegative(raw.caught),
-			evaluated: nonNegative(raw.evaluated),
+			since: typeof parsed.since === "string" ? parsed.since : "",
+			cursor: nonNegative(parsed.cursor),
+			blocked: nonNegative(parsed.blocked),
+			caught: nonNegative(parsed.caught),
+			evaluated: nonNegative(parsed.evaluated),
 		};
 	} catch {
 		return { ...EMPTY_LEDGER };

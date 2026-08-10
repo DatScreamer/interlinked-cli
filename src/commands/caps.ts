@@ -17,6 +17,7 @@ import {
 	resetMetricCapsCache,
 	resolveMetricCaps,
 } from "../harness/metric-caps.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 /** Highest valid coverage floor (percent). */
 const COVERAGE_MAX = 100;
@@ -75,14 +76,17 @@ export async function capsShowAction(
 	return 0;
 }
 
-/** Parse an existing metric-caps.json into a plain object; {} on absent/malformed. */
-function readExisting(path: string): Record<string, unknown> {
+/** Parse an existing metric-caps.json into a plain object; {} on absent, malformed
+ *  JSON, or JSON that parses to a non-object shape (array/string/number — valid
+ *  JSON, wrong shape) — all three take the same documented overwrite-cleanly path. */
+function readExisting(path: string): JsonObject {
 	try {
-		if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		if (!existsSync(path)) return {};
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		return isJsonObject(parsed) ? parsed : {}; // wrong shape → overwrite cleanly
 	} catch {
 		return {}; // malformed → overwrite cleanly
 	}
-	return {};
 }
 
 /** Validate a proposed cap value for `metricKey`; null when valid, else an error. */

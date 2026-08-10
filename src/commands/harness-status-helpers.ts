@@ -13,7 +13,7 @@ import { createDaemonClient } from "../harness/daemon-client.js";
 import type { DaemonHealth } from "../harness/daemon-protocol.js";
 import { discoverDaemons } from "../harness/session-paths.js";
 import { getConfigDir } from "../lib/config.js";
-import type { JsonObject } from "../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 import { getFramedSocketPath, getSocketPath } from "./harness-process.js";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +102,13 @@ export function readRssMb(pid: number): number | null {
 	}
 }
 
+/** Narrow a parsed `config.json` value to its `mode` field. Returns null when
+ *  the value isn't a JSON object or `mode` isn't a string. */
+function parseActiveMode(value: unknown): string | null {
+	if (!isJsonObject(value)) return null;
+	return typeof value.mode === "string" ? value.mode : null;
+}
+
 /** Read the configured operational mode from `.interlinked/config.json`.
  *  Returns null if the file is missing or malformed — the user might just
  *  not have run `interlinked enable` yet. */
@@ -109,50 +116,50 @@ export function readActiveMode(cwd: string): string | null {
 	try {
 		const configPath = join(getConfigDir(cwd), "config.json");
 		if (!existsSync(configPath)) return null;
-		const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as { mode?: unknown };
-		return typeof parsed.mode === "string" ? parsed.mode : null;
+		return parseActiveMode(JSON.parse(readFileSync(configPath, "utf-8")));
 	} catch (e) {
 		void e;
 		return null;
 	}
 }
 
+/** Narrow a parsed `harness-protocol.json` value to a full
+ *  `HarnessProtocolStatus`, defaulting every optional field and rejecting an
+ *  unrecognized (or absent) `protocol` literal. */
+function parseHarnessProtocolStatus(value: unknown): HarnessProtocolStatus | null {
+	if (!isJsonObject(value)) return null;
+	if (value.protocol !== "raw" && value.protocol !== "framed" && value.protocol !== "dual") {
+		return null;
+	}
+	return {
+		protocol: value.protocol,
+		protocol_version:
+			typeof value.protocol_version === "string" ? value.protocol_version : "unknown",
+		started_at: typeof value.started_at === "string" ? value.started_at : "",
+		raw_socket_path: typeof value.raw_socket_path === "string" ? value.raw_socket_path : null,
+		framed_socket_path:
+			typeof value.framed_socket_path === "string" ? value.framed_socket_path : null,
+		framed_session_id:
+			typeof value.framed_session_id === "string" ? value.framed_session_id : null,
+		last_raw_event_at:
+			typeof value.last_raw_event_at === "string" ? value.last_raw_event_at : null,
+		last_framed_event_at:
+			typeof value.last_framed_event_at === "string" ? value.last_framed_event_at : null,
+		raw_event_count: typeof value.raw_event_count === "number" ? value.raw_event_count : 0,
+		framed_event_count:
+			typeof value.framed_event_count === "number" ? value.framed_event_count : 0,
+		framed_error_count:
+			typeof value.framed_error_count === "number" ? value.framed_error_count : 0,
+		framed_timeout_count:
+			typeof value.framed_timeout_count === "number" ? value.framed_timeout_count : 0,
+	};
+}
+
 export function readProtocolStatus(cwd: string): HarnessProtocolStatus | null {
 	try {
 		const path = getProtocolStatusPath(cwd);
 		if (!existsSync(path)) return null;
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<HarnessProtocolStatus>;
-		if (
-			parsed.protocol !== "raw" &&
-			parsed.protocol !== "framed" &&
-			parsed.protocol !== "dual"
-		) {
-			return null;
-		}
-		return {
-			protocol: parsed.protocol,
-			protocol_version:
-				typeof parsed.protocol_version === "string" ? parsed.protocol_version : "unknown",
-			started_at: typeof parsed.started_at === "string" ? parsed.started_at : "",
-			raw_socket_path:
-				typeof parsed.raw_socket_path === "string" ? parsed.raw_socket_path : null,
-			framed_socket_path:
-				typeof parsed.framed_socket_path === "string" ? parsed.framed_socket_path : null,
-			framed_session_id:
-				typeof parsed.framed_session_id === "string" ? parsed.framed_session_id : null,
-			last_raw_event_at:
-				typeof parsed.last_raw_event_at === "string" ? parsed.last_raw_event_at : null,
-			last_framed_event_at:
-				typeof parsed.last_framed_event_at === "string" ? parsed.last_framed_event_at : null,
-			raw_event_count:
-				typeof parsed.raw_event_count === "number" ? parsed.raw_event_count : 0,
-			framed_event_count:
-				typeof parsed.framed_event_count === "number" ? parsed.framed_event_count : 0,
-			framed_error_count:
-				typeof parsed.framed_error_count === "number" ? parsed.framed_error_count : 0,
-			framed_timeout_count:
-				typeof parsed.framed_timeout_count === "number" ? parsed.framed_timeout_count : 0,
-		};
+		return parseHarnessProtocolStatus(JSON.parse(readFileSync(path, "utf-8")));
 	} catch (e) {
 		void e;
 		return null;
@@ -193,6 +200,13 @@ export async function readFramedSocketStatuses(cwd: string): Promise<FramedSocke
  *  read the trailing 8 KiB of the file (enough to span ~50 records at
  *  current sizes), parse JSON lines back-to-front, and return the first ts
  *  we recognise. Returns null on any read/parse failure. */
+/** Narrow a parsed latency-log record to its `ts` field. Returns null when
+ *  the value isn't a JSON object or `ts` isn't a string. */
+function parseLatencyRecordTs(value: unknown): string | null {
+	if (!isJsonObject(value)) return null;
+	return typeof value.ts === "string" ? value.ts : null;
+}
+
 export function readLastLatencyTimestamp(cwd: string): string | null {
 	try {
 		const path = join(getConfigDir(cwd), "logs", "latency.jsonl");
@@ -207,8 +221,8 @@ export function readLastLatencyTimestamp(cwd: string): string | null {
 			const line = lines[i];
 			if (line === undefined) continue;
 			try {
-				const parsed = JSON.parse(line) as { ts?: unknown };
-				if (typeof parsed.ts === "string") return parsed.ts;
+				const ts = parseLatencyRecordTs(JSON.parse(line));
+				if (ts !== null) return ts;
 			} catch (e) {
 				void e;
 			}

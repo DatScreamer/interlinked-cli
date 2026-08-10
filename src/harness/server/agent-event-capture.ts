@@ -29,6 +29,7 @@ import type {
 	AgentTranscriptMetrics,
 } from "../../lib/collection/types.js";
 import { appendCollection } from "../../lib/collection/writer.js";
+import { isJsonObject } from "../../lib/json-types.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { redactPii, scrubSecrets } from "../../lib/secrets.js";
 import { captureAgentTranscript } from "../timeline-capture.js";
@@ -118,8 +119,9 @@ export function lastAssistantText(jsonlText: string): string | null {
 		const line = lines[i]?.trim();
 		if (!line) continue;
 		try {
-			// SAFETY: transcript line is untyped JSON; assistantEntryText guards every read.
-			const text = assistantEntryText(JSON.parse(line) as JsonObject);
+			const parsed: unknown = JSON.parse(line);
+			if (!isJsonObject(parsed)) continue;
+			const text = assistantEntryText(parsed);
 			if (text !== null) return text;
 		} catch (err) {
 			void err; // truncated / non-JSON line — keep walking

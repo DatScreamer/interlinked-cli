@@ -13,6 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { parseFinding } from "./parse-finding.js";
 import {
 	computeCompleteness,
 	computeDedupKey,
@@ -271,8 +272,8 @@ export function loadFindings(cwd: string, opts: LoadOpts = {}): Finding[] {
 		for (const rawLine of readFileSync(path, "utf-8").split("\n")) {
 			if (!rawLine.trim()) continue;
 			try {
-				const parsed: unknown = JSON.parse(rawLine);
-				if (isFinding(parsed)) byId.set(parsed.id, parsed);
+				const finding = parseFinding(JSON.parse(rawLine));
+				if (finding) byId.set(finding.id, finding);
 			} catch (e) {
 				void e; // torn JSONL — skip, never throw (matches recurrence.ts)
 			}
@@ -391,13 +392,6 @@ export function foldByBugClass(findings: readonly Finding[]): BugClassRow[] {
 		.sort((a, b) => b.times_observed - a.times_observed || a.bug_class.localeCompare(b.bug_class));
 }
 
-function isFinding(value: unknown): value is Finding {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const f = value as Partial<Finding>;
-	return (
-		typeof f.id === "string" &&
-		typeof f.bug_class === "string" &&
-		Array.isArray(f.provenance) &&
-		typeof f.message === "string"
-	);
-}
+// `isFinding` was replaced by `parseFinding` (./parse-finding.ts) on 2026-08-09:
+// the predicate asserted the whole `Finding` interface while checking four of
+// its sixteen required fields. See that module's header for the full list.

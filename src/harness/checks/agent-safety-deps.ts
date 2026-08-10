@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject } from "../../lib/json-types.js";
 import { nonNull } from "../../lib/non-null.js";
 import {
 	getExtension,
@@ -101,19 +101,29 @@ const NODE_BUILTIN_MODULES = [
 	"console",
 ];
 
+/** Dependency-field key names, or [] when the field is missing/malformed
+ *  (not present, not an object, or an array — `Object.keys` on an array
+ *  yields numeric-index strings like "0"/"1", which would otherwise be
+ *  treated as declared dependency names). */
+function _depFieldNames(value: unknown): string[] {
+	return isJsonObject(value) ? Object.keys(value) : [];
+}
+
 /**
  * Parse a package.json into its full declared-dependency-name set — deps,
  * devDeps, peerDeps, optionalDeps — plus Node.js built-ins (bare and
- * `node:`-prefixed). Returns undefined if the file can't be read/parsed.
+ * `node:`-prefixed). Returns undefined if the file can't be read/parsed, or
+ * parses to something other than a JSON object.
  */
 function _loadPackageDeps(pkgPath: string): Set<string> | undefined {
 	try {
-		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		const pkg: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+		if (!isJsonObject(pkg)) return undefined;
 		const deps = new Set<string>([
-			...Object.keys(pkg.dependencies || {}),
-			...Object.keys(pkg.devDependencies || {}),
-			...Object.keys(pkg.peerDependencies || {}),
-			...Object.keys(pkg.optionalDependencies || {}),
+			..._depFieldNames(pkg.dependencies),
+			..._depFieldNames(pkg.devDependencies),
+			..._depFieldNames(pkg.peerDependencies),
+			..._depFieldNames(pkg.optionalDependencies),
 		]);
 		for (const mod of NODE_BUILTIN_MODULES) {
 			deps.add(mod);
@@ -219,16 +229,21 @@ export function checkPhantomDependencies(pkgJsonPath: string): InlineMatch[] {
 	if (!existsSync(pkgJsonPath)) return [];
 
 	let content: string;
-	let pkg: JsonObject;
+	let parsed: unknown;
 	try {
 		content = readFileSync(pkgJsonPath, "utf-8");
-		pkg = JSON.parse(content);
+		parsed = JSON.parse(content);
 	} catch {
 		return [];
 	}
+	// A syntactically valid but non-object top-level value (e.g. `null`) used
+	// to reach `pkg.dependencies` UNCAUGHT below — that property read sits
+	// after the try/catch closes, so a `null` package.json crashed this
+	// function outright instead of returning [].
+	if (!isJsonObject(parsed)) return [];
 
-	const deps = pkg.dependencies as Record<string, string> | undefined;
-	if (!deps || typeof deps !== "object") return [];
+	const deps = isJsonObject(parsed.dependencies) ? parsed.dependencies : undefined;
+	if (!deps) return [];
 
 	const depNames = Object.keys(deps);
 	if (depNames.length === 0) return [];
@@ -283,8 +298,8 @@ export function findWorkspaceRootFor(pkgJsonPath: string): string {
 		if (existsSync(parentPkg)) {
 			try {
 				const raw = readFileSync(parentPkg, "utf-8");
-				const json = JSON.parse(raw) as JsonObject;
-				if (json.workspaces !== undefined) return parent;
+				const json: unknown = JSON.parse(raw);
+				if (isJsonObject(json) && json.workspaces !== undefined) return parent;
 			} catch {
 				// Best-effort — unreadable parent package.json doesn't decide the question.
 			}

@@ -10,6 +10,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { isJsonObject } from "../lib/json-types.js";
 import type { HarnessEvent } from "./types.js";
 
 /** Maximum number of trailing events loaded per call. Bounds both memory
@@ -84,19 +85,36 @@ export function loadRecentWorkspaceEvents(
 	const tail = lines.slice(-MAX_TRAILING_EVENTS);
 	const events: HarnessEvent[] = [];
 	for (const line of tail) {
+		let parsed: unknown;
 		try {
-			const parsed = JSON.parse(line) as HarnessEvent;
-			if (
-				sinceTimestamp &&
-				typeof parsed.timestamp === "string" &&
-				parsed.timestamp < sinceTimestamp
-			) {
-				continue;
-			}
-			events.push(parsed);
+			parsed = JSON.parse(line);
 		} catch {
-			// Skip malformed lines silently — best-effort.
+			continue; // malformed line — best-effort, skip silently
 		}
+		// Structural gate only: reject non-object JSON (arrays, bare strings/
+		// numbers, `null`). We deliberately do NOT validate HarnessEvent's own
+		// required fields (hook_event/session_id/agent_source/timestamp) here —
+		// `.interlinked/activity.jsonl` rows are actually written in the
+		// LocalActivityEvent wire shape (ts/agent/session/type; see
+		// local-activity-types.ts), confirmed by sampling the real file
+		// (0/20000 real rows carried hook_event/agent_source/session_id,
+		// 2026-08-10). A strict per-field validator would drop every real row.
+		// Every caller of this function already individually type-guards the
+		// fields it reads (see sequence-checks/cross-agent.ts), matching the
+		// `sinceTimestamp` guard immediately below — this cast documents an
+		// existing, pre-existing type/wire mismatch rather than introducing one.
+		// The `as unknown as` (rather than a direct `as HarnessEvent`) is not
+		// stylistic: tsc refuses the direct cast ("neither type sufficiently
+		// overlaps with the other"), independently confirming the mismatch.
+		if (!isJsonObject(parsed)) continue;
+		if (
+			sinceTimestamp &&
+			typeof parsed.timestamp === "string" &&
+			parsed.timestamp < sinceTimestamp
+		) {
+			continue;
+		}
+		events.push(parsed as unknown as HarnessEvent);
 	}
 
 	cache.set(key, { mtime, since: sinceTimestamp, events });

@@ -39,7 +39,6 @@
 // (nothing usable) — with no fourth "partial" state to smuggle through.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { isTestPath } from "../coverage-test-selector.js";
 import { expectedCompanionTest } from "../coverage-pairing.js";
 import { seedFileBaseline } from "./adopt.js";
@@ -251,39 +250,10 @@ export function buildScopedMeasureOverlays(
 }
 
 // ============================================================
-// Runner endpoint configuration
+// Runner endpoint configuration — moved to runner-endpoints.ts (line cap)
 // ============================================================
 
-export interface ConfiguredEndpoints {
-	endpoints: string[];
-	token?: string;
-}
-
-/**
- * Runner topology + auth token from the gitignored local rules — the ONE
- * source of truth per repo (mirrors `scratch/measure-file.mts`'s ad hoc
- * reader, now a first-class, unit-testable function instead of a copy living
- * only in a throwaway script).
- */
-export function configuredRunnerEndpoints(
-	cwd: string,
-	readFile: (path: string) => string | null,
-): ConfiguredEndpoints {
-	const raw = readFile(join(cwd, ".interlinked", "guard-rules.local.json"));
-	if (raw === null) return { endpoints: [] };
-	try {
-		const cfg = JSON.parse(raw) as {
-			per_edit_mutation?: { runner_url?: string; runner_urls?: string[]; token?: string };
-		};
-		const m = cfg.per_edit_mutation ?? {};
-		const endpoints = [m.runner_url, ...(m.runner_urls ?? [])].filter(
-			(u): u is string => typeof u === "string" && u.length > 0,
-		);
-		return m.token ? { endpoints, token: m.token } : { endpoints };
-	} catch {
-		return { endpoints: [] };
-	}
-}
+export { type ConfiguredEndpoints, configuredRunnerEndpoints } from "./runner-endpoints.js";
 
 // ============================================================
 // The wire request — ONE whole-file answer per attempt (see module docstring)
@@ -457,19 +427,17 @@ export interface SurvivorEntry {
 	replacement: string;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return v !== null && typeof v === "object";
-}
+import { isJsonObject } from "../../lib/json-types.js";
 
 function mutantLocationLine(m: Record<string, unknown>): number {
-	const location = isRecord(m.location) ? m.location : null;
-	const start = location && isRecord(location.start) ? location.start : null;
+	const location = isJsonObject(m.location) ? m.location : null;
+	const start = location && isJsonObject(location.start) ? location.start : null;
 	if (!start || typeof start.line !== "number") return 0;
 	return start.line;
 }
 
 function toMutantEntry(m: unknown): { mutator: string; replacement: string; status: string; line: number } | null {
-	if (!isRecord(m)) return null;
+	if (!isJsonObject(m)) return null;
 	return {
 		mutator: typeof m.mutatorName === "string" ? m.mutatorName : "?",
 		replacement: typeof m.replacement === "string" ? m.replacement : "?",
@@ -479,10 +447,10 @@ function toMutantEntry(m: unknown): { mutator: string; replacement: string; stat
 }
 
 function rawMutantEntries(body: unknown): Array<{ mutator: string; replacement: string; status: string; line: number }> {
-	if (!isRecord(body) || !isRecord(body.files)) return [];
+	if (!isJsonObject(body) || !isJsonObject(body.files)) return [];
 	const out: Array<{ mutator: string; replacement: string; status: string; line: number }> = [];
 	for (const fileResult of Object.values(body.files)) {
-		if (!isRecord(fileResult) || !Array.isArray(fileResult.mutants)) continue;
+		if (!isJsonObject(fileResult) || !Array.isArray(fileResult.mutants)) continue;
 		for (const m of fileResult.mutants) {
 			const entry = toMutantEntry(m);
 			if (entry) out.push(entry);

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -85,6 +85,32 @@ describe("timeline-writer file I/O", () => {
 	it("appendTimelineRecords with an empty list is a no-op", () => {
 		appendTimelineRecords([], cwd);
 		expect(existingTimelineKeys(cwd).size).toBe(0);
+	});
+
+	describe("existingTimelineKeys — malformed rows (parseTimelineDedupKey)", () => {
+		function seedRawLines(lines: string[]): void {
+			mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+			appendFileSync(timelinePath(cwd), `${lines.join("\n")}\n`);
+		}
+
+		it("P1: keeps a row whose uuid is a string and seq is a number", () => {
+			seedRawLines([JSON.stringify({ uuid: "u1", seq: 0 })]);
+			expect(existingTimelineKeys(cwd)).toEqual(new Set(["u1#0"]));
+		});
+
+		it("N1: drops rows whose parsed value is not a JSON object", () => {
+			seedRawLines(["[1,2,3]", "42", "null", '"str"']);
+			expect(existingTimelineKeys(cwd).size).toBe(0);
+		});
+
+		it("N2: drops rows whose uuid/seq fields carry the wrong type or are missing", () => {
+			seedRawLines([
+				JSON.stringify({ uuid: 7, seq: 0 }),
+				JSON.stringify({ uuid: "u2", seq: "0" }),
+				JSON.stringify({ uuid: "u3" }),
+			]);
+			expect(existingTimelineKeys(cwd).size).toBe(0);
+		});
 	});
 
 	it("escapes U+2028/U+2029 so the JSONL has no literal line separators", () => {

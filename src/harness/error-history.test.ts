@@ -21,7 +21,7 @@
 import * as fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../lib/non-null.js";
-import { ErrorHistory } from "./error-history.js";
+import { ErrorHistory, parseErrorRecord } from "./error-history.js";
 import type {
 	ErrorMemoryConfig,
 	ErrorRecord,
@@ -74,7 +74,10 @@ function result(over: Partial<StructuralCheckResult> = {}): StructuralCheckResul
 	} as StructuralCheckResult;
 }
 
-const ROLE: ModuleRole = "core" as ModuleRole;
+// A real ModuleRole value (not "core" — that was never a valid member of the
+// union and only compiled via an unsafe cast; parseErrorRecord's file_role
+// gate now rejects anything outside "leaf"|"internal"|"hub"|"root").
+const ROLE: ModuleRole = "internal";
 
 /** Fresh ErrorHistory with no file on disk (existsSync(filePath) === false). */
 function freshHistory(config: ErrorMemoryConfig = cfg()): ErrorHistory {
@@ -99,6 +102,71 @@ function rec(over: Partial<ErrorRecord> = {}): ErrorRecord {
 		...over,
 	};
 }
+
+// =============================================================================
+// parseErrorRecord — the JSONL-row boundary validator behind load()
+// =============================================================================
+
+describe("parseErrorRecord — positive (must parse)", () => {
+	it("P1: parses a full record, keeping every optional field", () => {
+		const input = {
+			...rec(),
+			affected_files: ["a.ts", "b.ts"],
+			fix_context: "patched",
+			line_start: 1,
+			line_end: 2,
+			co_edited_files: ["c.ts"],
+			pre_error_sequence: ["Read", "Edit"],
+		};
+		expect(parseErrorRecord(input)).toEqual(input);
+	});
+
+	it("P2: parses a minimal record (required fields only), optionals come back undefined", () => {
+		const input = rec();
+		const parsed = parseErrorRecord(input);
+		expect(parsed).toEqual(input);
+		expect(parsed?.affected_files).toBeUndefined();
+		expect(parsed?.fix_context).toBeUndefined();
+		expect(parsed?.line_start).toBeUndefined();
+	});
+
+	it("P3: drops non-string entries from an optional string-array field rather than throwing", () => {
+		const input = { ...rec(), affected_files: ["ok.ts", 42, null] };
+		// affected_files fails the isStringArray gate as a whole -> undefined,
+		// not a partially-filtered array (fail-closed per field, not per-element).
+		expect(parseErrorRecord(input)?.affected_files).toBeUndefined();
+	});
+});
+
+describe("parseErrorRecord — negative (must reject)", () => {
+	it("N1: rejects non-object JSON (array)", () => {
+		expect(parseErrorRecord(["not", "a", "record"])).toBeNull();
+	});
+
+	it("N2: rejects non-object JSON (primitive)", () => {
+		expect(parseErrorRecord("just a string")).toBeNull();
+		expect(parseErrorRecord(42)).toBeNull();
+		expect(parseErrorRecord(null)).toBeNull();
+	});
+
+	it("N3: rejects a record missing a required field (message)", () => {
+		const { message, ...withoutMessage } = rec();
+		void message;
+		expect(parseErrorRecord(withoutMessage)).toBeNull();
+	});
+
+	it("N4: rejects a file_role outside the leaf|internal|hub|root union", () => {
+		expect(parseErrorRecord({ ...rec(), file_role: "core" })).toBeNull();
+	});
+
+	it("N5: rejects a severity outside the error|warning union", () => {
+		expect(parseErrorRecord({ ...rec(), severity: "info" })).toBeNull();
+	});
+
+	it("N6: rejects a wrong-typed required field (message as number)", () => {
+		expect(parseErrorRecord({ ...rec(), message: 123 })).toBeNull();
+	});
+});
 
 // =============================================================================
 // constructor / load

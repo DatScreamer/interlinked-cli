@@ -18,6 +18,7 @@
 // left RAW. Dedup key `${uuid}#${seq}` uses `codex:<session>:<lineIndex>` — the
 // rollout is append-only, so a line's index is stable across re-parses.
 
+import { isJsonObject } from "../lib/json-types.js";
 import { redactPii, scrubSecrets } from "../lib/secrets.js";
 import type { TimelineCategory, TimelineRecord } from "./transcript-record.js";
 
@@ -71,10 +72,58 @@ function flattenCodexContent(content: unknown): string {
 		.join("\n");
 }
 
+const CODEX_PAYLOAD_STRING_FIELDS = [
+	"type",
+	"role",
+	"name",
+	"arguments",
+	"call_id",
+	"id",
+	"message",
+	"model",
+	"session_id",
+	"cwd",
+] as const satisfies ReadonlyArray<keyof CodexPayload>;
+
+/** `content`/`input`/`output` are declared `unknown` on `CodexPayload`
+ *  itself (tool input/result content is intentionally left RAW — see the
+ *  file header), so they pass through with no shape check; only the string
+ *  fields need validating. */
+function parseCodexPayload(value: unknown): CodexPayload | undefined {
+	if (!isJsonObject(value)) return undefined;
+	const out: CodexPayload = {};
+	for (const key of CODEX_PAYLOAD_STRING_FIELDS) {
+		const v = value[key];
+		if (typeof v === "string") out[key] = v;
+	}
+	if (value.content !== undefined) out.content = value.content;
+	if (value.input !== undefined) out.input = value.input;
+	if (value.output !== undefined) out.output = value.output;
+	return out;
+}
+
+/** Replaces `JSON.parse(line) as CodexEntry` — an unchecked cast. Every
+ *  `CodexEntry` field is optional, so the old cast's only real gap was a
+ *  wrong-TYPED `timestamp`/`type` flowing into `TimelineRecord` unchecked
+ *  (e.g. a numeric timestamp landing in a `string` field); a malformed
+ *  top-level value (non-object, or literal `null`) already produced zero
+ *  records under the old code too, via the `if (e)` / `e?.payload` guards
+ *  downstream — replayed against 12600+ real ~/.codex/sessions/**\/*.jsonl
+ *  rows with zero divergences (scratch/fleet-r2/probe-b8-codex-rollout-replay.mts). */
+function parseCodexEntry(value: unknown): CodexEntry | null {
+	if (!isJsonObject(value)) return null;
+	const out: CodexEntry = {};
+	if (typeof value.timestamp === "string") out.timestamp = value.timestamp;
+	if (typeof value.type === "string") out.type = value.type;
+	const payload = parseCodexPayload(value.payload);
+	if (payload !== undefined) out.payload = payload;
+	return out;
+}
+
 /** One safe JSON.parse of a rollout line, or null. */
 function parseLine(line: string): CodexEntry | null {
 	try {
-		return JSON.parse(line) as CodexEntry;
+		return parseCodexEntry(JSON.parse(line));
 	} catch {
 		return null;
 	}

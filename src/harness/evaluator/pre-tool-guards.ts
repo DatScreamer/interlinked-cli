@@ -19,6 +19,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { baselineBashWriteRefusal } from "./baseline-bash-guard.js";
 import { evaluateBaselineIntegrityForEvent } from "./baseline-integrity-gate.js";
 import { evaluateConfigLooseningForEvent } from "./config-loosening-gate.js";
 import { analyzeApplyPatchDoom, analyzeStrReplaceDoom, formatDoomReason } from "./edit-doom.js";
@@ -254,6 +255,21 @@ export function evaluateConfigLooseningGate(
  * may only move in the tightening direction; the harness raises them itself via
  * internal writes, never the agent's edit tools. See baseline-integrity-gate.ts.
  */
+/**
+ * Bash arm of the baseline gate (red-team F1, 2026-08-09). The gate used to
+ * see only the edit tools, so `echo … > .interlinked/metric-caps.json` — or
+ * sed/tee/cp/an interpreter one-liner — loosened every ratchet at once,
+ * unobserved. A shell command's resulting bytes cannot be inspected before it
+ * runs, so that path is refused outright rather than adjudicated.
+ */
+function bashBaselineRefusal(event: HarnessEvent, warnings: string[]): HarnessDecision | null {
+	const raw = event.tool_input?.command;
+	const cmd = typeof raw === "string" ? raw : "";
+	const reason = baselineBashWriteRefusal(cmd, event.cwd ?? process.cwd());
+	if (!reason) return null;
+	return { decision: "block", reason, rule_id: "baseline_integrity_gate", warnings };
+}
+
 export function evaluateBaselineIntegrityGate(
 	event: HarnessEvent,
 	toolName: string,
@@ -263,6 +279,7 @@ export function evaluateBaselineIntegrityGate(
 		const d = evaluateBaselineIntegrityForEvent(event);
 		if (d) return { ...d, warnings };
 	}
+	if (toolName === "Bash") return bashBaselineRefusal(event, warnings);
 	return null;
 }
 

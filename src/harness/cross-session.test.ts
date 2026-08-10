@@ -57,6 +57,38 @@ describe("loadRecentWorkspaceEvents", () => {
 		expect(loadRecentWorkspaceEvents(dir)).toHaveLength(2);
 	});
 
+	it("P: keeps a valid JSON object line (object-shape gate positive case)", () => {
+		writeLog([{ hook_event: "PreToolUse", session_id: "s1", timestamp: "2026-05-27T00:00:01Z" }]);
+		expect(loadRecentWorkspaceEvents(dir)).toHaveLength(1);
+	});
+
+	it("N: rejects a well-formed but non-object JSON line — bare array (object-shape gate)", () => {
+		const sub = join(dir, ".interlinked");
+		mkdirSync(sub, { recursive: true });
+		writeFileSync(
+			join(sub, "activity.jsonl"),
+			`${JSON.stringify(["not", "an", "event"])}\n{"hook_event":"PreToolUse","session_id":"s1","timestamp":"2026-05-27T00:00:01Z"}\n`,
+			"utf-8",
+		);
+		expect(loadRecentWorkspaceEvents(dir)).toHaveLength(1);
+	});
+
+	it("N: rejects well-formed but non-object JSON lines — number, string, null (object-shape gate)", () => {
+		const sub = join(dir, ".interlinked");
+		mkdirSync(sub, { recursive: true });
+		writeFileSync(
+			join(sub, "activity.jsonl"),
+			[
+				"42",
+				'"just a string"',
+				"null",
+				'{"hook_event":"PreToolUse","session_id":"s1","timestamp":"2026-05-27T00:00:01Z"}',
+			].join("\n"),
+			"utf-8",
+		);
+		expect(loadRecentWorkspaceEvents(dir)).toHaveLength(1);
+	});
+
 	it("caches the result and returns the same array on a second call with no file change", () => {
 		writeLog([
 			{ hook_event: "PreToolUse", session_id: "s1", timestamp: "2026-05-27T00:00:01Z" },

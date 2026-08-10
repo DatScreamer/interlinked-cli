@@ -22,6 +22,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 
 export const SKIPPED_TESTS_BASELINE_REL = ".interlinked/skipped-tests-baseline.json";
 
@@ -37,18 +38,33 @@ export function emptySkippedTestsBaseline(): SkippedTestsBaseline {
 	return { version: 1, max_skipped: 0, files: {} };
 }
 
+/**
+ * Narrow a parsed `skipped-tests-baseline.json` into the domain shape. A
+ * malformed individual grandfather entry (e.g. a non-number ceiling) is
+ * dropped rather than trusted — `baseline_integrity_gate` compares these
+ * values directly, and a type-confused value (a string, say) would let a
+ * numeric comparison silently misbehave instead of enforcing the ratchet.
+ */
+function parseSkippedTestsBaseline(value: unknown): SkippedTestsBaseline | null {
+	if (!isJsonObject(value)) return null;
+	if (value.version !== 1) return null;
+	if (typeof value.max_skipped !== "number") return null;
+	const files: Record<string, number> = {};
+	if (isJsonObject(value.files)) {
+		for (const [file, count] of Object.entries(value.files)) {
+			if (typeof count === "number") files[file] = count;
+		}
+	}
+	return { version: 1, max_skipped: value.max_skipped, files };
+}
+
 /** Fail-soft loader: missing or malformed baseline reads as null (no policy). */
 export function loadSkippedTestsBaseline(projectRoot: string): SkippedTestsBaseline | null {
 	const path = join(projectRoot, SKIPPED_TESTS_BASELINE_REL);
 	if (!existsSync(path)) return null;
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<SkippedTestsBaseline>;
-		if (!raw || raw.version !== 1 || typeof raw.max_skipped !== "number") return null;
-		const files =
-			raw.files && typeof raw.files === "object" && !Array.isArray(raw.files)
-				? (raw.files as Record<string, number>)
-				: {};
-		return { version: 1, max_skipped: raw.max_skipped, files };
+		const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		return parseSkippedTestsBaseline(raw);
 	} catch {
 		return null;
 	}

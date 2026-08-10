@@ -638,6 +638,59 @@ describe("loadPolicies / getDefaultPolicies (via envelope.policies)", () => {
 		const ev = envFor("Bash", { command: "curl https://x" }, { escalation: { trigger: "external_url" } });
 		expect(ev.policies.map((p) => p.id)).toContain("no_exfil_after_taint");
 	});
+
+	// `loadPolicies` now validates each policy entry (id/name/description as
+	// strings, applies_to_triggers as a string array) instead of trusting an
+	// `as PolicyRule[]` cast. A malformed entry falls the WHOLE file back to
+	// defaults — same all-or-nothing philosophy the file already applies to a
+	// missing `policies` array or invalid JSON, and safer than silently
+	// mixing a partially-garbled custom entry into the evidence sent to the
+	// LLM classifier.
+	it("N1: a policy entry with a non-array applies_to_triggers falls back to defaults", () => {
+		fsMock.existsSync.mockReturnValue(true);
+		fsMock.readFileSync.mockReturnValue(
+			JSON.stringify({
+				policies: [{ id: "p_bad", name: "n", description: "d", applies_to_triggers: "external_url" }],
+			}),
+		);
+		const ev = envFor("Bash", { command: "curl https://x" }, { escalation: { trigger: "external_url" } });
+		const ids = ev.policies.map((p) => p.id);
+		expect(ids).not.toContain("p_bad");
+		expect(ids).toContain("no_exfil_after_taint");
+	});
+
+	it("N2: a policy entry missing a required string field falls back to defaults", () => {
+		fsMock.existsSync.mockReturnValue(true);
+		fsMock.readFileSync.mockReturnValue(
+			JSON.stringify({
+				policies: [{ id: "p_bad", applies_to_triggers: ["external_url"] }],
+			}),
+		);
+		const ev = envFor("Bash", { command: "curl https://x" }, { escalation: { trigger: "external_url" } });
+		const ids = ev.policies.map((p) => p.id);
+		expect(ids).not.toContain("p_bad");
+		expect(ids).toContain("no_exfil_after_taint");
+	});
+
+	it("P1: a policy entry with a valid applies_to_roles array passes through unchanged", () => {
+		fsMock.existsSync.mockReturnValue(true);
+		fsMock.readFileSync.mockReturnValue(
+			JSON.stringify({
+				policies: [
+					{
+						id: "p_roles",
+						name: "n",
+						description: "d",
+						applies_to_triggers: ["external_url"],
+						applies_to_roles: ["worker", "subagent"],
+					},
+				],
+			}),
+		);
+		const ev = envFor("Bash", { command: "curl https://x" }, { escalation: { trigger: "external_url" } });
+		const found = ev.policies.find((p) => p.id === "p_roles");
+		expect(found?.applies_to_roles).toEqual(["worker", "subagent"]);
+	});
 });
 
 // ===========================================
@@ -874,6 +927,47 @@ describe("callViaClaudeCode", () => {
 			},
 		});
 		expect(result).toMatchObject({ label: "deny", reasoning: "fell-through" });
+	});
+
+	// `isJsonObject` explicitly rejects arrays (typeof "object" but not a keyed
+	// record — see json-types.ts). Before that guard, the old `as JsonObject`
+	// cast let a JSON *array* through as if it were the structured_output
+	// payload: every field read `undefined`, and the function returned a
+	// fabricated "No reasoning provided" verdict instead of falling through
+	// to the `result` field like every other non-object shape already does.
+	it("N1: structured_output that is an ARRAY now falls through instead of yielding a fake verdict", async () => {
+		const { result } = await runClaudeCode({
+			drive: (child) => {
+				child.stdout.emit(
+					"data",
+					Buffer.from(
+						JSON.stringify({
+							structured_output: [1, 2, 3],
+							result: '{"compliant":false,"confidence":0.5,"reasoning":"fell-through-array"}',
+						}),
+					),
+				);
+				child.emit("close", 0);
+			},
+		});
+		expect(result).toMatchObject({ label: "deny", reasoning: "fell-through-array" });
+	});
+
+	it("P1: a policy_id that is a number (not a string) is dropped rather than passed through untyped", async () => {
+		const { result } = await runClaudeCode({
+			drive: (child) => {
+				child.stdout.emit(
+					"data",
+					Buffer.from(
+						JSON.stringify({
+							structured_output: { compliant: false, confidence: 0.5, reasoning: "x", policy_id: 42 },
+						}),
+					),
+				);
+				child.emit("close", 0);
+			},
+		});
+		expect(result.policy_id).toBeUndefined();
 	});
 
 	it("returns parse-fail when the wrapper has neither structured_output nor result (|| '' branch)", async () => {
@@ -1295,6 +1389,26 @@ describe("parseClassificationJson", () => {
 	it("returns the parse-fail fallback for malformed JSON inside a fence", async () => {
 		const r = await parseContent("```json\n{not valid}\n```");
 		expect(r.reasoning).toBe("Failed to parse classifier JSON");
+	});
+
+	// `isJsonObject` rejects arrays/primitives/null even when they parse as
+	// valid JSON — a bare JSON array is not a classification payload. Before
+	// the guard, `JSON.parse(cleaned) as JsonObject` let this through and
+	// every field read `undefined`, silently returning a "No reasoning
+	// provided" verdict instead of an honest parse failure.
+	it("N1: a top-level JSON array is treated as a parse failure, not a blank-fields verdict", async () => {
+		const r = await parseContent("[1,2,3]");
+		expect(r).toEqual({ label: "allow", confidence: 0, reasoning: "Failed to parse classifier JSON" });
+	});
+
+	it("N2: a top-level JSON null is treated as a parse failure", async () => {
+		const r = await parseContent("null");
+		expect(r).toEqual({ label: "allow", confidence: 0, reasoning: "Failed to parse classifier JSON" });
+	});
+
+	it("P1: a well-formed object still parses normally alongside the new array/null guard", async () => {
+		const r = await parseContent('{"compliant":true,"confidence":0.8,"reasoning":"still works"}');
+		expect(r).toMatchObject({ label: "allow", confidence: 0.8, reasoning: "still works" });
 	});
 });
 

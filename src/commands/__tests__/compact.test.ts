@@ -259,6 +259,73 @@ describe("loadArchiveManifest — malformed manifest handling", () => {
 		const tempDir = withManifest("null");
 		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
 	});
+
+	// --- parseArchiveManifest / parseArchiveSegment boundary parser ---
+
+	const VALID_SEGMENT = {
+		seq: 1,
+		file: "activity-0001.jsonl.gz",
+		bytes: 1000,
+		gz_bytes: 200,
+		records: 30,
+		created_at: "2026-08-01T00:00:00Z",
+	};
+
+	it("P1: accepts a well-formed manifest with a fully-shaped segment", () => {
+		const tempDir = withManifest(JSON.stringify({ version: 1, segments: [VALID_SEGMENT] }));
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [VALID_SEGMENT] });
+	});
+
+	it("N1: a single malformed segment (wrong-typed field) invalidates the whole manifest", () => {
+		// manifest.json has exactly one in-repo writer (compactCommand itself),
+		// unlike the multi-writer activity/collection logs — a shape mismatch
+		// here is corruption, not a legitimately-optional legacy field, so it
+		// falls back to empty rather than silently serving a partial segment
+		// list to `audit verify` (which reads segments in manifest order).
+		const badSegment = { ...VALID_SEGMENT, bytes: "not-a-number" };
+		const tempDir = withManifest(
+			JSON.stringify({ version: 1, segments: [VALID_SEGMENT, badSegment] }),
+		);
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("N2: a segments array containing a non-object entry invalidates the whole manifest", () => {
+		const tempDir = withManifest(JSON.stringify({ version: 1, segments: ["not-an-object"] }));
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+});
+
+describe("planCut — hash-chain line classification boundary parser", () => {
+	it("P1: a well-formed chained record (string type + string hash) blocks archiving past it", async () => {
+		const records = [
+			...Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", i })),
+			{ type: "guard_allow", hash: "a".repeat(64), previousHash: "0".repeat(64) },
+			...Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", i: 100 + i })),
+		];
+		const { tempDir, dataDir, content } = writeLog(records);
+		setSync(dataDir, Buffer.byteLength(content));
+		await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 });
+		expect(readFileSync(join(dataDir, "activity.jsonl"), "utf-8")).toContain("guard_allow");
+	});
+
+	it("N1: a line with hash present but NOT a string is not treated as chained", async () => {
+		// A malformed "type": "guard_allow" line whose hash is a number rather
+		// than a string must not pin lastChainedStart — the isJsonObject +
+		// typeof guards must keep behaving exactly like the pre-fix
+		// `as { type?: unknown; hash?: unknown }` cast's own typeof checks did.
+		const records = [
+			...Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", i })),
+			{ type: "guard_allow", hash: 12345 }, // hash is a number, not a string
+			...Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", i: 100 + i })),
+		];
+		const { tempDir, dataDir, content } = writeLog(records);
+		setSync(dataDir, Buffer.byteLength(content));
+		await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 });
+		// Nothing pins lastChainedStart, so the malformed line itself can be
+		// archived away — it does not survive as the mid-log chain anchor.
+		const live = readFileSync(join(dataDir, "activity.jsonl"), "utf-8");
+		expect(live).not.toContain('"hash":12345');
+	});
 });
 
 describe("registerCompactCommand — CLI wiring", () => {

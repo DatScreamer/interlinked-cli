@@ -726,3 +726,60 @@ describe("createSseReassembler", () => {
 		expect(content.map((b) => b.text)).toEqual(["first", "second", "third"]);
 	});
 });
+
+// --- closeBlock: a parsed-but-non-object accumulated buffer must be treated
+// the same as a parse FAILURE (kept under input_raw), never assigned to
+// `input` — a tool_use `input` is always a JSON object by API contract.
+describe("closeBlock — non-object parsed JSON", () => {
+	function toolUseInput(partialJson: string): Record<string, unknown> | undefined {
+		const r = createSseReassembler();
+		r.push(sse("message_start", { type: "message_start", message: { id: "m" } }));
+		r.push(
+			sse("content_block_start", {
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "t1", name: "X", input: {} },
+			}),
+		);
+		r.push(
+			sse("content_block_delta", {
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: partialJson },
+			}),
+		);
+		r.push(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+		const msg = r.finish();
+		// SAFETY: finish() always sets content to the ordered block array.
+		const content = msg?.content as Array<Record<string, unknown>>;
+		return content[0];
+	}
+
+	// input_raw gets set on the invalid-shape path exactly like the JSON.parse
+	// FAILURE path above (`'{"broken:'` test) — and that path never clears the
+	// `input: {}` seeded by content_block_start either, so `block.input` stays
+	// at its seeded default rather than adopting the rejected value.
+	it("N1: a top-level JSON array is rejected — input_raw kept, input stays at its seeded default", () => {
+		const block = toolUseInput("[1,2,3]");
+		expect(block?.input_raw).toBe("[1,2,3]");
+		expect(block?.input).toEqual({});
+	});
+
+	it("N2: a top-level bare JSON string is rejected — input_raw kept, input stays at its seeded default", () => {
+		const block = toolUseInput('"just a string"');
+		expect(block?.input_raw).toBe('"just a string"');
+		expect(block?.input).toEqual({});
+	});
+
+	it("N3: a top-level JSON number is rejected — input_raw kept, input stays at its seeded default", () => {
+		const block = toolUseInput("42");
+		expect(block?.input_raw).toBe("42");
+		expect(block?.input).toEqual({});
+	});
+
+	it("P1: a real object whose OWN values are arrays/nested objects still lands under input (only the top level must be an object)", () => {
+		const block = toolUseInput('{"files":["a.ts","b.ts"],"opts":{"deep":true}}');
+		expect(block?.input).toEqual({ files: ["a.ts", "b.ts"], opts: { deep: true } });
+		expect("input_raw" in (block ?? {})).toBe(false);
+	});
+});

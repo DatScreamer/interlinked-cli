@@ -81,6 +81,54 @@ describe("loadBaseline / saveBaseline round trip", () => {
 		saveBaseline(deep, b);
 		expect(JSON.parse(readFileSync(baselinePath(deep), "utf-8")).version).toBe(1);
 	});
+
+	it("N1: drops a malformed individual file entry but keeps valid ones", () => {
+		// Pre-fix, `raw as CoverageBaseline` trusted every per-file entry
+		// unchecked — a corrupted or hand-edited entry for one file would have
+		// silently propagated a non-numeric pct into the ratchet comparison
+		// instead of just losing that one file's high-water mark.
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(
+			baselinePath(tmp),
+			JSON.stringify({
+				version: 1,
+				updated_at: "2026-04-22T00:00:00Z",
+				files: {
+					"src/good.ts": { lines_pct: 80, branches_pct: 60 },
+					"src/bad.ts": { lines_pct: "not-a-number", branches_pct: 60 },
+				},
+			}),
+			"utf-8",
+		);
+		const result = loadBaseline(tmp);
+		expect(result.files).toEqual({ "src/good.ts": { lines_pct: 80, branches_pct: 60 } });
+		expect(result.files["src/bad.ts"]).toBeUndefined();
+	});
+
+	it("N2: rejects the whole baseline when files is an array instead of a record", () => {
+		// Pre-fix, the guard was `!raw.files` — a truthy check. An array is
+		// truthy, so it sailed straight through to `raw as CoverageBaseline`
+		// with `.files` actually holding an array, not a Record.
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(
+			baselinePath(tmp),
+			JSON.stringify({ version: 1, updated_at: "x", files: ["not", "a", "record"] }),
+			"utf-8",
+		);
+		expect(loadBaseline(tmp)).toEqual(emptyBaseline());
+	});
+
+	it("P1: defaults updated_at when missing, keeping valid file entries", () => {
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(
+			baselinePath(tmp),
+			JSON.stringify({ version: 1, files: { "src/foo.ts": { lines_pct: 75, branches_pct: 50 } } }),
+			"utf-8",
+		);
+		const result = loadBaseline(tmp);
+		expect(result.files).toEqual({ "src/foo.ts": { lines_pct: 75, branches_pct: 50 } });
+		expect(typeof result.updated_at).toBe("string");
+	});
 });
 
 describe("loadCoverageSummary", () => {

@@ -18,6 +18,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import type { MutationGateConfig } from "./check-policy.js";
 
 // ===========================================
@@ -85,15 +86,34 @@ export function emptyMutationBaseline(): MutationBaseline {
 // I/O
 // ===========================================
 
+/**
+ * Narrow a parsed `mutation-baseline.json` into the domain shape. Rejects
+ * the whole file for an invalid top-level shape (same as the pre-fix
+ * behavior), but a malformed INDIVIDUAL file entry is dropped rather than
+ * discarding every other file's high-water mark — a single hand-edited or
+ * partially-written entry must not reset the whole ratchet.
+ */
+function parseMutationBaseline(value: unknown): MutationBaseline | null {
+	if (!isJsonObject(value)) return null;
+	if (value.version !== 1) return null;
+	if (!isJsonObject(value.files)) return null;
+	const files: Record<string, { score: number; killed: number }> = {};
+	for (const [file, stats] of Object.entries(value.files)) {
+		if (!isJsonObject(stats)) continue;
+		const { score, killed } = stats;
+		if (typeof score !== "number" || typeof killed !== "number") continue;
+		files[file] = { score, killed };
+	}
+	const updatedAt = typeof value.updated_at === "string" ? value.updated_at : new Date(0).toISOString();
+	return { version: 1, updated_at: updatedAt, files };
+}
+
 export function loadMutationBaseline(interlinkedDir: string): MutationBaseline {
 	const path = mutationBaselinePath(interlinkedDir);
 	if (!existsSync(path)) return emptyMutationBaseline();
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8"));
-		if (!raw || typeof raw !== "object" || raw.version !== 1 || !raw.files) {
-			return emptyMutationBaseline();
-		}
-		return raw as MutationBaseline;
+		const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		return parseMutationBaseline(raw) ?? emptyMutationBaseline();
 	} catch {
 		return emptyMutationBaseline();
 	}

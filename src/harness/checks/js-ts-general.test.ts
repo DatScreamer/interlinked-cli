@@ -535,6 +535,35 @@ describe("checkDisabledTests", () => {
 		// `foo_test.py` is a test file, but the ext gate rejects it.
 		expect(checkDisabledTests("it.skip('x')", "src/foo_test.py")).toEqual([]);
 	});
+
+	it("N1: does not flag a `.skip(` call on an identifier merely ending in 'it'/'test' — regex word boundary", () => {
+		// The marker is `\b(?:it\.skip|...)`; "contest" ends in "test" but there is
+		// no word boundary before it, so `contest.skip(...)` (a quiz app's
+		// pagination helper) must not read as a disabled `test.skip`.
+		const code = "contest.skip(currentIndex);";
+		expect(checkDisabledTests(code, TEST)).toEqual([]);
+	});
+
+	it("N2: does not flag it.skip mentioned inside a comment", () => {
+		// stripCommentsAndStrings blanks comment text before the marker regex
+		// runs, so a mention IN a comment is not a live skip marker.
+		const code = "// TODO: remove the old it.skip('flaky', () => {}) call below";
+		expect(checkDisabledTests(code, TEST)).toEqual([]);
+	});
+
+	it("N3: does not flag it.skip mentioned inside a string literal", () => {
+		// String contents are likewise stripped before matching, so referring to
+		// the marker in a message string is not itself a skip.
+		const code = "const note = \"run it.skip('x') locally to disable\";";
+		expect(checkDisabledTests(code, TEST)).toEqual([]);
+	});
+
+	it("N4: does not flag a legitimately parameterized test via it.each", () => {
+		// `.each(...)` is a distinct jest/vitest modifier from `.skip` and is not
+		// in the marker set at all.
+		const code = "it.each([[1], [2]])('handles %s', (x) => { expect(x).toBeDefined(); });";
+		expect(checkDisabledTests(code, TEST)).toEqual([]);
+	});
 });
 
 // ===========================================

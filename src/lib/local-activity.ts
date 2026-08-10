@@ -15,8 +15,10 @@ import {
 import { dirname, join } from "node:path";
 import { buildCollectionRecord, PRE_EVENT_TYPES, TOOL_EVENT_TYPES } from "./collection/builder.js";
 import { appendCollection, getCollectionPath } from "./collection/writer.js";
+import { isJsonObject } from "./json-types.js";
 import {
 	countJsonlLines,
+	parseLocalActivityEvent,
 	readCollectionActivity,
 	readRecentLines,
 } from "./local-activity-collection.js";
@@ -132,7 +134,8 @@ function readActivityStream(opts?: ReadActivityOpts): LocalActivityEvent[] {
 
 	for (const line of lines) {
 		try {
-			const event = JSON.parse(line) as LocalActivityEvent;
+			const event = parseLocalActivityEvent(JSON.parse(line));
+			if (!event) continue;
 			if (opts?.since && new Date(event.ts).getTime() < opts.since) {
 				// We read newest -> oldest, so older lines won't match either.
 				break;
@@ -312,6 +315,19 @@ export function getLocalStats(cwd?: string): LocalStats {
 	};
 }
 
+/** Parse one sync-errors.jsonl line. Replaces
+ *  `JSON.parse(...) as { ts?: string; message?: string }` — both fields were
+ *  already declared optional, so the cast asserted nothing a validator could
+ *  meaningfully tighten; this just makes the shape check real. */
+function parseSyncErrorEntry(value: unknown): { ts?: string; message?: string } | null {
+	if (!isJsonObject(value)) return null;
+	const { ts, message } = value;
+	return {
+		...(typeof ts === "string" ? { ts } : {}),
+		...(typeof message === "string" ? { message } : {}),
+	};
+}
+
 /**
  * Return sync health details for status/reporting.
  */
@@ -327,9 +343,9 @@ export function getSyncDiagnostics(cwd?: string): SyncDiagnostics {
 	let lastSyncError: string | undefined;
 	if (syncErrorCount > 0) {
 		try {
-			const parsed = JSON.parse(nonNull(errorLines[0])) as { ts?: string; message?: string };
-			lastSyncErrorAt = parsed.ts;
-			lastSyncError = parsed.message;
+			const parsed = parseSyncErrorEntry(JSON.parse(nonNull(errorLines[0])));
+			lastSyncErrorAt = parsed?.ts;
+			lastSyncError = parsed?.message;
 		} catch (_err) {
 			/* intentional: malformed sync-error line — keep diagnostics best-effort */
 		}

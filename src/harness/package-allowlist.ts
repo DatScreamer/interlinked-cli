@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isJsonObject } from "../lib/json-types.js";
 import { DEFAULT_LICENSE_ALLOWLIST } from "./license-policy.js";
 import type { Ecosystem, PackageSpec } from "./package-install-parser.js";
 
@@ -71,14 +72,49 @@ function emptyAllowlist(): Allowlist {
 	};
 }
 
+/**
+ * Validate one package's allowlist grant. `approved_at`/`approved_by` are
+ * required (matching `AllowlistEntry`); a raw entry missing either is
+ * dropped rather than let a non-string `version_range`/`license` reach
+ * `isPackageAllowed`/`isLicenseAllowed`, which call string methods on them
+ * with no further runtime check.
+ */
+function parseAllowlistEntry(value: unknown): AllowlistEntry | null {
+	if (!isJsonObject(value)) return null;
+	const { approved_at, approved_by, reason, version_range, license } = value;
+	if (typeof approved_at !== "string" || typeof approved_by !== "string") return null;
+	const entry: AllowlistEntry = { approved_at, approved_by };
+	if (typeof reason === "string") entry.reason = reason;
+	if (typeof version_range === "string") entry.version_range = version_range;
+	if (typeof license === "string") entry.license = license;
+	return entry;
+}
+
+/** Validate one lockfile-snapshot grant (`sha256`/`approved_at`/`approved_by` required). */
+function parseLockfileSnapshot(value: unknown): LockfileSnapshot | null {
+	if (!isJsonObject(value)) return null;
+	const { sha256, approved_at, approved_by, reason } = value;
+	if (
+		typeof sha256 !== "string" ||
+		typeof approved_at !== "string" ||
+		typeof approved_by !== "string"
+	) {
+		return null;
+	}
+	const snap: LockfileSnapshot = { sha256, approved_at, approved_by };
+	if (typeof reason === "string") snap.reason = reason;
+	return snap;
+}
+
 export function loadAllowlist(cwd: string): Allowlist {
 	const p = allowlistPath(cwd);
 	if (!existsSync(p)) return emptyAllowlist();
 	try {
 		const raw = readFileSync(p, "utf-8");
-		const parsed = JSON.parse(raw) as Partial<Allowlist>;
+		const parsed: unknown = JSON.parse(raw);
 		const base = emptyAllowlist();
-		if (parsed.packages && typeof parsed.packages === "object") {
+		if (!isJsonObject(parsed)) return base;
+		if (isJsonObject(parsed.packages)) {
 			for (const eco of [
 				"npm",
 				"pypi",
@@ -90,16 +126,27 @@ export function loadAllowlist(cwd: string): Allowlist {
 				"gradle",
 				"nuget",
 			] as Ecosystem[]) {
-				const eco_entry = parsed.packages[eco];
-				if (eco_entry && typeof eco_entry === "object") base.packages[eco] = eco_entry;
+				const ecoEntry = parsed.packages[eco];
+				if (!isJsonObject(ecoEntry)) continue;
+				const entries: Record<string, AllowlistEntry> = {};
+				for (const [name, rawEntry] of Object.entries(ecoEntry)) {
+					const entry = parseAllowlistEntry(rawEntry);
+					if (entry) entries[name] = entry;
+				}
+				base.packages[eco] = entries;
 			}
 		}
-		if (parsed.lockfile_snapshots && typeof parsed.lockfile_snapshots === "object") {
-			base.lockfile_snapshots = parsed.lockfile_snapshots;
+		if (isJsonObject(parsed.lockfile_snapshots)) {
+			const snapshots: Record<string, LockfileSnapshot> = {};
+			for (const [name, rawSnap] of Object.entries(parsed.lockfile_snapshots)) {
+				const snap = parseLockfileSnapshot(rawSnap);
+				if (snap) snapshots[name] = snap;
+			}
+			base.lockfile_snapshots = snapshots;
 		}
 		if (
 			Array.isArray(parsed.license_allowlist) &&
-			parsed.license_allowlist.every((id) => typeof id === "string")
+			parsed.license_allowlist.every((id): id is string => typeof id === "string")
 		) {
 			base.license_allowlist = parsed.license_allowlist;
 		}

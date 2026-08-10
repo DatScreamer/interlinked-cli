@@ -13,6 +13,7 @@
 // the write path so a code change that breaks recording fails CI.
 
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { isJsonObject } from "../json-types.js";
 import { getCollectionPath } from "./writer.js";
 
 export type CollectionLivenessStatus =
@@ -71,15 +72,21 @@ function readTail(path: string, size: number, tailBytes: number): string | null 
 	}
 }
 
-/** Extract the `ts` field of the last complete JSONL record in a tail slice. */
+/** Extract the `ts` field of the last complete JSONL record in a tail slice.
+ *  Replaces `JSON.parse(line) as { ts?: unknown }` — the cast never checked
+ *  that the parsed value was even an object, so a garbled non-object line
+ *  (rather than throwing in JSON.parse) would read `.ts` off a primitive and
+ *  silently return `undefined` disguised as a valid parse. */
 function lastRecordTsFromTail(tail: string): string | null {
 	const lines = tail.split("\n");
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const line = lines[i]?.trim();
 		if (!line) continue;
 		try {
-			const rec = JSON.parse(line) as { ts?: unknown };
-			return typeof rec.ts === "string" ? rec.ts : null;
+			const parsed = JSON.parse(line);
+			if (!isJsonObject(parsed)) continue;
+			const ts = parsed.ts;
+			return typeof ts === "string" ? ts : null;
 		} catch {
 			// Partial/garbled line — the tail cut landed mid-record. Walk back
 			// to the previous complete line rather than failing the whole read.

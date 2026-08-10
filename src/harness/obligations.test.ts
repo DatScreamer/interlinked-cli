@@ -281,6 +281,31 @@ describe("parseObligationTxn — accepts", () => {
 	it("accepts a valid escalate row", () => {
 		expect(parseObligationTxn({ op: "escalate", id: "mutation:src/a.ts:1-2", survivors: [], atMs: 3 })).not.toBeNull();
 	});
+
+	it("accepts an escalate row with well-formed survivor entries, operator included", () => {
+		const txn = parseObligationTxn({
+			op: "escalate",
+			id: "mutation:src/a.ts:1-2",
+			survivors: [{ line: 6, description: "replaced `>` with `>=`", operator: "ConditionalBoundary" }],
+			atMs: 3,
+		});
+		expect(txn).toEqual({
+			op: "escalate",
+			id: "mutation:src/a.ts:1-2",
+			survivors: [{ line: 6, description: "replaced `>` with `>=`", operator: "ConditionalBoundary" }],
+			atMs: 3,
+		});
+	});
+
+	it("accepts an escalate row with a survivor entry omitting the optional operator", () => {
+		const txn = parseObligationTxn({
+			op: "escalate",
+			id: "mutation:src/a.ts:1-2",
+			survivors: [{ line: 6, description: "x" }],
+			atMs: 3,
+		});
+		expect(txn).toEqual({ op: "escalate", id: "mutation:src/a.ts:1-2", survivors: [{ line: 6, description: "x" }], atMs: 3 });
+	});
 });
 
 describe("parseObligationTxn — rejects", () => {
@@ -296,6 +321,15 @@ describe("parseObligationTxn — rejects", () => {
 		{ label: "discharge with a bad source", input: { op: "discharge", id: "x", source: "telepathy", atMs: 2 } },
 		{ label: "discharge missing id", input: { op: "discharge", source: "local", atMs: 2 } },
 		{ label: "escalate without survivors", input: { op: "escalate", id: "x", atMs: 3 } },
+		{ label: "escalate with a survivor missing a description", input: { op: "escalate", id: "x", survivors: [{ line: 1 }], atMs: 3 } },
+		{ label: "escalate with a non-numeric survivor line", input: { op: "escalate", id: "x", survivors: [{ line: "1", description: "d" }], atMs: 3 } },
+		{ label: "escalate with a non-string survivor operator", input: { op: "escalate", id: "x", survivors: [{ line: 1, description: "d", operator: 5 }], atMs: 3 } },
+		{ label: "escalate with a non-array survivors field", input: { op: "escalate", id: "x", survivors: "nope", atMs: 3 } },
+		{ label: "open with a non-numeric editSeq", input: { op: "open", kind: "coverage", file: "a", contentHash: "c", sessionId: "s", atMs: 1, editSeq: "x" } },
+		{ label: "open with a non-numeric strikes", input: { op: "open", kind: "coverage", file: "a", contentHash: "c", sessionId: "s", atMs: 1, strikes: "x" } },
+		{ label: "open with a non-string detector", input: { op: "open", kind: "coverage", file: "a", contentHash: "c", sessionId: "s", atMs: 1, detector: 5 } },
+		{ label: "discharge with a non-string forContentHash", input: { op: "discharge", id: "x", source: "local", atMs: 2, forContentHash: 5 } },
+		{ label: "discharge with a non-string witness", input: { op: "discharge", id: "x", source: "local", atMs: 2, witness: 5 } },
 	])("rejects $label", ({ input }) => {
 		expect(parseObligationTxn(input)).toBeNull();
 	});

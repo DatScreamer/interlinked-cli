@@ -107,3 +107,40 @@ describe("isPatchApplierGuardDisabled", () => {
 		expect(isPatchApplierGuardDisabled()).toBe(true);
 	});
 });
+
+// Red-team F3 (docs/design/red-team-findings-2026-08-09.md): the guard blocked
+// a probe script that WRITES NOTHING — it only carried write-shaped strings as
+// socket payloads. Both required signals were matched lexically, so a string
+// literal counted as a call. Any review tool, security fixture, or analysis
+// script that QUOTES offending code trips the same wire.
+describe("detectPatchApplier — write-shaped DATA is not a write — negative (must NOT fire)", () => {
+	it("N1: a write call quoted inside a double-quoted string is data", () => {
+		const src = [
+			"const payload = \"python3 -c \\\"open('src/x.ts','w').write('h')\\\"\";",
+			"send(payload);",
+		].join("\n");
+		expect(detectPatchApplier(src, "probe.mjs")).toBeNull();
+	});
+
+	it("N2: a write call quoted inside a single-quoted string is data", () => {
+		const src = ["const cmd = 'writeFileSync(\"src/x.ts\", body)';", "record(cmd);"].join("\n");
+		expect(detectPatchApplier(src, "probe.mjs")).toBeNull();
+	});
+
+	it("N3: a write call named only in a comment is data", () => {
+		const src = ["// writeFileSync('src/x.ts', body) is what an applier does", "run();"].join("\n");
+		expect(detectPatchApplier(src, "probe.mjs")).toBeNull();
+	});
+});
+
+describe("detectPatchApplier — real appliers still caught — positive (must fire)", () => {
+	it("P1: a genuine writeFileSync into repo source still fires", () => {
+		const src = ['writeFileSync("src/harness/x.ts", patched);'].join("\n");
+		expect(detectPatchApplier(src, "apply.mjs")).not.toBeNull();
+	});
+
+	it("P2: a genuine call whose PATH is a string literal still fires", () => {
+		const src = ["const dest = 'src/harness/y.ts';", "writeFileSync(dest, patched);"].join("\n");
+		expect(detectPatchApplier(src, "apply.mjs")).not.toBeNull();
+	});
+});

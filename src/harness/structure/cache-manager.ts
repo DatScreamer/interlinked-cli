@@ -5,7 +5,17 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AdoptionReport, BaselineFile, CatalogMeta, CategoryCatalog } from "./types.js";
+import { isJsonObject } from "../../lib/json-types.js";
+import type {
+	AdoptionReport,
+	BaselineEntry,
+	BaselineFile,
+	CatalogItem,
+	CatalogMeta,
+	CategoryCatalog,
+	Determinism,
+	Provenance,
+} from "./types.js";
 
 // -------------------------------------------
 // Constants
@@ -32,17 +42,138 @@ export function ensureCacheDir(cwd: string): void {
 // Safe JSON read
 // -------------------------------------------
 
-function readJsonSafe<T>(filePath: string): T | null {
+function readJsonSafe(filePath: string): unknown {
 	try {
 		const raw = readFileSync(filePath, "utf-8");
-		return JSON.parse(raw) as T;
+		return JSON.parse(raw);
 	} catch {
 		return null;
 	}
 }
 
-function hasValidSchemaVersion(data: { schema_version?: unknown }): boolean {
-	return data.schema_version === CURRENT_SCHEMA_VERSION;
+// -------------------------------------------
+// Per-artifact validators
+// -------------------------------------------
+// Every cache file here is self-written by this module, but a stale schema
+// version or a hand-edited file can still parse as syntactically valid JSON
+// that is the wrong shape. `readJsonSafe` returns `unknown`; these parsers
+// are the one place that narrows it into a domain type via a CONSTRUCTED
+// literal, so a required field added to a type in ./types.js fails this
+// file to compile instead of silently reading `undefined` downstream.
+
+function isProvenance(value: unknown): value is Provenance {
+	return value === "declared" || value === "extracted" || value === "inferred";
+}
+
+function isDeterminism(value: unknown): value is Determinism {
+	return (
+		value === "fully_deterministic" || value === "partially_deterministic" || value === "heuristic"
+	);
+}
+
+function parseCatalogItem(value: unknown): CatalogItem | null {
+	if (!isJsonObject(value)) return null;
+	const { local_id, global_ref, file, provenance, determinism_ceiling } = value;
+	if (typeof local_id !== "string") return null;
+	if (typeof global_ref !== "string") return null;
+	if (typeof file !== "string") return null;
+	if (!isProvenance(provenance)) return null;
+	if (!isDeterminism(determinism_ceiling)) return null;
+	return { local_id, global_ref, file, provenance, determinism_ceiling };
+}
+
+function parseBaselineEntry(value: unknown): BaselineEntry | null {
+	if (!isJsonObject(value)) return null;
+	const { finding_name, artifact_ref, source_file, determinism, required_companion_files, context_hash } =
+		value;
+	if (typeof finding_name !== "string") return null;
+	if (typeof artifact_ref !== "string") return null;
+	if (typeof source_file !== "string") return null;
+	if (!isDeterminism(determinism)) return null;
+	if (
+		!Array.isArray(required_companion_files) ||
+		!required_companion_files.every((f): f is string => typeof f === "string")
+	) {
+		return null;
+	}
+	if (typeof context_hash !== "string") return null;
+	return { finding_name, artifact_ref, source_file, determinism, required_companion_files, context_hash };
+}
+
+function parseCatalogMeta(value: unknown): CatalogMeta | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema_version !== CURRENT_SCHEMA_VERSION) return null;
+	const { cli_version, built_at, repo_root, last_scanned_commit, manifest_hash, extractor_versions } = value;
+	if (typeof cli_version !== "string") return null;
+	if (typeof built_at !== "string") return null;
+	if (typeof repo_root !== "string") return null;
+	if (typeof last_scanned_commit !== "string") return null;
+	if (typeof manifest_hash !== "string") return null;
+	if (!isJsonObject(extractor_versions)) return null;
+	const versions: Record<string, number> = {};
+	for (const [key, v] of Object.entries(extractor_versions)) {
+		if (typeof v !== "number") return null;
+		versions[key] = v;
+	}
+	return {
+		schema_version: 1,
+		cli_version,
+		built_at,
+		repo_root,
+		last_scanned_commit,
+		manifest_hash,
+		extractor_versions: versions,
+	};
+}
+
+function parseCategoryCatalog(value: unknown): CategoryCatalog | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema_version !== CURRENT_SCHEMA_VERSION) return null;
+	if (!Array.isArray(value.items)) return null;
+	const items: CatalogItem[] = [];
+	for (const raw of value.items) {
+		const item = parseCatalogItem(raw);
+		if (!item) return null;
+		items.push(item);
+	}
+	return { schema_version: 1, items };
+}
+
+function parseBaselineFile(value: unknown): BaselineFile | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema_version !== CURRENT_SCHEMA_VERSION) return null;
+	if (!Array.isArray(value.entries)) return null;
+	const entries: BaselineEntry[] = [];
+	for (const raw of value.entries) {
+		const entry = parseBaselineEntry(raw);
+		if (!entry) return null;
+		entries.push(entry);
+	}
+	return { schema_version: 1, entries };
+}
+
+function parseAdoptionReport(value: unknown): AdoptionReport | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema_version !== CURRENT_SCHEMA_VERSION) return null;
+	if (!isJsonObject(value.categories)) return null;
+	const { public_api, env, config, tests, docs, examples, glossary, layers, packages } = value.categories;
+	if (
+		typeof public_api !== "number" ||
+		typeof env !== "number" ||
+		typeof config !== "number" ||
+		typeof tests !== "number" ||
+		typeof docs !== "number" ||
+		typeof examples !== "number" ||
+		typeof glossary !== "number" ||
+		typeof layers !== "number" ||
+		typeof packages !== "number"
+	) {
+		return null;
+	}
+	return {
+		schema_version: 1,
+		categories: { public_api, env, config, tests, docs, examples, glossary, layers, packages },
+	};
 }
 
 // -------------------------------------------
@@ -51,11 +182,7 @@ function hasValidSchemaVersion(data: { schema_version?: unknown }): boolean {
 
 export function readCatalogMeta(cwd: string): CatalogMeta | null {
 	const filePath = join(getCacheDir(cwd), "catalog-meta.json");
-	const data = readJsonSafe<CatalogMeta>(filePath);
-	if (!data || !hasValidSchemaVersion(data)) {
-		return null;
-	}
-	return data;
+	return parseCatalogMeta(readJsonSafe(filePath));
 }
 
 export function writeCatalogMeta(cwd: string, meta: CatalogMeta): void {
@@ -70,11 +197,7 @@ export function writeCatalogMeta(cwd: string, meta: CatalogMeta): void {
 
 export function readCategoryCache(cwd: string, name: string): CategoryCatalog | null {
 	const filePath = join(getCacheDir(cwd), `${name}.json`);
-	const data = readJsonSafe<CategoryCatalog>(filePath);
-	if (!data || !hasValidSchemaVersion(data)) {
-		return null;
-	}
-	return data;
+	return parseCategoryCatalog(readJsonSafe(filePath));
 }
 
 export function writeCategoryCache(cwd: string, name: string, catalog: CategoryCatalog): void {
@@ -89,11 +212,7 @@ export function writeCategoryCache(cwd: string, name: string, catalog: CategoryC
 
 export function readBaseline(cwd: string): BaselineFile {
 	const filePath = join(getCacheDir(cwd), "baseline.json");
-	const data = readJsonSafe<BaselineFile>(filePath);
-	if (!data || !hasValidSchemaVersion(data)) {
-		return { schema_version: 1, entries: [] };
-	}
-	return data;
+	return parseBaselineFile(readJsonSafe(filePath)) ?? { schema_version: 1, entries: [] };
 }
 
 export function writeBaseline(cwd: string, baseline: BaselineFile): void {
@@ -108,11 +227,7 @@ export function writeBaseline(cwd: string, baseline: BaselineFile): void {
 
 export function readAdoptionReport(cwd: string): AdoptionReport | null {
 	const filePath = join(getCacheDir(cwd), "adoption-report.json");
-	const data = readJsonSafe<AdoptionReport>(filePath);
-	if (!data || !hasValidSchemaVersion(data)) {
-		return null;
-	}
-	return data;
+	return parseAdoptionReport(readJsonSafe(filePath));
 }
 
 export function writeAdoptionReport(cwd: string, report: AdoptionReport): void {

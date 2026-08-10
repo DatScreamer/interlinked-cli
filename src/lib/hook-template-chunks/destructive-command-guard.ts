@@ -376,6 +376,30 @@ function dcgCheckSystemLevel(cmd: string): DestructiveCommandVerdict | null {
 	return null;
 }
 
+/** Fetch-and-execute: a download piped (or process-substituted) into a shell
+ *  or interpreter. Red-team F2 — this is the hole UNDER the supply-chain
+ *  guard: installs are default-deny across ten ecosystems, and `curl | sh`
+ *  runs remote code with no manifest, registry, allowlist entry or pin. Sinks
+ *  are shells/interpreters only, so `| jq` / `| grep` stay allowed; the fetch
+ *  verb is required, so piping a LOCAL file into sh is untouched. String
+ *  concat, not template literals — this module is embedded into a backtick
+ *  template (see DESTRUCTIVE_COMMAND_GUARD_SOURCE). */
+function dcgCheckRemoteExecution(cmd: string): DestructiveCommandVerdict | null {
+	const fetchVerb = "(?:curl|wget|fetch)";
+	const sink = "(?:sudo\\s+)?(?:(?:ba|z|k|da)?sh|python3?|perl|ruby|node|php)";
+	const piped = new RegExp("\\b" + fetchVerb + "\\b[^|]*\\|\\s*" + sink + "\\b", "i");
+	const subst = new RegExp("\\b" + sink + "\\b\\s*<\\(\\s*[^)]*\\b" + fetchVerb + "\\b", "i");
+	if (!piped.test(cmd) && !subst.test(cmd)) return null;
+	return {
+		decision: "block",
+		reason:
+			"BLOCKED: remote code execution — a download piped into a shell/interpreter runs " +
+			"unreviewed remote code and bypasses the package allowlist entirely. Download to a " +
+			"file, read it, then run it deliberately; or install the dependency through its " +
+			"package manager so the supply-chain gate can screen it.",
+	};
+}
+
 function dcgCheckEmbeddedDestructive(cmd: string): DestructiveCommandVerdict | null {
 	if (/(python3?|node|ruby|perl)\s+-(c|e)\s+.*\b(os\.remove|shutil\.rmtree|unlink|rimraf)\b/i.test(cmd)) {
 		return {
@@ -429,6 +453,7 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 		dcgCheckInfraAsCode,
 		dcgCheckCloudProvider,
 		dcgCheckSystemLevel,
+		dcgCheckRemoteExecution,
 		dcgCheckEmbeddedDestructive,
 	];
 	for (const check of checks) {
@@ -462,6 +487,7 @@ export const DESTRUCTIVE_COMMAND_GUARD_SOURCE: string = [
 	dcgCheckInfraAsCode,
 	dcgCheckCloudProvider,
 	dcgCheckSystemLevel,
+	dcgCheckRemoteExecution,
 	dcgCheckEmbeddedDestructive,
 	checkDestructiveCommand,
 ]

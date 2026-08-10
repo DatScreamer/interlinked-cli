@@ -95,6 +95,41 @@ describe("getDataDir", () => {
 		mockReadFileSync.mockReturnValue("not json");
 		expect(getDataDir("/some/cwd")).toBe(join("/some/cwd", ".interlinked"));
 	});
+
+	// data_dir boundary parsing — replaces `JSON.parse(...) as LocalConfig`,
+	// an unchecked cast that let a wrongly-typed data_dir (e.g. a number) flow
+	// out of a function typed to return `string`.
+	it("P1: reads a well-formed string data_dir", () => {
+		delete process.env.INTERLINKED_DATA_DIR;
+		delete process.env.INTERLINKED_HOME;
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue(JSON.stringify({ data_dir: "/config/data" }));
+		expect(getDataDir("/some/cwd")).toBe("/config/data");
+	});
+
+	it("N1: falls through to default when data_dir is not a string", () => {
+		delete process.env.INTERLINKED_DATA_DIR;
+		delete process.env.INTERLINKED_HOME;
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue(JSON.stringify({ data_dir: 42 }));
+		expect(getDataDir("/some/cwd")).toBe(join("/some/cwd", ".interlinked"));
+	});
+
+	it("N2: falls through to default when config.local.json parses to a non-object (a bare JSON array)", () => {
+		delete process.env.INTERLINKED_DATA_DIR;
+		delete process.env.INTERLINKED_HOME;
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue(JSON.stringify(["not", "an", "object"]));
+		expect(getDataDir("/some/cwd")).toBe(join("/some/cwd", ".interlinked"));
+	});
+
+	it("N3: falls through to default when config.local.json parses to null", () => {
+		delete process.env.INTERLINKED_DATA_DIR;
+		delete process.env.INTERLINKED_HOME;
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue("null");
+		expect(getDataDir("/some/cwd")).toBe(join("/some/cwd", ".interlinked"));
+	});
 });
 
 describe("getHooksDir", () => {

@@ -6,6 +6,7 @@
 // output and returns a PolicyClassification. No module-private state — they
 // depend only on the JsonObject/PolicyClassification types and each other.
 
+import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { nonNull } from "../lib/non-null.js";
 import type { PolicyClassification } from "./types.js";
@@ -17,15 +18,16 @@ import type { PolicyClassification } from "./types.js";
  */
 export function parseClaudeCodeOutput(output: string): PolicyClassification {
 	try {
-		const wrapper = JSON.parse(output) as JsonObject;
+		const wrapper: unknown = JSON.parse(output);
+		if (!isJsonObject(wrapper)) return parseClassificationJson(output);
 		// --json-schema puts parsed result directly in structured_output
-		if (wrapper.structured_output && typeof wrapper.structured_output === "object") {
-			const so = wrapper.structured_output as JsonObject;
+		if (isJsonObject(wrapper.structured_output)) {
+			const so = wrapper.structured_output;
 			return {
 				label: so.compliant === false ? "deny" : "allow",
 				confidence: Math.max(0, Math.min(1, Number(so.confidence) || 0)),
 				reasoning: String(so.reasoning || "No reasoning provided"),
-				policy_id: (so.policy_id as string) || undefined,
+				policy_id: typeof so.policy_id === "string" && so.policy_id ? so.policy_id : undefined,
 			};
 		}
 		// Fallback: result field contains text (possibly markdown-fenced)
@@ -75,11 +77,14 @@ export function parseClassificationJson(text: string): PolicyClassification {
 		let cleaned = text.trim();
 		const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
 		if (fenceMatch) cleaned = nonNull(fenceMatch[1]).trim();
-		const parsed = JSON.parse(cleaned) as JsonObject;
-		const compliant = parsed.compliant as boolean | undefined;
+		const parsed: unknown = JSON.parse(cleaned);
+		if (!isJsonObject(parsed)) {
+			return { label: "allow", confidence: 0, reasoning: "Failed to parse classifier JSON" };
+		}
+		const compliant = parsed.compliant;
 		const confidence = Number(parsed.confidence) || 0;
 		const reasoning = String(parsed.reasoning || "No reasoning provided");
-		const policyId = parsed.policy_id as string | undefined;
+		const policyId = typeof parsed.policy_id === "string" ? parsed.policy_id : undefined;
 
 		return {
 			label: compliant === false ? "deny" : "allow",

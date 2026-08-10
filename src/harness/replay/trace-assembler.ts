@@ -15,7 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
+import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
 import { sanitizeSessionId } from "../session-paths.js";
 import {
 	envelopeForToolUseId,
@@ -64,10 +64,10 @@ export function perSessionEnvelopePath(cwd: string, sessionId: string): string {
 	return join(cwd, ".interlinked", "replay", "inference", `${safeId(sessionId)}.jsonl`);
 }
 
+// Rule 3 (scratch/fleet-r2/CONTRACT.md): route the local narrower through the
+// one canonical predicate instead of hand-rolling the object/array check.
 function asObject(value: unknown): JsonObject | null {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonObject)
-		: null;
+	return isJsonObject(value) ? value : null;
 }
 
 /** Tolerant collection.jsonl reader scoped to one session's tool events. */
@@ -198,6 +198,73 @@ export function assembleTrace(cwd: string, sessionId: string): AssembleSummary {
 	return { steps: steps.length, steps_with_envelope: ctx.stamped.length };
 }
 
+function parseTraceStepKey(value: unknown): TraceStepKey | null {
+	if (!isJsonObject(value)) return null;
+	const { session_id, ts } = value;
+	if (typeof session_id !== "string" || typeof ts !== "string") return null;
+	const seq = value.seq ?? null;
+	if (seq !== null && typeof seq !== "number") return null;
+	const toolUseId = value.tool_use_id ?? null;
+	if (toolUseId !== null && typeof toolUseId !== "string") return null;
+	return { session_id, seq, tool_use_id: toolUseId, ts };
+}
+
+/** `raw` is already normalized to `T | null` by the caller (`?? null`); this
+ *  returns `undefined` as an invalid-shape sentinel so the caller can tell
+ *  "legitimately null" apart from "malformed, reject the whole step". */
+function parseTraceAction(raw: unknown): TraceStep["action"] | undefined {
+	if (raw === null) return null;
+	if (!isJsonObject(raw)) return undefined;
+	const tool = raw.tool ?? null;
+	if (tool !== null && typeof tool !== "string") return undefined;
+	const input = raw.input ?? null;
+	if (input !== null && !isJsonObject(input)) return undefined;
+	return { tool, input };
+}
+
+/** Same invalid-shape sentinel convention as {@link parseTraceAction}. */
+function parseTraceResult(raw: unknown): TraceStep["result"] | undefined {
+	if (raw === null) return null;
+	if (!isJsonObject(raw)) return undefined;
+	const outcome = raw.outcome;
+	if (typeof outcome !== "string") return undefined;
+	const observation = raw.observation ?? null;
+	if (observation !== null && !isJsonObject(observation)) return undefined;
+	return { outcome, observation };
+}
+
+/** Validate one trace-file line. Exported for direct testing. */
+export function parseTraceStep(value: unknown): TraceStep | null {
+	if (!isJsonObject(value)) return null;
+	if (value.schema !== "replay-trace.v1") return null;
+	const key = parseTraceStepKey(value.key);
+	if (!key) return null;
+	const action = parseTraceAction(value.action ?? null);
+	if (action === undefined) return null;
+	const result = parseTraceResult(value.result ?? null);
+	if (result === undefined) return null;
+
+	const observationRef = value.observation_ref ?? null;
+	if (observationRef !== null && typeof observationRef !== "string") return null;
+	const preTree = value.pre_tree ?? null;
+	if (preTree !== null && typeof preTree !== "string") return null;
+	const postTree = value.post_tree ?? null;
+	if (postTree !== null && typeof postTree !== "string") return null;
+	const stateRef = value.state_ref ?? null;
+	if (stateRef !== null && typeof stateRef !== "string") return null;
+
+	return {
+		schema: "replay-trace.v1",
+		key,
+		observation_ref: observationRef,
+		action,
+		result,
+		pre_tree: preTree,
+		post_tree: postTree,
+		state_ref: stateRef,
+	};
+}
+
 /** Tolerant reader for an assembled trace. */
 export function loadTrace(cwd: string, sessionId: string): TraceStep[] {
 	const path = tracePath(cwd, sessionId);
@@ -206,9 +273,8 @@ export function loadTrace(cwd: string, sessionId: string): TraceStep[] {
 	for (const line of readFileSync(path, "utf-8").split("\n")) {
 		if (!line.trim()) continue;
 		try {
-			// SAFETY: schema-checked on the next line before use.
-			const parsed = JSON.parse(line) as TraceStep;
-			if (parsed && parsed.schema === "replay-trace.v1") out.push(parsed);
+			const parsed = parseTraceStep(JSON.parse(line));
+			if (parsed) out.push(parsed);
 		} catch (err) {
 			void err; // torn/foreign line — skipping is this reader's contract
 		}
