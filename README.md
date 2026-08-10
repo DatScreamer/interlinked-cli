@@ -137,26 +137,38 @@ exercises the same end-to-end path.
 
 ```bash
 # In the repo you want to instrument:
-interlinked install-hooks --runner claude-code   # or omit --runner to auto-detect
-interlinked harness start                        # start the local guard server
-interlinked status                               # show what's configured
+interlinked enable            # hooks + skills, auto-detecting every agent runner
+interlinked harness start     # start the local guard server
+interlinked status            # show what's configured
 ```
 
-That's it for local use. Run your agent of choice and tool-use events flow
-through the harness. Server commands such as `login`, `sync`, `tasks`, and
-`inbox` are available when you point the CLI at an Interlinked MCP Server.
+Then restart or reload your agent so it picks up the new skills. Run it as
+usual and tool-use events flow through the harness.
 
-### Optional: `/enforce` — turn AGENTS.md prose into deterministic rules
+**Use `enable`, not `install-hooks`, unless you know you want the adapter
+path.** Both wire the hooks, but `enable` also installs the skills that teach
+your agent *how to work with the harness* — how to read a `BLOCKED: …
+Suggestion: …` message, how to run `interlinked verify`, what the quality
+ratchets expect, and how to legitimately suppress a false positive. Without
+them, the first block your agent hits is a message it has to guess at, and the
+most likely guess is to work around the gate. `install-hooks` is the precise,
+manifest-tracked adapter path (see *Day-to-day commands*); it installs no
+skills.
 
-`install-hooks` wires the harness; `interlinked enable` does that *plus* installs
-the `/enforce` skill across every detected agent runner (Claude Code, Codex,
-Gemini, Copilot, Cursor). Use it when you want the imperatives in your
-`AGENTS.md` / `CLAUDE.md` / `.clinerules/` to become rules the harness actually
-enforces, instead of prose the model may or may not follow.
+Server commands such as `login`, `sync`, `tasks`, and `inbox` are available
+when you point the CLI at an Interlinked MCP Server.
+
+### `/enforce` — turn AGENTS.md prose into deterministic rules
+
+`interlinked enable` also installs the `/enforce` skill across every detected
+agent runner (Claude Code, Codex, Gemini, Copilot, Cursor). Use it when you want
+the imperatives in your `AGENTS.md` / `CLAUDE.md` / `.clinerules/` to become
+rules the harness actually enforces, instead of prose the model may or may not
+follow.
 
 ```bash
 # In the repo you want to instrument:
-interlinked enable                                    # installs hooks + /enforce
+interlinked enable                                    # hooks + skills (incl. /enforce)
 # Restart or reload your agent so it picks up the new skill, then in-agent:
 /enforce                                              # walk the project, distill imperatives
 /enforce AGENTS.md                                    # or target a single file
