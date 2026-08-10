@@ -103,12 +103,12 @@ export {
 	checkCommentClaimsThrowsDoesnt,
 	checkCommentClaimsValidationMissing,
 } from "./checks/comment-drift.js";
-// ---- compat-stubs ----
+// ---- sql-migrations (real implementations; stubs until 2026-08-09) ----
 export {
 	checkMigrationOrdering,
 	checkSqlSchemaConsistency,
 	checkVisibilityFilterMissing,
-} from "./checks/compat-stubs.js";
+} from "./checks/sql-migrations.js";
 // ---- complexity ----
 export { checkFunctionComplexity } from "./checks/complexity.js";
 // ---- cross-file (Batch 5) ----
