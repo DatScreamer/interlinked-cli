@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { _isRelativeModuleNotFound, evaluateBiomeDiffOverlay } from "../diff-overlay.js";
+import { sweepStaleFixtureDirs } from "./fixture-hygiene.js";
 
 type Diag = Parameters<typeof _isRelativeModuleNotFound>[0];
 const diag = (message: string): Diag => ({ message }) as Diag;
@@ -48,6 +49,7 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..");
 // silent zero findings. Rooting under CLI_ROOT (== projectRoot) makes the
 // rewrite+filter agree, and biome.json / tsconfig still resolve up-tree. The
 // `_…fixtures-` name is skipped by the strip-brace corpus walk.
+sweepStaleFixtureDirs(CLI_ROOT);
 const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_diff_overlay_fixtures-"));
 const FIXTURE_FILE = resolve(FIXTURE_DIR, "_overlay_fixture.ts");
 

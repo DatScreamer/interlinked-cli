@@ -111,6 +111,56 @@ describe("distStaleness", () => {
 		expect(result?.stale).toBe(false);
 	});
 
+	it("ignores ephemeral fixture-dir exhaust under src/ (leaked _*_fixtures-* mkdtemps)", () => {
+		// The harness's own test suites mkdtemp `_content_gate_fixtures-*` (and
+		// siblings) inside src/; interrupted runs leak them and live runs rewrite
+		// them. They are exhaust, not source edits — a probe file in one must not
+		// flip the verdict to stale (observed FP 2026-08-09).
+		const artifact = writeDist();
+		const realSrc = writeSrc("real.ts");
+		utimesSync(artifact, RECENT, RECENT);
+		utimesSync(realSrc, OLD, OLD);
+
+		const FUTURE = new Date("2020-01-01T02:00:00Z");
+		for (const leaked of [
+			"_content_gate_fixtures-pGlFeJ",
+			"_diff_overlay_fixtures-7N08Bw",
+			"_tsc_overlay_fixtures-K1ehFC",
+		]) {
+			const dir = join(root, "src", leaked);
+			mkdirSync(dir, { recursive: true });
+			const probe = join(dir, "probe.ts");
+			writeFileSync(probe, "export const probe = 1;\n");
+			utimesSync(probe, FUTURE, FUTURE);
+		}
+
+		const result = distStaleness(root);
+		expect(result?.newestSrcMs).toBe(OLD.getTime());
+		expect(result?.stale).toBe(false);
+	});
+
+	it("anchors on build completion: src edits during the build window are not stale", () => {
+		// tsup writes dist/index.js in the first second and later artifacts (DTS,
+		// asset copies) up to ~a minute afterwards. A src mtime landing between
+		// the two must compare against the newest dist artifact (build END) and
+		// read fresh — against index.js alone it would read stale forever.
+		const artifact = writeDist(); // dist/index.js — early ESM write
+		const lateArtifactDir = join(root, "dist", "types");
+		mkdirSync(lateArtifactDir, { recursive: true });
+		const lateArtifact = join(lateArtifactDir, "index.d.ts");
+		writeFileSync(lateArtifact, "// dts\n");
+		const srcFile = writeSrc("mid-build.ts");
+
+		const MID = new Date("2020-01-01T00:30:00Z");
+		utimesSync(artifact, OLD, OLD);
+		utimesSync(srcFile, MID, MID);
+		utimesSync(lateArtifact, RECENT, RECENT);
+
+		const result = distStaleness(root);
+		expect(result?.buildMs).toBe(RECENT.getTime());
+		expect(result?.stale).toBe(false);
+	});
+
 	it("keeps the newest mtime when a later-seen sibling file is not newer", () => {
 		// Two src files share the SAME mtime, so whichever the directory walk
 		// visits second compares equal (m > newest is false) and must not change

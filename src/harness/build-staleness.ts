@@ -15,12 +15,24 @@ const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage"])
 const MAX_ENTRIES = 50_000;
 const WALK_BUDGET_MS = 500;
 
+/**
+ * Ephemeral fixture directories the harness's own test suites mkdtemp inside
+ * the repo (content-gate / diff-overlay / tsc-overlay probes must live under
+ * the repo root so path-based gate predicates treat them as repo files).
+ * They are test exhaust, not source edits: interrupted runs leak them and any
+ * live test run rewrites them, so counting them turns every staleness verdict
+ * into a false positive (observed 2026-08-09: a leaked
+ * `src/_content_gate_fixtures-*` probe kept STALE BUILD firing seconds after
+ * a fresh rebuild+restart). Matches `_<name>_fixtures-<random>`.
+ */
+const EPHEMERAL_FIXTURE_DIR_RE = /^_.+_fixtures-/;
+
 export interface DistStaleness {
 	/** A src/ file is newer than the dist/ build artifact. */
 	stale: boolean;
 	/** Newest mtime (ms) found under src/. */
 	newestSrcMs: number;
-	/** mtime (ms) of the dist/ build artifact compared against. */
+	/** Newest artifact mtime (ms) under dist/ — the build's completion time. */
 	buildMs: number;
 }
 
@@ -43,7 +55,13 @@ function newestMtimeUnder(dir: string): number {
 		}
 		for (const entry of entries) {
 			if (entry.isDirectory()) {
-				if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+				if (
+					SKIP_DIRS.has(entry.name) ||
+					entry.name.startsWith(".") ||
+					EPHEMERAL_FIXTURE_DIR_RE.test(entry.name)
+				) {
+					continue;
+				}
 				stack.push(join(current, entry.name));
 			} else if (entry.isFile()) {
 				try {
@@ -66,12 +84,18 @@ function newestMtimeUnder(dir: string): number {
 export function distStaleness(repoRoot: string): DistStaleness | null {
 	const distArtifact = join(repoRoot, "dist", "index.js");
 	const srcDir = join(repoRoot, "src");
-	let buildMs: number;
+	let artifactMs: number;
 	try {
-		buildMs = statSync(distArtifact).mtimeMs;
+		artifactMs = statSync(distArtifact).mtimeMs;
 	} catch {
 		return null; // no build to be stale against
 	}
+	// Anchor on the END of the build, not its start: tsup writes the ESM entry
+	// artifacts in the first second and then spends ~a minute on DTS + asset
+	// copies, so any src mtime landing inside that window would read as "newer
+	// than the build" forever if compared against index.js alone. The newest
+	// file anywhere under dist/ is the last artifact written — build completion.
+	const buildMs = Math.max(artifactMs, newestMtimeUnder(join(repoRoot, "dist")));
 	const newestSrcMs = newestMtimeUnder(srcDir);
 	if (newestSrcMs === 0) return null; // unreadable src
 	return { stale: newestSrcMs > buildMs, newestSrcMs, buildMs };

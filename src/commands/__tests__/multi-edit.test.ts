@@ -27,6 +27,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { sweepStaleFixtureDirs } from "../../harness/__tests__/fixture-hygiene.js";
 import { nonNull } from "../../lib/non-null.js";
 import {
 	applyEditsToBuffer,
@@ -369,6 +370,7 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..", "..");
 // exactOptionalPropertyTypes applied to the overlaid file) exercise the real
 // toolchains. Sitting at the repo root keeps these fixtures off the strip-brace
 // corpus walk (which only descends `src/`).
+sweepStaleFixtureDirs(CLI_ROOT);
 const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_multi_edit_fixtures-"));
 
 // Module-level registry. `writeFixture` adds, `rmFixture` removes on

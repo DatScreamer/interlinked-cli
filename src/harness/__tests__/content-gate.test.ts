@@ -63,6 +63,7 @@ vi.mock("../diff-overlay.js", async () => {
 });
 
 import { nonNull } from "../../lib/non-null.js";
+import { sweepStaleFixtureDirs } from "./fixture-hygiene.js";
 import {
 	formatGateResult,
 	GATE_SEVERITY_ERROR,
@@ -90,6 +91,7 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..");
 // skipped by the strip-brace corpus walk. The fixtures are not `*.test.ts` and
 // not in a `__tests__/` dir, so the registry detectors (pre_block / pre_warn)
 // still run on them.
+sweepStaleFixtureDirs(CLI_ROOT);
 const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_content_gate_fixtures-"));
 const CLEAN_FIXTURE = resolve(FIXTURE_DIR, "_gate_clean.ts");
 const BIOME_FIXTURE = resolve(FIXTURE_DIR, "_gate_biome.ts");
