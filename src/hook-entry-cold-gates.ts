@@ -102,35 +102,67 @@ interface FileTargetInput {
 
 type ColdToolInput = FileTargetInput & ApplyPatchInput;
 
-function extractColdTargetPaths(event: UnifiedHookEvent): string[] {
+/** Read the plain file-path-shaped keys off a tool_input, in
+ *  `FILE_PATH_INPUT_KEYS` order. No dedup — matches the pre-decomposition
+ *  behavior, where a caller passing the same path under two keys (e.g.
+ *  `file_path` and `path`) got both copies. */
+function extractDirectPathInputs(ti: ColdToolInput): string[] {
 	const paths: string[] = [];
+	for (const key of FILE_PATH_INPUT_KEYS) {
+		const v = ti[key];
+		if (typeof v === "string" && v.trim() !== "") paths.push(v.trim());
+	}
+	return paths;
+}
+
+/** Run one `apply_patch` header regex over `patch`, returning trimmed,
+ *  non-empty matches in first-seen order, skipping anything already present
+ *  in `exclude` (checked against both the caller's accumulator and matches
+ *  already found this call). Resets `re.lastIndex` before returning so a
+ *  stateful global regex is safe to reuse on the next event. */
+function collectApplyPatchHeaderPaths(patch: string, re: RegExp, exclude: readonly string[]): string[] {
+	const found: string[] = [];
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(patch)) !== null) {
+		const p = (m[1] ?? "").trim();
+		if (p && !exclude.includes(p) && !found.includes(p)) found.push(p);
+	}
+	re.lastIndex = 0;
+	return found;
+}
+
+/** Extract file paths named in an `apply_patch` body's `*** Update/Add/Delete
+ *  File:` and `*** Move to:` headers. `existingPaths` is the accumulator
+ *  built so far (direct key inputs) — new matches are deduped against it and
+ *  against each other, mirroring the single shared `paths` array the
+ *  pre-decomposition loop scanned. */
+function extractApplyPatchPaths(ti: ColdToolInput, existingPaths: readonly string[]): string[] {
+	const patch = String(ti.command ?? ti.patch ?? ti.content ?? ti._raw_patch ?? "");
+	const headerPaths = collectApplyPatchHeaderPaths(patch, APPLY_PATCH_FILE_HEADER_RE, existingPaths);
+	const movePaths = collectApplyPatchHeaderPaths(patch, APPLY_PATCH_MOVE_HEADER_RE, [
+		...existingPaths,
+		...headerPaths,
+	]);
+	return [...headerPaths, ...movePaths];
+}
+
+function extractColdTargetPaths(event: UnifiedHookEvent): string[] {
 	const action = event.action;
 	if (action.kind === ACTION_TOOL_CALL) {
 		const ti = (action.tool_input ?? {}) as ColdToolInput;
-		for (const key of FILE_PATH_INPUT_KEYS) {
-			const v = ti[key];
-			if (typeof v === "string" && v.trim() !== "") paths.push(v.trim());
-		}
+		const paths = extractDirectPathInputs(ti);
 		if (action.tool_name === APPLY_PATCH_TOOL) {
-			const patch = String(ti.command ?? ti.patch ?? ti.content ?? ti._raw_patch ?? "");
-			let m: RegExpExecArray | null;
-			while ((m = APPLY_PATCH_FILE_HEADER_RE.exec(patch)) !== null) {
-				const p = (m[1] ?? "").trim();
-				if (p && !paths.includes(p)) paths.push(p);
-			}
-			while ((m = APPLY_PATCH_MOVE_HEADER_RE.exec(patch)) !== null) {
-				const p = (m[1] ?? "").trim();
-				if (p && !paths.includes(p)) paths.push(p);
-			}
-			APPLY_PATCH_FILE_HEADER_RE.lastIndex = 0;
-			APPLY_PATCH_MOVE_HEADER_RE.lastIndex = 0;
+			paths.push(...extractApplyPatchPaths(ti, paths));
 		}
-	} else if (action.kind === ACTION_FILE_OPERATION) {
-		if (typeof action.path === "string" && action.path.trim() !== "") {
-			paths.push(action.path.trim());
-		}
+		return paths;
 	}
-	return paths;
+	if (action.kind === ACTION_FILE_OPERATION) {
+		if (typeof action.path === "string" && action.path.trim() !== "") {
+			return [action.path.trim()];
+		}
+		return [];
+	}
+	return [];
 }
 
 function colColdToolName(event: UnifiedHookEvent): string | null {
