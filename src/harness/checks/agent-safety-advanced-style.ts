@@ -96,14 +96,30 @@ export function checkUnvalidatedJsonBoundary(content: string, filePath: string):
 
 		// Regex escape via alternation: varName is an identifier, safe.
 		const propAccess = new RegExp(`\\b${varName}\\.[A-Za-z_$]`);
+		// Schema-library method call. `(?<!JSON)` keeps a RE-parse
+		// (`JSON.parse(v)`) from counting as validation — JSON.parse asserts
+		// nothing about shape.
 		const validated = new RegExp(
-			`\\.(?:parse|safeParse|decode|check|validate)\\s*\\(\\s*${varName}\\b`,
+			`(?<!JSON)\\.(?:parse|safeParse|decode|check|validate)\\s*\\(\\s*${varName}\\b`,
 		);
+		// Local validator (boundary-parser campaign): a bare `parseX(v)` /
+		// `isX(v)` / `validateX(v)` / `normalizeX(v)` call with the value as
+		// first argument IS the validation this check demands — the swept
+		// pattern routes JSON through `parseFoo(v: unknown): Foo | null`
+		// instead of a schema library. The lookbehind rejects dotted calls
+		// (`JSON.parse`, `foo.isX`) so only file-local helpers count.
+		const localValidator = new RegExp(
+			`(?<![.\\w$])(?:is|parse|validate|normalize)[\\w$]*\\s*\\(\\s*${varName}\\b`,
+		);
+		// An Array.isArray gate is shape validation too — the per-element
+		// mapper after it is usually a bare function REFERENCE
+		// (`parsed.map(parseRow)`), which call-shaped recognition can't see.
+		const arrayGate = new RegExp(`\\bArray\\.isArray\\s*\\(\\s*${varName}\\b`);
 
 		let flag = false;
 		for (let j = i + 1; j < Math.min(strippedLines.length, i + 1 + SCAN_AHEAD); j++) {
 			const forward = nonNull(strippedLines[j]);
-			if (validated.test(forward)) {
+			if (validated.test(forward) || localValidator.test(forward) || arrayGate.test(forward)) {
 				flag = false;
 				break;
 			}

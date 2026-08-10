@@ -76,8 +76,11 @@ correctness/bug-class, agent-clarity, complexity, test-quality, comment/spec dri
 
 **Default vs advisory.** Default-gate checks fire on every edit + default verify. Advisory
 checks (the `DEFAULT_ADVISORY_SKIPS` list — complexity, CRAP, DRY clones, `boolean_trap`,
-`write_without_mkdir`, most `ubs_*`, Swift/test heuristics…) fire **only** under
-`verify --all-checks`. **"Advisory" ≠ silent** — an advisory check that fires at PostToolUse
+`write_without_mkdir`, `homedir_write_escape`, most `ubs_*`, Swift/test heuristics…) fire
+**only** under `verify --all-checks`. `unvalidated_json_boundary` was PROMOTED to the
+default gate 2026-08-10 after the boundary-parser sweep took the repo to 0 fires — expect
+it on ordinary edits: route parsed JSON through a local `parseX(v: unknown): X | null`
+(or an `isX` guard / `Array.isArray` gate) before field access. **"Advisory" ≠ silent** — an advisory check that fires at PostToolUse
 still warns; demoting a check doesn't stop it warning on edits. Fix the detector, not the list.
 
 Every finding is tagged `[proven]` (a real tool ran it — fix it) or `[heuristic]` (regex/AST

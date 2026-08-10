@@ -93,6 +93,8 @@ export interface CodeQualityResults {
 	arrayIterateeVariadicBuiltin: CodeQualityIssue[];
 	/** writeFile-family / createWriteStream on a nested path with no prior mkdir-recursive / existsSync guard. */
 	writeWithoutMkdir: CodeQualityIssue[];
+	/** Write-family calls whose path derives from the user's real home directory. */
+	homedirWriteEscape: CodeQualityIssue[];
 	/** Bare numeric literal duplicating a same-file named policy constant. */
 	duplicatedPolicyConstant: CodeQualityIssue[];
 	typePredicateDrift: CodeQualityIssue[];
@@ -100,6 +102,7 @@ export interface CodeQualityResults {
 	snapshotHygiene: CodeQualityIssue[];
 	/** Raw hook-payload contract field read in one casing with no other-casing fallback. */
 	payloadFieldCasing: CodeQualityIssue[];
+	anonymousRegistration: CodeQualityIssue[];
 	/** Verify-only: file-write to a path excluded by .gitignore (no `!` carve-out). */
 	gitignoredWrittenConfig: CodeQualityIssue[];
 	propertyTestCandidate: CodeQualityIssue[];

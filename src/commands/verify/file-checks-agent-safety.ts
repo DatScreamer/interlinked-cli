@@ -23,10 +23,11 @@ import { checkRawControlBytes } from "../../harness/checks/control-bytes.js";
 import { computeCrap } from "../../harness/checks/crap.js";
 import { computeCyclomaticComplexity } from "../../harness/checks/cyclomatic.js";
 import { detectDesignSlop } from "../../harness/checks/design-slop.js";
-import { detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js";
+import { detectHomedirWriteEscape, detectWriteWithoutMkdir } from "../../harness/checks/fs-write-safety.js";
 import { detectGitignoredWrites } from "../../harness/checks/gitignored-write.js";
 import { maintainabilityCheck } from "../../harness/checks/maintainability.js";
 import { detectNaNCoercionGuards } from "../../harness/checks/nan-coercion.js";
+import { checkAnonymousRegistration } from "../../harness/checks/anonymous-registration.js";
 import { detectPayloadFieldCasing } from "../../harness/checks/payload-casing.js";
 import { detectPolicyConstantDrift } from "../../harness/checks/policy-constant-drift.js";
 import { propertyCandidateCheck } from "../../harness/checks/property-candidate.js";
@@ -338,6 +339,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.writeWithoutMkdir.push(
 		...toIssues("write_without_mkdir", relPath, detectWriteWithoutMkdir(content, file)),
 	);
+	r.homedirWriteEscape.push(
+		...toIssues("homedir_write_escape", relPath, detectHomedirWriteEscape(content, file)),
+	);
 	r.duplicatedPolicyConstant.push(
 		...toIssues(
 			"duplicated_policy_constant",
@@ -353,6 +357,9 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	);
 	r.payloadFieldCasing.push(
 		...toIssues("payload_field_casing", relPath, detectPayloadFieldCasing(content, file)),
+	);
+	r.anonymousRegistration.push(
+		...toIssues("anonymous_registration", relPath, checkAnonymousRegistration(content, file)),
 	);
 	// halstead_difficulty — verify-only. Pure, but a full TS parse plus a
 	// per-token tally per file: measured, it pushed the determinism-conformance

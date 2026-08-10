@@ -210,9 +210,38 @@ The integrity gate matches these eight files; direction is **per-file**:
 | `mutation-baseline.json` | score/killed may only **rise**. |
 | `large-files-baseline.json` | `max_lines` may only **fall**; a grandfather count may only **shrink**; a new over-cap entry is blocked. |
 | `untested-files-baseline.json` | `min_coverage_pct` may only **rise**; `files` is an **exemption list** → may only **shrink**. |
-| `metric-caps.json` | `max_*`/`crap_threshold` may only **tighten**; `min_coverage` may only **rise**. |
+| `metric-caps.json` | `max_*`/`crap_threshold` may only **tighten**; `min_coverage` may only **rise**. Includes `max_predicate_drift` — see below. |
 | `skipped-tests-baseline.json` | `max_skipped` may only **tighten**; a grandfather count may only **shrink**. |
 | `mutation-manifest.json` | the accepted-survivor set may only **shrink**. |
+
+### `max_predicate_drift` — ratchet the unchecked-assertion count to zero (added 2026-08-09)
+
+A repo-wide COUNT water-line, not a per-function cap. It bounds how many
+`type_predicate_drift` findings the tree may carry: a hand-rolled
+`function isFoo(v): v is Foo` that validates some of `Foo`'s required properties
+and silently ignores the rest.
+
+Why it needs a ratchet rather than a block: `v is T` is an **unchecked assertion**.
+TypeScript never compares the predicate body to `T`, so adding a required field to
+`T` leaves every stale guard returning `true` — no compile error, no test failure.
+The count only ever grows by accident, so the water-line only ever falls.
+
+To clear a finding, do not enlarge the guard — replace it with a parser:
+
+```ts
+export function parseFoo(v: unknown): Foo | null {
+  if (!isJsonObject(v)) return null;
+  // …validate each field…
+  return { a, b, c };   // CONSTRUCTED literal — the compiler checks it against Foo
+}
+```
+
+The constructed return is the point: add a required field to `Foo` and this fails
+to compile at the boundary instead of under-validating at runtime.
+
+Measure the current count with `interlinked verify --all-checks` (section
+"type predicate drift"), then lower `max_predicate_drift` to match. Raising it is
+blocked by `baseline_integrity_gate`.
 
 > **Two different "min coverage" numbers:** `metric-caps.json → min_coverage` = the per-file
 > **floor for the edit-time gate** (default 0 = off). `untested-files-baseline.json →

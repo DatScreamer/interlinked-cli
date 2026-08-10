@@ -270,9 +270,12 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"ubs_time_format_locale_dep",
 				// Bun-regression detector pack (2026-07-20): JS half of the reinterpret pair
 				"unaligned_reinterpret",
-				"unvalidated_json_boundary",
+				// unvalidated_json_boundary: PROMOTED to default gate 2026-08-10
+				// (R2 fleet swept all sites; 0 fires on promotion).
 				// fs-write-safety: nested-path write missing a mkdir-recursive guard.
 				"write_without_mkdir",
+				// fs-write-safety: write path derives from the user's real home.
+				"homedir_write_escape",
 				// Batch 1: agent-laziness — advisory (heuristic)
 				"sync_io_on_hot_path",
 				"unbounded_promise_all",
@@ -329,6 +332,10 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"spec_path_ref",
 				"contradictory_nullness_chain",
 				"resource_handle_leak",
+				// Retrieval-legibility wave (2026-08-10): an anonymous handler still
+				// RUNS correctly — it is only unreachable from its own id by name, so
+				// the cost is legibility, not correctness. Deep-audit tier.
+				"anonymous_registration",
 			].sort(),
 		);
 	});

@@ -52,10 +52,12 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"comment_claims_throws_doesnt",
 	"magic_literal_in_conditional",
 	"write_without_mkdir",
+	"homedir_write_escape",
 	"duplicated_policy_constant",
 	"type_predicate_drift",
 	"snapshot_hygiene",
 	"design_slop",
+	"anonymous_registration",
 	"payload_field_casing",
 	"gitignored_written_config",
 	// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling + two
@@ -65,7 +67,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"spec_path_ref",
 	"contradictory_nullness_chain",
 	"resource_handle_leak",
-	"unvalidated_json_boundary",
+	// unvalidated_json_boundary: PROMOTED to default gate 2026-08-10 (R2).
 	"dead_exports",
 	"untested_inverse_pair",
 	"untested_idempotent",

@@ -18,10 +18,13 @@ const EXPECTED_IDS = [
 	// history-relational-metrics Phase 1 (2026-07-24): AST-computed cognitive
 	// complexity joined the fragment as its ninth entry.
 	"cognitive_complexity",
+	// boundary-parser campaign R2 (2026-08-10): write paths derived from the
+	// user's real home — the mutation-run corpus-leak class — as the tenth.
+	"homedir_write_escape",
 ] as const;
 
 describe("QUALITY_FRONTIER_ENTRIES", () => {
-	it("registers exactly the nine wave detectors, in declaration order", () => {
+	it("registers exactly the ten wave detectors, in declaration order", () => {
 		expect(QUALITY_FRONTIER_ENTRIES.map((e) => e.id)).toEqual([...EXPECTED_IDS]);
 	});
 

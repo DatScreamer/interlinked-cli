@@ -69,6 +69,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 		tier: 1,
 		determinism: "heuristic",
 	},
+	homedir_write_escape: {
+		name: "Homedir Write Escape",
+		description:
+			"Detects write-family calls whose path derives from the user's real home (homedir() / process.env.HOME/USERPROFILE, directly or via up to two local bindings) — writes that escape the repo into real user data; the test runner must sandbox HOME because per-test env redirects break under mutation",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	duplicated_policy_constant: {
 		name: "Duplicated Policy Constant",
 		description:
@@ -111,6 +118,13 @@ export const GENERIC_CORE_JS_META: Record<string, CheckMeta> = {
 			"Detects a block-form /* eslint-disable */ … /* eslint-enable */ region spanning more than 10 lines — the suppression covers code that never needed it. Disable-with-no-enable is owned by file_level_suppression.",
 		tier: 1,
 		determinism: "fully_deterministic",
+	},
+	anonymous_registration: {
+		name: "Anonymous Registration",
+		description:
+			"Detects a registry entry pairing a greppable string id/name key with an ANONYMOUS function implementation — the key is what other files reference, but the implementation is not reachable from it in one hop by grep, index, embedding search, or the harness's own name-based resolvers (the gap that left four checks unsatisfiable in 2026-08)",
+		tier: 2,
+		determinism: "heuristic",
 	},
 	payload_field_casing: {
 		name: "Payload Field Casing",

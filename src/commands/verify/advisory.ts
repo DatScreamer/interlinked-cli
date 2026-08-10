@@ -6,31 +6,9 @@
 // set is pinned by a regression test in `__tests__/verify.test.ts` so any
 // policy change shows up in the PR diff. Edit both together.
 
-/** Public API — consumed by `verify.ts`, `tool-results.ts`, and tests. */
-export const TOOL_IDS = [
-	"tsc",
-	"biome",
-	"eslint",
-	"semgrep",
-	"gitleaks",
-	"dep-audit",
-	"mypy",
-	"ruff",
-	"cargo-check",
-	"cargo-clippy",
-	"go-build",
-	"golangci-lint",
-	"c-compile",
-	"clang-tidy",
-	"oxlint",
-	"knip",
-	"shellcheck",
-	"actionlint",
-	"hadolint",
-	"taplo",
-	"swiftlint",
-	"swift-build",
-] as const;
+// Tool-id table lives in tool-ids.ts (extracted at the 500-line cap);
+// re-exported here so existing importers keep working.
+export { TOOL_IDS } from "./tool-ids.js";
 
 /**
  * Public API — consumed by `verify.ts` and `__tests__/verify.test.ts`.
@@ -122,6 +100,11 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// all read as "no guard". Advisory until the scan can follow the path
 	// variable across call boundaries.
 	"write_without_mkdir",
+	// homedir_write_escape: real leak class (mutation runs writing real user
+	// data — 1443 corpus rows, 2026-08-10), but legitimate global writers
+	// (installers, cross-repo caches) fire by design; the actionable fix is
+	// suite-level (sandbox HOME in the test runner), not per-write.
+	"homedir_write_escape",
 	// duplicated_policy_constant: real drift bug class, but the bare-literal
 	// match fires on coincidental reuse (a `7` that is the constant's value but
 	// means something unrelated elsewhere in the file). Trivial numbers are
@@ -147,15 +130,15 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// field + missing other-casing fallback). Real cross-runner drift bug class, but a
 	// single-casing read is correct when only one runner is targeted. Advisory.
 	"payload_field_casing",
-	// gitignored_written_config: verify-only (needs `git check-ignore`). Real
-	// "this file can never be committed" bug class, but only statically-
-	// resolvable paths are flagged and the ephemeral-target exclusion list is
-	// heuristic. Advisory until path resolution covers more shapes.
+	// gitignored_written_config: verify-only (needs `git check-ignore`); only
+	// statically-resolvable paths flagged, heuristic ephemeral-target excludes.
 	"gitignored_written_config",
-	// readme_script_drift: verify-only sibling (3-arg — needs a package.json
-	// scripts resolver). Deterministic extraction, heuristic nearest-manifest
-	// resolution in monorepos. Advisory, like gitignored_written_config.
+	// readme_script_drift: verify-only sibling (3-arg package.json resolver);
+	// deterministic extraction, heuristic nearest-manifest resolution.
 	"readme_script_drift",
+	// anonymous_registration: legibility, not correctness — an anonymous handler
+	// still RUNS; it is only unreachable from its own id by name (23/2288 files).
+	"anonymous_registration",
 	// spec_path_ref: verify-only 3-arg fs resolver; heuristic present-tense gate. Advisory.
 	"spec_path_ref",
 	// contradictory_nullness_chain: exact syntax match, but the a?.b! pattern is
@@ -166,11 +149,12 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// process-lifetime handles are legitimate. Per effect-ts-harness-additions
 	// §2.5: start advisory, ratchet to default after cross-repo FP calibration.
 	"resource_handle_leak",
-	// Unvalidated JSON boundary: real agent-quality issue, but the heuristic
-	// "assign + property-access before schema parse" over-flags idiomatic
-	// patterns where the parsed value is typed via a separate cast. Advisory
-	// until the detection can track type assertions / branded types.
-	"unvalidated_json_boundary",
+	// unvalidated_json_boundary PROMOTED to the default gate 2026-08-10
+	// (boundary-parser campaign R2): the old rationale called the
+	// `JSON.parse(x) as T` form idiomatic — re-examined, that cast IS the
+	// defect class, and the fleet swept all 97 sites. Detector now recognizes
+	// local parseX/isX validators and Array.isArray gates as validation, and
+	// no longer credits a JSON.parse RE-parse. 0 fires repo-wide on promotion.
 	// Dead exports: legitimate signal, but walks every git-tracked source file
 	// on every edit (expensive for large repos) and FPs on public API surfaces
 	// consumed by external packages. Advisory until we can honor package.json

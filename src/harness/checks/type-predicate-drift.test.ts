@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectTypePredicateDrift } from "./type-predicate-drift.js";
 
@@ -145,7 +148,7 @@ function isFoo(v: unknown): v is Foo {
 		expect(detectTypePredicateDrift(src, F)).toEqual([]);
 	});
 
-	it("N6: the asserted type is not declared in this file", () => {
+	it("N6: the asserted type is neither declared here nor resolvable (import target absent)", () => {
 		const src = `
 import type { Foo } from "./foo.js";
 function isFoo(v: unknown): v is Foo {
@@ -223,5 +226,111 @@ function is${i}(v: unknown): v is T${i} {
 
 	it("returns [] for a file containing no predicates at all", () => {
 		expect(detectTypePredicateDrift("export const x = 1;\n", F)).toEqual([]);
+	});
+});
+
+// Widening (R2-5, 2026-08-10): arrow-form predicates and one-hop cross-file
+// type resolution through RELATIVE import specifiers. Both were documented
+// false-negative lanes; `import { Foo } from "./types.js"` + `v is Foo` is the
+// most common real-world predicate shape, so same-file-only made the drift-0
+// ratchet narrower than its rhetoric.
+describe("detectTypePredicateDrift — widening (arrow + cross-file)", () => {
+	it("P6: arrow predicate with block body drifts like a function declaration", () => {
+		const src = `
+interface Pair { left: string; right: string; }
+const isPair = (v: unknown): v is Pair => {
+	const o = v as Record<string, unknown>;
+	return typeof o.left === "string";
+};
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("right");
+	});
+
+	it("P7: arrow predicate with EXPRESSION body drifts too", () => {
+		const src = `
+interface Pair { left: string; right: string; }
+const isPair = (v: unknown): v is Pair =>
+	typeof (v as Record<string, unknown>).left === "string";
+`;
+		const out = detectTypePredicateDrift(src, F);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.text).toContain("right");
+	});
+
+	it("P8: asserted type imported from a sibling file resolves and drifts", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tpd-xfile-"));
+		try {
+			writeFileSync(
+				join(dir, "shapes.ts"),
+				"export interface Job { kind: string; riskTier: string; file: string; }\n",
+			);
+			const guardPath = join(dir, "guard.ts");
+			const src = `
+import type { Job } from "./shapes.js";
+export function isJob(v: unknown): v is Job {
+	const o = v as Record<string, unknown>;
+	return typeof o.kind === "string" && typeof o.file === "string";
+}
+`;
+			writeFileSync(guardPath, src);
+			const out = detectTypePredicateDrift(src, guardPath);
+			expect(out).toHaveLength(1);
+			expect(out[0]?.text).toContain("riskTier");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("N12: a complete guard against an imported type stays clean", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tpd-xfile-"));
+		try {
+			writeFileSync(
+				join(dir, "shapes.ts"),
+				"export interface Job { kind: string; file: string; }\n",
+			);
+			const src = `
+import type { Job } from "./shapes.js";
+export function isJob(v: unknown): v is Job {
+	const o = v as Record<string, unknown>;
+	return typeof o.kind === "string" && typeof o.file === "string";
+}
+`;
+			expect(detectTypePredicateDrift(src, join(dir, "guard.ts"))).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("N13: package-specifier imports stay unresolvable — no fire", () => {
+		const src = `
+import type { ZodShape } from "some-package";
+function isShape(v: unknown): v is ZodShape {
+	const o = v as Record<string, unknown>;
+	return typeof o.name === "string";
+}
+`;
+		expect(detectTypePredicateDrift(src, F)).toEqual([]);
+	});
+
+	it("N14: `import { A as B }` resolves through the SOURCE name's declaration", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tpd-xfile-"));
+		try {
+			writeFileSync(
+				join(dir, "shapes.ts"),
+				"export interface Wire { seq: number; body: string; }\n",
+			);
+			const src = `
+import type { Wire as Frame } from "./shapes.js";
+export function isFrame(v: unknown): v is Frame {
+	const o = v as Record<string, unknown>;
+	return typeof o.seq === "number" && typeof o.body === "string";
+}
+`;
+			expect(detectTypePredicateDrift(src, join(dir, "guard.ts"))).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

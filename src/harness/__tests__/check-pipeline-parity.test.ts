@@ -119,6 +119,11 @@ function readRegistrySources(): string {
 		"entries-warnings/agent-laziness.ts",
 		"entries-warnings/test-and-demo.ts",
 		"entries-warnings/endpoint-security.ts",
+		// Quality-frontier wave (2026-07-06..08-10). Added to the visible set
+		// 2026-08-10 when homedir_write_escape landed there WITH verify wiring —
+		// the file's older checks are PostToolUse-only (deferred verify batch,
+		// documented in POSTTOOLUSE_ONLY_CHECKS below).
+		"entries-warnings/quality-frontier.ts",
 		"entries-taste.ts",
 		"entries-c-cpp.ts",
 		"builders.ts",
@@ -341,6 +346,30 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"ubs_naive_datetime",
 	"checkRedosCatastrophic",
 	"redos_catastrophic",
+	// Quality-frontier wave (entries-warnings/quality-frontier.ts): shipped
+	// PostToolUse-enforced 2026-07; their verify-surface wiring (interface +
+	// init + push + streamCqSection) is a deferred batch, matching the UBS
+	// class-breadth precedent above. homedir_write_escape (2026-08-10) is the
+	// exception — it landed WITH full verify wiring, so it is absent here.
+	// Function name (import parity) + snake_case id (toIssues parity).
+	"cognitiveComplexityCheck",
+	"cognitive_complexity",
+	"detectContradictoryNullnessChain",
+	"contradictory_nullness_chain",
+	"detectImplicitSwitchFallthrough",
+	"implicit_switch_fallthrough",
+	"detectNumericSortWithoutComparator",
+	"numeric_sort_without_comparator",
+	"detectCatchRewrapLosesCause",
+	"catch_rewrap_loses_cause",
+	"detectJsonStringifyError",
+	"json_stringify_error",
+	"detectResourceHandleLeak",
+	"resource_handle_leak",
+	"detectJsdocParamDrift",
+	"jsdoc_param_drift",
+	"detectTimeoutUnitMismatch",
+	"timeout_unit_mismatch",
 	// Package publish invariants — needs pre-edit disk content to diff against
 	// post-edit proposed content, so the check only makes sense at PreToolUse
 	// where those two states differ. Running it during `interlinked verify`
@@ -607,6 +636,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 		// key in JSON output rather than destructured individually.
 		// TODO: These should be individually included in JSON output for tooling.
 		const AGGREGATED_IN_JSON = new Set([
+			"anonymousRegistration",
 			"cognitiveComplexity",
 			"misusedPromises",
 			"floatingPromises",
@@ -635,6 +665,7 @@ describe("check pipeline parity: verify ↔ PostToolUse", () => {
 			"arrayPushReturnUsed",
 			"arrayIterateeVariadicBuiltin",
 			"writeWithoutMkdir",
+			"homedirWriteEscape",
 			"duplicatedPolicyConstant",
 			"typePredicateDrift",
 			"snapshotHygiene",

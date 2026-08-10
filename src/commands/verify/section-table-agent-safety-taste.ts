@@ -124,6 +124,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "homedir write escape",
+		key: "homedirWriteEscape",
+		noun: "writes whose path derives from the user's real home directory",
+		passLabel: "no writes escaping into the user's home",
+		color: "33",
+	},
+	{
 		label: "duplicated policy constant",
 		key: "duplicatedPolicyConstant",
 		noun: "bare literals duplicating a same-file named policy constant",
@@ -142,6 +149,13 @@ export const tasteStructuralSections: readonly SectionSpec[] = [
 		key: "snapshotHygiene",
 		noun: "writes of snapshot-review artifacts (*.snap.new / *.pending-snap) that must not be committed",
 		passLabel: "no committed snapshot-review artifacts",
+		color: "33",
+	},
+	{
+		label: "anonymous registration",
+		key: "anonymousRegistration",
+		noun: "registry entries whose implementation has no name — unreachable from their own id by grep, index, or embedding search",
+		passLabel: "every registered implementation is named",
 		color: "33",
 	},
 	{

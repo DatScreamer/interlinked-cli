@@ -49,7 +49,7 @@ describe("checkThrowLiteral", () => {
 		}
 	});
 
-	it("does NOT flag throw new Error(...)", () => {
+	it("N1: does NOT flag throw new Error(...)", () => {
 		const out = checkThrowLiteral(
 			'function f() {\n  throw new Error("boom");\n}\n',
 			"src/x.ts",
@@ -57,7 +57,7 @@ describe("checkThrowLiteral", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("does NOT flag throw new CustomError(...)", () => {
+	it("N2: does NOT flag throw new CustomError(...) — real Error subclass", () => {
 		const out = checkThrowLiteral(
 			"function f() {\n  throw new ValidationError(msg);\n}\n",
 			"src/x.ts",
@@ -65,8 +65,19 @@ describe("checkThrowLiteral", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("does NOT flag re-throwing a variable (too ambiguous)", () => {
-		const out = checkThrowLiteral("function f() {\n  throw err;\n}\n", "src/x.ts");
+	it("N3: does NOT flag re-throwing a caught variable (too ambiguous — could be an Error instance)", () => {
+		const out = checkThrowLiteral(
+			"function f() {\n  try {\n    risky();\n  } catch (err) {\n    throw err;\n  }\n}\n",
+			"src/x.ts",
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("N4: does NOT flag throwing the result of an error-factory call (not `new`, not a literal)", () => {
+		const out = checkThrowLiteral(
+			'function f() {\n  throw createValidationError("boom");\n}\n',
+			"src/x.ts",
+		);
 		expect(out).toEqual([]);
 	});
 
@@ -554,6 +565,68 @@ describe("checkUnvalidatedJsonBoundary — extra branches", () => {
 		const code = "const data = JSON.parse(raw);\nreturn data.id;\n";
 		expect(checkUnvalidatedJsonBoundary(code, "src/x.test.ts")).toEqual([]);
 		expect(checkUnvalidatedJsonBoundary(code, "src/x.py")).toEqual([]);
+	});
+
+	// Local-validator recognition (boundary-parser campaign R2-4, 2026-08-10):
+	// the swept pattern routes parsed JSON through a local `parseX(v): X | null`
+	// (or an `isX(v)` guard) instead of a schema library — that IS the
+	// validation this check demands, so it must not keep firing on swept code.
+	it("N: does NOT flag when a local parseX validator consumes the value first", () => {
+		const code = [
+			"const data = JSON.parse(raw);",
+			"const finding = parseFinding(data);",
+			"if (finding === null) return null;",
+			"use(finding.id);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("N: does NOT flag when an isX type-guard gates the value first", () => {
+		const code = [
+			"const body = await res.json();",
+			"if (!isSandboxJobRequest(body)) return null;",
+			"run(body.riskTier);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("N: does NOT flag a validateX call with the value as first argument", () => {
+		const code = [
+			"const cfg = JSON.parse(text);",
+			"const checked = validateConfig(cfg, opts);",
+			"use(checked.mode);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("P: still flags when the local-validator call comes AFTER the field access", () => {
+		const code = [
+			"const data = JSON.parse(raw);",
+			"use(data.id);",
+			"const finding = parseFinding(data);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts").length).toBe(1);
+	});
+
+	it("P: a dotted .parse-like name does not fake local validation (JSON.parse(data) re-parse)", () => {
+		const code = [
+			"const data = JSON.parse(raw);",
+			"const again = JSON.parse(data);",
+			"use(data.id);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts").length).toBe(1);
+	});
+
+	it("N: an Array.isArray gate on the value counts as shape validation", () => {
+		// The per-element mapper (`.map(parseCiRun)`) is a bare function
+		// REFERENCE, invisible to call-shaped recognition — the array gate is
+		// the narrowing this check should credit.
+		const code = [
+			"const parsed: unknown = JSON.parse(raw);",
+			"if (!Array.isArray(parsed)) return [];",
+			"return parsed.map(parseCiRun).filter(Boolean);",
+		].join("\n");
+		expect(checkUnvalidatedJsonBoundary(code, "src/x.ts")).toEqual([]);
 	});
 });
 

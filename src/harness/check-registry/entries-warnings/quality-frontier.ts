@@ -6,6 +6,7 @@
 // barrel is legacy back-compat surface; see its header).
 
 import { cognitiveComplexityCheck } from "../../checks/cognitive-ast.js";
+import { detectHomedirWriteEscape } from "../../checks/fs-write-safety.js";
 import {
 	detectContradictoryNullnessChain,
 	detectImplicitSwitchFallthrough,
@@ -163,5 +164,21 @@ export const QUALITY_FRONTIER_ENTRIES: CheckRegistration[] = [
 			"High cognitive complexity means deep nesting or long mixed boolean chains, not just many branches. Flatten with early returns, extract nested blocks into named helpers (extraction to top level also clears the lambda-depth penalty), or split mixed &&/|| chains into named intermediate booleans.",
 		fn: cognitiveComplexityCheck,
 		resultsPropName: "cognitiveComplexity",
+	},
+	{
+		id: "homedir_write_escape",
+		phase: "post",
+		name: "Homedir Write Escape",
+		description:
+			"Detects write-family calls (writeFileSync / appendFileSync / writeFile / appendFile / createWriteStream / mkdirSync / cpSync / renameSync / rmSync) whose path argument derives from the user's real home directory — homedir() or process.env.HOME/USERPROFILE, directly or through up to two local bindings. Such writes escape the repo into real user data, and per-test env redirects around them break under mutation testing (a mutant of an `ENV ?? homedir()` fallback bypasses the redirect while the redirected test stays green — 1443 fixture rows leaked into a real cross-repo corpus this way, 2026-08-10).",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"This write resolves under the user's real home directory. If the global location is the contract (cross-repo cache, installer), keep it — but sandbox HOME at the TEST-RUNNER level (a setupFiles module that mkdtemps a fake home and sets HOME/USERPROFILE before any test loads) so tests and mutation runs can never touch real user data. Per-test env redirects are not enough: a mutant of the env-override fallback writes to the real home while redirected tests stay green.",
+		fn: detectHomedirWriteEscape,
+		resultsPropName: "homedirWriteEscape",
+		content_keywords: ["homedir", "process.env.HOME", "process.env.USERPROFILE"],
 	},
 ];

@@ -32,4 +32,10 @@ describe("findProcessEnvOutsideConfig", () => {
 	it("N1: does not flag reads in a bootstrap-named module (boundary allowlist)", () => {
 		expect(n("const url = process.env.SERVER_URL;", "src/bootstrap.ts")).toBe(0);
 	});
+	it("N2: does not flag files inside a setup directory (test-setup/ is a setup boundary)", () => {
+		expect(n("process.env.HOME = sandbox;", "src/test-setup/home-sandbox.ts")).toBe(0);
+	});
+	it("P1: still flags a non-setup directory whose file merely mentions setup in its name tail", () => {
+		expect(n("const t = process.env.TOKEN;", "src/commands/account-setup-helpers.ts")).toBeGreaterThan(0);
+	});
 });

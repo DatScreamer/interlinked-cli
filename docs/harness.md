@@ -250,7 +250,7 @@ The harness enforces this by:
 
 **Why:** Teams need shared safety policies (everyone should be blocked from `rm -rf /`), but individual developers may need exceptions (e.g., a DevOps engineer who legitimately uses `terraform destroy`).
 
-The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
+The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
 
 ### 7. Server Bridge — Coordination Without Dependency
 
@@ -274,7 +274,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 | `cli/src/harness/types.ts` | All type definitions: events, decisions, rules, cohort, reservations, config |
 | `cli/src/harness/server.ts` | Node.js Unix socket server — the main entry point (`node:net`) |
 | `cli/src/harness/evaluator.ts` | Guard evaluation — PreToolUse blocking + PostToolUse feedback |
-| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
+| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
 | `cli/src/harness/session-state.ts` | Per-session trajectory tracking (files, commands, tool counts) |
 | `cli/src/harness/cohort.ts` | Agent cohort manager (join/leave/lost detection, file tracking) |
 | `cli/src/harness/reservations.ts` | Auto file reservation (optimistic lock, 30s release, server sync) |
@@ -314,7 +314,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> built-in guard rules by category |
+| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count --> built-in guard rules by category |
 | `cli/docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
 | `cli/docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `cli/docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
@@ -409,7 +409,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 
 ## Guard Rules — Overview
 
-> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
+> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
 
 ### Lifecycle Enforcement
 
@@ -419,7 +419,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 | AskUserQuestion redirect | Yes | Warn | Tool name is `AskUserQuestion` |
 | Curl-to-MCP detection | Yes | Warn → Block | `curl localhost:PORT` (escalates after 5 calls) |
 
-### Built-in Rule Categories (<!-- gen:builtin_rule_count -->119<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
+### Built-in Rule Categories (<!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
 
 Category counts below are derived from `docs/generated/guard-rules.md` (the
 auto-generated source of truth — regenerate with `npm run docs` after adding

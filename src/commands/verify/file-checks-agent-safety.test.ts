@@ -444,6 +444,22 @@ describe("runAgentSafetyChecks — check-id mutation coverage (positive, exact i
 		expect(nonNull(c.r.writeWithoutMkdir[0]).check).toBe("write_without_mkdir");
 	});
 
+	it("homedir_write_escape — appendFileSync(join(homedir(), ...)) reaches verify results", () => {
+		const code = [
+			"import { appendFileSync, mkdirSync } from 'node:fs';",
+			"import { homedir } from 'node:os';",
+			"import { join } from 'node:path';",
+			"function log(row) {",
+			"  mkdirSync(join(homedir(), '.tool'), { recursive: true });",
+			"  appendFileSync(join(homedir(), '.tool', 'log.jsonl'), row);",
+			"}",
+		].join("\n");
+		const c = ctx(code);
+		runAgentSafetyChecks(c);
+		expect(c.r.homedirWriteEscape.length).toBeGreaterThanOrEqual(1);
+		expect(nonNull(c.r.homedirWriteEscape[0]).check).toBe("homedir_write_escape");
+	});
+
 	it("duplicated_policy_constant — bare literal duplicating a same-file DEFAULT_* constant", () => {
 		const c = ctx(
 			"const MAX_RETRIES = 7;\n\nfunction runWithRetry(fn) {\n  let attempts = 0;\n  while (attempts < 7) {\n    fn();\n    attempts++;\n  }\n}\n",

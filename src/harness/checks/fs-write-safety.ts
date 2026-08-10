@@ -78,6 +78,7 @@ function countTopLevelArgs(text: string, afterOpenParen: number, budget: number)
 	const end = Math.min(text.length, afterOpenParen + budget);
 	for (let i = afterOpenParen; i < end; i++) {
 		const ch = text.charAt(i);
+		// interlinked: defer else_if_chain -- canonical bracket-depth walk; a dispatch table would hide the paired depth mutations
 		if (ch === "(" || ch === "[" || ch === "{") {
 			depth++;
 		} else if (ch === ")" || ch === "]" || ch === "}") {
@@ -235,5 +236,162 @@ export function detectWriteWithoutMkdir(content: string, filePath: string): Inli
 		if (matches.length >= MAX_MATCHES_PER_FILE) break;
 	}
 
+	return matches;
+}
+
+// ─── homedir write escape ────────────────────────────────────────────────────
+// Class source (2026-08-10): Stryker mutants of `INTERLINKED_HOME ?? homedir()`
+// routed test-suite corpus writes into the REAL ~/.interlinked — 1443 fixture
+// rows in the user's cross-repo findings corpus. Per-test env redirects are
+// cooperative and break under mutation, so any production write that resolves
+// under the user's home needs the TEST RUNNER to sandbox HOME itself. This
+// detector surfaces those writes so the sandbox gets added before the class
+// bites.
+
+/** homedir() call, or the HOME/USERPROFILE env vars it reads. */
+const HOME_SOURCE_RE =
+	/\bhomedir\s*\(|\bprocess\.env\.(?:HOME|USERPROFILE)\b|\bprocess\.env\[\s*["'](?:HOME|USERPROFILE)["']\s*\]/;
+
+/** Write-family calls whose PATH argument matters (includes dir creation and
+ *  deletion — mkdir/rm against the real home are the same escape). */
+const HOME_WRITE_RE =
+	/\b(?:writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream|mkdirSync|cpSync|renameSync|rmSync)\s*\(/;
+
+const HOME_WRITE_STRIPPED_RE = new RegExp(HOME_WRITE_RE.source, "g");
+
+/** A `const`/`let`/`var` or `function` declaration that binds a name. */
+const HOME_DECL_RE =
+	/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=|^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
+
+/** Test paths are the sandbox's job (home-sandbox.ts), not this detector's. */
+const HOME_TEST_PATH_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)__(?:tests|fixtures|mocks)__\//;
+
+/**
+ * Find the 0-based inclusive end line of the statement/block starting at
+ * `startIdx` by bracket balance over fully-stripped lines. Budget-bounded.
+ */
+function statementEndLine(strippedLines: string[], startIdx: number): number {
+	let depth = 0;
+	const budgetEnd = Math.min(strippedLines.length, startIdx + 60);
+	for (let i = startIdx; i < budgetEnd; i++) {
+		const line = strippedLines[i] ?? "";
+		for (const ch of line) {
+			if (ch === "(" || ch === "[" || ch === "{") depth++;
+			else if (ch === ")" || ch === "]" || ch === "}") depth--;
+		}
+		if (depth <= 0) return i;
+	}
+	return budgetEnd - 1;
+}
+
+/**
+ * Collect names bound to home-derived values: directly (`join(homedir(), …)`,
+ * `process.env.HOME`), or transitively through an already-collected name
+ * (`const gpath = globalCorpusPath()`). Runs on fully-stripped lines so
+ * comments and string literals can never taint a name. Fixpoint capped at 3
+ * passes — one direct pass plus two hops covers the corpus.ts incident shape.
+ */
+/** True when any of `strippedLines[start..end]` mentions a home source or an
+ *  already-tainted name (`alt`). */
+// interlinked: defer function_arg_count -- private helper with one caller; (lines, start, end, taint-alt) as a struct is pure ceremony
+function windowHasHomeSource(
+	strippedLines: string[],
+	start: number,
+	end: number,
+	alt: RegExp | null,
+): boolean {
+	for (let k = start; k <= end; k++) {
+		const line = strippedLines[k] ?? "";
+		if (HOME_SOURCE_RE.test(line)) return true;
+		if (alt !== null && alt.test(line)) return true;
+	}
+	return false;
+}
+
+/** One taint pass: add every declared name whose statement window mentions a
+ *  home source or an already-tainted name. Returns true when the set grew. */
+function growHomeNames(strippedLines: string[], names: Set<string>): boolean {
+	const alt = names.size > 0 ? new RegExp(`\\b(?:${Array.from(names).join("|")})\\b`) : null;
+	let grew = false;
+	for (let i = 0; i < strippedLines.length; i++) {
+		const decl = HOME_DECL_RE.exec(strippedLines[i] ?? "");
+		const name = decl?.[1] ?? decl?.[2];
+		if (!name || names.has(name)) continue;
+		if (windowHasHomeSource(strippedLines, i, statementEndLine(strippedLines, i), alt)) {
+			names.add(name);
+			grew = true;
+		}
+	}
+	return grew;
+}
+
+function collectHomeDerivedNames(strippedLines: string[]): Set<string> {
+	const names = new Set<string>();
+	for (let pass = 0; pass < 3; pass++) {
+		if (!growHomeNames(strippedLines, names)) break;
+	}
+	return names;
+}
+
+/**
+ * Slice the FIRST argument of the call opening at `afterOpen` in `text`.
+ * Bounding the scan to the path argument is what keeps read-only home use
+ * clean: `writeFileSync(join(cwd, "out.json"), credsFromHome)` must not fire.
+ */
+function firstArgWindow(text: string, afterOpen: number): string {
+	let depth = 1;
+	const end = Math.min(text.length, afterOpen + 300);
+	for (let i = afterOpen; i < end; i++) {
+		const ch = text.charAt(i);
+		if (ch === "(" || ch === "[" || ch === "{") depth++;
+		else if (ch === ")" || ch === "]" || ch === "}") {
+			depth--;
+			if (depth === 0) return text.slice(afterOpen, i);
+		} else if (ch === "," && depth === 1) {
+			return text.slice(afterOpen, i);
+		}
+	}
+	return text.slice(afterOpen, end);
+}
+
+/**
+ * Detect write-family calls whose path argument derives from the user's real
+ * home directory (directly, or through up to two local bindings).
+ *
+ * check id: `homedir_write_escape`
+ */
+export function detectHomedirWriteEscape(content: string, filePath: string): InlineMatch[] {
+	const ext = getExtension(filePath);
+	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
+	if (HOME_TEST_PATH_RE.test(filePath.replace(/\\/g, "/"))) return [];
+
+	const stripped = stripCommentsAndStrings(content);
+	const strippedLines = stripped.split("\n");
+	const rawLines = content.split("\n");
+	const names = collectHomeDerivedNames(strippedLines);
+	const nameAlt =
+		names.size > 0 ? new RegExp(`\\b(?:${Array.from(names).join("|")})\\b`) : null;
+
+	const matches: InlineMatch[] = [];
+	const seen = new Set<number>();
+	HOME_WRITE_STRIPPED_RE.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = HOME_WRITE_STRIPPED_RE.exec(stripped)) !== null) {
+		const lineIdx = stripped.slice(0, m.index).split("\n").length - 1;
+		const lineNo = lineIdx + 1;
+		if (seen.has(lineNo)) continue;
+
+		// Re-locate the call on the RAW line so template-literal paths
+		// (`${process.env.HOME}/…`) are visible in the argument window.
+		const rawLine = rawLines[lineIdx] ?? "";
+		const rawCall = HOME_WRITE_RE.exec(rawLine);
+		if (rawCall === null) continue;
+		const window = firstArgWindow(rawLine, rawCall.index + rawCall[0].length);
+		if (!HOME_SOURCE_RE.test(window) && !(nameAlt !== null && nameAlt.test(window))) continue;
+
+		seen.add(lineNo);
+		matches.push({ line: lineNo, text: rawLine.trim().slice(0, REPORT_LINE_TRUNC) });
+		if (matches.length >= MAX_MATCHES_PER_FILE) break;
+	}
 	return matches;
 }

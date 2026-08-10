@@ -19,7 +19,7 @@ import { SPEC_LEDGER_CHECK_KINDS } from "./spec/ledger-drift.js";
 // loudly — that is the whole point: the number can never silently drift.
 const EXPECTED_BY_FAMILY: Record<string, number> = {
 	// +8 Bun-regression detector pack wired (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2), 2026-07-20
-	inline: 254, // +type_predicate_drift (`v is T` guards leaving required fields of T unchecked — the unchecked-assertion class, ratcheted by metric-caps → max_predicate_drift, 2026-08-09); prior: 253 = +timing_flake (fixed-wait-then-assert; two live instances each cost a whole coverage measurement, 2026-08-06); prior: 252 = +procfs_probe_in_test (CI-hang class from the 2026-07 unit-lane saga, 2026-07-31); prior: 251 = +8 Bun-regression pack; prior: 250 = (verification-density Track A lane 1, 2026-07-26); prior: 250 = +raw_control_bytes (source invisible to grep, 2026-07-25); prior: 242 = +cognitive_complexity (history-relational-metrics Phase 1, 2026-07-24); +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
+	inline: 256, // +homedir_write_escape (write path derives from the user's real home — the mutation-run corpus-leak class, 2026-08-10); prior: 255 = +anonymous_registration (a registry id whose implementation has no name — unreachable from its own key by grep/index/embedding search; the gap that left four checks unsatisfiable, 2026-08-10); prior: 254 = +type_predicate_drift (`v is T` guards leaving required fields of T unchecked — the unchecked-assertion class, ratcheted by metric-caps → max_predicate_drift, 2026-08-09); prior: 253 = +timing_flake (fixed-wait-then-assert; two live instances each cost a whole coverage measurement, 2026-08-06); prior: 252 = +procfs_probe_in_test (CI-hang class from the 2026-07 unit-lane saga, 2026-07-31); prior: 251 = +8 Bun-regression pack; prior: 250 = (verification-density Track A lane 1, 2026-07-26); prior: 250 = +raw_control_bytes (source invisible to grep, 2026-07-25); prior: 242 = +cognitive_complexity (history-relational-metrics Phase 1, 2026-07-24); +weak_random, +archive_extract_traversal, +python_assert_tautology, +rust_test_nondeterminism, +naive_datetime, +redos_catastrophic (DW P0.4/P0.5/breadth, 2026-07-17)
 	sequence: 23,
 	structural: 25,
 	tool_quality: 33,
@@ -29,7 +29,7 @@ const EXPECTED_BY_FAMILY: Record<string, number> = {
 };
 // +8 Bun-regression detector pack wired (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2), 2026-07-20
 // +raw_control_bytes (2026-07-25)
-const EXPECTED_TOTAL = 379; // +type_predicate_drift (2026-08-09); prior: 378 = +timing_flake (2026-08-06); prior: 377 = +procfs_probe_in_test (2026-07-31)
+const EXPECTED_TOTAL = 381; // +homedir_write_escape (2026-08-10); prior: 380 = +anonymous_registration (2026-08-10); prior: 379 = +type_predicate_drift (2026-08-09); prior: 378 = +timing_flake (2026-08-06); prior: 377 = +procfs_probe_in_test (2026-07-31)
 
 // Ids per family, mirroring getCheckInventory's own sources — so the union/overlap
 // assertions verify the DISTINCT total against reality, not a restated sum.

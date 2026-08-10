@@ -24,9 +24,13 @@
 //
 // Check id: type_predicate_drift
 // Phase:    advisory (post-tool) — heuristic, deliberately conservative:
-//           same-file types only, and only when the guard already checks at
-//           least one field (a guard that checks none is delegating, not drifting).
+//           same-file types, arrow + function predicates, and ONE-HOP relative
+//           imports (R2-5 widening 2026-08-10); only fires when the guard
+//           already checks at least one field (a guard that checks none is
+//           delegating, not drifting).
 
+import { readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { getExtension, type InlineMatch, isGeneratedFile, isTestFile } from "./shared.js";
 import { stripCommentsAndStrings } from "./shared-text-utils.js";
 
@@ -59,6 +63,17 @@ interface PredicateSite {
 // (`v is Foo<Bar>`) are skipped — resolving type arguments needs a type checker.
 const PREDICATE_SIG =
 	/\bfunction\s+\w+\s*\(([^)]*)\)\s*:\s*([A-Za-z_$][\w$]*)\s+is\s+([A-Za-z_$][\w$]*)\s*\{/;
+
+// Arrow form: `const isFoo = (v: unknown): v is Foo => …`. A bare-param arrow
+// cannot carry a return-type annotation, so the parenthesized form is the only
+// shape that exists. (R2-5 widening, 2026-08-10 — arrow predicates were a
+// documented false-negative lane.)
+const ARROW_PREDICATE_SIG =
+	/\b(?:const|let|var)\s+\w+\s*=\s*\(([^)]*)\)\s*:\s*([A-Za-z_$][\w$]*)\s+is\s+([A-Za-z_$][\w$]*)\s*=>/;
+
+// Named-import clause. Runs against ORIGINAL source — stripping erases string
+// literals, and the specifier is one.
+const IMPORT_DECL = /\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
 
 // `interface Foo {` / `interface Foo extends Bar {` — `extends` makes the
 // required set incomplete, so those are skipped (see collectDeclaredShapes).
@@ -185,7 +200,126 @@ function collectPredicates(stripped: string): PredicateSite[] {
 		global.lastIndex = m.index + m[0].length;
 		m = global.exec(stripped);
 	}
+	sites.push(...collectArrowPredicates(stripped));
 	return sites;
+}
+
+/** Slice an arrow's EXPRESSION body: from `start` to the first `;`/newline at
+ *  bracket depth 0 (budget-bounded). */
+function arrowExpressionBody(stripped: string, start: number): string {
+	let depth = 0;
+	const end = Math.min(stripped.length, start + 2000);
+	for (let i = start; i < end; i++) {
+		const ch = stripped.charAt(i);
+		if (ch === "(" || ch === "[" || ch === "{") depth++;
+		else if (ch === ")" || ch === "]" || ch === "}") depth--;
+		else if (depth <= 0 && (ch === ";" || ch === "\n")) return stripped.slice(start, i);
+	}
+	return stripped.slice(start, end);
+}
+
+/** Arrow-form predicates: block body via brace match, expression body via the
+ *  depth-0 statement-end walk. */
+function collectArrowPredicates(stripped: string): PredicateSite[] {
+	const sites: PredicateSite[] = [];
+	const global = new RegExp(ARROW_PREDICATE_SIG.source, "g");
+	let m = global.exec(stripped);
+	while (m !== null) {
+		const param = m[2];
+		const typeName = m[3];
+		let after = m.index + m[0].length;
+		while (after < stripped.length && /\s/.test(stripped.charAt(after))) after++;
+		let body: string | null = null;
+		if (stripped.charAt(after) === "{") {
+			const closeIdx = matchBrace(stripped, after);
+			if (closeIdx > after) body = stripped.slice(after + 1, closeIdx);
+		} else {
+			body = arrowExpressionBody(stripped, after);
+		}
+		if (param && typeName && body !== null) {
+			sites.push({ line: lineOf(stripped, m.index), param, typeName, body });
+		}
+		global.lastIndex = m.index + m[0].length;
+		m = global.exec(stripped);
+	}
+	return sites;
+}
+
+/** A named type import: the local binding, its source-file name, and origin. */
+interface ImportedType {
+	sourceName: string;
+	specifier: string;
+}
+
+/** Map local type name → import origin, from ORIGINAL (unstripped) source. */
+function collectTypeImports(original: string): Map<string, ImportedType> {
+	const imports = new Map<string, ImportedType>();
+	IMPORT_DECL.lastIndex = 0;
+	let m = IMPORT_DECL.exec(original);
+	while (m !== null) {
+		const clause = m[1] ?? "";
+		const specifier = m[2] ?? "";
+		for (const rawItem of clause.split(",")) {
+			const item = rawItem.trim().replace(/^type\s+/, "");
+			if (item === "") continue;
+			const asMatch = /^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/.exec(item);
+			const sourceName = asMatch?.[1] ?? item;
+			const localName = asMatch?.[2] ?? item;
+			if (/^[A-Za-z_$][\w$]*$/.test(sourceName) && /^[A-Za-z_$][\w$]*$/.test(localName)) {
+				imports.set(localName, { sourceName, specifier });
+			}
+		}
+		m = IMPORT_DECL.exec(original);
+	}
+	return imports;
+}
+
+/** Per-process cache of shapes parsed from imported files, invalidated by
+ *  mtime. Keeps the one-hop resolution cheap on the hook path. */
+const importedShapeCache = new Map<
+	string,
+	{ mtimeMs: number; shapes: Map<string, DeclaredShape> }
+>();
+const MAX_IMPORT_FILE_BYTES = 262144;
+
+function shapesFromFile(absPath: string): Map<string, DeclaredShape> | null {
+	try {
+		const st = statSync(absPath);
+		if (st.size > MAX_IMPORT_FILE_BYTES) return null;
+		const hit = importedShapeCache.get(absPath);
+		if (hit && hit.mtimeMs === st.mtimeMs) return hit.shapes;
+		const shapes = collectDeclaredShapes(stripCommentsAndStrings(readFileSync(absPath, "utf-8")));
+		importedShapeCache.set(absPath, { mtimeMs: st.mtimeMs, shapes });
+		return shapes;
+	} catch {
+		return null; // unreadable/absent — behave as before the widening
+	}
+}
+
+/**
+ * One-hop cross-file resolution (R2-5): follow a RELATIVE named import to a
+ * sibling .ts source and look the asserted type up there. Package specifiers,
+ * deep re-export chains, and anything unreadable resolve to null — identical
+ * to the pre-widening behavior for those cases.
+ */
+function resolveImportedShape(
+	typeName: string,
+	imports: Map<string, ImportedType>,
+	filePath: string,
+): DeclaredShape | null {
+	const imp = imports.get(typeName);
+	if (!imp || !imp.specifier.startsWith(".")) return null;
+	const base = join(dirname(filePath), imp.specifier);
+	const candidates = [
+		base.replace(/\.m?js$/, ".ts"),
+		base.replace(/\.m?js$/, ".mts"),
+		base.endsWith(".ts") ? base : `${base}.ts`,
+	];
+	for (const candidate of candidates) {
+		const shape = shapesFromFile(candidate)?.get(imp.sourceName);
+		if (shape) return shape;
+	}
+	return null;
 }
 
 /**
@@ -233,14 +367,16 @@ export function detectTypePredicateDrift(content: string, filePath: string): Inl
 	if (!stripped.includes(" is ")) return [];
 
 	const shapes = collectDeclaredShapes(stripped);
-	if (shapes.size === 0) return [];
+	const typeImports = collectTypeImports(content);
+	if (shapes.size === 0 && typeImports.size === 0) return [];
 
 	const originalLines = content.split("\n");
 	const matches: InlineMatch[] = [];
 
 	for (const site of collectPredicates(stripped)) {
 		if (matches.length >= MAX_MATCHES) break;
-		const shape = shapes.get(site.typeName);
+		const shape =
+			shapes.get(site.typeName) ?? resolveImportedShape(site.typeName, typeImports, filePath);
 		if (!shape || shape.requiredProps.length < 2) continue;
 		if (!looksLikeShapeValidator(site.body)) continue;
 

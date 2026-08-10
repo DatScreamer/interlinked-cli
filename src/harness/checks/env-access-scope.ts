@@ -38,6 +38,10 @@ function isConfigBoundary(filePath: string): boolean {
 	if (/\/config\//.test(norm)) return true;
 	if (/\.config\.[mc]?[jt]sx?$/.test(norm)) return true;
 	if (/(?:^|\/)(?:setup|bootstrap)[^/]*$/.test(norm)) return true;
+	// A directory named for the role is the same boundary as a file named for
+	// it: `src/test-setup/home-sandbox.ts` IS a setup file (found via dogfood
+	// FP 2026-08-10 — the suite-wide HOME sandbox fired this check).
+	if (/(?:^|\/)(?:test-setup|setup|bootstrap)\//.test(norm)) return true;
 	return CONFIG_MODULE_NAMES.has(basenameNoExt(norm));
 }
 
