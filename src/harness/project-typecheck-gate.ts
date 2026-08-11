@@ -103,6 +103,28 @@ export function parseTscDiagnostics(stdout: string): TscDiagnostic[] {
 	return diags;
 }
 
+/**
+ * A child killed by a signal surfaces differently per platform and wrapper:
+ * macOS spawnSync reports `signal` directly; Linux npm re-encodes a script's
+ * signal death as plain `status = 128 + signum` (143 = SIGTERM, 137 = SIGKILL)
+ * with `signal: null`; a timeout kill can also leave `status: null`. Treat all
+ * three as "did not run to completion" — never let a signal death fall through
+ * to output parsing, which reads an empty diagnostic list as a hard failure
+ * (or worse). Caught live: CI-only failures on run 31517477152 where Linux
+ * classified a SIGTERM'd child by its 143 exit code.
+ */
+const SIGNAL_EXIT_BASE = 128;
+function diedBySignal(result: { status: number | null; signal: NodeJS.Signals | null }): boolean {
+	return result.signal !== null || result.status === null || result.status >= SIGNAL_EXIT_BASE;
+}
+
+/** Human-readable cause for the timed-out/terminated finding message. */
+function describeDeath(result: { status: number | null; signal: NodeJS.Signals | null }): string {
+	if (result.signal) return `signal ${result.signal}`;
+	if (result.status === null) return "no exit status";
+	return `exit ${result.status}`;
+}
+
 /** Run the project's typecheck and return one CheckResultEntry per
  *  diagnostic (capped at 50). Empty array on success. Returns a single
  *  "skipped" warning entry when bypassed via env var so the audit log
@@ -142,13 +164,13 @@ export function checkProjectTypecheckClean(cwd: string): CheckResultEntry[] {
 		];
 	}
 
-	if (result.signal === "SIGTERM" || result.status === null) {
+	if (diedBySignal(result)) {
 		return [
 			{
 				source: "structural",
 				name: "project_typecheck_timed_out",
 				severity: "warning",
-				message: `Project typecheck (${cmd.source}) exceeded ${TYPECHECK_TIMEOUT_MS / 1000}s timeout. Verify CI manually.`,
+				message: `Project typecheck (${cmd.source}) exceeded ${TYPECHECK_TIMEOUT_MS / 1000}s timeout or was terminated (${describeDeath(result)}). Verify CI manually.`,
 				determinism: "fully_deterministic",
 			},
 		];
@@ -277,13 +299,13 @@ export function checkProjectTestsClean(cwd: string): CheckResultEntry[] {
 		];
 	}
 
-	if (result.signal === "SIGTERM" || result.status === null) {
+	if (diedBySignal(result)) {
 		return [
 			{
 				source: "structural",
 				name: "project_tests_timed_out",
 				severity: "warning",
-				message: `Project tests (${cmd.source}) exceeded ${TESTS_TIMEOUT_MS / 1000}s timeout. Verify CI manually.`,
+				message: `Project tests (${cmd.source}) exceeded ${TESTS_TIMEOUT_MS / 1000}s timeout or was terminated (${describeDeath(result)}). Verify CI manually.`,
 				determinism: "fully_deterministic",
 			},
 		];

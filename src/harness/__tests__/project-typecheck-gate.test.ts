@@ -281,6 +281,20 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).message).toContain("exceeded");
 		expect(nonNull(results[0]).message).toContain("timeout");
 	});
+
+	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: { "typecheck:stable": 'node -e "process.exit(143)"' },
+			}),
+		);
+		const results = checkProjectTypecheckClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).name).toBe("project_typecheck_timed_out");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("exit 143");
+	});
 });
 
 describe("resolveTestCommand", () => {
@@ -455,5 +469,17 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exceeded");
 		expect(nonNull(results[0]).message).toContain("timeout");
+	});
+
+	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(143)"' } }),
+		);
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0]).name).toBe("project_tests_timed_out");
+		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(nonNull(results[0]).message).toContain("exit 143");
 	});
 });

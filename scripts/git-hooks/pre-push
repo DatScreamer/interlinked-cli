@@ -81,6 +81,41 @@ if [ "$should_run" -eq 0 ]; then
 	exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Gate against a disposable export of HEAD, not the dirty working tree.
+#
+# History note (do not regress this): an earlier design stashed the working
+# tree to test a clean state, and `git stash pop` conflicts with test-written
+# fixture paths caused silent work loss — that class is forbidden. This
+# design NEVER touches the working tree: `git worktree add --detach` checks
+# out the exact HEAD being pushed into a temp dir (node_modules symlinked —
+# the same pattern the two-box mutation runner uses), gates run there, and
+# the export is removed on exit. Unstaged/uncommitted changes can neither
+# cause false gate failures nor mask real ones.
+#
+# Fallback: if the export cannot be created (exotic clone states), gates run
+# against the working tree exactly as before — correctness degrades to the
+# old documented trade-off rather than blocking the push outright.
+# ---------------------------------------------------------------------------
+GATE_DIR="$(pwd)"
+export_dir=""
+if export_dir="$(mktemp -d "${TMPDIR:-/tmp}/prepush-head-XXXXXX" 2>/dev/null)" \
+	&& git worktree add --detach --quiet "$export_dir/tree" HEAD 2>/dev/null \
+	&& ln -s "$(pwd)/node_modules" "$export_dir/tree/node_modules" 2>/dev/null; then
+	GATE_DIR="$export_dir/tree"
+	echo "[pre-push] Gating against clean export of HEAD ($(git rev-parse --short HEAD)) — working tree untouched."
+else
+	echo "[pre-push] WARNING: could not export HEAD to a temp worktree; gating against working tree (old behavior)."
+fi
+cleanup_export() {
+	if [ -n "$export_dir" ]; then
+		git worktree remove --force "$export_dir/tree" >/dev/null 2>&1
+		rm -rf "$export_dir" >/dev/null 2>&1
+		git worktree prune >/dev/null 2>&1
+	fi
+}
+trap cleanup_export EXIT
+
 if [ "$docs_only" -eq 1 ]; then
 	# A Markdown-only push skips the expensive, code-dependent gate
 	# (typecheck + tests) but STILL validates the generated doc markers:
@@ -90,7 +125,7 @@ if [ "$docs_only" -eq 1 ]; then
 	# Letting that through to CI is the gap we are closing here.
 	echo "[pre-push] Push is Markdown-only — skipping typecheck + tests, validating doc markers only (CI still runs)."
 	set +e
-	npm run docs:check
+	(cd "$GATE_DIR" && npm run docs:check)
 	docs_status=$?
 	set -e
 	if [ "$docs_status" -ne 0 ]; then
@@ -105,22 +140,11 @@ if [ "$docs_only" -eq 1 ]; then
 	exit 0
 fi
 
-# Tests run against the live working tree — we deliberately do NOT stash
-# unstaged / untracked changes. The earlier stash/pop machinery was a
-# repeat data-loss source: when the test suite writes paths the stash
-# also holds (the fixture files at src/lib/_multi_edit_*.ts being the
-# canonical example), `git stash pop` fails on conflict, the work sits in
-# the stash invisibly, and the working tree appears clean — easy to miss,
-# easy to delete by accident later. We accept the trade-off the comment
-# above already calls out: the gate may now occasionally produce a false
-# positive (test reads disk state that differs from what's being pushed),
-# or — more dangerously — a false NEGATIVE (working-tree changes mask a
-# failure the pushed commit would actually have). The user has explicitly
-# opted into "sometimes CI catches it instead of pre-push" rather than
-# any continued risk of silent work loss. Bypass via `--no-verify` if a
-# specific working-tree divergence is producing a false positive.
+# Gates below run inside GATE_DIR — the clean HEAD export created above
+# (or the working tree only on export-creation failure). The stash/pop
+# approach remains forbidden; see the history note at the export block.
 
-echo "[pre-push] Running typecheck + tests against working tree (mirrors CI exactly)..."
+echo "[pre-push] Running typecheck + tests in $GATE_DIR (mirrors CI exactly)..."
 
 # Mirror what CI actually runs (see .github/workflows/ci.yml):
 #   - npm run typecheck:stable  (stable tsc, not the experimental tsgo)
@@ -134,7 +158,7 @@ echo "[pre-push] Running typecheck + tests against working tree (mirrors CI exac
 #                                does not run a less-stable, higher-
 #                                parallelism variant than CI)
 set +e
-npm run typecheck:stable
+(cd "$GATE_DIR" && npm run typecheck:stable)
 tc_status=$?
 set -e
 
@@ -147,7 +171,7 @@ if [ "$tc_status" -ne 0 ]; then
 fi
 
 set +e
-npm run docs:check
+(cd "$GATE_DIR" && npm run docs:check)
 docs_status=$?
 set -e
 
@@ -159,8 +183,26 @@ if [ "$docs_status" -ne 0 ]; then
 	exit 1
 fi
 
+# CI builds dist/ before testing (ci.yml), and some integration tests stat
+# build artifacts — a bare HEAD export has no dist/ (gitignored), so build
+# here too or those tests fail only in the export. Conditional on a build
+# script existing so repos (and hook-test fixtures) without one skip it,
+# same as CI would.
+if [ "$GATE_DIR" != "$(pwd)" ] \
+	&& (cd "$GATE_DIR" && node -e "process.exit((require('./package.json').scripts||{}).build?0:1)" 2>/dev/null); then
+	set +e
+	(cd "$GATE_DIR" && npm run build)
+	build_status=$?
+	set -e
+	if [ "$build_status" -ne 0 ]; then
+		echo ""
+		echo "❌ pre-push: build failed in HEAD export (exit $build_status). Push blocked."
+		exit 1
+	fi
+fi
+
 set +e
-CI=1 npm test
+(cd "$GATE_DIR" && CI=1 npm test)
 test_status=$?
 set -e
 
@@ -179,7 +221,7 @@ fi
 if [ "$pkg_touched" -eq 1 ]; then
 	echo "[pre-push] Package surface changed — running build + distribution smokes..."
 	set +e
-	bash scripts/ci-packaging.sh
+	(cd "$GATE_DIR" && bash scripts/ci-packaging.sh)
 	pkg_status=$?
 	set -e
 	if [ "$pkg_status" -ne 0 ]; then
