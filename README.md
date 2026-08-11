@@ -107,7 +107,7 @@ exercises the same end-to-end path.
 ## What you get
 
 - **Guard harness.** A local Unix-socket server evaluates every agent
-  action against <!-- gen:builtin_rule_count -->120<!-- /gen:builtin_rule_count -->
+  action against <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count -->
   deterministic safety rules (destructive commands, secrets in writes,
   sensitive-file reads, lockfile drift, etc.) and returns block/allow
   decisions in about 1–5 ms for cheap rules; content-checking rules
