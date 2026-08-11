@@ -184,9 +184,10 @@ function findTestFiles(
 
 	// 2. Dependents that are test files (1-hop only, bounded)
 	const dependents = view.getDependents(filePath);
-	const checked = 0;
+	let checked = 0;
 	for (const dep of dependents) {
 		if (checked >= 50) break;
+		checked++;
 		const depBase = basename(dep);
 		if (TEST_PATTERNS.some((p) => depBase.includes(p))) {
 			const relDep = graph.toRelative(dep);
