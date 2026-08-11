@@ -593,3 +593,49 @@ describe("parseExports — a second 'as' inside one specifier exposes the split 
 		]);
 	});
 });
+
+describe("parseExports — alias-split final trim, heavy whitespace beyond the doubled-space cases above", () => {
+	// The three alias-then-pop chains (typeReExport, namedReExport,
+	// processExportStatement) all end `.split(/\s+as\s+/).pop()!.trim()`. These
+	// go past double whitespace to a mix of tabs/triple-spaces on BOTH sides of
+	// "as" at once, in case a boundary survives at 2 spaces but not 3+ or tabs.
+	it("typeReExport: triple space and a tab around 'as' still isolates the alias", () => {
+		expect(parseExports("export type { Foo   as\tBar }")).toEqual([
+			{ name: "Bar", kind: "type", isTypeOnly: true, line: 1 },
+		]);
+	});
+
+	it("namedReExport: triple space and a tab around 'as' still isolates the alias", () => {
+		expect(parseExports("export { Foo   as\tBar }")).toEqual([
+			{ name: "Bar", kind: "const", isTypeOnly: false, line: 1 },
+		]);
+	});
+
+	it("processExportStatement (multiline): triple space and a tab around 'as' still isolates the alias", () => {
+		const code = ["export {", "Foo   as\tBar", "}"].join("\n");
+		expect(parseExports(code)).toEqual([
+			{ name: "Bar", kind: "const", isTypeOnly: false, line: 1 },
+		]);
+	});
+});
+
+describe("parseExports — lines that start with 'export' but match no known form never fall through to a later one", () => {
+	// Regression net around the skip-guard at the top of the per-line dispatch
+	// (`if (!trimmed.startsWith("export")) continue;`): every one of these is
+	// shaped so it could only ever produce output by accidentally satisfying a
+	// LATER matcher once the leading guard stops filtering non-export content.
+	it("a bare brace line with no 'export' anywhere produces nothing", () => {
+		expect(parseExports("{ foo }")).toEqual([]);
+	});
+
+	it("blank and whitespace-only lines around a real export produce nothing extra", () => {
+		const code = ["", "   ", "export const only = 1;", "\t"].join("\n");
+		expect(parseExports(code)).toEqual([
+			{ name: "only", kind: "const", isTypeOnly: false, line: 3 },
+		]);
+	});
+
+	it("a line that merely CONTAINS the word export, not at the start, produces nothing", () => {
+		expect(parseExports("const reexportLike = 1;")).toEqual([]);
+	});
+});

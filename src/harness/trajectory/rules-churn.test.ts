@@ -867,6 +867,114 @@ describe("churn_sha_cycle_revisit — mutation hardening", () => {
 });
 
 // ===========================================
+// churn_sha_cycle_revisit — firstPrior must anchor at the ACTUAL first match
+// ===========================================
+describe("churn_sha_cycle_revisit — firstPrior anchoring", () => {
+	it("does NOT fire when a failing edit occurred BEFORE the real revisit pair began (firstPrior must be the actual first sha match, not index 0)", () => {
+		// If firstPrior were ever miscomputed as 0 (or the sincePrior step
+		// derived from it), the failingIntervened scan would widen to include
+		// src/fp.ts's step-2 failing edit — which sits BEFORE the real A-revisit
+		// pair (idx2="A" .. idx4="A") — and wrongly fire.
+		const v = run([
+			...editEvents("src/fp.ts", "", "Z"), // idx0
+			...editEvents("src/fp.ts", "Z", "Y", { fail: true }), // idx1 — failing, but before the real pair
+			...editEvents("src/fp.ts", "Y", "A"), // idx2 — the REAL firstPrior
+			...editEvents("src/fp.ts", "A", "B"), // idx3
+			...editEvents("src/fp.ts", "B", "A"), // idx4 = cur, revisits idx2's "A"
+		]);
+		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(false);
+	});
+
+	it("does NOT fire when every revisited entry is byte-identical (pure identical-content churn stays whitespace-only even with 2 distinct revisits)", () => {
+		// allWhitespace must be seeded true and must gate BEFORE the
+		// twoDistinctRevisits check — three byte-identical edits give
+		// priorIdxs.length===2 (twoDistinctRevisits=true) but every entry in
+		// the revisit span shares cur's normSha, so this must still be null.
+		const v = run([
+			...editEvents("src/idem.ts", "", "X"),
+			...editEvents("src/idem.ts", "X", "X"),
+			...editEvents("src/idem.ts", "X", "X"),
+		]);
+		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(false);
+	});
+
+	it("does NOT fire when the ENTIRE forward span from firstPrior to now is whitespace-only, even with a failing edit inside that span (the scan must walk FORWARD from firstPrior, not backward)", () => {
+		const v = run([
+			...editEvents("src/fwd.ts", "", "Z"),
+			...editEvents("src/fwd.ts", "Z", "A"),
+			...editEvents("src/fwd.ts", "A", "A ", { fail: true }),
+			...editEvents("src/fwd.ts", "A ", "A"),
+		]);
+		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(false);
+	});
+});
+
+// ===========================================
+// churn_sha_cycle_revisit — allWhitespace must default true and gate the
+// twoDistinctRevisits/failingIntervened path, and the intervened-window
+// bounds must be exact (strict, not inclusive)
+// ===========================================
+describe("churn_sha_cycle_revisit — allWhitespace default and window exactness", () => {
+	it("does NOT fire on a whitespace-only cycle even with TWO distinct revisits (allWhitespace must default true and gate before twoDistinctRevisits, not just single-revisit cases)", () => {
+		// Every entry shares normSha with cur (only trailing-space count differs),
+		// so priorIdxs has 2 exact-sha matches (twoDistinctRevisits=true) yet the
+		// whole span is whitespace-only. If allWhitespace ever defaulted false, or
+		// its guard were bypassed, this would incorrectly fire.
+		const v = run([
+			...editEvents("src/ws2.ts", "", "x=1"),
+			...editEvents("src/ws2.ts", "x=1", "x=1 "),
+			...editEvents("src/ws2.ts", "x=1 ", "x=1"),
+			...editEvents("src/ws2.ts", "x=1", "x=1  "),
+			...editEvents("src/ws2.ts", "x=1  ", "x=1"),
+		]);
+		expect(firedIds(v).has("churn_sha_cycle_revisit")).toBe(false);
+	});
+
+	it("a failing edit exactly AT sincePrior does not count as intervened (the window's lower bound is strict '>', not '>=')", () => {
+		const state = createState("s");
+		const file = "src/windowlo.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			{ sha: "A", normSha: "a", atStep: 2 }, // firstPrior; sincePrior = 2
+			{ sha: "B", normSha: "b", atStep: 4 },
+			{ sha: "A", normSha: "a", atStep: 6 }, // cur
+		]);
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "x", new: "B", anchor: "z", atStep: 2, failedCheck: true, greenCountAtEntry: 0 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "B", new_string: "A" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("a failing edit exactly AT cur.atStep does not count as intervened (the window's upper bound is strict '<', not '<=')", () => {
+		const state = createState("s");
+		const file = "src/windowhi.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			{ sha: "A", normSha: "a", atStep: 2 },
+			{ sha: "B", normSha: "b", atStep: 4 },
+			{ sha: "A", normSha: "a", atStep: 6 }, // cur; sincePrior = 2
+		]);
+		(state.fileEditLog as Map<string, unknown>).set(file, [
+			{ old: "x", new: "B", anchor: "z", atStep: 6, failedCheck: true, greenCountAtEntry: 0 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "B", new_string: "A" });
+		expect(churnShaCycleRevisit(state, ev)).toBeNull();
+	});
+
+	it("does not throw when hist[firstPrior] itself is a hole (optional chaining protects the sincePrior read, not just the scans)", () => {
+		// cur.sha is deliberately undefined too, so the hole at index 0 still
+		// satisfies `hist[i]?.sha === cur.sha` and becomes firstPrior.
+		const state = createState("s");
+		const file = "src/holefirstprior.ts";
+		(state.fileShaHistory as Map<string, unknown>).set(file, [
+			undefined,
+			{ sha: undefined, normSha: "x", atStep: 5 },
+		]);
+		const ev = postEditEvent("Edit", { file_path: file, old_string: "x", new_string: "y" });
+		expect(() => churnShaCycleRevisit(state, ev)).not.toThrow();
+	});
+});
+
+// ===========================================
 // churn_literal_edit_revert — guard clauses, defensive holes, asymmetric matches
 // ===========================================
 describe("churn_literal_edit_revert — mutation hardening", () => {

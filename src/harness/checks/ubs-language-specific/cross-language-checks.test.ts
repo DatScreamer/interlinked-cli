@@ -525,3 +525,399 @@ describe("checkUbsHardcodedLocalhost — match cap and exact shape", () => {
 		expect(matches).toEqual([{ line: 2, text: 'const url = "http://localhost:3000";' }]);
 	});
 });
+
+// ===========================================================================
+// Mutation-kill regression suite (fleet M5, 2026-08-10). Each case pins a
+// whitespace/char-class boundary the regex-level survivor report showed was
+// unguarded — a mutant that loosens or tightens one of these boundaries
+// (`\s+`→`\s`, a negated character class, a dropped `*`/`?`) changes the
+// verdict for the EXACT input below. Grouped by the sqlVerb/interpolation/
+// exemption regex each targets; see mutant location in the summary comment.
+// ===========================================================================
+
+describe("checkSqlStringConcat — sqlVerb: repeated-whitespace still fires (P: must fire)", () => {
+	// Each kills the `\s+`→`\s` (or the overlapping [\w,\s] column-list class)
+	// mutation on that verb's line in `sqlVerb` — a single required whitespace
+	// position that a naive `\s` cannot stretch across two real spaces.
+	it("P: SELECT with 2 spaces before *", () => {
+		expect(checkSqlStringConcat('const q = "SELECT  * FROM " + t;', "db.ts").length).toBeGreaterThan(0);
+	});
+	it("P: SELECT column-list with 2 spaces after the comma", () => {
+		expect(
+			checkSqlStringConcat('const q = "SELECT id,  name FROM " + t;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: SELECT column-list with 2 spaces before FROM", () => {
+		expect(
+			checkSqlStringConcat('const q = "SELECT id, name  FROM " + t;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: INSERT with 2 spaces before INTO", () => {
+		expect(
+			checkSqlStringConcat('const q = "INSERT  INTO users VALUES (" + v + ")";', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: UPDATE with 2 spaces before the table name", () => {
+		expect(checkSqlStringConcat('const q = "UPDATE  users SET x = " + v;', "db.ts").length).toBeGreaterThan(0);
+	});
+	it("P: DELETE with 2 spaces before FROM", () => {
+		expect(
+			checkSqlStringConcat('const q = "DELETE  FROM users WHERE id = " + id;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: DELETE FROM with 2 spaces before the table name", () => {
+		expect(
+			checkSqlStringConcat('const q = "DELETE FROM  users WHERE id = " + id;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: DROP with 2 spaces before TABLE", () => {
+		expect(checkSqlStringConcat('const q = "DROP  TABLE " + t;', "db.ts").length).toBeGreaterThan(0);
+	});
+	it("P: TRUNCATE with 2 spaces before TABLE", () => {
+		expect(checkSqlStringConcat('const q = "TRUNCATE  TABLE " + t;', "db.ts").length).toBeGreaterThan(0);
+	});
+});
+
+describe("checkSqlStringConcat — selectConcatPrefix whitespace boundary (P: must fire)", () => {
+	it("P: no whitespace at all between SELECT, quote, and operator", () => {
+		expect(checkSqlStringConcat('let sql = "SELECT"+col;', "db.ts").length).toBeGreaterThan(0);
+	});
+	it("P: exactly one space between SELECT and the opening quote", () => {
+		expect(checkSqlStringConcat('let sql = "SELECT "+col;', "db.ts").length).toBeGreaterThan(0);
+	});
+});
+
+describe("checkSqlStringConcat — interpolation whitespace/identifier boundary (P: must fire)", () => {
+	it("P: 2 spaces between the closing quote and the concat operator", () => {
+		expect(
+			checkSqlStringConcat('const q = "SELECT * FROM x"  + y;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: 2 spaces between the concat operator and a single-char identifier", () => {
+		expect(
+			checkSqlStringConcat('const q = "SELECT * FROM x" +  col;', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: single-char identifier right after the operator (no trailing ident chars to spare)", () => {
+		expect(checkSqlStringConcat('const q = "SELECT * FROM x" + y;', "db.ts").length).toBeGreaterThan(0);
+	});
+	it("P: template literal with extra text between the interpolation and the closing backtick", () => {
+		const code = "const q = `SELECT * FROM users WHERE id = ${uid}xyz`;";
+		expect(checkSqlStringConcat(code, "db.ts").length).toBeGreaterThan(0);
+	});
+});
+
+describe("checkSqlStringConcat — placeholder exemption boundary (N: must not fire)", () => {
+	// Both kill a mutation that narrows the placeholder regex just enough to
+	// miss a still-parameterized shape, which would wrongly turn the
+	// exemption off and flag a safe parameterized query.
+	it("N: a 2-digit numbered placeholder ($12) is still recognized as parameterized", () => {
+		const code = 'db.query("SELECT * FROM t WHERE id = $12" + extra, [id]);';
+		expect(checkSqlStringConcat(code, "db.ts")).toEqual([]);
+	});
+	it("N: a `?` placeholder followed by a space before the closing quote is still recognized", () => {
+		const code = 'db.query("SELECT * FROM t WHERE id = ? " + extra, [id]);';
+		expect(checkSqlStringConcat(code, "db.ts")).toEqual([]);
+	});
+});
+
+describe("checkSqlStringConcat — eventListener exemption boundary (N: must not fire)", () => {
+	it("N: a space between the dot and the listener method name is still exempt", () => {
+		expect(checkSqlStringConcat('el. on("SELECT * FROM " + name);', "db.ts")).toEqual([]);
+	});
+	it("N: a space between the listener method name and its call parens is still exempt", () => {
+		expect(checkSqlStringConcat('el.on ("SELECT * FROM " + name);', "db.ts")).toEqual([]);
+	});
+});
+
+describe("checkSqlEscapeHatchNonLiteral — call-shape whitespace boundary (P: must fire)", () => {
+	it("P: a space between the escape-hatch method name and its call parens still flags", () => {
+		const matches = checkSqlEscapeHatchNonLiteral("const q = sql.unsafe (tableName);", "db.ts");
+		expect(matches.length).toBeGreaterThan(0);
+	});
+	it("P: truncates the quoted source line in the message to 120 chars", () => {
+		const longIdent = "y".repeat(200);
+		const code = `const q = sql.unsafe(${longIdent});`;
+		const matches = checkSqlEscapeHatchNonLiteral(code, "db.ts");
+		expect(matches).toHaveLength(1);
+		const msg = matches[0]?.text ?? "";
+		const quotedPart = msg.slice(msg.indexOf("): ") + 3);
+		expect(quotedPart.length).toBe(120);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — path-exemption endsWith boundary (N/P pairs)", () => {
+	it("N: a filename that merely ends in .env (not the bare dotfile) is still exempt", () => {
+		const code = 'const url = "http://localhost:3000";';
+		expect(checkUbsHardcodedLocalhost(code, "secrets/prod.env")).toEqual([]);
+	});
+	it("N: a filename ending in .env.example (not just .env) is still exempt", () => {
+		const code = 'const url = "http://localhost:3000";';
+		expect(checkUbsHardcodedLocalhost(code, "secrets/prod.env.example")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — metadataAssignment colon-spacing boundary (N: must not fire)", () => {
+	it("N: no space at all between the field name's colon and the opening quote", () => {
+		const code = 'description:"http://localhost:3000"';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — regExpConstructor call-shape boundary (N: must not fire)", () => {
+	it("N: a space between RegExp and its call parens is still recognized as a constructor", () => {
+		const code = 'const re = new RegExp ("localhost");';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — localhostAsDefault boundary (N: must not fire)", () => {
+	it("N: no space between `||` and the fallback string literal is still a default", () => {
+		const code = 'const url = flag ||"http://localhost:8787";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — localhostAsTest boundary (N: must not fire)", () => {
+	it("N: a space between .includes and its call parens is still a membership test", () => {
+		const code = 'if (url.includes ("localhost")) { x(); }';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: double-equals (==), not just triple-equals, is still an equality test", () => {
+		const code = 'const isLocal = host == "localhost";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: non-quote prose text between the quote and the localhost token is still exempt", () => {
+		const code = 'const isLocal = host === "is-localhost";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — localhostNamedDefault boundary (N: must not fire)", () => {
+	it("N: 2 spaces after const is still a named-default declaration", () => {
+		const code = 'const  fallbackHost = "127.0.0.1";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a word-char prefix before Fallback (xFallbackHost) is still a named default", () => {
+		const code = 'const xFallbackHost = "127.0.0.1";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: no space before the `=` is still a named-default declaration", () => {
+		const code = 'const fallbackHost="127.0.0.1";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — regex-pattern-naming exemption (isRegexPatternLocalhostLine)", () => {
+	// The naming-convention branch of the pattern-building exemption was only
+	// ever reached, before this suite, via lines that ALSO tripped the earlier
+	// `RegExp(` constructor exemption — so the branch itself (and the whole
+	// function body / return expression) could be gutted with no test noticing.
+	it("N: an UPPER_RE-named template assignment is exempt even with no RegExp( on the line", () => {
+		const code = "const HOST_RE = `localhost`;";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("P: a lowercase-leading identifier does NOT satisfy the _RE naming convention (still fires)", () => {
+		const code = "const host_RE = `localhost`;";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts").length).toBeGreaterThan(0);
+	});
+	it("N: extra text on both sides of localhost inside the template is still exempt via _RE naming", () => {
+		const code = "const XX_RE = `see localhost xx`;";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a *Pattern-suffixed identifier (not _RE) also satisfies the naming convention", () => {
+		const code = "myPattern = `localhost`;";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a backslash-d regex escape sequence signals a regex-building line", () => {
+		const code = "const p = `port \\\\d+ on localhost`;";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a `.test(` call signals a regex-building line even with a space before `test`", () => {
+		const code = "if (pattern. test(`has localhost in it`)) { x(); }";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a `.match(` call with a space before its parens also signals a regex-building line", () => {
+		const code = "const m = line.match (`localhost` + suffix);";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — multi-line RegExp( continuation (isPrevLineRegExpOpen)", () => {
+	// Regression for a coverage gap: the ONLY existing multi-line test used a
+	// localhost token that never satisfied LOCALHOST_ENDPOINT_RE in the first
+	// place (not `//`/`@`-prefixed, not colon-digit, not quote-adjacent), so
+	// it passed vacuously without ever reaching isPrevLineRegExpOpen. These
+	// use a backtick-adjacent token so the endpoint gate is actually crossed.
+	it("N: previous non-blank line ending in RegExp( exempts a backtick-adjacent localhost token", () => {
+		const code = ["const pattern = new RegExp(", "  `localhost`,", '  "i",', ");"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a blank line between RegExp( and the localhost continuation is still skipped over", () => {
+		const code = ["const pattern = new RegExp(", "", "  `localhost`,", '  "i",', ");"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — dev-token guard boundary (isDevGuardedLocalhostLine)", () => {
+	it("N: a bare `dev` token (no suffix) in the guarding conditional still exempts", () => {
+		const code = ["if (dev) {", '  url = "http://localhost:3000";', "}"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a bare `DEV` token (no suffix) in the guarding conditional still exempts", () => {
+		const code = ["if (DEV) {", '  url = "http://localhost:3000";', "}"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a dev-gated conditional exactly 3 non-blank lines back still exempts", () => {
+		const code = [
+			"if (devMode) {",
+			"  const a = 1;",
+			"  const b = 2;",
+			'  url = "http://localhost:3000";',
+			"}",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("P: a dev-gated conditional 4 non-blank lines back is past the lookback window (still fires)", () => {
+		const code = [
+			"if (devMode) {",
+			"  const a = 1;",
+			"  const b = 2;",
+			"  const c = 3;",
+			'  url = "http://localhost:3000";',
+			"}",
+		].join("\n");
+		const matches = checkUbsHardcodedLocalhost(code, "src/x.ts");
+		expect(matches).toEqual([{ line: 5, text: 'url = "http://localhost:3000";' }]);
+	});
+});
+
+// ===========================================================================
+// Round 2 (fleet M5): the after-measure re-run showed these specific
+// whitespace/char-class boundaries were NOT actually exercised by round 1 —
+// several round-1 additions targeted a same-shaped but DIFFERENT regex (e.g.
+// `isExemptStrippedLocalhostLine`'s regExpConstructor vs
+// `isPrevLineRegExpOpen`'s own end-anchored regex), or hit an escape hatch
+// the mutant could still reach via a different alternative/restart position.
+// ===========================================================================
+
+describe("checkSqlStringConcat — sqlVerb: second whitespace run per verb (round 2)", () => {
+	it("P: 2 spaces between INTO and the table name", () => {
+		expect(
+			checkSqlStringConcat('const q = "INSERT INTO  users VALUES (" + v + ")";', "db.ts").length,
+		).toBeGreaterThan(0);
+	});
+	it("P: 2 spaces between the table name and SET", () => {
+		expect(checkSqlStringConcat('const q = "UPDATE users  SET x = " + v;', "db.ts").length).toBeGreaterThan(0);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — metadataAssignment: space before the colon (round 2)", () => {
+	it("N: a space before the colon, no space after, is still a metadata assignment", () => {
+		const code = 'description :"http://localhost:3000"';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — localhostAsTest: non-quote prefix before the token (round 2)", () => {
+	it("N: prose text directly adjacent to the token (no separating space) is still exempt", () => {
+		const code = 'const isLocal = host === "is-localhost";';
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — isPrevLineRegExpOpen: its OWN end-anchored regex (round 2)", () => {
+	// Distinct from the regExpConstructor exemption (`\bRegExp\s*\(/`, no end
+	// anchor) tested earlier — this one requires "RegExp(" to be the LAST
+	// thing on the previous line (`\bRegExp\s*\(\s*$/`), only reachable via a
+	// genuine multi-line continuation.
+	it("N: a space between RegExp and its opening paren on the continuation-opening line", () => {
+		const code = ["const pattern = new RegExp (", "  `localhost`,", '  "i",', ");"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: trailing whitespace after the opening paren on the continuation-opening line", () => {
+		const code = ["const pattern = new RegExp( ", "  `localhost`,", '  "i",', ");"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a whitespace-only (not empty) line between RegExp( and the localhost continuation", () => {
+		const code = ["const pattern = new RegExp(", "   ", "  `localhost`,", '  "i",', ");"].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — isDevGuardedLocalhostLine: blank lines inside the lookback (round 2)", () => {
+	it("N: a blank line inside the 3-line lookback does not consume a slot (dev token still reached)", () => {
+		const code = [
+			"if (devMode) {",
+			"",
+			"  const a = 1;",
+			"  const b = 2;",
+			'  url = "http://localhost:3000";',
+			"}",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a whitespace-only line inside the 3-line lookback does not consume a slot either", () => {
+		const code = [
+			"if (devMode) {",
+			"   ",
+			"  const a = 1;",
+			"  const b = 2;",
+			'  url = "http://localhost:3000";',
+			"}",
+		].join("\n");
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — final match text truncation to 150 chars (round 2)", () => {
+	it("P: a long localhost line truncates the reported text to exactly 150 chars", () => {
+		const pad = "x".repeat(200);
+		const code = `const url = "http://localhost:3000"; // ${pad}`;
+		const matches = checkUbsHardcodedLocalhost(code, "src/x.ts");
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.text.length).toBe(150);
+	});
+});
+
+describe("checkUbsHardcodedLocalhost — regex-pattern-naming: character-level boundaries (round 2)", () => {
+	// Round 1's HOST_RE/myPattern/XX_RE tests exercised the ALTERNATIVE choice
+	// (which branch of the big OR fires) but several mutants sit INSIDE one
+	// alternative's character class or quantifier, where the mutant can still
+	// match by restarting the naming-convention scan at a later uppercase
+	// letter immediately before the "_RE"/"Re" suffix. These pin the exact
+	// boundary so that escape hatch is closed off.
+	it("N: a single-uppercase-letter _RE identifier (no room to restart mid-name)", () => {
+		expect(checkUbsHardcodedLocalhost("const X_RE = `localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: an uppercase-then-lowercase _RE identifier (restart position is not uppercase)", () => {
+		expect(checkUbsHardcodedLocalhost("const Xa_RE = `localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: a single-lowercase-letter Re-suffixed identifier (no room to restart mid-name)", () => {
+		expect(checkUbsHardcodedLocalhost("hRe = `localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: an underscore immediately before Re blocks the mid-name restart (my_Re)", () => {
+		expect(checkUbsHardcodedLocalhost("my_Re = `localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: no whitespace at all before the `=` is still a Re-suffixed declaration", () => {
+		expect(checkUbsHardcodedLocalhost("hostRegex=`localhost`", "src/x.ts")).toEqual([]);
+	});
+	it("N: a literal `[a-z]`-shaped character class signals a regex-building line", () => {
+		expect(checkUbsHardcodedLocalhost("const p = `[a-z] on localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: a literal `[^a-z]`-shaped (negated) character class also signals one", () => {
+		expect(checkUbsHardcodedLocalhost("const p = `[^a-z] on localhost`;", "src/x.ts")).toEqual([]);
+	});
+	it("N: a `.test(` call with no space before its parens signals a regex-building line", () => {
+		const code = "const p = `has localhost`; p.test(p);";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a `.test(` call with a space before its parens also signals one", () => {
+		const code = "const p = `has localhost`; p.test (p);";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+	it("N: a `.test(` call with 2 spaces before its parens also signals one", () => {
+		const code = "const p = `has localhost`; p.test  (p);";
+		expect(checkUbsHardcodedLocalhost(code, "src/x.ts")).toEqual([]);
+	});
+});

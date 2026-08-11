@@ -11,6 +11,7 @@
 // deterministic; no network or fs is touched by the module under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nonNull } from "../lib/non-null.js";
 import { getPatternWarnings } from "./pattern-detector.js";
 import type { ErrorRecord, SessionTrajectory } from "./types.js";
 
@@ -116,9 +117,10 @@ describe("hot-region detector", () => {
 		expect(warnings[0]).toContain("Lines 31-60");
 		expect(warnings[0]).toContain("2 check failures");
 		expect(warnings[0]).toContain("Take extra care");
-		// Both check names from the bucket's Set are listed.
-		expect(warnings[0]).toContain("tsc");
-		expect(warnings[0]).toContain("biome");
+		// Both check names from the bucket's Set are listed, joined with ", "
+		// (not just present anywhere — a dropped separator would still pass
+		// two separate `.toContain` calls on the individual names).
+		expect(warnings[0]).toContain("tsc, biome");
 	});
 
 	it("sorts multiple hot regions by error count (hottest first)", () => {
@@ -388,8 +390,8 @@ describe("sequence detector", () => {
 		expect(warnings[0]).toContain("[interlinked:sequence-pattern]");
 		expect(warnings[0]).toContain("led to 2 previous error(s)");
 		expect(warnings[0]).toContain("3 consecutive edits to the same file without re-reading");
-		expect(warnings[0]).toContain("tsc");
-		expect(warnings[0]).toContain("biome");
+		// Both check names, joined with ", " (not just present anywhere).
+		expect(warnings[0]).toContain("(tsc, biome):");
 	});
 
 	it("does not warn when history patterns exist but none match the current features", () => {
@@ -642,5 +644,458 @@ describe("getPatternWarnings — combined detectors", () => {
 		expect(warnings[1]).toContain("[interlinked:edit-pair]");
 		expect(warnings[2]).toContain("[interlinked:temporal]");
 		expect(warnings[3]).toContain("[interlinked:sequence-pattern]");
+	});
+});
+
+// ===========================================================================
+// Survivor-elimination corpus (fleet M6, mutation-kill pass).
+//
+// Every case below targets a SPECIFIC mutation survivor identified by
+// `interlinked mutation measure`, verified by hand-tracing the real
+// (unmutated) arithmetic/control-flow before being written. Each test name
+// documents the mutant class it kills. A handful of survivors are NOT
+// addressed here because they are provably unobservable through this
+// module's one public entry point — see the report for the full list; the
+// short version: `TemporalStats.last4Hours`/`last24Hours` (and the
+// `fourHoursAgo`/`dayAgo` arithmetic that feeds them) are computed but never
+// read by `getTemporalWarning`, and several early-return guards
+// (`fileRecords.length < 2`, `pairs.length === 0`, `stats.total < 2`,
+// `currentSequence.length < 3`, `currentFeatures.size === 0`,
+// `patterns.length === 0`, `withSequences.length < 2`) are shielded by a
+// downstream threshold that already produces the identical empty result
+// once the guard is bypassed.
+// ===========================================================================
+
+describe("hot-region detector — bucket threshold (data.count >= 2)", () => {
+	it("does not warn when every bucket has fewer than 2 errors, even with >= 2 total records", () => {
+		// Two records for the file, far enough apart to land in DIFFERENT
+		// 30-line buckets. Each bucket's count stays at 1 (below the >= 2
+		// threshold), so findHotRegions must report zero hotspots — a mutant
+		// that lowers the threshold to "any count" would report both.
+		const t = minutesAgoISO(5000);
+		const records = [
+			rec({ line_start: 10, timestamp: t }), // bucket 0 (lines 1-30)
+			rec({ line_start: 200, timestamp: t }), // bucket 6 (lines 181-210)
+		];
+		expect(getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION)).toEqual([]);
+	});
+});
+
+describe("hot-region detector — editLine boundary precision", () => {
+	// One hot region: lines 31-60 (bucket 1, from line_start 40 & 55).
+	// Boundaries per the source: lineStart - 10 = 21, lineEnd + 10 = 70.
+	const t = minutesAgoISO(5000);
+	const records = [
+		rec({ line_start: 40, timestamp: t }),
+		rec({ line_start: 55, timestamp: t }),
+	];
+
+	it("warns exactly AT the left boundary (editLine === lineStart - 10)", () => {
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION, 21);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("Lines 31-60");
+	});
+
+	it("warns exactly AT the right boundary (editLine === lineEnd + 10)", () => {
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION, 70);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("Lines 31-60");
+	});
+
+	it("warns at editLine = 65 (inside the +10 offset; a -10 offset would miss it)", () => {
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION, 65);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("Lines 31-60");
+	});
+
+	it("does NOT warn left of the left boundary, even though it's within the right bound", () => {
+		// editLine 10 < lineStart-10 (21), so the left conjunct legitimately
+		// fails; if it were forced true, the right conjunct alone (10 <= 70)
+		// would wrongly match.
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION, 10);
+		expect(warnings).toEqual([]);
+	});
+});
+
+describe("hot-region detector — check-name join separator", () => {
+	it("preserves the comma separator when multiple check names share a hot region (editLine branch)", () => {
+		const t = minutesAgoISO(5000);
+		const records = [
+			rec({ line_start: 40, check_name: "tsc", timestamp: t }),
+			rec({ line_start: 55, check_name: "biome", timestamp: t }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION, 45);
+		expect(warnings[0]).toContain("tsc, biome");
+	});
+});
+
+describe("edit-pair detector — filter precision (findEditPairs)", () => {
+	const old = minutesAgoISO(5000);
+
+	it("filters strictly by file — decoys from OTHER files must not inflate the denominator", () => {
+		const records = [
+			rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ file: "src/other1.ts", co_edited_files: ["src/qux.ts"], timestamp: old }),
+			rec({ file: "src/other2.ts", co_edited_files: ["src/qux.ts"], timestamp: old }),
+			rec({ file: "src/other3.ts", co_edited_files: ["src/qux.ts"], timestamp: old }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("src/bar.ts (100% of the time)");
+		expect(warnings[0]).not.toContain("qux.ts");
+	});
+
+	it("filters strictly by non-empty co_edited_files — empty-array decoys must not inflate the denominator", () => {
+		const records = [
+			rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ file: "src/foo.ts", co_edited_files: [], timestamp: old }),
+			rec({ file: "src/foo.ts", co_edited_files: [], timestamp: old }),
+			rec({ file: "src/foo.ts", co_edited_files: [], timestamp: old }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("src/bar.ts (100% of the time)");
+	});
+
+	it("does not let a single record's DUPLICATE co_edited_files entry satisfy the 2-record minimum", () => {
+		// Exactly ONE qualifying record (fileRecords.length === 1), but its
+		// co_edited_files lists the same paired file twice. Downstream
+		// count/ratio logic alone can't reject this (count=2, ratio=2.0) —
+		// only the `fileRecords.length < 2` early-return does, so this pins
+		// that the guard actually runs.
+		const records = [rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts", "src/bar.ts"] })];
+		expect(getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION)).toEqual([]);
+	});
+});
+
+describe("edit-pair detector — ratio threshold precision", () => {
+	const old = minutesAgoISO(5000);
+
+	it("excludes a candidate whose ratio is below 0.5 even when its count is >= 2", () => {
+		const records = [
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/x1.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/x2.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/x3.ts"], timestamp: old }),
+		];
+		// bar.ts: count 2, ratio 2/5 = 0.4 (< 0.5) -> excluded even though
+		// count >= 2. x1/x2/x3 each have count 1, below the count floor too.
+		expect(getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION)).toEqual([]);
+	});
+
+	it("includes a candidate at the EXACT 0.5 ratio boundary (>= not >)", () => {
+		const records = [
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/x1.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/x2.ts"], timestamp: old }),
+		];
+		// bar.ts: count 2, ratio 2/4 = 0.5 EXACTLY -> must be included.
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("src/bar.ts (50% of the time)");
+	});
+});
+
+describe("edit-pair detector — sort order and join separator", () => {
+	const old = minutesAgoISO(5000);
+
+	it("sorts pairs by ratio descending, not by first-seen order", () => {
+		// low.ts is discovered in records[0]/[1] (ratio 0.5); high.ts is
+		// discovered afterward but has a higher ratio (0.75). A dropped or
+		// non-discriminating comparator leaves the original (ascending)
+		// discovery order intact instead of sorting.
+		const records = [
+			rec({ co_edited_files: ["src/low.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/low.ts", "src/high.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/high.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/high.ts"], timestamp: old }),
+		];
+		// fileRecords.length = 4. low.ts count 2 (ratio 0.5). high.ts count 3 (ratio 0.75).
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		const text = nonNull(warnings[0]);
+		expect(text).toContain("high.ts");
+		expect(text).toContain("low.ts");
+		expect(text.indexOf("high.ts")).toBeLessThan(text.indexOf("low.ts"));
+	});
+
+	it("preserves the comma separator between multiple paired-file entries", () => {
+		const records = [
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/bar.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/baz.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/baz.ts"], timestamp: old }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain(
+			"src/bar.ts (50% of the time), src/baz.ts (50% of the time)",
+		);
+	});
+});
+
+describe("temporal detector — arithmetic and boundary precision", () => {
+	it("computes avgIntervalS via division, and keeps a dense recent cluster from reading as a burst", () => {
+		// 3 records at 0, 10, 20 minutes ago (no older history). totalSpanHours
+		// floors to 1 (actual span is 20min = 0.33h), so avgHourlyRate = 3/1 =
+		// 3, and lastHour(3) > avgHourlyRate*3(9) is false — NOT a burst. Any
+		// arithmetic corruption of the totalSpanHours computation (the
+		// subtraction, the /(60*60*1000) divisor, or its nested factors)
+		// inflates the raw span past the Math.max(1, ...) floor, crashing
+		// avgHourlyRate toward 0 and flipping this to a false burst.
+		const records = [
+			rec({ timestamp: minutesAgoISO(0) }),
+			rec({ timestamp: minutesAgoISO(10) }),
+			rec({ timestamp: minutesAgoISO(20) }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("[interlinked:temporal]");
+		expect(warnings[0]).not.toContain("error-burst");
+		expect(warnings[0]).toContain("3 errors on this file in the last hour");
+		expect(warnings[0]).toContain("600s between errors");
+	});
+
+	it("requires lastHour >= 3 exactly at the boundary for burst detection (not just > 3)", () => {
+		// 3 records in the last hour + 1 old record (600 min ago) pulls the
+		// average hourly rate down to 0.4, so avgHourlyRate*3 = 1.2 and
+		// lastHour(3) > 1.2 is comfortably true — isolating the OTHER
+		// conjunct (lastHour >= 3) at its exact boundary.
+		const records = [
+			rec({ timestamp: minutesAgoISO(1) }),
+			rec({ timestamp: minutesAgoISO(2) }),
+			rec({ timestamp: minutesAgoISO(3) }),
+			rec({ timestamp: minutesAgoISO(600) }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("[interlinked:error-burst]");
+		expect(warnings[0]).toContain("3 errors on this file in the last hour");
+	});
+
+	it("requires avgHourlyRate*3 STRICTLY less than lastHour for burst (boundary: 3 > 3 is false)", () => {
+		// 3 records in the last hour + 1 old record exactly 240 minutes (4h)
+		// old. totalSpanHours = 4, avgHourlyRate = 1, avgHourlyRate*3 = 3 =
+		// lastHour exactly. Must NOT be a burst at this boundary — must fall
+		// through to the plain "lastHour >= 2" temporal message instead.
+		const records = [
+			rec({ timestamp: minutesAgoISO(1) }),
+			rec({ timestamp: minutesAgoISO(2) }),
+			rec({ timestamp: minutesAgoISO(3) }),
+			rec({ timestamp: minutesAgoISO(240) }),
+		];
+		const warnings = getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("[interlinked:temporal]");
+		expect(warnings[0]).not.toContain("error-burst");
+	});
+
+	it("requires strictly MORE than 60 minutes ago to exclude a record from the last-hour count", () => {
+		// One record exactly 60 minutes ago (the boundary itself) plus one
+		// clearly-recent record. The boundary record must be EXCLUDED from
+		// lastHour (> not >=), leaving lastHour at 1 — below the >= 2 floor
+		// for any temporal message at all.
+		const records = [rec({ timestamp: minutesAgoISO(60) }), rec({ timestamp: minutesAgoISO(30) })];
+		expect(getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION)).toEqual([]);
+	});
+});
+
+describe("sequence detector — filter precision (findSequencePatterns)", () => {
+	it("filters strictly by a qualifying pre_error_sequence — a record with none must not reach extractSequenceFeatures", () => {
+		// A decoy record with NO pre_error_sequence at all sits alongside two
+		// valid recurring-pattern records. If the filter is bypassed (skipped
+		// or forced to admit everything), the decoy's `undefined` sequence
+		// reaches `extractSequenceFeatures` (or the filter predicate itself),
+		// which iterates/reads it directly and throws — proving the filter
+		// genuinely ran rather than merely returning the same-shaped array by
+		// coincidence.
+		const old = minutesAgoISO(5000);
+		const seq = ["Edit:a", "Edit:a", "Edit:a"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ timestamp: old }), // no pre_error_sequence — must be filtered out
+		];
+		const sess = session([], seq);
+		expect(() => getPatternWarnings(records, "src/foo.ts", sess)).not.toThrow();
+		const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+		expect(warnings[0]).toContain("[interlinked:sequence-pattern]");
+	});
+
+	it("requires a recurring feature to appear at least twice across history before treating it as a pattern", () => {
+		// Two DIFFERENT single-occurrence features across two history
+		// records — each individually below the recurrence floor. The
+		// current sequence exhibits one of them, so if the count >= 2 floor
+		// were bypassed, a 1-occurrence pattern would still surface as a
+		// warning.
+		const old = minutesAgoISO(5000);
+		const consecutiveSeq = ["Read:r", "Edit:a", "Edit:a", "Edit:a"]; // "3 consecutive edits" only
+		const noTestSeq = ["Read:r", "Bash:ls", "Edit:a", "Edit:b", "Edit:c", "Edit:d", "Edit:e"]; // "5 edits without running tests" only
+		const records = [
+			rec({ pre_error_sequence: consecutiveSeq, timestamp: old }),
+			rec({ pre_error_sequence: noTestSeq, timestamp: old }),
+		];
+		const sess = session([], consecutiveSeq);
+		expect(getPatternWarnings(records, "src/foo.ts", sess)).toEqual([]);
+	});
+
+	it("sorts recurring sequence patterns by occurrence count descending, not by first-seen order", () => {
+		// The lower-occurrence feature ("3 consecutive edits", 2x) is
+		// discovered first in the records array; the higher-occurrence
+		// feature ("6 edits without running tests", 4x) is discovered
+		// afterward. The current sequence exhibits BOTH — a dropped or
+		// non-discriminating comparator would leave them in ascending
+		// discovery order and report the WRONG (lower) occurrence count
+		// first.
+		const old = minutesAgoISO(5000);
+		const consecutiveSeq = ["Read:r", "Edit:a", "Edit:a", "Edit:a"];
+		const editsWithoutTestsSeq = [
+			"Read:r",
+			"Bash:ls",
+			"Edit:a",
+			"Edit:b",
+			"Edit:c",
+			"Edit:d",
+			"Edit:e",
+			"Edit:f",
+		];
+		const records = [
+			rec({ pre_error_sequence: consecutiveSeq, timestamp: old }),
+			rec({ pre_error_sequence: consecutiveSeq, timestamp: old }),
+			rec({ pre_error_sequence: editsWithoutTestsSeq, timestamp: old }),
+			rec({ pre_error_sequence: editsWithoutTestsSeq, timestamp: old }),
+			rec({ pre_error_sequence: editsWithoutTestsSeq, timestamp: old }),
+			rec({ pre_error_sequence: editsWithoutTestsSeq, timestamp: old }),
+		];
+		const current = [
+			"Read:r",
+			"Bash:ls",
+			"Edit:a",
+			"Edit:a",
+			"Edit:a",
+			"Edit:b",
+			"Edit:c",
+			"Edit:d",
+		];
+		const sess = session([], current);
+		const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("led to 4 previous error(s)");
+		expect(warnings[0]).toContain("6 edits without running tests");
+	});
+});
+
+describe("extractSequenceFeatures — fallback and gate precision", () => {
+	const old = minutesAgoISO(5000);
+
+	it("re-derives lastEditFile from an empty target after a mismatch (the `target || \"\"` fallback)", () => {
+		// After the first edit (a real target "foo") every subsequent edit
+		// has an EMPTY target (colon with nothing after). The first
+		// empty-target edit is a mismatch against "foo" and must fall back
+		// to "" — letting the next two empty-target edits match it and reach
+		// the 3-consecutive threshold. A corrupted fallback value would never
+		// let them re-align.
+		const seq = ["Edit:foo", "Edit:", "Edit:", "Edit:"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		const sess = session([], seq);
+		const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+		expect(warnings[0]).toContain("3 consecutive edits to the same file without re-reading");
+	});
+
+	it("does not misclassify an unrecognized tool as a bash command (isBashCommand gate)", () => {
+		// An unrecognized tool name reaches the bash else-if branch but must
+		// NOT be counted as bash — otherwise the "no shell commands" feature
+		// (which needs bashCount === 0) would be wrongly suppressed.
+		const seq = ["Read:r", "mcp__foo__bar:x", "Edit:a", "Edit:b", "Edit:c", "Edit:d"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		const sess = session([], seq);
+		const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+		expect(warnings[0]).toContain("4 edits without any shell commands");
+	});
+
+	it("does not misclassify a non-test bash command as resetting the edits-since-test counter", () => {
+		const seq = ["Edit:a", "Edit:b", "Edit:c", "Edit:d", "Edit:e", "Bash:ls -la", "Edit:f"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		const sess = session([], seq);
+		const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+		expect(warnings[0]).toContain("6 edits without running tests");
+	});
+
+	it("requires at least 3 edits for the blind-editing feature (editCount >= 3 conjunct)", () => {
+		const seq = ["Bash:ls", "Edit:a", "Edit:b"]; // editCount = 2, below every threshold
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		const sess = session([], seq);
+		expect(getPatternWarnings(records, "src/foo.ts", sess)).toEqual([]);
+	});
+
+	it("requires bashCount to be exactly 0 for the no-shell feature (bashCount === 0 conjunct)", () => {
+		// A non-test bash call plus a read: real code suppresses BOTH the
+		// blind-editing feature (a read is present) AND the no-shell feature
+		// (a bash call ran) — so no sequence-pattern warning should fire at
+		// all.
+		const seq = ["Read:r", "Bash:npm run typecheck", "Edit:a", "Edit:b", "Edit:c", "Edit:d"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		const sess = session([], seq);
+		expect(getPatternWarnings(records, "src/foo.ts", sess)).toEqual([]);
+	});
+});
+
+describe("extractSequenceFeatures — tool-alias allowlist coverage", () => {
+	const old = minutesAgoISO(5000);
+
+	it("recognizes every documented edit-tool alias (isEditTool allowlist)", () => {
+		for (const alias of ["Write", "WriteFile", "EditFile", "edit_file", "NotebookEdit"]) {
+			const seq = [`${alias}:a`, `${alias}:a`, `${alias}:a`];
+			const records = [
+				rec({ pre_error_sequence: seq, timestamp: old }),
+				rec({ pre_error_sequence: seq, timestamp: old }),
+			];
+			const sess = session([], seq);
+			const warnings = getPatternWarnings(records, "src/foo.ts", sess);
+			expect(warnings[0]).toContain("3 consecutive edits to the same file without re-reading");
+		}
+	});
+
+	it("recognizes every documented read-tool alias (isReadTool allowlist, suppresses blind-editing)", () => {
+		for (const alias of ["ReadFile", "read_file", "Glob", "Grep"]) {
+			const seq = [`${alias}:r`, "Edit:a", "Edit:b", "Edit:c"];
+			const records = [
+				rec({ pre_error_sequence: seq, timestamp: old }),
+				rec({ pre_error_sequence: seq, timestamp: old }),
+			];
+			const sess = session([], seq);
+			expect(getPatternWarnings(records, "src/foo.ts", sess)).toEqual([]);
+		}
+	});
+
+	it("recognizes every documented bash-tool alias (isBashCommand allowlist, suppresses no-shell)", () => {
+		for (const alias of ["Shell", "shell", "run_command"]) {
+			const seq = [`${alias}:ls`, "Read:r", "Edit:a", "Edit:b", "Edit:c", "Edit:d"];
+			const records = [
+				rec({ pre_error_sequence: seq, timestamp: old }),
+				rec({ pre_error_sequence: seq, timestamp: old }),
+			];
+			const sess = session([], seq);
+			expect(getPatternWarnings(records, "src/foo.ts", sess)).toEqual([]);
+		}
 	});
 });

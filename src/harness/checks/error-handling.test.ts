@@ -697,6 +697,19 @@ describe("checkLossyErrorRethrow — sharper assertions (spacing, caps, boundari
 		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
 	});
 
+	it("does NOT attribute a throw AFTER an EMPTY catch's closing brace to that catch (the throw-search must stop at closeIdx, not scan the rest of the file)", () => {
+		const code = [
+			"catch (e1) { }",
+			"doSomethingElse();",
+			'throw new Error("unrelated, standalone throw outside any catch");',
+		].join("\n");
+		// catch(e1) has a zero-width body (bodyStart === closeIdx). A scan that
+		// forgets to bound the throw-search by closeIdx would keep matching
+		// ERROR_CTOR_RE forward past the catch entirely and wrongly report this
+		// unrelated standalone throw as belonging to catch(e1).
+		expect(checkLossyErrorRethrow(code, TS)).toEqual([]);
+	});
+
 	it("still finds the lossy rethrow after nested braces (an if-block) open and close within the same catch, without prematurely stopping at the inner close", () => {
 		const code = [
 			"function g() {",
@@ -2406,6 +2419,20 @@ describe("blankStringLiteralsPreserveLength — direct unit tests", () => {
 		const out = blankStringLiteralsPreserveLength(input);
 		expect(out.length).toBe(input.length);
 		expect(out).toBe('x = "    "');
+	});
+
+	it("P: blanks the backslash ITSELF (not just its escaped partner) to a single space — a mutant that drops this char loses one character of output length", () => {
+		// Isolates the FIRST of the two length-preserving writes inside the
+		// escape-pair branch: `if (s[i] !== "\n") out[i] = " ";` blanks the
+		// backslash position. Two backslash-escape pairs in one literal so a
+		// dropped/emptied write shows up as a 2-character length shortfall,
+		// not a single off-by-one that could be misread as a boundary quirk.
+		const input = String.raw`x = "a\qb\rc"`;
+		const out = blankStringLiteralsPreserveLength(input);
+		expect(out.length).toBe(input.length);
+		expect(out.slice(0, 5)).toBe('x = "');
+		expect(out.slice(-1)).toBe('"');
+		expect(out.slice(5, -1)).toBe(" ".repeat(7));
 	});
 
 	it("does not extend the output when a backslash escape's second character is out of bounds (backslash is the very last character)", () => {

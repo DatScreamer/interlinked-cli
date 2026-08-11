@@ -287,3 +287,232 @@ describe("SECURITY_AND_SAFETY_RULES — fires through the real evaluator matchin
 		).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Rule-by-rule exact-value pins — pattern text, severity, category, negation
+// ---------------------------------------------------------------------------
+//
+// The invariant checks above assert SHAPE: non-empty, legal enum member,
+// compiles. They cannot tell "critical" from "high", or one regex from a
+// different-but-equally-well-formed regex — a severity downgrade or a
+// swapped pattern string passes every shape check above. This table pins
+// the exact VALUE the table author intended for every rule, so a change to
+// what a rule actually DOES (not just its shape) fails a specific, named
+// assertion instead of surviving as an unnoticed mutant.
+
+interface ExpectedPattern {
+	field: string;
+	regex: string;
+	flags?: string;
+	negate?: true;
+}
+
+interface ExpectedRule {
+	id: string;
+	action: GuardRule["action"];
+	severity: GuardRule["severity"];
+	category: string;
+	toolMatch: readonly string[];
+	patterns: readonly ExpectedPattern[];
+}
+
+const EXPECTED_RULES: readonly ExpectedRule[] = [
+	{
+		id: "builtin-build-script-injection",
+		action: "warn",
+		severity: "high",
+		category: "supply-chain",
+		toolMatch: ["Write", "Edit", "WriteFile", "EditFile", "write_file", "edit_file"],
+		patterns: [
+			{
+				field: "content",
+				regex:
+					'"(preinstall|postinstall|prepare|prepublish)"\\s*:\\s*"[^"]*\\b(curl|wget|nc|bash\\s+-c|eval|exec)\\b',
+			},
+			{
+				field: "new_string",
+				regex:
+					'"(preinstall|postinstall|prepare|prepublish)"\\s*:\\s*"[^"]*\\b(curl|wget|nc|bash\\s+-c|eval|exec)\\b',
+			},
+		],
+	},
+	{
+		id: "builtin-npmrc-manipulation",
+		action: "block",
+		severity: "critical",
+		category: "supply-chain",
+		toolMatch: ["Write", "Edit", "WriteFile", "EditFile", "write_file", "edit_file"],
+		patterns: [
+			{ field: "file_path", regex: "(\\.npmrc|\\.yarnrc|\\.yarnrc\\.yml|\\.pnpmfile\\.cjs)$" },
+		],
+	},
+	{
+		id: "builtin-npm-publish",
+		action: "warn",
+		severity: "high",
+		category: "supply-chain",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{ field: "command", regex: "\\bnpm\\s+publish\\b" },
+			{ field: "command", regex: "--dry-run", negate: true },
+		],
+	},
+	{
+		id: "builtin-scanner-pending-access",
+		action: "block",
+		severity: "critical",
+		category: "Security",
+		toolMatch: [
+			"Bash",
+			"Shell",
+			"run_command",
+			"Grep",
+			"grep",
+			"Search",
+			"Glob",
+			"glob",
+			"FileSearch",
+		],
+		patterns: [
+			{ field: "command", regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)" },
+			{ field: "path", regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)" },
+			{ field: "pattern", regex: "\\.interlinked/(scanner/pending|content-scanner\\.audit)" },
+		],
+	},
+	{
+		id: "builtin-nohup-network",
+		action: "block",
+		severity: "critical",
+		category: "process-safety",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{
+				field: "command",
+				regex: "\\bnohup\\b.*\\b(curl|wget|nc|netcat|python3?|node|ruby|perl)\\b.*&",
+				flags: "i",
+			},
+			{
+				field: "command",
+				regex: "\\bdisown\\b.*\\b(curl|wget|nc|netcat|python3?|node|ruby|perl)\\b",
+				flags: "i",
+			},
+		],
+	},
+	{
+		id: "builtin-background-network",
+		action: "warn",
+		severity: "high",
+		category: "process-safety",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{
+				field: "command",
+				regex: "\\b(curl|wget|nc|netcat|python3?|node|ruby|perl)\\b[^|;]*\\s+&\\s*$",
+			},
+		],
+	},
+	{
+		id: "builtin-remote-code-execution",
+		action: "block",
+		severity: "critical",
+		category: "supply-chain",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{
+				field: "command",
+				regex:
+					"\\b(curl|wget|fetch)\\b[^|]*\\|\\s*(sudo\\s+)?((ba|z|k|da)?sh|python3?|perl|ruby|node|php)\\b",
+			},
+			{
+				field: "command",
+				regex:
+					"\\b((ba|z|k|da)?sh|python3?|perl|ruby|node|php)\\b\\s*<\\(\\s*[^)]*\\b(curl|wget|fetch)\\b",
+			},
+		],
+	},
+	{
+		id: "builtin-cron-persistence",
+		action: "ask",
+		severity: "critical",
+		category: "process-safety",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{ field: "command", regex: "\\bcrontab\\s+(-e|-r|-)\\b" },
+			{ field: "command", regex: "\\bsystemctl\\s+(enable|mask)\\b" },
+			{ field: "command", regex: "\\blaunchctl\\s+(load|submit)\\b" },
+		],
+	},
+	{
+		id: "builtin-cron-file-write",
+		action: "ask",
+		severity: "critical",
+		category: "process-safety",
+		toolMatch: ["Write", "Edit", "WriteFile", "EditFile", "write_file", "edit_file"],
+		patterns: [
+			{
+				field: "file_path",
+				regex: "(/etc/cron\\.d/|/etc/crontab|\\.service$|/LaunchAgents/|/LaunchDaemons/)",
+			},
+		],
+	},
+	{
+		id: "builtin-clipboard-exfil",
+		action: "warn",
+		severity: "medium",
+		category: "information-flow",
+		toolMatch: ["Bash", "Shell", "run_command"],
+		patterns: [
+			{ field: "command", regex: "\\|\\s*(pbcopy|xclip|xsel|clip\\.exe)\\b" },
+			{ field: "command", regex: "\\b(pbcopy|xclip|xsel|clip\\.exe)\\b.*<" },
+		],
+	},
+];
+
+/** Pair every expected pin with its live rule once, at module scope, so each
+ *  `it()` body below has a guaranteed-defined pair and needs no internal
+ *  branching — a rule dropped from the table entirely is still caught by
+ *  the coverage test immediately below, independent of this list. */
+const RULE_PIN_CASES: ReadonlyArray<readonly [string, GuardRule, ExpectedRule]> = EXPECTED_RULES.flatMap(
+	(expected) => {
+		const rule = SECURITY_AND_SAFETY_RULES.find((r) => r.id === expected.id);
+		return rule ? [[expected.id, rule, expected] as const] : [];
+	},
+);
+
+describe("SECURITY_AND_SAFETY_RULES — rule-by-rule exact-value pins", () => {
+	it("EXPECTED_RULES pins every rule id in the table, exactly", () => {
+		const actualIds = SECURITY_AND_SAFETY_RULES.map((r) => r.id).sort();
+		const expectedIds = EXPECTED_RULES.map((e) => e.id).sort();
+		expect(expectedIds).toEqual(actualIds);
+	});
+
+	it.each(RULE_PIN_CASES)("%s: action is pinned exactly", (_id, rule, expected) => {
+		expect(rule.action).toBe(expected.action);
+	});
+
+	it.each(RULE_PIN_CASES)("%s: severity is pinned exactly", (_id, rule, expected) => {
+		expect(rule.severity).toBe(expected.severity);
+	});
+
+	it.each(RULE_PIN_CASES)("%s: category is pinned exactly", (_id, rule, expected) => {
+		expect(rule.category).toBe(expected.category);
+	});
+
+	it.each(RULE_PIN_CASES)("%s: tool_match is pinned exactly (order + membership)", (_id, rule, expected) => {
+		expect(rule.tool_match).toEqual(expected.toolMatch);
+	});
+
+	it.each(RULE_PIN_CASES)(
+		"%s: patterns (field, regex text, flags, negate) are pinned exactly",
+		(_id, rule, expected) => {
+			expect(rule.patterns).toEqual(
+				expected.patterns.map((p) => ({
+					field: p.field,
+					regex: p.regex,
+					flags: p.flags,
+					negate: p.negate,
+				})),
+			);
+		},
+	);
+});

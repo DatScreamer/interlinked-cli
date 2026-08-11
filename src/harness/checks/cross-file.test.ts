@@ -91,6 +91,46 @@ describe("checkEmptyBodyHandler", () => {
 		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
 	});
 
+	it("does not treat a lowercase-after-`on` arrow name as a handler (kills the on[A-Z] -> on[^A-Z] negated-class mutant)", () => {
+		const code = `const online = (req) => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("recognizes a two-character on-prefixed arrow handler name with nothing after the capital letter, e.g. `onX` (kills the on[A-Z]\\w* -> on[A-Z]\\w mutant)", () => {
+		const code = `const onX = (req) => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("does not treat `onX--extra` as an arrow handler name — a non-word char right after the capital letter breaks the match (kills the on[A-Z]\\w* -> on[A-Z]\\W* mutant)", () => {
+		const code = `const onX--extra = (req) => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("matches an arrow handler with zero incidental whitespace anywhere around the `=`, params, and `=>` (kills 4 \\s*->\\s single-char-required mutants on the arrow pattern)", () => {
+		const code = `const handleRequest=(req)=>{{}};`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("matches `async(` with zero space after async in an arrow handler (kills the async\\s* -> async\\s mutant)", () => {
+		const code = `const handleRequest = async(req) => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("matches `async (` with a space after async in an arrow handler (kills the async\\s* -> async\\S* mutant)", () => {
+		const code = `const handleRequest = async (req) => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("matches a return-type annotation with zero space after the colon (kills the :\\s* -> :\\s mutant)", () => {
+		const code = `const handleRequest = (req):Response => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("matches a multi-character return-type annotation (kills the [^=]+ -> [^=] and [^=]+ -> [=]+ mutants)", () => {
+		const code = `const handleRequest = (req): Response => { {} };`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
 	it("caps findings at MAX_MATCHES (5) with 6+ empty handlers", () => {
 		const code = Array.from({ length: 6 }, (_, i) => `function handle${i}() {}`).join("\n");
 		expect(checkEmptyBodyHandler(code, TS).length).toBe(5);
@@ -139,6 +179,86 @@ describe("checkEmptyBodyHandler", () => {
 	it("filters brace-only lines so a purely-nested empty block is still empty (kills brace-literal filter mutants)", () => {
 		const code = `function handleRequest(req) {\n  {\n  }\n}`;
 		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("treats a body with more than one real line as non-empty even when the first line alone looks trivial (kills the lines.length>1 short-circuit-removal mutant)", () => {
+		const code = `function handleRequest(req) {\n  return;\n  console.log("more");\n}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("does not treat a body as empty when real content follows an empty nested bare block after a trivial return (kills the nested-brace depth-tracking disabled mutants)", () => {
+		const code = `function handleRequest(req) {\n  return;\n  {\n  }\n  doExtra();\n}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("still does not fire when the far-away `{` (>200 chars) happens to itself be an empty block (kills the skip-guard condition/body-removal mutants)", () => {
+		const pad = "\n".repeat(250);
+		const code = `function handleRequest(req)${pad}{}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("processes a `{` exactly 200 chars past the signature match, not skipping at the inclusive boundary (kills the >= / arithmetic-operator off-by-one mutants)", () => {
+		const code = `function handleRequest(${"x".repeat(200)}{}`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("consumes a multi-char (2+) whitespace gap between `async` and `function`, reporting the earlier line where `async` starts (kills the async\\s+ -> exactly-one-char mutant)", () => {
+		const code = "async\n\nfunction handleRequest(req) {}";
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([{ line: 1, text: EMPTY_BODY_TEXT("handleRequest") }]);
+	});
+
+	it("recognizes a two-character on-prefixed handler name with nothing after the capital letter, e.g. `onX` (kills the on[A-Z]\\w* -> on[A-Z]\\w mutant)", () => {
+		const code = `function onX(req) {}`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("does not treat `onX--extra` as a handler name — a non-word char right after the capital letter breaks the match (kills the on[A-Z]\\w* -> on[A-Z]\\W* mutant)", () => {
+		const code = "function onX--extra(req) {}";
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("tolerates a space between the handler name and its parameter-list paren (kills the \\s*\\( -> \\S*\\( mutant)", () => {
+		const code = `function handleRequest (req) {}`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("does not treat a body starting with stray non-whitespace text before `return` as empty (kills the ^-anchor-removal and ^\\s*->^\\S* mutants on the return pattern)", () => {
+		const code = `function handleRequest(req) {xreturn}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("treats a bare `return` with no semicolon at all as an empty body (kills the ;? -> ; mandatory-semicolon mutant)", () => {
+		const code = `function handleRequest(req) {return}`;
+		expect(checkEmptyBodyHandler(code, TS).length).toBe(1);
+	});
+
+	it("does not treat `return;` followed by stray non-whitespace text as empty (kills the trailing \\s*->\\S* mutant on the return pattern)", () => {
+		const code = `function handleRequest(req) {return;x}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("does not treat a body starting with stray non-whitespace text before `console.log` as empty (kills the ^-anchor-removal and ^\\s*->^\\S* mutants on the console pattern)", () => {
+		const code = `function handleRequest(req) {xconsole.log()}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("does not treat `console.log()` followed by stray non-whitespace text as empty (kills the trailing-$-removal and trailing \\s*->\\S* mutants on the console pattern)", () => {
+		const code1 = `function handleRequest(req) {console.log()x}`;
+		expect(checkEmptyBodyHandler(code1, TS)).toEqual([]);
+		const code2 = `function handleOther(req) {console.log();x}`;
+		expect(checkEmptyBodyHandler(code2, TS)).toEqual([]);
+	});
+
+	it("does not treat a body starting with stray non-whitespace text before `logger.info` as empty (kills the ^-anchor-removal and ^\\s*->^\\S* mutants on the logger pattern)", () => {
+		const code = `function handleRequest(req) {xlogger.info()}`;
+		expect(checkEmptyBodyHandler(code, TS)).toEqual([]);
+	});
+
+	it("does not treat `logger.info()` followed by stray non-whitespace text as empty (kills the trailing-$-removal and trailing \\s*->\\S* mutants on the logger pattern)", () => {
+		const code1 = `function handleRequest(req) {logger.info()x}`;
+		expect(checkEmptyBodyHandler(code1, TS)).toEqual([]);
+		const code2 = `function handleOther(req) {logger.info();x}`;
+		expect(checkEmptyBodyHandler(code2, TS)).toEqual([]);
 	});
 });
 
@@ -368,6 +488,73 @@ const AlphaValidator = z.object({ a: z.string(), b: z.string() });
 		expect(matches.length).toBe(1);
 		expect(nonNull(matches[0]).text).toContain("only in schema: b");
 	});
+
+	it("captures a schema's very first key (immediately after the opening brace, no preceding delimiter) — kills the ^-anchor-removal regex mutant on the key extractor", () => {
+		const code = `
+const UserSchema = z.object({ uniqueFirst: z.string(), shared: z.string() });
+interface User { shared: string; }
+`;
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("only in schema: uniqueFirst");
+	});
+
+	it("consumes a multi-char gap between `export` and `const`, reporting the earlier line where `export` starts (kills the export\\s+ -> exactly-one-char and export\\s+ -> export\\S+ mutants)", () => {
+		const code =
+			"export\n\nconst UserSchema = z.object({ a: z.string(), b: z.string() });\ninterface User { a: string; }";
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).line).toBe(1);
+	});
+
+	it("matches a Zod schema declaration carrying its own multi-character TS type annotation, e.g. `: ZodType` (kills the [^=]+ -> [^=] and [^=]+ -> [=]+ mutants on the schema's own type-annotation group)", () => {
+		const code = "const UserSchema: ZodType = z.object({ a: z.string(), b: z.string() });\ninterface User { a: string; }";
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("only in schema: b");
+	});
+
+	it("reports line 1 for a schema/type pair declared on the very first line, not line 2 (kills the match-fallback-array mutant on the newline-count computation)", () => {
+		const code = `const AlphaSchema = z.object({ a: z.string(), b: z.string() });\ninterface Alpha { a: string; }`;
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toEqual([
+			{
+				line: 1,
+				text: "schema/type drift between `AlphaSchema` and `Alpha` — only in schema: b. The type and the runtime validator should agree; derive one from the other.",
+			},
+		]);
+	});
+
+	it("locates its own `{` even when an earlier unrelated `{` exists in the file (kills the indexOf-search-start arithmetic-operator mutant)", () => {
+		const code = `
+interface Decoy { z: string; }
+const UserSchema = z.object({ id: z.string(), name: z.string() });
+interface User { id: string; name: string; }
+`;
+		expect(checkSchemaTypeDrift(code, TS)).toEqual([]);
+	});
+
+	it("truncates the reported onlyInSchema drift keys to the first 4 even when more exist (kills the .slice(0,4) removal / string-blanking mutants)", () => {
+		const code = `
+const BigSchema = z.object({ a: z.string(), b: z.string(), c: z.string(), d: z.string(), e: z.string() });
+interface Big { }
+`;
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("only in schema: a, b, c, d");
+		expect(nonNull(matches[0]).text).not.toMatch(/\be\b/);
+	});
+
+	it("truncates the reported onlyInType drift keys to the first 4 even when more exist (kills the .slice(0,4) removal / string-blanking mutants on the type side)", () => {
+		const code = `
+const SmallSchema = z.object({ });
+interface Small { a: string; b: string; c: string; d: string; e: string; }
+`;
+		const matches = checkSchemaTypeDrift(code, TS);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("only in type: a, b, c, d");
+		expect(nonNull(matches[0]).text).not.toMatch(/\be\b/);
+	});
 });
 
 describe("checkMigrationParity", () => {
@@ -488,5 +675,14 @@ describe("checkMigrationParity", () => {
 		const matches = checkMigrationParity("", filePath);
 		expect(matches.length).toBe(1);
 		expect(nonNull(matches[0]).text).toContain("0001_down.sql");
+	});
+
+	it("does not fire on an up.sql inside a /tests/ directory, even though it's also inside a migrations dir (isolates the isTestFile guard from the UP_SQL_RE guard; kills the isTestFile-disabled mutant)", () => {
+		const base = mkdtempSync(join(tmpdir(), "migrations-in-tests-"));
+		const testsMigrations = join(base, "tests", "migrations");
+		mkdirSync(testsMigrations, { recursive: true });
+		writeFileSync(join(testsMigrations, "0001_up.sql"), "");
+		const filePath = join(testsMigrations, "0001_up.sql");
+		expect(checkMigrationParity("", filePath)).toEqual([]);
 	});
 });

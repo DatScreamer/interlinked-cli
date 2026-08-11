@@ -1352,3 +1352,69 @@ describe("checkNumberPrecisionLoss — negative (must not fire)", () => {
 		expect(checkNumberPrecisionLoss("const id = 9007199254740993n;\n", "src/x.ts")).toEqual([]);
 	});
 });
+
+// ===========================================================================
+// Mutation-kill fleet wave 3 (K4, campaign scratch/fleet-r2). Best-attempt
+// pins for survivors NOT covered by the wave-2 subsumption argument above.
+// Each case below is the STRONGEST input found for its target mutant after
+// exhaustive analysis (hand tracing + a standalone re-implementation fuzzed
+// against 200k+ random lines — see scratch/fleet-r2/k4/*.mjs); none is
+// claimed to kill anything. Full rationale is in the fleet report, not
+// re-derived per case here to stay within its report budget.
+// ===========================================================================
+
+describe("checkNonNullAssertions — nnaMatch verification-regex pins", () => {
+	it("fires with a multi-char identifier through the exact adjacency the outer detector already required", () => {
+		expect(checkNonNullAssertions("const v = value!.bar;\n", "src/x.ts")).toEqual([
+			{ line: 1, text: "const v = value!.bar;" },
+		]);
+	});
+});
+
+describe("checkJsLooseEquality — null-idiom guard pin", () => {
+	it("fires on a loose comparison with NO null idiom anywhere on the line", () => {
+		expect(checkJsLooseEquality("if (left == right) {}\n", "src/x.ts")).toEqual([
+			{ line: 1, text: "if (left == right) {}" },
+		]);
+	});
+});
+
+describe("checkConstantCondition — trim()/tail-quantifier pins", () => {
+	it("fires on a constant condition with leading AND trailing whitespace", () => {
+		expect(checkConstantCondition("   if (true) {}   \n", "src/x.ts")).toHaveLength(1);
+	});
+
+	it("fires on a constant ternary with leading AND trailing whitespace", () => {
+		expect(checkConstantCondition("   return true ? a : b;   \n", "src/x.ts")).toHaveLength(1);
+	});
+});
+
+describe("checkEvalUsage — trim() pin", () => {
+	it("fires on eval() with leading AND trailing whitespace on the line", () => {
+		expect(checkEvalUsage("   eval(x);   \n", "src/x.ts")).toHaveLength(1);
+	});
+});
+
+describe("checkInnerHtmlUsage — trim() pin", () => {
+	it("fires on innerHTML assignment with leading AND trailing whitespace", () => {
+		expect(checkInnerHtmlUsage("   el.innerHTML = h;   \n", "src/x.ts")).toHaveLength(1);
+	});
+});
+
+// Extends the "Subsumption pins" comment (near N18-N21 above): the SAME
+// argument covers the `isTypeofCheck` gate (`strLiteral !== undefined &&
+// TYPEOF_RESULTS.has(strLiteral) && /\btypeof\b/.test(line)`, the `dq ?? sq`
+// feeding it, and `!isTypeofCheck`) plus `isMagicLiteralHit`'s three
+// `!== undefined` guards — extracted 2026-08-09, after that comment was
+// written. Every TYPEOF_RESULTS member is ALSO a self-describing token, so
+// `isMagicString` returns `false` for it regardless of whether the typeof
+// gate skipped the call. `undefined` itself is likewise safe on every path:
+// `Number(undefined)` is `NaN` (isMagicNumber false), `Set.has(undefined)` is
+// `false`, and `RegExp.test(undefined)` coerces to the STRING `"undefined"`,
+// which `SELF_DESCRIBING_TOKEN` also matches. N13/N19 above exercise the
+// double-quoted typeof path; this case adds the single-quoted `sq` capture.
+describe("checkMagicLiteralInConditional — typeof-gate subsumption pin", () => {
+	it("does NOT flag the typeof idiom through the single-quoted `sq` capture", () => {
+		expect(checkMagicLiteralInConditional("if (typeof x === 'string') {}\n", "src/x.ts")).toEqual([]);
+	});
+});

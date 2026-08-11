@@ -1201,6 +1201,36 @@ describe("looksLikeUrlSpec — package.json repin prefixes (existing-name value 
 		const r = repin("^1.0.0", "1.0.0 (see https://example.com)");
 		expect(r).toBeNull();
 	});
+
+	it("does not repin-flag a value merely CONTAINING 'git+' when it doesn't start there (leading-anchor pin: git+)", () => {
+		const r = repin("^1.0.0", "resolved git+https://evil.git");
+		expect(r).toBeNull();
+	});
+
+	it("repin-flags a bare http:// (not just https://) URL (mandatory-s regression pin)", () => {
+		const r = repin("^1.0.0", "http://mirror.evil/foo");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("does not repin-flag a value merely CONTAINING 'file:' when it doesn't start there (leading-anchor pin: file:)", () => {
+		const r = repin("^1.0.0", "resolved file:../evil");
+		expect(r).toBeNull();
+	});
+
+	it("does not repin-flag a value merely CONTAINING 'github:' when it doesn't start there (leading-anchor pin: github:)", () => {
+		const r = repin("^1.0.0", "resolved github:attacker/evil");
+		expect(r).toBeNull();
+	});
+
+	it("does not repin-flag a value merely CONTAINING 'gitlab:' when it doesn't start there (leading-anchor pin: gitlab:)", () => {
+		const r = repin("^1.0.0", "resolved gitlab:attacker/evil");
+		expect(r).toBeNull();
+	});
+
+	it("does not repin-flag a value merely CONTAINING 'bitbucket:' when it doesn't start there (leading-anchor pin: bitbucket:)", () => {
+		const r = repin("^1.0.0", "resolved bitbucket:attacker/evil");
+		expect(r).toBeNull();
+	});
 });
 
 describe("looksLikeNonRegistrySource — TOML inline-table repins (Cargo)", () => {
@@ -1706,5 +1736,294 @@ describe("parsePipRequirementLine (direct)", () => {
 	it("returns null (not a throw) when the trimmed line doesn't start with a valid name character (final regex-guard pin)", () => {
 		expect(() => parsePipRequirementLine("===not-a-name===")).not.toThrow();
 		expect(parsePipRequirementLine("===not-a-name===")).toBeNull();
+	});
+});
+
+// ============================================================
+// K2 mutation-survivor hardening (2026-08-10). Each test below targets a
+// SPECIFIC regex/branch identified via `mutation survivors --file
+// manifest-edit-guard --json` (assignment K2, supply-chain PreToolUse
+// gate) — not a generic re-check of decision === block/null.
+// ============================================================
+
+describe("classifyManifestValue — leading/trailing anchor pins (top-level branches)", () => {
+	function classify(value: string) {
+		return evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: {} }, null, 2),
+				next: JSON.stringify({ dependencies: { foo: value } }, null, 2),
+			}),
+		);
+	}
+
+	it("does not classify a value merely CONTAINING a tarball URL when it doesn't start there (leading-anchor pin: tarball)", () => {
+		const r = classify("resolved-from https://attacker.com/foo.tgz");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/tarball URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a value merely CONTAINING 'git+' when it doesn't start there (leading-anchor pin: git+)", () => {
+		const r = classify("resolved git+https://attacker.com/evil.git");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a value merely CONTAINING 'github:' when it doesn't start there (leading-anchor pin: github:)", () => {
+		const r = classify("see github:attacker/evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a value merely CONTAINING 'gitlab:' when it doesn't start there (leading-anchor pin: gitlab:)", () => {
+		const r = classify("see gitlab:attacker/evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a value merely CONTAINING 'bitbucket:' when it doesn't start there (leading-anchor pin: bitbucket:)", () => {
+		const r = classify("see bitbucket:attacker/evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a bare-https .git URL when it doesn't start at the value's beginning (leading-anchor pin: https .git)", () => {
+		const r = classify("mirror-of https://attacker.com/evil.git");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("does not classify a bare-https .git URL followed by trailing non-fragment text (trailing-anchor pin: https .git)", () => {
+		const r = classify("https://attacker.com/evil.gitconfig");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("classifies a bare http:// (not just https://) .git URL as git_url (mandatory-s regression pin)", () => {
+		const r = classify("http://attacker.com/evil.git");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("classifies a bare https .git URL with a multi-char host/path and no fragment (single-char-host + optional-fragment pins)", () => {
+		const r = classify("https://attacker.com/evil.git");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("classifies a bare https .git URL with a multi-character fragment (single-char-fragment pin)", () => {
+		const r = classify("https://attacker.com/evil.git#deadbeef");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+});
+
+describe("classifyManifestValue — file: branch (anchor + replacement-text pins)", () => {
+	function classify(value: string) {
+		return evaluateManifestEdit(
+			newContent({
+				filename: "package.json",
+				current: JSON.stringify({ dependencies: {} }, null, 2),
+				next: JSON.stringify({ dependencies: { foo: value } }, null, 2),
+			}),
+		);
+	}
+
+	it("does not classify a value merely CONTAINING 'file:' when it doesn't start there (leading-anchor pin: file:)", () => {
+		const r = classify("resolved file:../evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the npm allowlist/);
+		expect(r?.reason).not.toMatch(/file: installs are never auto-allowed/);
+	});
+
+	it("strips zero slashes after 'file:' when none are present (quantifier pin: replace-regex slash-star vs literal slash)", () => {
+		const r = classify("file:evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed \(evil\)/);
+	});
+
+	it("removes the file: prefix cleanly rather than substituting placeholder text (replacement-text pin)", () => {
+		const r = classify("file:../evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed \(\.\.\/evil\)/);
+		expect(r?.reason).not.toMatch(/Stryker/);
+	});
+});
+
+describe("classifyManifestValue — inline-table capture width/quantifier/class pins", () => {
+	function classifyCargo(value: string) {
+		const before = `[dependencies]\n`;
+		const after = `[dependencies]\nfoo = ${value}\n`;
+		return evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+	}
+
+	it("captures the full inline git= value, not just its first character (quantifier pin: gitInline)", () => {
+		const r = classifyCargo('{ git = "https://attacker.com/foo-evil-pkg" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("https://attacker.com/foo-evil-pkg");
+	});
+
+	it("matches the path key with no whitespace around '=' or before the opening quote (quantifier pins: both \\s* around path's separator)", () => {
+		const r = classifyCargo('{ path="../evil" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed/);
+	});
+
+	it("requires an actual ':' or '=' immediately after 'path' (negated-class regression pin: path key)", () => {
+		const r = classifyCargo("pathological-value");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/is not in the cargo allowlist/);
+		expect(r?.reason).not.toMatch(/file: installs are never auto-allowed/);
+	});
+
+	it("matches path values with no surrounding quotes and captures ordinary (non-whitespace) characters (mandatory-quote + capture-class pins)", () => {
+		const r = classifyCargo("path = ../evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/file: installs are never auto-allowed/);
+	});
+
+	it("captures the full path value, not just its first character (quantifier pin: pathInline final capture group)", () => {
+		const r = classifyCargo('{ path = "../evil-long-path" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("../evil-long-path");
+	});
+
+	it("does not require whitespace, quotes, or a specifically-'https' scheme around the url= key (quantifier + literal pins: urlInline)", () => {
+		const r = classifyCargo("{ url=http://mirror.evil/payload }");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/tarball URL installs are never auto-allowed/);
+	});
+
+	it("captures the full inline url= value, not just its first character after the scheme (quantifier pin: urlInline final capture group)", () => {
+		const r = classifyCargo('{ url = "https://attacker.com/payload-full-path.tgz" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("https://attacker.com/payload-full-path.tgz");
+	});
+
+	it("does not require whitespace or quotes around the repository= key, and requires a real separator + varied capture characters (compact regression pin: repositoryInline)", () => {
+		const r = classifyCargo("repository=../evil");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("captures the full inline repository= value, not just its first character (quantifier pin: repositoryInline final capture group)", () => {
+		const r = classifyCargo('{ repository = "https://mirror.evil/very-long-repo-path" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("https://mirror.evil/very-long-repo-path");
+	});
+
+	it("does not require whitespace or quotes around the registry= key, and requires a real separator + varied capture characters (compact regression pin: registryInline)", () => {
+		const r = classifyCargo("registry=alt-index-value");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("captures the full inline registry= value, not just its first character (quantifier pin: registryInline final capture group)", () => {
+		const r = classifyCargo('{ registry = "https://mirror.evil/very-long-registry-path" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("https://mirror.evil/very-long-registry-path");
+	});
+
+	it("does not require whitespace or quotes around the source= key, and requires varied capture characters (compact regression pin: sourceInline)", () => {
+		const r = classifyCargo("source=vendored-value");
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toMatch(/git URL installs are never auto-allowed/);
+	});
+
+	it("captures the full inline source= value, not just its first character (quantifier pin: sourceInline final capture group)", () => {
+		const r = classifyCargo('{ source = "https://mirror.evil/very-long-source-path" }');
+		expect(r?.decision).toBe("block");
+		expect(r?.reason).toContain("https://mirror.evil/very-long-source-path");
+	});
+});
+
+describe("looksLikeNonRegistrySource — key-detection quantifier/class/anchor pins (repin gating)", () => {
+	function repinUnapproved(afterValue: string) {
+		const before = `[dependencies]\nserde = "1"\n`;
+		const after = `[dependencies]\nserde = ${afterValue}\n`;
+		return evaluateManifestEdit(
+			newContent({ filename: "Cargo.toml", current: before, next: after }),
+		);
+	}
+
+	it("detects a bare path= repin with no surrounding whitespace (quantifier pin: path)", () => {
+		expect(repinUnapproved("{path=/etc/evil}")?.decision).toBe("block");
+	});
+
+	it("detects a bare repository= repin with no surrounding whitespace (quantifier pin: repository)", () => {
+		expect(repinUnapproved("{repository=https://mirror.evil}")?.decision).toBe("block");
+	});
+
+	it("detects a bare registry= repin with no surrounding whitespace (quantifier pin: registry)", () => {
+		expect(repinUnapproved("{registry=alt-index}")?.decision).toBe("block");
+	});
+
+	it("detects a bare url= repin with no surrounding whitespace (quantifier pin: url)", () => {
+		expect(repinUnapproved("{url=https://mirror.evil/x.tgz}")?.decision).toBe("block");
+	});
+
+	it("detects a bare source= repin with no surrounding whitespace (quantifier pin: source)", () => {
+		expect(repinUnapproved("{source=vendored}")?.decision).toBe("block");
+	});
+
+	it("does not treat a repin as non-registry merely because path/repository/registry/url/source appear without a real separator (negated-class regression pin, all five keys)", () => {
+		const r = repinUnapproved("pathological-registryless-repositoryless-urlless-sourceless");
+		expect(r).toBeNull();
+	});
+
+	it("does not treat a repin as non-registry merely because it CONTAINS 'git+' (leading-anchor pin: git+)", () => {
+		const r = repinUnapproved("resolved git+https://evil.git");
+		expect(r).toBeNull();
+	});
+
+	it("does not treat a repin as non-registry merely because it CONTAINS 'https:' (leading-anchor pin: https?)", () => {
+		const r = repinUnapproved("mirror at https://evil.example/pkg");
+		expect(r).toBeNull();
+	});
+
+	it("detects a bare http:// (not just https://) repin as a non-registry source (mandatory-s regression pin: https?)", () => {
+		const r = repinUnapproved("http://mirror.evil/pkg");
+		expect(r?.decision).toBe("block");
+	});
+
+	it("does not treat a repin as non-registry merely because it CONTAINS 'file:' (leading-anchor pin: file:)", () => {
+		const r = repinUnapproved("resolved file:../evil");
+		expect(r).toBeNull();
+	});
+
+	it("does not treat a repin as non-registry merely because it CONTAINS 'github:' (leading-anchor pin: github:)", () => {
+		const r = repinUnapproved("resolved github:attacker/evil");
+		expect(r).toBeNull();
+	});
+});
+
+describe("extractCargoDeps — TARGET header anchor + comment-marker direction pin", () => {
+	it("does not treat a section header as [dependencies] merely because that text appears later in the line (leading-anchor pin)", () => {
+		const content = '[foo][dependencies]\nserde = "1"\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.has("serde")).toBe(false);
+	});
+
+	it("skips lines starting with '#', not lines merely ending with '#' (startsWith vs endsWith pin)", () => {
+		const content = '[dependencies]\nserde = "1" #\n';
+		const deps = extractCargoDeps(content);
+		expect(deps.get("serde")).toBe('"1"');
+	});
+});
+
+describe("extractPyprojectDeps — TARGET_HEADERS anchor pin", () => {
+	it("does not enter a dependencies block merely because the header text appears later in the line (leading-anchor pin)", () => {
+		const content = '[foo][tool.poetry.dependencies]\nrequests = "^2.31"\n';
+		const deps = extractPyprojectDeps(content);
+		expect(deps.has("requests")).toBe(false);
 	});
 });

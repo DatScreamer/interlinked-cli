@@ -519,4 +519,140 @@ describe("parser-imports (mutation coverage)", () => {
 			expect(out).toEqual([]);
 		});
 	});
+
+	// collapseImportLines' buffer-flush test (line ~70) is
+	// `/from\s+['"][^'"]+['"]/.test(buffer) || /['"][^'"]+['"]/.test(buffer)`.
+	// Every case below plants a decoy on the FIRST continuation line that must
+	// NOT satisfy either regex (so the buffer keeps accumulating past it), then
+	// closes with a real `} from "./m.js"` on the last line. A weakened first
+	// regex fires on the decoy line instead, flushing the buffer early and
+	// splitting the accumulated text into two dead (unparseable) fragments —
+	// collapsing the whole result to `[]` instead of the one real edge below.
+	describe("collapseImportLines flush-regex precision (early-flush decoys)", () => {
+		it("does not flush on a 'from' keyword with no opening quote after it (open-quote class must require an actual quote)", () => {
+			const content = ["import {", '  from XY"', '} from "./m.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{
+					fromFile: "/tmp/x.ts",
+					specifier: "./m.js",
+					symbols: ['from XY"'],
+					isTypeOnly: false,
+				},
+			]);
+		});
+
+		it("does not flush on quote characters standing in for the quoted body (body class must require NON-quote content)", () => {
+			const content = ["import {", "  from '''", '} from "./m.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{
+					fromFile: "/tmp/x.ts",
+					specifier: "./m.js",
+					symbols: ["from '''"],
+					isTypeOnly: false,
+				},
+			]);
+		});
+
+		it("does not flush on an opening quote with no closing quote (closing-quote class must require an actual quote)", () => {
+			const content = ["import {", "  from 'xy", '} from "./m.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{
+					fromFile: "/tmp/x.ts",
+					specifier: "./m.js",
+					symbols: ["from 'xy"],
+					isTypeOnly: false,
+				},
+			]);
+		});
+
+		it("does not flush on an unpaired quote with no 'from' anywhere (the 'from' literal in the first regex is load-bearing)", () => {
+			const content = ["import {", "  aXY'", '} from "./m.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{
+					fromFile: "/tmp/x.ts",
+					specifier: "./m.js",
+					symbols: ["aXY'"],
+					isTypeOnly: false,
+				},
+			]);
+		});
+
+		it("does not flush on an unpaired quote via the bare-quote alternative either (its closing-quote class must require an actual quote)", () => {
+			const content = ["import {", "  'abc", '} from "./m.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{
+					fromFile: "/tmp/x.ts",
+					specifier: "./m.js",
+					symbols: ["'abc"],
+					isTypeOnly: false,
+				},
+			]);
+		});
+	});
+
+	describe("parseDestructuredSymbols rename-split is not bypassable", () => {
+		it("still splits on the colon when the rename has no surrounding whitespace at all", () => {
+			// Regression net for the colon-split step: asserts the export-side
+			// name alone survives, not the raw "a:b" segment, across several
+			// spacing shapes so a mutant collapsing the split-then-take-[0]
+			// chain down to the raw segment cannot pass by matching only one
+			// shape.
+			const out = parseImports('const { a:b } = await import("./m1.js")', "/tmp/x.ts");
+			expect(out[0]?.symbols).toEqual(["a"]);
+		});
+
+		it("splits on the colon with heavy internal spacing on both sides", () => {
+			const out = parseImports('const { a  :  b } = await import("./m2.js")', "/tmp/x.ts");
+			expect(out[0]?.symbols).toEqual(["a"]);
+		});
+
+		it("splits every entry in a multi-symbol rename list, not just the first", () => {
+			const out = parseImports(
+				'const { first: renamedFirst, second: renamedSecond } = await import("./m3.js")',
+				"/tmp/x.ts",
+			);
+			expect(out[0]?.symbols).toEqual(["first", "second"]);
+		});
+	});
+
+	describe("collapseImportLines buffer-start does not re-open on an already-complete import", () => {
+		it("keeps two consecutive complete single-line named imports as two separate edges", () => {
+			const content = ['import { a } from "./m.js"', 'import { b } from "./n.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./m.js", symbols: ["a"], isTypeOnly: false },
+				{ fromFile: "/tmp/x.ts", specifier: "./n.js", symbols: ["b"], isTypeOnly: false },
+			]);
+		});
+
+		it("keeps a complete single-line named import separate from a following default import", () => {
+			const content = ['import { a } from "./m.js"', 'import Def from "./def.js"'].join("\n");
+			const out = parseImports(content, "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./m.js", symbols: ["a"], isTypeOnly: false },
+				{ fromFile: "/tmp/x.ts", specifier: "./def.js", symbols: ["Def"], isTypeOnly: false },
+			]);
+		});
+	});
+
+	describe("isStringEmbeddedKeyword only fires when a keyword is genuinely preceded by a quote", () => {
+		it("parses a require() call reached with zero quote characters anywhere earlier on the line", () => {
+			const out = parseImports('if (cond) require("./real.js")', "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./real.js", symbols: [], isTypeOnly: false },
+			]);
+		});
+
+		it("parses a dynamic import() call reached with zero quote characters anywhere earlier on the line", () => {
+			const out = parseImports('if (cond) { x = import("./real2.js"); }', "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./real2.js", symbols: [], isTypeOnly: false },
+			]);
+		});
+	});
 });

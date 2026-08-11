@@ -1391,3 +1391,147 @@ describe("buildCollectionRecord — task action", () => {
 		expect(rec.action).toEqual({ task: "", params: null });
 	});
 });
+
+// -------------------------------------------------------
+// apply_patch — hunks fallback when neither command nor patch is present
+// (mutation: file_edit's apply_patch branch defaults `new` to "" when both
+// input.command and input.patch are absent; a mutant that changes that
+// fallback would leak a sentinel string into the persisted diff hunk)
+// -------------------------------------------------------
+describe("buildCollectionRecord — apply_patch hunks empty fallback", () => {
+	it("produces an empty new-hunk body when neither command nor patch is present on the input", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: {},
+				tool_response: "Patch applied",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ diff: { hunks: [{ old: "", new: "" }] } });
+	});
+
+	it("prefers patch over an absent command for the new-hunk body", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "apply_patch",
+				tool_input: { patch: "*** Update File: /x.ts\n-a\n+b" },
+				tool_response: "Patch applied",
+			}),
+		)!;
+
+		expect(rec.action).toMatchObject({ diff: { hunks: [{ old: "", new: "*** Update File: /x.ts\n-a\n+b" }] } });
+	});
+});
+
+// -------------------------------------------------------
+// file_read observation — content stays null (and byte/line accounting must
+// not throw) when the response is a plain object with neither `.file` nor
+// `.content` (mutation: the ternaries guarding content!==null before
+// content.split(...) / Buffer.byteLength(...) — content is exactly `null`
+// here, and both of those calls throw a TypeError on a null argument)
+// -------------------------------------------------------
+describe("buildCollectionRecord — file_read null-content byte/line accounting", () => {
+	it("does not throw when the response object carries neither .file nor .content", () => {
+		expect(() =>
+			buildCollectionRecord(
+				baseEvent({
+					tool_name: "Read",
+					tool_input: { file_path: "/x.ts" },
+					tool_response: {},
+				}),
+			),
+		).not.toThrow();
+	});
+
+	it("reports content, line_count, and byte_count all as null (not a thrown error) for that response shape", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Read",
+				tool_input: { file_path: "/x.ts" },
+				tool_response: {},
+			}),
+		)!;
+		expect(rec.observation).toEqual({ content: null, content_ref: null, line_count: null, byte_count: null });
+	});
+});
+
+// -------------------------------------------------------
+// buildObservation — the null/undefined short-circuit must run BEFORE
+// dispatching to a per-class observation builder (mutation: disabling this
+// guard would let a per-class builder run on a null response and return a
+// non-null "empty" observation object instead of the true null)
+// -------------------------------------------------------
+describe("buildCollectionRecord — observation short-circuits on a null tool_response", () => {
+	it("returns the JS null value itself, not a per-class empty-observation object, for a shell_exec null response", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo hi" },
+				tool_response: null,
+			}),
+		)!;
+		// Strict identity: a mutant that bypasses the null guard would produce
+		// { stdout: null, stderr: null, exit_code: null, duration_ms: null }
+		// here instead — an object, not null.
+		expect(rec.observation).toBe(null);
+	});
+});
+
+// -------------------------------------------------------
+// buildFidelity — the phase/observation gate must not run for a post event
+// whose observation resolves to null (mutation: forcing this gate open would
+// cast the null observation to an object and crash on property access, or —
+// depending on which clause is mutated — populate fidelity.fields for a
+// tool_response that was never actually captured)
+// -------------------------------------------------------
+describe("buildCollectionRecord — fidelity gate on post-with-null-observation", () => {
+	it("does not throw for a post event whose tool_response is entirely absent", () => {
+		expect(() =>
+			buildCollectionRecord(baseEvent({ tool_name: "Bash", tool_input: { command: "echo" } })),
+		).not.toThrow();
+	});
+
+	it("produces an empty fidelity fields map (not a thrown error) for that same post-with-no-response event", () => {
+		const rec = buildCollectionRecord(baseEvent({ tool_name: "Bash", tool_input: { command: "echo" } }))!;
+		expect(rec.observation).toBeNull();
+		expect(rec.fidelity.fields).toEqual({});
+		expect(rec.fidelity.record.completeness).toBe("complete");
+	});
+
+	it("never creates a fidelity entry for a field whose observation value is exactly null, even alongside a present sibling field", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({
+				tool_name: "Bash",
+				tool_input: { command: "echo" },
+				tool_response: { stderr: "only stderr present" },
+				tool_output_bytes: 5,
+			}),
+		)!;
+		expect(rec.observation).toMatchObject({ stdout: null, stderr: "only stderr present" });
+		expect("observation.stdout" in rec.fidelity.fields).toBe(false);
+		expect("observation.stderr" in rec.fidelity.fields).toBe(true);
+	});
+});
+
+// -------------------------------------------------------
+// buildPrivacy — redaction_status depends on BOTH phase and observation
+// presence (mutation: forcing the gate open would mark a pre-phase or
+// empty-observation record "unscanned" even though nothing was captured)
+// -------------------------------------------------------
+describe("buildCollectionRecord — privacy gate depends on phase AND observation", () => {
+	it("is not_required for a pre-phase event", () => {
+		const rec = buildCollectionRecord(
+			preEvent({ tool_name: "Bash", tool_input: { command: "echo hi" } }),
+		)!;
+		expect(rec.privacy.redaction_status).toBe("not_required");
+	});
+
+	it("is not_required for a post-phase event whose observation resolves to null (explicit null tool_response)", () => {
+		const rec = buildCollectionRecord(
+			baseEvent({ tool_name: "Bash", tool_input: { command: "echo hi" }, tool_response: null }),
+		)!;
+		expect(rec.observation).toBeNull();
+		expect(rec.privacy.redaction_status).toBe("not_required");
+	});
+});

@@ -233,6 +233,67 @@ describe("checkRecursiveWalkerLstat", () => {
 		expect(out.length).toBeGreaterThanOrEqual(1);
 	});
 
+	it("does NOT recognize a method-shaped line preceded by stray non-whitespace text as a class-method declaration (kills the declRe3 ^-anchor-removal mutant)", () => {
+		const src = [
+			"xx  walk(dir) {",
+			"    for (const e of readdirSync(dir)) {",
+			"      if (statSync(e).isDirectory()) walk(e);",
+			"    }",
+			"  }",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does NOT recognize a method-shaped line followed by stray non-whitespace text on the same line as a class-method declaration (kills the declRe3 $-anchor-removal mutant)", () => {
+		const src = [
+			"  walk(dir) {x",
+			"    for (const e of readdirSync(dir)) {",
+			"      if (statSync(e).isDirectory()) walk(e);",
+			"    }",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("recognizes a class-method walker with two spaces after the `public` modifier (kills the declRe3 modifier \\s+->\\s single-char mutant)", () => {
+		const src = [
+			"  public  walk(dir) {",
+			"    for (const e of readdirSync(dir)) {",
+			"      if (statSync(e).isDirectory()) walk(e);",
+			"    }",
+			"  }",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("recognizes a class-method walker with one space after the `public` modifier (kills the declRe3 modifier \\s+->\\S+ mutant)", () => {
+		const src = [
+			"  public walk(dir) {",
+			"    for (const e of readdirSync(dir)) {",
+			"      if (statSync(e).isDirectory()) walk(e);",
+			"    }",
+			"  }",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("recognizes a class-method walker with a space between the method name and its parameter-list paren (kills the declRe3 name\\s*(->name\\S*( mutant)", () => {
+		const src = [
+			"  walk (dir) {",
+			"    for (const e of readdirSync(dir)) {",
+			"      if (statSync(e).isDirectory()) walk(e);",
+			"    }",
+			"  }",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
 	it("does NOT flag a non-recursive function that uses readdirSync + statSync", () => {
 		const src = [
 			'import { readdirSync, statSync } from "node:fs";',
@@ -353,10 +414,82 @@ describe("checkRecursiveWalkerLstat", () => {
 		expect(out[0]?.text).toHaveLength(150);
 	});
 
+	it("flags a walker declared with two spaces after `function` (kills the declRe1 \\s+->\\s single-char mutant)", () => {
+		const src = [
+			"function  walk(dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags a walker declared with a space between the name and the parameter-list paren (kills the declRe1 trailing \\s*(->\\S*( mutant)", () => {
+		const src = [
+			"function walk (dir) {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
 	it("flags a recursive walker declared as `const walk = (dir) => { ... }` (declRe2/m2 branch)", () => {
 		const src = [
 			'import { readdirSync, statSync } from "node:fs";',
 			"const walk = (dir) => {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"};",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags an arrow walker declared with two spaces after `const` (kills the declRe2 first \\s+->\\s single-char mutant)", () => {
+		const src = [
+			"const  walk = (dir) => {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"};",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags an arrow walker declared with zero incidental whitespace around the `=` (kills 2 \\s*->\\s single-char-required mutants on declRe2)", () => {
+		const src = [
+			"const walk=(dir)=>{",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"};",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags an arrow walker declared with two spaces after `async` (kills the declRe2 async\\s+->async\\s single-char mutant)", () => {
+		const src = [
+			"const walk = async  (dir) => {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"};",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flags an arrow walker declared with one space after `async` (kills the declRe2 async\\s+->async\\S+ mutant)", () => {
+		const src = [
+			"const walk = async (dir) => {",
 			"  for (const e of readdirSync(dir)) {",
 			"    if (statSync(e).isDirectory()) walk(e);",
 			"  }",
@@ -399,6 +532,51 @@ describe("checkRecursiveWalkerLstat", () => {
 			"  }",
 			"}",
 		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("locates the function's own opening brace even when it sits at column index 1 of its line, not just column 0 (kills the idx!==-1 -> idx!==1 unary-literal-flip and the always-return ConditionalExpression mutants in findWalkerBodyOpen)", () => {
+		const src = [
+			"function walk(dir)",
+			" {",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does not fabricate a walker body for a declaration whose own opening brace is never found (kills the return -1 -> return 1 unary-literal-flip mutant in findWalkerBodyOpen)", () => {
+		const src = " { readdirSync(d); walk(d); statSync(d); }\nfunction walk(dir)";
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("finds the TRUE matching close brace (depth back to zero), not just the first `}` encountered, when the body contains a nested block before the real content (kills the depth===0 -> always-true / depth!==0 mutants in findWalkerBodyClose)", () => {
+		const src = [
+			"function walk(dir) {",
+			"  if (true) {",
+			"  }",
+			"  for (const e of readdirSync(dir)) {",
+			"    if (statSync(e).isDirectory()) walk(e);",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("does not treat a declaration with no discoverable opening brace as having a real body, even when an EARLIER unrelated `{...}` chunk in the file would look like a real recursive walker (kills the bodyOpen<0 guard-disabled ConditionalExpression mutant)", () => {
+		const src = " { readdirSync(d); walk(d); statSync(d); }\nfunction walk(dir)";
+		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
+		expect(out).toEqual([]);
+	});
+
+	it("does not fabricate a body for an unbalanced (never-closed) declaration even when the trailing content would otherwise look like a real recursive walker (kills the bodyClose<0 guard-disabled ConditionalExpression mutant)", () => {
+		const src = "function walk(dir) {\n  readdirSync(dir);\n  walk(dir);\n  statSync(dir);";
 		const out = checkRecursiveWalkerLstat(src, "src/walker.ts");
 		expect(out).toEqual([]);
 	});
@@ -467,5 +645,13 @@ describe("checkWeakRandom (ubs_weak_random_security) — Python scope", () => {
 
 	it("flags random.random ( with a space before the paren (kills the \\s*->\\S* mutant)", () => {
 		expect(checkWeakRandom("nonceValue = random.random ()", "src/a.py")).toHaveLength(1);
+	});
+
+	it("recognizes `session__id` (a doubled separator) as the same security context as a single-separated `session_id` (kills the [_-]+ -> [_-] quantifier-drop mutant)", () => {
+		expect(checkWeakRandom("session__id = random.random()", "src/a.py")).toHaveLength(1);
+	});
+
+	it("recognizes a security term that only exists in its space-separated form, e.g. `private_key`, not its glued form (kills the underscore-replacement space -> empty-string mutant)", () => {
+		expect(checkWeakRandom("private_key = random.random()", "src/a.py")).toHaveLength(1);
 	});
 });

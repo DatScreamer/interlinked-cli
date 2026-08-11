@@ -1418,6 +1418,34 @@ describe("checkHappyPathOnlyTest — NEGATIVE_ASSERTION_RE additional isolated b
 	});
 });
 
+describe("checkDuplicateTestNames — scanForOpenBraceSkippingStrings 'not found' sentinel", () => {
+	it("still dedups two file-root it()s as ONE scope when a TRAILING describe's callback body never opens a brace", () => {
+		// scanForOpenBraceSkippingStrings must return a sentinel that reads as
+		// "not found" to its caller (open < 0). If the sentinel value were ever
+		// a small POSITIVE number instead, its caller's `open < 0` guard would
+		// stop skipping and would call findMatchingCloseBraceSkippingStrings
+		// from that bogus low position — which, scanning forward from near the
+		// START of the file, would walk into the FIRST real it() call's own
+		// `{}` body and return ITS closing brace as a phantom describe body
+		// end. That phantom range [sentinel, thatBrace] would swallow the
+		// FIRST it("dup")'s offset (its own `{` sits past the sentinel) while
+		// leaving the SECOND it("dup") at file-root scope — splitting one
+		// genuine duplicate into two "different scope" entries and silently
+		// dropping the finding. A one-line leading comment is required: it
+		// pushes the first it()'s offset to sit just past a sentinel of "1",
+		// which a bare offset of 0 would not.
+		const code = [
+			"// leading comment",
+			'it("dup", () => {});',
+			'it("dup", () => {});',
+			'describe("no body", () => doThing());',
+		].join("\n");
+		const matches = checkDuplicateTestNames(code, TEST);
+		expect(matches.length).toBe(1);
+		expect(nonNull(matches[0]).text).toContain('duplicate test name "dup"');
+	});
+});
+
 describe("checkTestMissingSutImport — subprocess-exemption regex robustness", () => {
 	it("recognizes a subprocess call with whitespace before its call paren", () => {
 		const code = [

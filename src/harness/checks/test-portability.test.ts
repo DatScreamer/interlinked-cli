@@ -1077,6 +1077,326 @@ describe("checkSilentDependencySkip — AVAILABILITY_GUARD_RE whitespace boundar
 	}
 });
 
+// ===========================================
+// Fleet W4 mutation-kill pins (2026-08-10) — added against
+// `interlinked mutation measure src/harness/checks/test-portability.ts`.
+// Each block targets a specific surviving mutant (id noted in a leading
+// comment) in the internal helpers consequentSpan / consequentIsSilentSkip /
+// findConsequentClose / isBareReturn / hasUnconditionalRuntimeSkip, which are
+// unexported and so can only be pinned through the two public checkers.
+// ===========================================
+
+describe("checkPlatformConditionalAssertion — consequentSpan brace-consequent scanning (fleet W4 mutation pin)", () => {
+	// Mutants cfe56723 (whitespace-skip loop -> false), e192f8c6 (loop bound
+	// -> >=), 4bf175f6/cb2a1b99/387fb800/2e125f6a/b1f87037 (the "masked[j] ===
+	// '{'" brace check, mutated true/false/!==/""/emptied) all collapse to the
+	// SAME observable bug here: the multi-line braced block stops being
+	// recognized as a brace at all, so the walk falls through to the
+	// bare-statement branch and truncates at the newline right after `{`,
+	// never reaching the guarded skip two lines down.
+	it("fires when a multi-line dependency-guarded skip's braced consequent spans several statements before the newline", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // windows-only named-pipe semantics under test",
+			"  if (!dockerAvailable) {",
+			"    doSetup();",
+			"    ctx.skip();",
+			"  }",
+			"  expect(bindPipe()).toBe(0);",
+			"});",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutants 3e91a8ee/4995a47c (close === -1 forced true/!==) make a
+	// GENUINELY balanced brace pair use the "unbalanced" masked.length
+	// fallback instead of its real close+1 boundary — over-extending the
+	// span past the block's actual end and swallowing an unrelated LATER
+	// skip that should stay uncovered.
+	it("does not treat a skip call as covered merely because it occurs after an EARLIER if's span start (upper bound must hold too)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) { doStuff(); }",
+			"  ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutant 9f0175e2 (close === -1 forced false) and 4c98d7bb (-1 -> +1 in
+	// that same comparison) skip the "unbalanced, fail open to end of slice"
+	// fallback even when findConsequentClose genuinely returns -1, instead
+	// computing close+1 = 0 — an inverted [j, 0) span that can never cover
+	// anything, flipping a should-fire finding into silence.
+	it("falls open (treats coverage as extending to the slice end) when a braced consequent's closing brace is genuinely missing", () => {
+		const content = [
+			"// on platforms where this dependency check has no equivalent",
+			"if (!dockerAvailable) { ctx.skip();",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutant 6652e4b4 (depth === 0 -> true) makes findConsequentClose return
+	// the first inner closing brace of a NESTED block instead of the one that
+	// actually balances the outer if — truncating the span before the
+	// guarded skip that follows the nested block.
+	it("does not let findConsequentClose return a nested inner closing brace for an outer if's braced consequent (depth must reach zero)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) {",
+			"    if (extra) { helper(); }",
+			"    ctx.skip();",
+			"  }",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutant ffb285e1 (k < e -> k <= e) lets a skip whose offset lands
+	// EXACTLY on a span's exclusive end count as covered. An empty braced
+	// consequent immediately followed (no gap) by the skip call puts the
+	// skip's offset exactly at that boundary.
+	it("recognizes a skip call whose offset lands exactly at a span's exclusive end as NOT covered (off-by-one at e)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) {}ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — consequentSpan bare-consequent scanning (fleet W4 mutation pin)", () => {
+	// Mutants 6517d12d/905ecd2e (drop the semicolon-stop while in bounds),
+	// 3c553bdf/f44bdf95 (masked[end] !== ';' forced true / '' string) all let
+	// the bare-statement walk run PAST the first semicolon on the line,
+	// swallowing an unrelated, genuinely-unconditional skip that follows on
+	// the same line as a second statement.
+	it("does not let a bare if-consequent's span swallow an unrelated unconditional skip that follows on the same line (semicolon boundary)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) doSetup(); ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutants 227f2868 (whole end-walk condition -> false), e09f6c82 (end <
+	// masked.length -> >=), 7f035ce1 (masked[end] !== ';' -> ===), f14ce12e
+	// (masked[end] !== '\n' -> ===) all collapse the walk to ZERO iterations,
+	// shrinking the span to a single character. A skip preceded by leading
+	// text inside the SAME bare consequent then falls outside that
+	// collapsed span even though it is genuinely guarded.
+	it("still finds the skip call when leading text precedes it inside a bare if-consequent (span must extend past position j)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) void ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutants efeecc56 (masked[end] !== '\n' forced true) and 0c9386b1 ('\n'
+	// -> '') disable the newline-stop for a bare consequent with no trailing
+	// semicolon (ASI). The walk then runs onto the NEXT line and swallows an
+	// unrelated, genuinely-unconditional skip there. The same construction
+	// also kills 4c5fb99b (the slice-rejoin `.join("\n")` -> `.join("")` in
+	// checkPlatformConditionalAssertion itself): losing the real newline
+	// character has the identical effect on the walk.
+	it("does not let a bare if-consequent's span (ending via ASI, no semicolon) swallow a skip call on the following line", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) doSetup()",
+			"  ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutant 516047dc (end < masked.length -> true) drops the bounds check
+	// on the bare-statement walk while keeping the ;/\n checks. With no
+	// terminator anywhere before EOF the walk runs forever reading
+	// `undefined` past the string end under the mutant; the real guard
+	// correctly stops at the true string boundary and reports a real finding.
+	it("terminates and finds the skip call when a bare if-consequent has no trailing terminator at all before EOF", () => {
+		const content = [
+			"// on platforms where this dependency check has no equivalent",
+			"if (!dockerAvailable) void ctx.skip()",
+		].join("\n");
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — hasUnconditionalRuntimeSkip aggregation (fleet W4 mutation pin)", () => {
+	// Mutants e7082533/fb238b02 (the inner `k >= s && k < e` predicate forced
+	// true / turned into ||) are already covered by the "swallow" and
+	// "leading text" cases above (any non-empty span makes every skip read
+	// as covered once the predicate is unconditionally true).
+
+	// Mutant 21ca53b8 (k >= s -> true, dropping the lower bound) lets a skip
+	// positioned BEFORE a later if's span still read as covered, since only
+	// k < e is left checked and the later span's end is textually after it.
+	it("does not treat a skip call as covered merely because it occurs before a LATER if's span end (lower bound must hold too)", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  ctx.skip();",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) { doStuff(); }",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutant 51286de3 (skipOffsets.some -> .every) requires EVERY skip call
+	// to be uncovered before treating the code as having unconditional-skip
+	// evidence. Two skip calls — one guarded, one genuinely unconditional —
+	// expose the difference: .some correctly finds the second; .every
+	// wrongly demands both.
+	it("treats the code as having unconditional-skip evidence when ANY skip call is uncovered, even if another skip in the same test is guarded", () => {
+		const content = [
+			"it('binds the raw socket', (ctx) => {",
+			"  // linux-only raw socket semantics under test",
+			"  if (!dockerAvailable) ctx.skip();",
+			"  ctx.skip();",
+			"  expect(bindRawSocket()).toBe(0);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — internal offset arithmetic and EOF safety (fleet W4 mutation pin)", () => {
+	// Mutants ecd701e5/734fc754 (consequentSpan's whitespace-skip loop bound
+	// dropped/loosened to <=) read one character past the slice end when the
+	// if-condition's closing paren is followed only by trailing whitespace
+	// running to EOF, throwing inside nonNull instead of returning cleanly.
+	it("does not read past the end of the slice when an if-condition's closing paren is followed only by trailing whitespace to EOF", () => {
+		const content = [
+			"// on platforms where this dependency check has no equivalent",
+			"ctx.skip();",
+			"if (!dockerAvailable) ",
+		].join("\n");
+		expect(() => checkPlatformConditionalAssertion(content, TEST_PATH)).not.toThrow();
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutant 21025adf (the (m.index ?? 0) + m[0].length offset used to call
+	// consequentSpan flipped to a MINUS) computes a position before the
+	// if-condition even starts. When the if is near the front of the slice
+	// this goes negative, and nonNull throws on the resulting `undefined`
+	// read instead of consequentSpan returning a real span.
+	it("computes a valid forward offset for the if-condition match (not a negative index that would read before the string start)", () => {
+		const content = [
+			"if (!dockerAvailable) ctx.skip();",
+			"// on platforms where this needs a real explicit gate",
+		].join("\n");
+		expect(() => checkPlatformConditionalAssertion(content, TEST_PATH)).not.toThrow();
+		const matches = checkPlatformConditionalAssertion(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+});
+
+describe("checkSilentDependencySkip — consequentIsSilentSkip boundary scanning (fleet W4 mutation pin)", () => {
+	// Mutants 59dd6f15 (whitespace-skip loop bound forced true) and
+	// 0980ec93 (loop bound loosened to <=) read one character past the end
+	// of `masked` when a bare availability guard is the very last text in
+	// the file, throwing inside nonNull instead of returning false cleanly.
+	it("does not run past end-of-string when a bare availability guard is the very last text in the file (no trailing whitespace or body)", () => {
+		const content = "if (!RG_AVAILABLE)";
+		expect(() => checkSilentDependencySkip(content, TEST_PATH)).not.toThrow();
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutant 8a0eea72 (masked[j] === '{' forced true) makes a bare,
+	// non-return consequent (a plain function call, not a skip) get treated
+	// as if it opened a brace, scanning forward for a spurious matching '}'
+	// elsewhere in the test and mis-reading the resulting slice as a
+	// trailing bare return.
+	it("does not flag a bare non-return consequent even when a later unrelated braced return exists in the same test (line 312 boundary)", () => {
+		const content = [
+			"it('uses rg', () => {",
+			"  if (!RG_AVAILABLE) doSetup();",
+			"  if (other) { return; }",
+			"  expect(runRg()).toContain('x');",
+			"});",
+		].join("\n");
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutants c7a991dd (close === -1 forced false) and 4ba82779 (-1 -> +1 in
+	// that comparison) skip the "unbalanced — fail open" early return even
+	// when findConsequentClose genuinely cannot find a matching '}',
+	// instead slicing a bogus body that spuriously ends in "return".
+	it("fails open (does not flag) when the guard's braced consequent is genuinely unbalanced (no closing brace found)", () => {
+		const content = "it('x', () => { if (!RG_AVAILABLE) { return;";
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+});
+
+describe("checkSilentDependencySkip — isBareReturn boundary scanning (fleet W4 mutation pin)", () => {
+	// Mutants a7154e12 (indexOf('\n', ...) -> indexOf('', ...), which always
+	// "finds" a match at the search start) and a41f792b (drops the `^`
+	// anchor from the terminator regex) both make isBareReturn say true for
+	// ANY identifier that merely starts with the six letters "return" — even
+	// a differently named function call.
+	it("does not treat a bare consequent CALLING a function merely NAMED like 'return...' as a bare return", () => {
+		const content = ["it('x', () => {", "  if (!RG_AVAILABLE) returnSomething();", "  expect(1).toBe(1);", "});"].join(
+			"\n",
+		);
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+
+	// Mutants 0e1b64b8 (lineEnd === -1 forced true), a48e60a6 (that equality
+	// inverted to !==), and c7fdf95a (the terminator regex loses its `|$`
+	// alternative) each break the ASI case: a bare `return` with no trailing
+	// semicolon, relying on the newline to end the statement, while more
+	// code follows later in the same file.
+	it("recognizes a bare return with no trailing semicolon, relying on ASI at the newline, even when more code follows later in the file", () => {
+		const content = ["it('x', () => {", "  if (!RG_AVAILABLE) return", "  expect(1).toBe(1);", "});"].join("\n");
+		const matches = checkSilentDependencySkip(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutant 11769ecd inverts the leading-whitespace class from `[ \t]` to
+	// `[^ \t]`, so it can no longer skip over real padding spaces before a
+	// terminating semicolon.
+	it("recognizes a bare return followed by whitespace before the terminating semicolon", () => {
+		const content = ["it('x', () => {", "  if (!RG_AVAILABLE) return   ;", "  expect(1).toBe(1);", "});"].join("\n");
+		const matches = checkSilentDependencySkip(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+
+	// Mutants 7843166d (lineEnd === -1 forced false) and d2211a44 (-1 -> +1
+	// in that comparison) both make isBareReturn slice with a literal `-1`
+	// end bound even though `masked.indexOf` genuinely found no newline —
+	// `.slice(x, -1)` drops the string's last character. A guard whose
+	// consequent is "return" plus one lone non-terminator character at
+	// EOF empties out under that off-by-one slice and wrongly matches "$".
+	it("does not mistake a bare return that is missing its terminator, with only a lone trailing character before EOF, as a valid bare-return skip", () => {
+		const content = "it('x', () => { if (!RG_AVAILABLE) returnx";
+		expect(checkSilentDependencySkip(content, TEST_PATH)).toEqual([]);
+	});
+});
+
 describe("dogfood sweep — the repo's own suite stays portability-clean", () => {
 	function collectTestFiles(dir: string, out: string[]): string[] {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1118,5 +1438,68 @@ describe("dogfood sweep — the repo's own suite stays portability-clean", () =>
 		const content = readFileSync(own, "utf8");
 		expect(checkSilentDependencySkip(content, own)).toEqual([]);
 		expect(checkPlatformConditionalAssertion(content, own)).toEqual([]);
+	});
+});
+
+// ===========================================
+// Fleet K5 survivor-kill round (test-portability.ts, second pass)
+// ===========================================
+//
+// Residual survivors after the W4 round. The empty-block-then-skip
+// arrangement below separates a reversed whitespace walk from its brace
+// check (consequentSpan's `j++` -> `j--`).
+
+describe("checkSilentDependencySkip — consequentIsSilentSkip tight brace formatting (fleet K5 mutation pin)", () => {
+	it("recognizes a silent bare-return skip guard whose closing paren sits directly against its opening brace (no space before `{`)", () => {
+		// Regression pin for the tight `){return;}` formatting (no space before
+		// the brace). NOTE: this does NOT kill consequentIsSilentSkip's
+		// `masked.slice(j + 1, close)` -> `j - 1` mutant (attempted, confirmed
+		// by direct replay in scratch/k5-diag.mjs): `slice(j - 1, close)`
+		// always includes `masked[j]` itself, which is the literal `{` this
+		// branch is already conditioned on — and `{` is itself a valid
+		// TRAILING_BARE_RETURN_RE boundary char, so the off-by-two slice keeps
+		// matching regardless of what precedes it. Left open; kept as a
+		// legitimate behavioral pin for the tight-formatting case regardless.
+		const content = "it('x', () => { if(!RG_AVAILABLE){return;} expect(1).toBe(1); });";
+		const matches = checkSilentDependencySkip(content, TEST_PATH);
+		expect(matches).toHaveLength(1);
+	});
+});
+
+describe("checkPlatformConditionalAssertion — consequentSpan reversed whitespace walk (fleet K5 mutation pin)", () => {
+	it("does not lose a genuinely unconditional runtime skip as platform evidence when it directly follows an EMPTY braced if-consequent on the same line", () => {
+		// Targets consequentSpan's whitespace-skip loop `j++` -> `j--`. With
+		// exactly one space between an if's `)` and its `{`, decrementing
+		// instead of incrementing walks BACKWARD onto the closing paren
+		// instead of forward onto `{`. The brace check then fails and the
+		// bare-consequent branch takes over from that paren; its
+		// semicolon-seeking scan runs forward past the empty `{ }` and
+		// swallows the next statement's `ctx.skip()` into a bogus "covered"
+		// span, even though that skip sits entirely outside the real braces.
+		const content = [
+			"it('x', (ctx) => {",
+			"  // linux-only semantics under test",
+			"  if (guardedThing) { } ctx.skip();",
+			"  expect(1).toBe(1);",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
+	});
+
+	it("does not treat a genuinely unconditional skip as covered merely because its offset falls anywhere after an EARLIER if's span start (upper bound dropped entirely)", () => {
+		// Targets the inner `k >= s && k < e` predicate's `k < e` term ->
+		// `true` specifically (as opposed to the whole predicate or `k >= s`,
+		// each already pinned above/elsewhere): with only the lower bound
+		// left standing, a skip on a later line still reads as "covered" by
+		// an EARLIER if's span merely for coming after its start.
+		const content = [
+			"// linux-only semantics under test",
+			"it('x', (ctx) => {",
+			"  if (guardedThing) { }",
+			"  expect(1).toBe(1);",
+			"  ctx.skip();",
+			"});",
+		].join("\n");
+		expect(checkPlatformConditionalAssertion(content, TEST_PATH)).toEqual([]);
 	});
 });

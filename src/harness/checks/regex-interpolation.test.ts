@@ -1086,3 +1086,164 @@ describe("checkRegexFromInterpolation — mutation-hardening round 2", () => {
 		expect(fires(src)).toBe(true);
 	});
 });
+
+// ─── round 3: fleet mutation-kill sweep (2026-08-10) ──────────────────────────
+
+describe("checkRegexFromInterpolation — isEscapeCall endsWith-guard mutation coverage", () => {
+	it("RGX-EC1: an escape-call-shaped operand with TRAILING junk after its closing paren is NOT an escape call — still fires", () => {
+		// Pins `if (!e.endsWith(")")) return false;` as an actual short-circuit
+		// gate, not dead code. `escapeRegExp(x)y` matches CALL_HEAD_RE's callee
+		// pattern regardless of trailing text (that regex only anchors at the
+		// start), so without the endsWith guard the trailing `y` would be
+		// silently ignored and this would be wrongly treated as a clean
+		// escape call.
+		const src = "const re = new RegExp('^' + escapeRegExp(x)y);";
+		const found = run(src);
+		expect(found.length).toBe(1);
+		expect(found[0]?.text).toMatch(/concatenation/);
+	});
+});
+
+// ─── round 4: K3 fleet mutation-kill sweep (2026-08-10) ──────────────────────
+//
+// Targets the survivor set from `mutation survivors --file regex-interpolation.ts`
+// (79 open). Each case below was validated by differential mutant application
+// (candidate mutant patched into a scratch copy, both variants run against the
+// input, output compared) before landing, so these are not guesses.
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: splitTopLevelPlus ++ guards", () => {
+	it("K3-1: `x++y` (double-plus, no legal split point) produces no finding", () => {
+		// Baseline for the next two cases: neither `+` in `x++y` is a valid
+		// split point (each is either immediately preceded or followed by the
+		// other `+`), so the whole thing stays one unsplit, non-template blob.
+		expect(run("const re = new RegExp(x++y);")).toHaveLength(0);
+	});
+
+	it("K3-2: disabling the next-char-is-`+` guard would wrongly split `x++y` and fire — pinned via the correct (unsplit) outcome", () => {
+		// Kills: ConditionalExpression `arg.charAt(j+1)!=="+"`→true, MethodExpression
+		// `arg.charAt(j+1)`→arg, ArithmeticOperator `j+1`→`j-1`, StringLiteral
+		// `"+"`→"" (all four next-side guard mutants collapse to the same wrong
+		// split of x++y into ["x","+y"], which DOES fire as concatenation).
+		const found = run("const re = new RegExp(x++y);");
+		expect(found).toHaveLength(0);
+	});
+
+	it("K3-3: disabling the prev-char-is-`+` guard would wrongly split `x++y` and fire — pinned via the correct (unsplit) outcome", () => {
+		// Kills the four prev-side guard mutants (ConditionalExpression,
+		// MethodExpression, ArithmeticOperator, StringLiteral) the same way,
+		// via the second `+` in x++y instead of the first.
+		const found = run("const re = new RegExp(x++y);");
+		expect(found).toHaveLength(0);
+	});
+});
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: budget boundaries (exposure construction)", () => {
+	// A giant filler template that legitimately exceeds SCAN_STEP_BUDGET should
+	// FAIL to parse as one token; that failure exposes an embedded
+	// `RegExp(`${zzz}`)` snippet as ordinary re-lexed code, which fires. If a
+	// mutant disables/weakens the budget check, the giant filler instead
+	// parses as ONE (successful) template whose first stray backtick "closes"
+	// it — swallowing the embedded call as inert content, so it does NOT fire.
+	// This makes the budget check's effect on TOTALLY UNRELATED code
+	// observable, closing the gap plain long/short inputs can't reach.
+	function exposureCase(fillerLen: number): string {
+		return "const junk = `" + "F".repeat(fillerLen) + "new RegExp(`${zzz}`)" + "`;";
+	}
+
+	it("K3-4: a filler well past SCAN_STEP_BUDGET (2500 chars) in scanTemplate's own walk still exposes the embedded call — budget fires", () => {
+		const found = run(exposureCase(2500));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text).toMatch(/template/);
+	});
+
+	it("K3-5: exactly at the scanTemplate budget boundary (1989 vs 1990 chars) flips from swallowed to exposed", () => {
+		// 1989 F's: scanTemplate's own budget has NOT tripped yet, so it
+		// successfully (mis)parses the giant filler as one token and swallows
+		// the embedded call. One character more (1990) trips the budget.
+		expect(run(exposureCase(1989))).toHaveLength(0);
+		expect(run(exposureCase(1990))).toHaveLength(1);
+	});
+
+	it("K3-6: a filler well past SCAN_STEP_BUDGET inside a `${...}` substitution body still exposes a call embedded right after it", () => {
+		const src = "const junk = `${" + "F".repeat(2500) + "}new RegExp(`${w}`)" + "`;";
+		const found = run(src);
+		expect(found).toHaveLength(1);
+	});
+
+	it("K3-7: exactly at the scanSubstitution budget boundary (2000 vs 2001 chars) flips from swallowed to exposed", () => {
+		const build = (n: number) => "const junk = `${" + "F".repeat(n) + "}new RegExp(`${w}`)" + "`;";
+		expect(run(build(2000))).toHaveLength(0);
+		expect(run(build(2001))).toHaveLength(1);
+	});
+});
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: nested-brace and escape edge cases", () => {
+	it("K3-8: an escape call whose argument contains a nested `{...}` object literal is still recognized as exempt (brace depth tracked correctly)", () => {
+		// If brace-open tracking inside scanSubstitution is disabled/weakened,
+		// the FIRST (nested) "}" is wrongly read as the substitution's own
+		// close, truncating the captured text to "escapeFoo({x" — which no
+		// longer ends in ")" and so is no longer recognized as an escape call,
+		// and fires instead of staying exempt.
+		const src = "const re = new RegExp(`${escapeFoo({x})}`);";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("K3-9: an escaped dollar sign right before what would be a substitution prevents it from being recognized as one", () => {
+		// `\$` inside a template escapes the dollar (same as real JS), so
+		// `${x}` here is literal text, not a live substitution — zero subs,
+		// no finding. If backslash-escape handling in scanTemplate is
+		// disabled, the `$` would instead be read as starting `${x}`.
+		const src = "const re = new RegExp(`\\${x}`);";
+		expect(run(src)).toHaveLength(0);
+	});
+});
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: prevSignificantChar window and whitespace class", () => {
+	const tail = "/ RegExp(`${z}`) /;";
+
+	it("K3-10: a `/` more than PREV_SIG_WINDOW (200 chars) past its nearest significant char reads as having NO prior context — treated as a regex literal, which fails to close and swallows the embedded call, so this does not fire", () => {
+		// If the window were unbounded, the scan would reach back to `)` and
+		// correctly read it as division instead — exposing the embedded call.
+		const src = "const divResult = f()" + " ".repeat(205) + tail;
+		const found = run(src);
+		expect(found).toHaveLength(0);
+	});
+
+	it("K3-11: a tab between `)` and `/` is correctly skipped as whitespace — the `/` reads back to `)` (division), exposing the embedded call, so this fires", () => {
+		const src = "const divResult = f()\t" + tail;
+		expect(run(src)).toHaveLength(1);
+	});
+
+	it("K3-12: a newline between `)` and `/` is correctly skipped as whitespace — division, not a regex literal, so this fires", () => {
+		const src = "const divResult = f()\n" + tail;
+		expect(run(src)).toHaveLength(1);
+	});
+
+	it("K3-13: a carriage return between `)` and `/` is correctly skipped as whitespace — division, not a regex literal, so this fires", () => {
+		const src = "const divResult = f()\r" + tail;
+		expect(run(src)).toHaveLength(1);
+	});
+});
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: skipRegexLiteral bail propagation", () => {
+	it("K3-14: an unterminated regex literal (newline before any closing `/`) at the very start of the file still lets a later real call fire", () => {
+		// Regression-shaped like R19-R21, but specifically pins the newline-bail
+		// `return -1` at file position 0 — the one spot where stringLikeEnd's
+		// `end > i` guard can't absorb a corrupted (wrong-sign) return value,
+		// since i=0 there.
+		const src = "/abc\ndef new RegExp(`${w}`) more/;\nconst tail = 1;";
+		const found = run(src);
+		expect(found.map((f) => f.line)).toEqual([2]);
+	});
+});
+
+describe("checkRegexFromInterpolation — K3 fleet sweep: numeric substitution with incidental whitespace", () => {
+	it("K3-15: a numeric substitution with surrounding whitespace (`${ 3 }`) is still exempt, not dynamic", () => {
+		// isExemptDynamicPart trims its input before the numeric-literal test;
+		// substitution text from a template is NOT pre-trimmed by its caller,
+		// so this specifically exercises that internal trim (not a redundant
+		// one done by the caller already).
+		const src = "const re = new RegExp(`x{1,${ 3 }}`);";
+		expect(run(src)).toHaveLength(0);
+	});
+});

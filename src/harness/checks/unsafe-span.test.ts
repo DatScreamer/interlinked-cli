@@ -1362,6 +1362,31 @@ describe("checkRustUnsafeSpan — rawStringOpenAt mutation coverage (round 2)", 
 		expect(found[0]?.text).toContain("spans 6 nonblank lines");
 	});
 
+	it("RSO7: a wrong opener length must not let the search start land ON the opener's own quote, false-matching a `\"#` shaped sequence right after it", () => {
+		// Pins the openLen computation `j + 1 - i` end-to-end. If openLen were
+		// computed 1 short, blankRustRawString's search would start AT the
+		// opener's own closing quote (itself a `"`), and since the very next
+		// content char here is `#`, that position would false-match the 1-hash
+		// closer immediately — leaving everything from `abc}def"#` on as REAL
+		// unblanked code, exposing the `}` and closing the block early.
+		const src = [
+			"fn f() {", // 1
+			"    unsafe {", // 2
+			'        let s = r#"#abc}def"#;', // 3 — content starts with `#`
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src, "crates/core/src/gen8.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+
 	it("RSO6: 'r' followed by hashes with NO quote (r#x) must be rejected, not accepted as a real raw-string opener", () => {
 		// Pins the final `charAt(j) !== '"'` check (and its equality-flip /
 		// `charAt` -> `src` / `'"'` -> `''` variants): `r#x` has no opening
@@ -1386,5 +1411,246 @@ describe("checkRustUnsafeSpan — rawStringOpenAt mutation coverage (round 2)", 
 		expect(found).toHaveLength(1);
 		expect(found[0]?.line).toBe(2);
 		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+});
+
+// ─── round 3: fleet mutation-kill sweep (2026-08-10) ──────────────────────────
+
+describe("checkRustUnsafeSpan — blankRustString escape-handling mutation coverage", () => {
+	it("RP15: an escape sequence must advance the scan FORWARD past both chars, not backward — otherwise the opening quote itself gets misread as the close", () => {
+		// Pins the `i += 2` direction in blankRustString. If the escape branch
+		// ever moved `i` BACKWARD, the scan would re-visit the string's own
+		// opening quote and misread it as an immediate close, leaving
+		// everything after (including the embedded `}`) as real unblanked
+		// code — closing the unsafe block far too early.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			'        let s = "a\\b}";', // 3 — escape + a `}` later in the string body
+			"        x1();", // 4
+			"        x2();", // 5
+			"        x3();", // 6
+			"        x4();", // 7
+			"        x5();", // 8
+			"    }", // 9
+			"}", // 10
+		];
+		const found = rust(src, "crates/core/src/esc.rs");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+	});
+});
+
+describe("checkRustUnsafeSpan — blankRustCharLiteral non-escape-branch clause coverage", () => {
+	it("MK-CL5: an empty char literal ('') keeps the trailing `}` live — the 3-char-literal clause must not misfire when the second char IS the closing quote", () => {
+		// Pins the `next !== "'"` clause of the non-escape branch. `''` is not
+		// a real 1-char literal (Rust doesn't allow it), so `charAt(start+2)`
+		// lands on whatever comes after — here a real `}`. If the clause were
+		// forced true (or the operator flipped), the apostrophe pair plus the
+		// next char would get wrongly blanked, hiding the `}` and letting the
+		// block run on further than it should.
+		const src = [
+			"fn f(p: *mut u8) {", // 1
+			"    unsafe {", // 2
+			"        let x = ''}b;", // 3 — '' then a real `}`, not a 3-char literal
+			"        x1();",
+			"        x2();",
+			"        x3();",
+			"        x4();",
+			"        x5();",
+			"    }",
+			"}",
+		];
+		expect(rust(src, "crates/core/src/emptylit.rs")).toHaveLength(0);
+	});
+});
+
+describe("checkSuppressionSpan — DIRECTIVE_BODY_RE mutation coverage", () => {
+	it("RS-DIR1: a mid-comment PROSE mention of 'eslint-disable' (not at the body start) is not a real directive", () => {
+		// Pins the leading `^` anchor: without it, the pattern could match
+		// anywhere in the body instead of only at its start.
+		const src = [
+			"/* note: consider eslint-disable for this section */", // 1 — prose, not a directive
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14 — a real bare enable, with nothing real to pair with
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+
+	it("RS-DIR2: zero whitespace before 'eslint-disable' (/*eslint-disable*/) is still a valid directive", () => {
+		// Pins `\s*` (zero-or-more) against a narrowing to `\s` (exactly one):
+		// a comment with NO space between the delimiter and the keyword must
+		// still be recognized.
+		const src = [
+			"/*eslint-disable*/", // 1 — no leading space
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+});
+
+describe("checkSuppressionSpan — parseRuleList split-marker regex mutation coverage", () => {
+	it("RS-PL1: a `--` with NO whitespace before it is not a justification split — the whole tail is one rule name", () => {
+		// Pins the `\s` clause immediately before `--`. A rule name that
+		// happens to CONTAIN "--" with no preceding space must not be split.
+		const src = [
+			"/* eslint-disable no-console-- reason */", // 1 — 'e' immediately before "--"
+			...stmts(12, ""), // 2-13
+			ENABLE_NO_CONSOLE, // 14 — targets "no-console", NOT the real (unsplit) rule name
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+
+	it("RS-PL2: a `--` at the very end of the tail (no trailing char) still splits via the end-of-string alternative", () => {
+		// Pins the `$` branch of `(?:\s|$)`. Removing it would leave the
+		// trailing " --" attached to the rule name.
+		const src = [
+			"/* eslint-disable no-console --*/", // 1 — "--" is the last text before the delimiter
+			...stmts(12, ""), // 2-13
+			ENABLE_NO_CONSOLE, // 14
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+
+	it("RS-PL3: a `--` followed by a real whitespace char (not end-of-string) still splits via the whitespace alternative", () => {
+		// Pins the `\s` branch of `(?:\s|$)` specifically (as opposed to a
+		// non-whitespace char following, which must NOT split).
+		const src = [
+			"/* eslint-disable no-console -- because reasons */", // 1
+			...stmts(12, ""), // 2-13
+			ENABLE_NO_CONSOLE, // 14
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+});
+
+describe("checkSuppressionSpan — parseRuleList empty-entry filter mutation coverage", () => {
+	it("RS-FILT1: a trailing-comma empty rule entry must be filtered out, not survive as a phantom '' target", () => {
+		// Pins the `.filter((rule) => rule !== "")` call. If the filter were
+		// removed (or its predicate neutered), a disable with a trailing
+		// comma would carry a stray "" rule; that stray "" would then
+		// spuriously MATCH an unrelated enable that ALSO has its own
+		// trailing-comma "" artifact, even though neither directive shares a
+		// real rule name — producing a finding where none should exist.
+		const src = [
+			"/* eslint-disable no-console, */", // 1 — trailing comma
+			...stmts(12, ""), // 2-13
+			"/* eslint-enable no-undef, */", // 14 — unrelated rule, also trailing comma
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+});
+
+describe("checkSuppressionSpan — consumeBlockComment unterminated-at-EOF mutation coverage", () => {
+	it("RS-EOF1: an unterminated block-form enable at true EOF must use the WHOLE remaining text as its body, not one character short", () => {
+		// Pins `bodyEnd = close === -1 ? content.length : close` and the
+		// paired resume-offset computation. If either used `close` itself
+		// (-1) instead of `content.length` for the unterminated case, the
+		// computed body would drop the file's FINAL character — here, the
+		// last letter of the rule name — corrupting the parsed rule from
+		// "my-rule" to "my-rul", which then fails to match the enable this
+		// disable is genuinely waiting for.
+		const src = [
+			"/* eslint-disable my-rule */", // 1
+			...stmts(12, ""), // 2-13
+			"/* eslint-enable my-rule", // 14 — unterminated: no closing */, ends at true EOF
+		].join("\n");
+		const found = suppression(src.split("\n"));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+});
+
+describe("checkSuppressionSpan — isQuoteChar backtick-clause mutation coverage", () => {
+	it("RS-QUOTE1: a backtick-delimited template containing directive text stays opaque even with no other quote types nearby", () => {
+		// Isolates the "`" arm of isQuoteChar from "'" and '"' (both already
+		// covered elsewhere) by using ONLY a backtick-quoted string. Uses the
+		// file's hoisted DISABLE/ENABLE constants (not an inline literal) so
+		// this test body itself never contains raw directive-shaped text.
+		const bt = String.fromCharCode(96);
+		const src = [
+			"const s = " + bt + DISABLE + bt + ";", // 1 — directive text inside a template
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14 — a real, unrelated enable
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+});
+
+describe("checkSuppressionSpan — skipStringLiteral resumption mutation coverage", () => {
+	it("RS-RESUME1: a short well-terminated string literal must not swallow the rest of the file — scanning resumes right after it", () => {
+		// Pins that skipStringLiteral's loop body actually RUNS (as opposed
+		// to being replaced with an empty block, or its test forced to
+		// `false`/an inverted boundary) — any of those defects makes the
+		// function always return content.length, silently discarding every
+		// directive that follows any plain string literal in the file.
+		const src = [
+			'const s = "hello";', // 1 — plain terminated string, unrelated to directives
+			DISABLE, // 2
+			...stmts(12, ""), // 3-14
+			ENABLE, // 15
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+		expect(found[0]?.text).toContain("spans 14 lines");
+	});
+});
+
+describe("checkSuppressionSpan — main-loop and findEnableLineFor guard mutation coverage", () => {
+	it("RS-MAIN1: two bare enables with no disable at all must never pair with each other", () => {
+		// Pins the `disable.kind !== "disable"` guard. If it were disabled,
+		// the FIRST enable would be processed as though it were a disable,
+		// and its own (bare) rule-set would spuriously pair with the SECOND
+		// enable via findEnableLineFor's `d.kind === "enable"` check.
+		const src = [
+			ENABLE, // 1 — bare enable, no preceding disable
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14 — another bare enable, far below
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+
+	it("RS-FEL1: an enable is only ever searched for AFTER the disable's own index — a rule-matching enable earlier in the file must not pair", () => {
+		// Pins the `fromIdx + 1` starting point of findEnableLineFor's scan
+		// (and its guard's short-circuit order): an enable that appears
+		// BEFORE the disable in question must never close it, even when the
+		// rule names line up exactly.
+		const src = [
+			ENABLE_NO_CONSOLE, // 1 — precedes the disable; must not pair with it
+			...stmts(12, ""), // 2-13
+			DISABLE_NO_CONSOLE, // 14 — nothing valid follows this one
+		];
+		expect(suppression(src)).toHaveLength(0);
+	});
+});
+
+describe("checkSuppressionSpan — skipStringLiteral quote-close mutation coverage", () => {
+	it("RS-SL1: a real directive immediately after a same-line string literal is still detected — the string must stop at its OWN closing quote", () => {
+		// Pins `if (ch === quote) return i + 1;`. If the closing-quote check
+		// never fires, the "string skip" runs on past its own close looking
+		// for a newline instead, swallowing a real directive that follows
+		// later on the SAME line — here, DISABLE right after the string.
+		const src = [
+			'const s = "abc"; ' + DISABLE, // 1 — string, then a real directive, same line
+			...stmts(12, ""), // 2-13
+			ENABLE, // 14
+		];
+		const found = suppression(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 14 lines");
 	});
 });

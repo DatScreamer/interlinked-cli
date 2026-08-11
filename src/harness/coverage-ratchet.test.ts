@@ -129,6 +129,42 @@ describe("loadBaseline / saveBaseline round trip", () => {
 		expect(result.files).toEqual({ "src/foo.ts": { lines_pct: 75, branches_pct: 50 } });
 		expect(typeof result.updated_at).toBe("string");
 	});
+
+	it("N3: rejects the whole baseline when version is not 1, even though files is otherwise well-formed", () => {
+		// A version mismatch must reject the WHOLE file (per the module doc:
+		// "Rejects the whole file for an invalid top-level shape") — a future
+		// incompatible baseline format must not be silently read as today's.
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(
+			baselinePath(tmp),
+			JSON.stringify({
+				version: 2,
+				updated_at: "2026-01-01",
+				files: { "src/foo.ts": { lines_pct: 90, branches_pct: 60 } },
+			}),
+			"utf-8",
+		);
+		expect(loadBaseline(tmp)).toEqual(emptyBaseline());
+	});
+
+	it("N5: drops a file entry whose stats value is null, keeping sibling valid entries", () => {
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(
+			baselinePath(tmp),
+			JSON.stringify({
+				version: 1,
+				updated_at: "2026-01-01",
+				files: {
+					"src/good.ts": { lines_pct: 80, branches_pct: 60 },
+					"src/null-stats.ts": null,
+				},
+			}),
+			"utf-8",
+		);
+		const result = loadBaseline(tmp);
+		expect(result.files).toEqual({ "src/good.ts": { lines_pct: 80, branches_pct: 60 } });
+		expect(result.files["src/null-stats.ts"]).toBeUndefined();
+	});
 });
 
 describe("loadCoverageSummary", () => {

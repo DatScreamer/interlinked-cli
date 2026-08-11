@@ -7,9 +7,14 @@ import { CohortManager } from "../../cohort.js";
 import { ReservationManager } from "../../reservations.js";
 import { maxLinesFor } from "../../large-file-policy.js";
 import { getDefaultConfig } from "../../rules-loader.js";
+import * as bashProvenance from "../../bash-provenance.js";
+import * as signaturesModule from "../../signatures.js";
+import * as taintTracker from "../../taint-tracker.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../types.js";
+import * as verificationStopChecks from "../../verification-stop-checks.js";
 import { STUB_INTRODUCED_CAP } from "../../verification-stop-checks.js";
 import { evaluatePostToolUse } from "../post-tool.js";
+import * as toolClassifiers from "../tool-classifiers.js";
 
 /** Drops a required config field to `undefined` at the type level, for
  *  probing OptionalChaining mutants that assume the field could be absent
@@ -2364,5 +2369,372 @@ describe("read file-size warning — mutation-targeted", () => {
 		writeFileSync(p, exact);
 		const ws = warningsOf(makeEvent({ tool_name: "Read", tool_input: { file_path: p }, cwd: dir }));
 		expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
+	});
+});
+
+// ===========================================
+// Fleet W5 survivor-kill round (post-tool.ts)
+// ===========================================
+//
+// Targeted at specific surviving mutants from a 2026-08-10 measure run
+// against the MBP runner. Each test names the exact line/mutator it targets.
+// Several guards here are provably redundant with an inner check performed
+// by the callee (ratchetSensitivity's own `>` gate, scanForStubs's own
+// non-string guard) — for those, session/warnings state alone cannot
+// distinguish "skipped" from "called but a no-op", so the test spies on the
+// call itself instead of the downstream state.
+
+describe("post-tool.ts — fleet W5 survivor kills (round 1)", () => {
+	it("does not call reservations.scheduleRelease when the write carries no path", () => {
+		// Targets L82 `(...) || ""` -> a non-empty StringLiteral AND L84
+		// `if (filePath)` -> `if (true)`: a non-empty fallback would be truthy
+		// and wrongly trigger scheduleRelease for a write with no real path.
+		// getAll() can't distinguish this (no reservation exists under either
+		// name to release), so this observes the CALL directly.
+		const reservations = new ReservationManager();
+		const spy = vi.spyOn(reservations, "scheduleRelease");
+		try {
+			const result = evaluatePostToolUse(
+				makeEvent({ tool_name: "Write", tool_input: { content: "x" } }),
+				getDefaultConfig(),
+				undefined,
+				reservations,
+				new CohortManager(),
+			);
+			expect(result.decision).toBe("allow");
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not fire a reminder whose glob exactly matches the empty-path fallback placeholder", () => {
+		// Targets L154 rawPath fallback `""` -> a non-empty StringLiteral: a
+		// truthy placeholder would skip the `!rawPath` early return and could
+		// match an exact-value glob the real (empty) fallback never would.
+		const cfg = getDefaultConfig();
+		cfg.file_reminders = [{ id: "x", glob: "Stryker was here!", message: "no-path reminder" }];
+		const ws = warningsOf(makeEvent({ tool_name: "Write", tool_input: { content: "x" } }), cfg);
+		expect(ws.some((w) => w.includes("no-path reminder"))).toBe(false);
+	});
+
+	it("does not attempt a secrets scan when Bash output sits exactly at the minimum-byte boundary", () => {
+		// Targets L226 `toScan.length <= OUTPUT_SCAN_MIN_BYTES` -> `false` and
+		// `<=` -> `<`: both let a 10-byte buffer (the boundary itself) reach
+		// the scanner, which the original code correctly skips.
+		const spy = vi.spyOn(signaturesModule, "scanSecrets");
+		try {
+			const ws = warningsOf(
+				makeEvent({
+					tool_name: "Bash",
+					tool_input: { command: "echo" },
+					tool_response: "0123456789", // exactly OUTPUT_SCAN_MIN_BYTES (10) bytes
+				}),
+			);
+			expect(ws.some((w) => w.includes("[interlinked:output-scan]"))).toBe(false);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not emit the egress-filter line when a secret sits beyond the filter's fixed 100KB window", () => {
+		// Targets L247 `filtered.redaction_count > 0` -> `true` / `>= 0`.
+		// filterOutputEgress always scans DEFAULT_EGRESS_FILTER_CONFIG's fixed
+		// 100_000-byte window, independent of output_scanning.max_scan_bytes.
+		// A secret placed past byte 100,000 but still inside a larger
+		// configured max_scan_bytes is caught by the OUTER scan (so this code
+		// path is reached) but MISSED by the egress filter (redaction_count
+		// stays 0) — the only input shape that separates `> 0` from "always".
+		const AWS_KEY_BOUNDARY = `AKIA${"ABCDEFGHIJKLMNOP"}`;
+		const cfg = getDefaultConfig();
+		cfg.output_scanning = { ...cfg.output_scanning, max_scan_bytes: 100_050 };
+		const filler = "x".repeat(100_010);
+		const content = `${filler}AWS_ACCESS_KEY_ID=${AWS_KEY_BOUNDARY}\n`;
+		const ws = warningsOf(
+			makeEvent({ tool_name: "Bash", tool_input: { command: "printenv" }, tool_response: content }),
+			cfg,
+		);
+		expect(ws.some((w) => w.includes("[interlinked:output-scan]"))).toBe(true);
+		expect(ws.some((w) => w.includes("[interlinked:egress-filter]"))).toBe(false);
+	});
+
+	it("does not invoke ratchetSensitivity when the read file's sensitivity does not exceed the session's current level", () => {
+		// Targets L304 `SENSITIVITY_ORDER[...] > SENSITIVITY_ORDER[...]` ->
+		// `true` / `>=`. ratchetSensitivity is itself idempotent for a
+		// non-escalating call (its own `>` guard no-ops), so
+		// session.sensitivity_level can't distinguish an unnecessary call
+		// from a correctly-skipped one — only the call itself is observable.
+		const spy = vi.spyOn(taintTracker, "ratchetSensitivity");
+		try {
+			const session = { ...makeSession(), sensitivity_level: "Confidential" as const };
+			runPostTool(
+				makeEvent({ tool_name: "Read", tool_input: { file_path: "/repo/.env" }, tool_response: "x\n" }),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+			expect(session.sensitivity_level).toBe("Confidential");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not ratchet sensitivity from a probe path when a Read carries no file_path", () => {
+		// Targets L301 filePath fallback `""` -> a non-empty StringLiteral AND
+		// L302 `if (!filePath) return []` -> `if (false)` / `[]` ->
+		// `["Stryker was here"]`. A configured file_sensitivity glob that
+		// exact-matches the empty string proves whether classifyFileSensitivity
+		// was even reached with a truthy placeholder path, and whether the
+		// function's return value picked up a phantom warning string.
+		const cfg = getDefaultConfig();
+		cfg.taint_tracking = {
+			...cfg.taint_tracking,
+			file_sensitivity: [{ glob: "", level: "HighlyConfidential" }],
+		};
+		const session = makeSession();
+		const result = runPostTool(
+			makeEvent({ tool_name: "Read", tool_input: {}, tool_response: "some content\n" }),
+			cfg,
+			session,
+		);
+		expect(session.sensitivity_level).toBe("Public");
+		expect(result.warnings).toBeUndefined();
+	});
+
+	it("does not ratchet sensitivity to a level keyed on a non-empty placeholder path", () => {
+		// Targets L301 filePath fallback `""` -> a non-empty StringLiteral
+		// specifically: a glob keyed on the EMPTY string (used above) only
+		// catches the case where filePath truly stays "". This companion glob
+		// exact-matches the StringLiteral mutator's own placeholder text, so a
+		// truthy-but-fake path from the mutated fallback is what would match.
+		const cfg = getDefaultConfig();
+		cfg.taint_tracking = {
+			...cfg.taint_tracking,
+			file_sensitivity: [{ glob: "Stryker was here!", level: "HighlyConfidential" }],
+		};
+		const session = makeSession();
+		const result = runPostTool(
+			makeEvent({ tool_name: "Read", tool_input: {}, tool_response: "some content\n" }),
+			cfg,
+			session,
+		);
+		expect(session.sensitivity_level).toBe("Public");
+		expect(result.warnings).toBeUndefined();
+	});
+
+	// NOTE: L316/L317 (collectReadFileSizeWarning's filePath fallback + guard)
+	// and L365 (collectEditNearMissWarning's `!filePath || !existsSync(...)`)
+	// were attempted here via `vi.spyOn(nodeFs, "readFileSync")` — vitest
+	// cannot spy on `node:fs` exports in this project's strict-ESM config
+	// (`Cannot redefine property: readFileSync` — the module namespace is not
+	// configurable). No black-box behavioral difference exists either way
+	// (the subsequent read throws inside a try/catch that swallows it
+	// regardless of which fallback/guard shape is active), so these four
+	// mutants are left open rather than shipped as a broken/fragile test.
+
+	it("does not invoke scanForStubs when the session is already at STUB_INTRODUCED_CAP", () => {
+		// Targets L469 `length >= CAP` -> `false` / `> CAP`. The redundant
+		// in-loop guard (L471, already fully covered) still prevents any
+		// observable growth of stubs_introduced under either mutant, so only
+		// whether the scan was attempted at all is a distinguishing signal.
+		const session = makeSession();
+		session.stubs_introduced = Array.from({ length: STUB_INTRODUCED_CAP }, () => ({
+			file: "/prefilled.ts",
+			kind: "TODO" as const,
+			snippet: "TODO: x",
+		}));
+		const spy = vi.spyOn(verificationStopChecks, "scanForStubs");
+		try {
+			runPostTool(
+				makeEvent({
+					tool_name: "Write",
+					tool_input: { file_path: "/repo/src/cap-check.ts", content: "// TODO: another\n" },
+				}),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not scan any payload when a write carries none of content/new_string/edits", () => {
+		// Targets L482 `[]` -> `["Stryker was here"]`, L484 `typeof content ===
+		// "string"` -> `true`, and L487 `typeof newString === "string"` ->
+		// `true`. Any of the three would push a phantom (non-string or
+		// placeholder) entry into the scan-inputs list even though the event
+		// carries no real payload; scanForStubs gracefully no-ops on a
+		// non-string input, so only the call count is a distinguishing signal.
+		const session = makeSession();
+		const spy = vi.spyOn(verificationStopChecks, "scanForStubs");
+		try {
+			runPostTool(
+				makeEvent({
+					tool_name: "Write",
+					tool_input: { file_path: "/repo/src/no-payload.ts" },
+				}),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not scan a non-string MultiEdit new_string value", () => {
+		// Targets L494 `typeof ns === "string"` -> `true`: without the guard,
+		// a non-string new_string (e.g. a malformed numeric payload) would
+		// still reach scanForStubs.
+		const session = makeSession();
+		const spy = vi.spyOn(verificationStopChecks, "scanForStubs");
+		try {
+			runPostTool(
+				makeEvent({
+					tool_name: "MultiEdit",
+					tool_input: {
+						file_path: "/repo/src/numeric.ts",
+						edits: [{ old_string: "x", new_string: 42 }],
+					},
+				}),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+// ===========================================
+// Fleet K5 survivor-kill round (post-tool.ts, second pass)
+// ===========================================
+//
+// Residual survivors after the W5 round. Most remaining `event.tool_name ||
+// ""` StringLiteral mutants sit behind a classifier (isBash/isFileWrite/
+// isReadOperation/isFileOperation) that has its OWN `if (!toolName) return
+// false` guard — so "" and "Stryker was here!" resolve to the identical
+// false return, and no black-box return-value assertion can tell them apart.
+// The only observable difference is the exact argument the classifier
+// receives, so these are killed by spying on the classifier itself.
+
+describe("post-tool.ts — fleet K5 survivor kills (round 2)", () => {
+	it("never lets an absent tool_name's `|| \"\"` fallback reach a classifier as a non-empty placeholder, across every call site in one pass", () => {
+		// Targets the StringLiteral `"" -> "Stryker was here!"` survivor on the
+		// `event.tool_name || ""` fallback in EACH of: collectCommitCadenceWarning,
+		// collectEditNearMissWarning, collectFileReminders, collectReadFileSizeWarning,
+		// collectToolMissWarning, evaluatePostToolUse (top), ratchetTaintOnRead,
+		// recordBashProvenanceIfFetching, recordStubsIntroduced. Stryker mutates one
+		// AST node per run, so under any ONE of these mutants exactly one spied
+		// call leaks the placeholder text while every other (unmutated) call site
+		// still passes "" — the "never Stryker was here!" assertion catches
+		// whichever one is active. The event is shaped (hook_event Failure,
+		// tool_response present, tool_input {}) so every listed function's guard
+		// chain reaches its classifier call before returning.
+		const isBashSpy = vi.spyOn(toolClassifiers, "isBash");
+		const isFileWriteSpy = vi.spyOn(toolClassifiers, "isFileWrite");
+		const isReadOperationSpy = vi.spyOn(toolClassifiers, "isReadOperation");
+		const isFileOperationSpy = vi.spyOn(toolClassifiers, "isFileOperation");
+		try {
+			const session = makeSession();
+			const event: HarnessEvent = {
+				hook_event: "PostToolUseFailure",
+				session_id: "t",
+				agent_source: "claude",
+				tool_input: {},
+				tool_response: "clean output",
+				timestamp: FIXED_TIMESTAMP,
+			};
+			evaluatePostToolUse(event, getDefaultConfig(), session, new ReservationManager(), new CohortManager());
+			const allCalls = [
+				...isBashSpy.mock.calls,
+				...isFileWriteSpy.mock.calls,
+				...isReadOperationSpy.mock.calls,
+				...isFileOperationSpy.mock.calls,
+			];
+			expect(allCalls.length).toBeGreaterThan(0);
+			expect(allCalls.some(([arg]) => arg === "Stryker was here!")).toBe(false);
+			expect(allCalls.some(([arg]) => arg === "")).toBe(true);
+		} finally {
+			isBashSpy.mockRestore();
+			isFileWriteSpy.mockRestore();
+			isReadOperationSpy.mockRestore();
+			isFileOperationSpy.mockRestore();
+		}
+	});
+
+	it("does not attempt bash-fetch provenance classification when the command resolves to the empty-string fallback", () => {
+		// Targets recordBashProvenanceIfFetching's `command = (...) || ""`
+		// StringLiteral fallback AND the `!command` ConditionalExpression ->
+		// `false` on the same guard: classifyBashCommandProvenance is a plain
+		// downstream call (not double-guarded like the tool-name classifiers),
+		// so whether it gets invoked at all is directly observable. Either
+		// mutant lets a Bash call with no `command` field reach the classifier
+		// with a truthy placeholder instead of being skipped.
+		const spy = vi.spyOn(bashProvenance, "classifyBashCommandProvenance");
+		try {
+			const session = makeSession();
+			runPostTool(
+				makeEvent({ tool_name: "Bash", tool_input: {} }),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+			expect(session.taint_sources).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not scan a stub payload from an edits[] entry whose typeof is not literally \"object\" (a function value)", () => {
+		// Targets collectStubScanInputs' `e && typeof e === "object"` compound
+		// guard's `typeof e === "object"` sub-expression -> `true`. A function
+		// value has typeof "function" (not "object"), so the ORIGINAL guard
+		// excludes it — but it can still carry an own `new_string` property
+		// (functions are objects for property-access purposes), which is the
+		// only way to build an `e` that is (a) excluded by the real typeof
+		// check, (b) admitted by the `-> true` mutant, and (c) yields a REAL
+		// string through to scanForStubs so the divergence is observable.
+		const session = makeSession();
+		const spy = vi.spyOn(verificationStopChecks, "scanForStubs");
+		const rogueEdit = Object.assign(() => {}, { new_string: "// TODO: fix this later" });
+		try {
+			runPostTool(
+				makeEvent({
+					tool_name: "MultiEdit",
+					tool_input: {
+						file_path: "/repo/src/rogue-edit.ts",
+						edits: [rogueEdit],
+					},
+				}),
+				getDefaultConfig(),
+				session,
+			);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("emits no warning from the taint-ratchet path when the read-classification guard itself is what gates it (taint_tracking disabled)", () => {
+		// Targets ratchetTaintOnRead's FIRST `return [];` (the combined
+		// `!isReadOperation(...) || !session || !rules.taint_tracking?.enabled`
+		// guard) ArrayDeclaration -> `["Stryker was here"]`. The other two
+		// `[]` return points in this function are already pinned (the
+		// !filePath guard by the "does not ratchet sensitivity from a probe
+		// path" case above, and the success path by "never emits a visible
+		// warning" above) — this is the one guard neither of those exercises.
+		const cfg = getDefaultConfig();
+		clearConfigField(cfg, "taint_tracking");
+		const session = makeSession();
+		const result = runPostTool(
+			makeEvent({ tool_name: "Read", tool_input: { file_path: "/repo/.env" }, tool_response: "x\n" }),
+			cfg,
+			session,
+		);
+		expect(result.warnings).toBeUndefined();
 	});
 });

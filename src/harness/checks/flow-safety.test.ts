@@ -685,3 +685,38 @@ describe("checkBoundaryCopyNoRevalidation — negative cases (must NOT fire)", (
 		expect(checkBoundaryCopyNoRevalidation(code, "src/lib/foo.py")).toEqual([]);
 	});
 });
+
+describe("checkCleanupReentrancy — every CLEANUP_METHOD_NAMES entry is live (P: must fire)", () => {
+	it("P: close() that calls this.close()", () => {
+		const code = ["class Bug {", "  close() {", "    this.close();", "  }", "}"].join("\n");
+		expect(checkCleanupReentrancy(code, TS)).toEqual([{ line: 3, text: "this.close();" }]);
+	});
+	it("P: teardown() that calls this.teardown()", () => {
+		const code = ["class Bug {", "  teardown() {", "    this.teardown();", "  }", "}"].join("\n");
+		expect(checkCleanupReentrancy(code, TS)).toEqual([{ line: 3, text: "this.teardown();" }]);
+	});
+	it("P: unmount() that calls this.unmount()", () => {
+		const code = ["class Bug {", "  unmount() {", "    this.unmount();", "  }", "}"].join("\n");
+		expect(checkCleanupReentrancy(code, TS)).toEqual([{ line: 3, text: "this.unmount();" }]);
+	});
+	it("P: cleanup() that calls this.cleanup()", () => {
+		const code = ["class Bug {", "  cleanup() {", "    this.cleanup();", "  }", "}"].join("\n");
+		expect(checkCleanupReentrancy(code, TS)).toEqual([{ line: 3, text: "this.cleanup();" }]);
+	});
+});
+
+describe("checkBoundaryCopyNoRevalidation — .validate call-shape whitespace boundary (N: must not fire)", () => {
+	it("N: a space between .validate and its call parens is still a validator", () => {
+		const code = "function ok(req: any) { return schema.validate (req.body); }";
+		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+	// The case above never calls Object.assign or spreads anything, so
+	// isValidated() is never invoked at all — it is vacuous with respect to
+	// VALIDATOR_RES regardless of the `.validate` regex's exact whitespace
+	// handling. This one actually routes the space-before-paren `.validate`
+	// call through Object.assign's source-validation check.
+	it("N: Object.assign source wrapped in `.validate (x)` with a space is still recognized (must actually invoke isValidated)", () => {
+		const code = "function bug(slot: any, req: any) { Object.assign(slot, schema.validate (req.body)); }";
+		expect(checkBoundaryCopyNoRevalidation(code, TS)).toEqual([]);
+	});
+});

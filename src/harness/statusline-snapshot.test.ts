@@ -605,6 +605,24 @@ describe("statusline snapshot rows", () => {
 		expect(valueOf(text, "review_findings_open")).toBe("12");
 	});
 
+	it("renders live guardTally counters and last-block rule verbatim (P1: nonzero counts)", () => {
+		const text = write(emptyConfig(), {
+			guardTally: { blocked: 3, warned: 7, asked: 2, lastBlockRule: "block_force_push" },
+		});
+		expect(valueOf(text, "guard_blocked")).toBe("3");
+		expect(valueOf(text, "guard_warned")).toBe("7");
+		expect(valueOf(text, "guard_asked")).toBe("2");
+		expect(valueOf(text, "guard_last_block_rule")).toBe("block_force_push");
+	});
+
+	it("defaults every guard-tally field when guardTally is omitted entirely (N1)", () => {
+		const text = write(emptyConfig());
+		expect(valueOf(text, "guard_blocked")).toBe("0");
+		expect(valueOf(text, "guard_warned")).toBe("0");
+		expect(valueOf(text, "guard_asked")).toBe("0");
+		expect(valueOf(text, "guard_last_block_rule")).toBe("");
+	});
+
 	it("writes all three artifacts on one call", () => {
 		write(emptyConfig());
 		expect(existsSync(join(interlinkedDir, "statusline.snapshot"))).toBe(true);
@@ -1391,5 +1409,111 @@ describe("writeStatuslineArtifacts — ledger and caps failure swallowing", () =
 		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
 		expect(text).toMatch(/^cap_cyclomatic=0$/m);
 		expect(text).toMatch(/^cap_crap=0$/m);
+	});
+});
+
+// ===========================================
+// safeCaps — root derivation from interlinkedDir (L126 regex)
+// ===========================================
+// `safeCaps` strips the TRAILING `/.interlinked` segment off `interlinkedDir`
+// to find the project root metric-caps.json lives under. These tests write a
+// real override at the expected root and read it back through the emitted
+// `cap_cyclomatic`/`cap_crap` rows — the only way to observe the private
+// regex's behavior, since it isn't exported.
+
+describe("safeCaps — resolves metric-caps.json from interlinkedDir's own root", () => {
+	let cwd: string;
+	let interlinkedDir: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "statusline-caps-"));
+		interlinkedDir = join(cwd, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	function writeCapsOverride(dir: string, maxCyclomatic: number, crapThreshold: number): void {
+		writeFileSync(
+			join(dir, "metric-caps.json"),
+			JSON.stringify({ max_cyclomatic: maxCyclomatic, crap_threshold: crapThreshold }),
+		);
+	}
+
+	it("P1: reads the override from the SAME .interlinked dir the caller passed (single occurrence, no trailing slash)", () => {
+		writeCapsOverride(interlinkedDir, 77, 66);
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^cap_cyclomatic=77$/m);
+		expect(text).toMatch(/^cap_crap=66$/m);
+	});
+
+	it("P2: still finds the override when interlinkedDir carries an explicit trailing slash", () => {
+		writeCapsOverride(interlinkedDir, 78, 67);
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir: `${interlinkedDir}/`,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^cap_cyclomatic=78$/m);
+		expect(text).toMatch(/^cap_crap=67$/m);
+	});
+
+	it("P3: strips only the TRAILING .interlinked segment — an earlier .interlinked in the path is left alone", () => {
+		// A decoy ".interlinked" directory sits between cwd and the REAL one:
+		// cwd/.interlinked/nested/.interlinked. Only an end-anchored match
+		// resolves root = cwd/.interlinked/nested (the correct answer); an
+		// unanchored or first-match regex would instead strip the DECOY
+		// occurrence and produce a broken, nonexistent root.
+		const decoyRoot = join(cwd, ".interlinked", "nested");
+		const realInterlinkedDir = join(decoyRoot, ".interlinked");
+		mkdirSync(realInterlinkedDir, { recursive: true });
+		writeCapsOverride(realInterlinkedDir, 79, 68);
+		writeStatuslineArtifacts({
+			cwd: decoyRoot,
+			interlinkedDir: realInterlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(realInterlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^cap_cyclomatic=79$/m);
+		expect(text).toMatch(/^cap_crap=68$/m);
+	});
+
+	it("N1: falls back to the documented defaults when no metric-caps.json exists at the root", () => {
+		writeStatuslineArtifacts({
+			cwd,
+			interlinkedDir,
+			rules: emptyConfig(),
+			reservationsCount: 0,
+			indexStatus: "missing",
+			indexFiles: 0,
+			serverBridgeConnected: false,
+			daemonPid: 1,
+		});
+		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
+		expect(text).toMatch(/^cap_cyclomatic=25$/m);
+		expect(text).toMatch(/^cap_crap=30$/m);
 	});
 });

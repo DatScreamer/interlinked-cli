@@ -564,6 +564,80 @@ describe("lastReadStep: exact/loop precedence and max-step selection", () => {
 		// overwrites unconditionally would end on the LAST-processed value (5).
 		expect(rebReadRecencyDecayEdit(state, edit("/repo/src/x.ts"))).toBeNull();
 	});
+
+	it("k===base alone (no directory on either side, so endsWith('/'+k) cannot match) still recognizes the read", () => {
+		const state = createState("s1");
+		state.fileReadSteps.set("x.ts", 1); // bare basename key, no directory
+		const event = edit("x.ts"); // edited file also has no directory
+		expect(rebBlindEditUnreadFile(state, event)).toBeNull();
+	});
+});
+
+describe("(module) IMPORT_SPEC_RE: whitespace after the opening paren / before it", () => {
+	it("'require(' matches with a space AFTER the opening paren, before the quote", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'const u = require( "./unseen.js");'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("dynamic 'import(' matches with a space AFTER the opening paren, before the quote", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'const u = import( "./unseen.js");'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("dynamic 'import(' matches with ZERO space between 'import' and the opening paren", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.ts", "// top", 'const u = import("./unseen.js");'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("JS_TS_FILE_RE recognizes an edited .mjs file, not just plain .ts/.js", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			edit("/repo/src/a.mjs", "// top", 'import { x } from "./unseen.js";'),
+		]);
+		expect(v?.ruleId).toBe("reb_import_added_without_reading_module");
+	});
+
+	it("moduleKnown matches extension-insensitively even when the import specifier itself uses .mjs", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/src/util.ts"),
+			edit("/repo/src/a.ts", "// top", 'import { x } from "./util.mjs";'),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("MODULE_EXT_RE strips only the TRAILING extension, not an extension-lookalike substring mid-path", () => {
+		// "a.jsonify.js" contains ".js" mid-string (inside "jsonify") in addition
+		// to the real trailing ".js" — an unanchored strip would remove the WRONG
+		// occurrence and break the extension-insensitive comparison.
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/src/a.jsonify.ts"),
+			edit("/repo/src/b.ts", "// top", 'import { x } from "./a.jsonify.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+});
+
+describe("moduleKnown: index-file resolution and the resolved.endsWith(/kn) suffix clause", () => {
+	it("resolves a directory import ('./sub') to a previously-read 'sub/index' file", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/src/sub/index.ts"),
+			edit("/repo/src/a.ts", "// top", 'import { x } from "./sub";'),
+		]);
+		expect(v).toBeNull();
+	});
+
+	it("matches via resolved.endsWith('/'+kn) when the read key is a directory-suffix of the resolved path", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("nested/helper.ts"),
+			edit("/repo/a.ts", "// top", 'import { h } from "./deep/nested/helper.js";'),
+		]);
+		expect(v).toBeNull();
+	});
 });
 
 describe("sessionHasOriented: readCount alone is sufficient", () => {
@@ -894,6 +968,28 @@ describe("reb_blind_edit_unread_file: daemon-restart state loss (documented gap,
 // ============================================================
 // Wiring
 // ============================================================
+
+describe("lastReadStep: the || chain's clauses are each independently load-bearing", () => {
+	it("matches a MULTI-SEGMENT relative pseudo-read key via file.endsWith, independent of the k===base clause (crafted state, single key)", () => {
+		// A LogicalOperator mutant that turns the endsWith/=== pair into an
+		// AND (or drops the trailing endsWith clause) would reject this key,
+		// since k !== base here — only the first (endsWith) clause admits it.
+		const state = createState("s1");
+		state.fileReadSteps.set("src/x.ts", 1); // deliberately NOT "x.ts" alone
+		const event = edit("/repo/src/x.ts");
+		expect(rebBlindEditUnreadFile(state, event)).toBeNull();
+	});
+});
+
+describe("resolveRelative: '..' pops a directory segment rather than being pushed literally", () => {
+	it("does NOT fire when a ../ import resolves via a proper directory pop, matching a prior read at the popped-up path", () => {
+		const v = run(rebImportAddedWithoutReadingModule, [
+			read("/repo/lib/util.ts"),
+			edit("/repo/src/a.ts", "// top", 'import { u } from "../lib/util.js";'),
+		]);
+		expect(v).toBeNull();
+	});
+});
 
 describe("Family 9 — wiring", () => {
 	it("READ_EDIT_RULES exports all five rules", () => {

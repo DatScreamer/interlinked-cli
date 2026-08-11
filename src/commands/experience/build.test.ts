@@ -1254,6 +1254,38 @@ describe("VERIFICATION_PATTERN — verifier command classification", () => {
 	}
 });
 
+describe("buildExperience — id-set population uses a falsy guard, not merely 'defined'", () => {
+	it("does NOT add an empty-string tool_use_id to the join id-set (so an empty-id collection record never joins)", () => {
+		writeJsonl(".interlinked/timeline.jsonl", [
+			timelineRow({ ts: "2026-07-27T10:00:00.000Z", category: "tool_use", tool_use_id: "", tool_input: {} }),
+		]);
+		writeJsonl(".interlinked/collection.jsonl", [
+			{
+				schema: "collection.v1",
+				kind: "tool_event",
+				ts: "2026-07-27T10:00:00.500Z",
+				session_id: SESSION,
+				tool_use_id: "",
+				phase: "post",
+				seq: 1,
+			},
+		]);
+		const built = buildExperience({ dir, sessionId: SESSION, format: "ix" });
+		expect(built.diagnostics.collection_joined).toBe(0);
+	});
+});
+
+describe("spineFromTimeline — tool_calls id/name fall back to empty string, not a placeholder", () => {
+	it("defaults tool_calls[0].id and .name to exact empty strings when the row lacks them", () => {
+		writeJsonl(".interlinked/timeline.jsonl", [
+			timelineRow({ ts: "2026-07-27T10:00:00.000Z", category: "tool_use", tool_input: {} }),
+		]);
+		const built = buildExperience({ dir, sessionId: SESSION, format: "letta" });
+		const call = built.records[1] as ExperienceAssistantRecord;
+		expect(call.tool_calls).toEqual([{ id: "", name: "", args: "{}" }]);
+	});
+});
+
 describe("loadTimeline — DEFAULT_BUDGET is generous enough for a real multi-chunk scan", () => {
 	it("reads every row of a file spanning more than one internal scan chunk, untruncated", () => {
 		const rowCount = 2500;

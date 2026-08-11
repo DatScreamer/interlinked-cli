@@ -268,6 +268,36 @@ describe("evaluateWriteContentGuards", () => {
 			"pre_warn",
 			"DISK CONTENT",
 		);
+		// L158: readFileSync must be called with the "utf-8" encoding, not some
+		// other/empty string — a string-literal mutant on the encoding arg.
+		expect(readFileSync).toHaveBeenCalledWith("src/a.ts", "utf-8");
+	});
+
+	it("does not read a non-existent file: readFileSync is skipped when existsSync is false (L158 conditional)", () => {
+		vi.mocked(existsSync).mockReturnValue(false);
+		run({ file_path: "src/a.ts", content: "NEW FULL FILE" }, { toolName: "Write" });
+		expect(readFileSync).not.toHaveBeenCalled();
+		expect(vi.mocked(buildAgentSafetyChecks)).toHaveBeenCalledWith(
+			"NEW FULL FILE",
+			"src/a.ts",
+			"pre_warn",
+			undefined,
+		);
+	});
+
+	it("does not treat a non-string old_string as pre-edit content — falls through to the disk read (L152 ternary)", () => {
+		vi.mocked(existsSync).mockReturnValue(true);
+		vi.mocked(readFileSync).mockReturnValue("DISK CONTENT");
+		run(
+			{ file_path: "src/a.ts", old_string: 123, content: "NEW FULL FILE" },
+			{ toolName: "Edit" },
+		);
+		expect(vi.mocked(buildAgentSafetyChecks)).toHaveBeenCalledWith(
+			"NEW FULL FILE",
+			"src/a.ts",
+			"pre_warn",
+			"DISK CONTENT",
+		);
 	});
 
 	it("falls back to undefined preEditContent when the on-disk read throws (L160 catch)", () => {
@@ -297,6 +327,27 @@ describe("evaluateWriteContentGuards", () => {
 		expect(scanPromptInjection).not.toHaveBeenCalled();
 	});
 
+	it("still skips injection scanning when content length is EXACTLY the threshold (L208 boundary <=)", () => {
+		run({ file_path: "src/a.ts", content: "x".repeat(10) });
+		expect(scanPromptInjection).not.toHaveBeenCalled();
+	});
+
+	it("passes a string event.cwd through to isContentScanExempt unchanged (L202 typeof guard, string case)", () => {
+		run(
+			{ file_path: "src/a.ts", content: "x".repeat(50) },
+			{ event: baseEvent({ cwd: "/my/proj" }) },
+		);
+		expect(isContentScanExempt).toHaveBeenCalledWith("src/a.ts", "/my/proj");
+	});
+
+	it("passes undefined to isContentScanExempt when event.cwd is not a string (L202 typeof guard, non-string case)", () => {
+		run(
+			{ file_path: "src/a.ts", content: "x".repeat(50) },
+			{ event: baseEvent({ cwd: 12345 as unknown as string }) },
+		);
+		expect(isContentScanExempt).toHaveBeenCalledWith("src/a.ts", undefined);
+	});
+
 	it("skips injection scanning when the path is exempt", () => {
 		vi.mocked(isContentScanExempt).mockReturnValue(true);
 		run({ file_path: "src/a.test.ts", content: "x".repeat(50) });
@@ -306,6 +357,27 @@ describe("evaluateWriteContentGuards", () => {
 	it("returns null (no block, no escalation) when scanPromptInjection finds nothing", () => {
 		const result = run({ file_path: "src/a.ts", content: "x".repeat(50) });
 		expect(result.kind).toBe("ok");
+	});
+
+	it("treats mixed-severity matches as high confidence when only SOME are critical/high (L213 .some, not .every)", () => {
+		vi.mocked(scanPromptInjection).mockReturnValue([
+			{
+				category: "prompt_injection",
+				rule_id: "pi-a",
+				severity: "low",
+				description: "low one",
+				matched_text: "x",
+			},
+			{
+				category: "prompt_injection",
+				rule_id: "pi-b",
+				severity: "critical",
+				description: "crit one",
+				matched_text: "y",
+			},
+		]);
+		const result = run({ file_path: "src/a.ts", content: "x".repeat(50) });
+		expect(result.kind).toBe("block");
 	});
 
 	it("blocks on a critical-severity injection match (highConfidence true)", () => {
@@ -363,6 +435,23 @@ describe("evaluateWriteContentGuards", () => {
 		]);
 	});
 
+	it("truncates recent_tool_sequence to the last 10 entries (L234 .slice(-10))", () => {
+		vi.mocked(scanPromptInjection).mockReturnValue([
+			{
+				category: "prompt_injection",
+				rule_id: "pi-4",
+				severity: "low",
+				description: "d",
+				matched_text: "m",
+			},
+		]);
+		const longSeq = Array.from({ length: 15 }, (_, i) => `Tool${i}`);
+		const session = baseSession({ tool_sequence: longSeq });
+		const result = run({ file_path: "src/a.ts", content: "x".repeat(50) }, { session });
+		if (result.kind !== "ok") throw new Error("unreachable");
+		expect(result.escalation?.recent_tool_sequence).toEqual(longSeq.slice(-10));
+	});
+
 	it("escalates using the session's own fields when a session is present", () => {
 		vi.mocked(scanPromptInjection).mockReturnValue([
 			{
@@ -398,11 +487,60 @@ describe("evaluateWriteContentGuards", () => {
 		]);
 	});
 
+	it("does not attempt JSON.parse on whitespace-only content (L256 .trim() truthiness)", () => {
+		const result = run({ file_path: "config.json", content: "   \n  " });
+		expect(result.kind).toBe("ok");
+		if (result.kind !== "ok") throw new Error("unreachable");
+		expect(result.warnings).toEqual([]);
+	});
+
+	it("does not call findMalformedRulesIn for a plain (non-claude-settings) json file (L264 guard)", async () => {
+		const { findMalformedRulesIn } = await import("../../lib/settings-validator.js");
+		run({ file_path: "config.json", content: "{}" });
+		expect(findMalformedRulesIn).not.toHaveBeenCalled();
+	});
+
+	it("does not call findMalformedRulesIn when JSON parsing failed, even for a real claude settings path (L264 parsedJson===undefined operand)", async () => {
+		// A non-settings path short-circuits on the FIRST `||` operand, so it can
+		// never observe a mutation to the SECOND operand (`parsedJson ===
+		// undefined`) — this case forces the first operand false so the second
+		// one is actually evaluated.
+		const { findMalformedRulesIn } = await import("../../lib/settings-validator.js");
+		run({ file_path: ".claude/settings.json", content: "{ not valid json" });
+		expect(findMalformedRulesIn).not.toHaveBeenCalled();
+	});
+
 	it("does not warn or block for valid JSON on a non-settings path", () => {
 		const result = run({ file_path: "config.json", content: '{"a":1}' });
 		expect(result.kind).toBe("ok");
 		if (result.kind !== "ok") throw new Error("unreachable");
 		expect(result.warnings).toEqual([]);
+	});
+
+	it("truncates a long JSON parse error message to 100 chars (L261 .slice(0,100))", () => {
+		const longMsg = "A".repeat(100) + "OVERFLOW-TAIL-SHOULD-BE-CUT";
+		const spy = vi.spyOn(JSON, "parse").mockImplementation(() => {
+			throw new Error(longMsg);
+		});
+		try {
+			const result = run({ file_path: "config.json", content: "{}" });
+			if (result.kind !== "ok") throw new Error("unreachable");
+			const warning = result.warnings.find((w) => w.includes("Invalid JSON"));
+			expect(warning).toContain("A".repeat(100));
+			expect(warning).not.toContain("OVERFLOW-TAIL-SHOULD-BE-CUT");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("does not treat a path with .claude/settings.json in the MIDDLE (not at the true end) as a claude settings file (L138 $ anchor)", async () => {
+		const { findMalformedRulesIn } = await import("../../lib/settings-validator.js");
+		const result = run({
+			file_path: "foo/.claude/settings.json/backup.json",
+			content: "{}",
+		});
+		expect(result.kind).toBe("ok");
+		expect(findMalformedRulesIn).not.toHaveBeenCalled();
 	});
 
 	it("blocks a malformed permission rule written to .claude/settings.json", async () => {
@@ -471,6 +609,21 @@ describe("evaluateWriteContentGuards", () => {
 		);
 	});
 
+	it("blocks a .jpg extension (L56 jpe?g — the ? makes the e optional, not literal)", () => {
+		const result = run({ file_path: "assets/photo.jpg", content: "x" });
+		expect(result.kind).toBe("block");
+	});
+
+	it("blocks a .woff extension without the trailing 2 (L56 woff2? — the ? makes the 2 optional)", () => {
+		const result = run({ file_path: "assets/font.woff", content: "x" });
+		expect(result.kind).toBe("block");
+	});
+
+	it("does not block a filename that merely CONTAINS a binary extension mid-path, not at the end (L56 $ anchor)", () => {
+		const result = run({ file_path: "notes.pdf.md", content: "x" });
+		expect(result.kind).not.toBe("block");
+	});
+
 	it("blocks writes containing merge-conflict markers", () => {
 		const content = ["<<<<<<< HEAD", "mine", "=======", "theirs", ">>>>>>> branch"].join("\n");
 		const result = run({ file_path: "src/a.ts", content });
@@ -480,11 +633,107 @@ describe("evaluateWriteContentGuards", () => {
 		);
 	});
 
+	// ── MERGE_CONFLICT_MARKER boundary tests (L59) — each isolates ONE marker
+	// line so no OTHER (unmutated) alternative in the regex masks the mutant.
+
+	it("does not treat a mid-line '<<<<<<< ' substring as a conflict marker (L59 requires ^ line-start)", () => {
+		const content = 'const s = "embedded <<<<<<< marker mid-line";\n';
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("requires exactly 7 '<' characters, not just one, for the conflict-start marker (L59 <{7})", () => {
+		const content = "< something not a real conflict marker\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("requires whitespace immediately after the 7 '<' characters (L59 <{7}\\s, isolated: no other marker line present)", () => {
+		const content = "<<<<<<< HEAD\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).toBe("block");
+	});
+
+	it("requires exactly 7 '=' filling the whole line, not just a 7-'=' prefix (L59 ^={7}$)", () => {
+		const content = "======= extra text on the line, not a real conflict marker\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("does not treat a trailing 7-'=' run NOT at line start as a conflict marker (L59 requires ^ before ={7}$)", () => {
+		const content = "text=======\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("requires exactly 7 '=' characters, not just one, for the divider marker (L59 ={7})", () => {
+		const content = "=\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("does not treat a mid-line '>>>>>>> ' substring as a conflict marker (L59 requires ^ line-start)", () => {
+		const content = 'const s = "embedded >>>>>>> marker mid-line";\n';
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("requires exactly 7 '>' characters, not just one, for the conflict-end marker (L59 >{7})", () => {
+		const content = "> something not a real conflict marker\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).not.toBe("block");
+	});
+
+	it("requires whitespace immediately after the 7 '>' characters (L59 >{7}\\s, isolated: no other marker line present)", () => {
+		const content = ">>>>>>> branch\nexport const x = 1;\n";
+		const result = run({ file_path: "src/a.ts", content });
+		expect(result.kind).toBe("block");
+	});
+
+	it("blocks a write starting with /etc/ even when the path does not END with /etc/ (L293 startsWith, not endsWith)", () => {
+		const result = run({ file_path: "/etc/shadow", content: "x" });
+		expect(result.kind).toBe("block");
+	});
+
+	it("blocks a write starting with /usr/ even when the path does not END with /usr/ (L293 startsWith, not endsWith)", () => {
+		const result = run({ file_path: "/usr/bin/evil", content: "x" });
+		expect(result.kind).toBe("block");
+	});
+
 	// ── preBlockRegistryGuard + deferrableTransientGuard (L333-388) ────────
 
 	it("returns null when the registry gate reports no outcomes", () => {
 		const result = run({ file_path: "src/a.ts", content: "clean" });
 		expect(result.kind).toBe("ok");
+	});
+
+	it("L343: preBlockRegistryGuard prefers findProjectRoot's result over event.cwd/process.cwd()", () => {
+		vi.mocked(findProjectRoot).mockReturnValue("/found/root");
+		run({ file_path: "src/a.ts", content: "clean" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(runPreBlockRegistryGate).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRoot: "/found/root" }),
+		);
+	});
+
+	it("L343: preBlockRegistryGuard falls back to event.cwd (not process.cwd()) when findProjectRoot is null", () => {
+		vi.mocked(findProjectRoot).mockReturnValue(null);
+		run({ file_path: "src/a.ts", content: "clean" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(runPreBlockRegistryGate).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRoot: "/event/cwd" }),
+		);
+	});
+
+	it("L343: findProjectRoot's own second argument is event.cwd (not event.cwd && process.cwd()) — checking the FIRST call specifically (isolated, no deferrable outcome)", () => {
+		run(
+			{ file_path: "src/a.ts", content: "clean" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: {
+					quality_checks: { typescript: { enabled: false }, biome_lint: { enabled: false } },
+				} as never,
+			},
+		);
+		expect(findProjectRoot).toHaveBeenNthCalledWith(1, "src/a.ts", "/event/cwd");
 	});
 
 	it("blocks on a non-deferrable introduced finding", () => {
@@ -510,6 +759,31 @@ describe("evaluateWriteContentGuards", () => {
 		expect(preBlockIntroducedBlock).toHaveBeenCalledTimes(1);
 	});
 
+	it("only folds DEFERRABLE outcomes into the transient ledger, not all outcomes (L352 .filter)", () => {
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "non_deferrable_check",
+				introduced: [],
+				preexisting: [{ line: 9, text: "old finding" }],
+				instruction: "n/a",
+				deferrable: false,
+			},
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		run({ file_path: "src/a.ts", content: "// TODO" });
+		expect(applyTransientDebt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				findings: [{ detector: "todo_comment", line: 1, message: "TODO" }],
+			}),
+		);
+	});
+
 	it("folds a deferrable finding into the transient ledger and does not block when the ledger returns no decision", () => {
 		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
 			{
@@ -531,6 +805,52 @@ describe("evaluateWriteContentGuards", () => {
 				findings: [{ detector: "todo_comment", line: 1, message: "TODO" }, { detector: "todo_comment", line: 9, message: "old TODO" }],
 			}),
 		);
+	});
+
+	it("still surfaces pre-existing warnings when a deferrable finding's debt check returns no decision (L355 if(deferred) — true variant)", () => {
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [{ line: 9, text: "old TODO" }],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		vi.mocked(preexistingPreBlockWarnings).mockReturnValue(["[interlinked:pre-block] preexisting note"]);
+		vi.mocked(applyTransientDebt).mockReturnValue({ decision: null, warnings: [] });
+		const result = run({ file_path: "src/a.ts", content: "// TODO" });
+		expect(result.kind).toBe("ok");
+		if (result.kind !== "ok") throw new Error("unreachable");
+		expect(result.warnings).toContain("[interlinked:pre-block] preexisting note");
+	});
+
+	it("blocks when the transient ledger returns a due decision for a deferrable finding, isolated from the tsc overlay's own debt call (L355 if(deferred) — false variant)", () => {
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		vi.mocked(applyTransientDebt).mockReturnValue({
+			decision: { decision: "block", reason: "debt due", rule_id: "transient-debt" } as never,
+			warnings: [],
+		});
+		const result = run(
+			{ file_path: "src/a.ts", content: "// TODO" },
+			{
+				rules: {
+					quality_checks: { typescript: { enabled: false }, biome_lint: { enabled: false } },
+				} as never,
+			},
+		);
+		expect(result).toEqual({
+			kind: "block",
+			decision: { decision: "block", reason: "debt due", rule_id: "transient-debt", warnings: [] },
+		});
 	});
 
 	it("blocks when the transient ledger returns a due decision for a deferrable finding (L354-355, L385)", () => {
@@ -571,6 +891,78 @@ describe("evaluateWriteContentGuards", () => {
 		expect(result.warnings).toContain("[interlinked:pre-block] preexisting");
 	});
 
+	it("L371+L373: deferrableTransientGuard prefers findProjectRoot's result and normalizes dryRun via !! (isolated from the tsc/biome overlays' own debt calls)", () => {
+		vi.mocked(findProjectRoot).mockReturnValue("/found/root");
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		run(
+			{ file_path: "src/a.ts", content: "// TODO" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: {
+					quality_checks: { typescript: { enabled: false }, biome_lint: { enabled: false } },
+				} as never,
+			},
+		);
+		expect(applyTransientDebt).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRoot: "/found/root", dryRun: false }),
+		);
+	});
+
+	it("L371: deferrableTransientGuard falls back to event.cwd (not process.cwd()) when findProjectRoot is null (isolated)", () => {
+		vi.mocked(findProjectRoot).mockReturnValue(null);
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		run(
+			{ file_path: "src/a.ts", content: "// TODO" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: {
+					quality_checks: { typescript: { enabled: false }, biome_lint: { enabled: false } },
+				} as never,
+			},
+		);
+		expect(applyTransientDebt).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRoot: "/event/cwd" }),
+		);
+	});
+
+	it("L371: findProjectRoot's own second argument is event.cwd (not event.cwd && process.cwd()) — checking the SECOND call (deferrable path) specifically (isolated via call order)", () => {
+		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
+			{
+				checkId: "todo_comment",
+				introduced: [{ line: 1, text: "TODO" }],
+				preexisting: [],
+				instruction: "resolve",
+				deferrable: true,
+			},
+		] as never);
+		run(
+			{ file_path: "src/a.ts", content: "// TODO" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: {
+					quality_checks: { typescript: { enabled: false }, biome_lint: { enabled: false } },
+				} as never,
+			},
+		);
+		expect(findProjectRoot).toHaveBeenNthCalledWith(2, "src/a.ts", "/event/cwd");
+	});
+
 	it("passes the resolved project root through to the deferrable transient guard (L370)", () => {
 		vi.mocked(findProjectRoot).mockReturnValue("/resolved/root");
 		vi.mocked(runPreBlockRegistryGate).mockReturnValue([
@@ -589,6 +981,29 @@ describe("evaluateWriteContentGuards", () => {
 	});
 
 	// ── biomeDiffOverlayGuard (L393-421) ────────────────────────────────────
+
+	it("L396: biomeDiffOverlayGuard prefers findProjectRoot's result over event.cwd/process.cwd()", () => {
+		vi.mocked(findProjectRoot).mockReturnValue("/found/root");
+		run({ file_path: "src/a.ts", content: "x" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(evaluateBiomeDiffOverlay).toHaveBeenCalledWith("src/a.ts", "x", "/found/root");
+	});
+
+	it("L396: biomeDiffOverlayGuard falls back to event.cwd (not process.cwd()) when findProjectRoot is null", () => {
+		vi.mocked(findProjectRoot).mockReturnValue(null);
+		run({ file_path: "src/a.ts", content: "x" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(evaluateBiomeDiffOverlay).toHaveBeenCalledWith("src/a.ts", "x", "/event/cwd");
+	});
+
+	it("L396: findProjectRoot's own second argument is event.cwd (not event.cwd && process.cwd()) — checking the biome-guard's call specifically (isolated via call order, tsc disabled)", () => {
+		run(
+			{ file_path: "src/a.ts", content: "x" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: { quality_checks: { typescript: { enabled: false } } } as never,
+			},
+		);
+		expect(findProjectRoot).toHaveBeenNthCalledWith(2, "src/a.ts", "/event/cwd");
+	});
 
 	it("skips the biome overlay entirely when disabled by config", () => {
 		run(
@@ -648,6 +1063,49 @@ describe("evaluateWriteContentGuards", () => {
 
 	// ── tscDiffOverlayGuard (L426-465) ──────────────────────────────────────
 
+	it("L429: tscDiffOverlayGuard prefers findProjectRoot's result over event.cwd/process.cwd()", () => {
+		vi.mocked(findProjectRoot).mockReturnValue("/found/root");
+		run({ file_path: "src/a.ts", content: "x" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(evaluateTscDiffOverlay).toHaveBeenCalledWith("src/a.ts", "x", "/found/root");
+	});
+
+	it("L429: tscDiffOverlayGuard falls back to event.cwd (not process.cwd()) when findProjectRoot is null", () => {
+		vi.mocked(findProjectRoot).mockReturnValue(null);
+		run({ file_path: "src/a.ts", content: "x" }, { event: baseEvent({ cwd: "/event/cwd" }) });
+		expect(evaluateTscDiffOverlay).toHaveBeenCalledWith("src/a.ts", "x", "/event/cwd");
+	});
+
+	it("L429: findProjectRoot's own second argument is event.cwd (not event.cwd && process.cwd()) — checking the tsc-guard's call specifically (isolated via call order, biome disabled)", () => {
+		run(
+			{ file_path: "src/a.ts", content: "x" },
+			{
+				event: baseEvent({ cwd: "/event/cwd" }),
+				rules: { quality_checks: { biome_lint: { enabled: false } } } as never,
+			},
+		);
+		expect(findProjectRoot).toHaveBeenNthCalledWith(2, "src/a.ts", "/event/cwd");
+	});
+
+	it("filters warnOnly to exclude blocking findings (L432 .filter, not raw array)", () => {
+		vi.mocked(isTscFindingBlocking).mockImplementation(
+			(f: { ruleId?: string | undefined }) => f.ruleId === "TS2345",
+		);
+		vi.mocked(evaluateTscDiffOverlay).mockReturnValue({
+			newFindings: [
+				{ ruleId: "TS2345", line: 1, message: "blocking one" },
+				{ ruleId: "TS7053", line: 2, message: "warn one" },
+			] as never,
+			proposedFindings: [] as never,
+			elapsedMs: 1,
+			exceededBudget: false,
+		});
+		const result = run({ file_path: "src/a.ts", content: "x" }, { toolName: "MultiEdit" });
+		if (result.kind !== "block") throw new Error("expected block");
+		expect(result.decision.warnings).toEqual([
+			"[interlinked:tsc-overlay] src/a.ts:2 — TS7053 warn one. New in this edit (deferred, not dismissed).",
+		]);
+	});
+
 	it("skips the tsc overlay entirely when disabled by config", () => {
 		run(
 			{ file_path: "src/a.ts", content: "x" },
@@ -695,6 +1153,33 @@ describe("evaluateWriteContentGuards", () => {
 		});
 	});
 
+	it("L442+L446: tscDiffOverlayGuard passes the full debt payload to applyTransientDebt, with dryRun normalized via !! (isolated — no deferrable pre-block outcome)", () => {
+		vi.mocked(evaluateTscDiffOverlay).mockReturnValue({
+			newFindings: [],
+			proposedFindings: [{ ruleId: "TS7053", line: 6, message: "implicit any" }] as never,
+			elapsedMs: 4,
+			exceededBudget: false,
+		});
+		vi.mocked(deferrableFromTsc).mockReturnValue([
+			{ detector: "tsc", line: 6, message: "implicit any" },
+		] as never);
+		vi.mocked(findProjectRoot).mockReturnValue("/found/root");
+		const event = baseEvent({ session_id: "sess-xyz" });
+		run(
+			{ file_path: "src/a.ts", content: "x" },
+			{ event, rules: { quality_checks: { transient_debt: { enabled: true } } } as never },
+		);
+		expect(applyTransientDebt).toHaveBeenCalledWith({
+			filePath: "src/a.ts",
+			projectRoot: "/found/root",
+			sessionId: "sess-xyz",
+			dryRun: false,
+			findings: [{ detector: "tsc", line: 6, message: "implicit any" }],
+			content: "x",
+			config: { enabled: true },
+		});
+	});
+
 	it("blocks on a genuinely new hard type error, outranking any debt decision", () => {
 		vi.mocked(evaluateTscDiffOverlay).mockReturnValue({
 			newFindings: [{ ruleId: "TS2345", line: 8, column: 2, message: "type mismatch" }] as never,
@@ -710,6 +1195,20 @@ describe("evaluateWriteContentGuards", () => {
 		if (result.kind !== "block") throw new Error("expected block");
 		expect(result.decision.rule_id).toBe("tsc-diff-overlay");
 		expect(result.decision.reason).toContain("BLOCKED by tsc diff-overlay");
+	});
+
+	it("pins the full block-decision shape from a hard tsc type error (decision/severity/category literals, L456/460/461)", () => {
+		vi.mocked(evaluateTscDiffOverlay).mockReturnValue({
+			newFindings: [{ ruleId: "TS2345", line: 8, column: 2, message: "type mismatch" }] as never,
+			proposedFindings: [] as never,
+			elapsedMs: 4,
+			exceededBudget: false,
+		});
+		const result = run({ file_path: "src/a.ts", content: "x" }, { toolName: "MultiEdit" });
+		if (result.kind !== "block") throw new Error("expected block");
+		expect(result.decision.decision).toBe("block");
+		expect(result.decision.severity).toBe("high");
+		expect(result.decision.category).toBe("pre-block");
 	});
 
 	// ── strictTypingOverlayGuard (L475-500) ─────────────────────────────────
@@ -836,6 +1335,25 @@ describe("evaluateWriteContentGuards", () => {
 	});
 
 	// ── strictTypingOverlayGuard: no '+N more' summary for a single finding (L481) ──
+
+	it("truncates the strict-typing lineList to the first 5 findings (L482 .slice(0,5))", () => {
+		const manyFindings = Array.from({ length: 8 }, (_, i) => ({
+			ruleId: "as-any",
+			line: i + 1,
+			message: `as any used #${i + 1}`,
+		}));
+		vi.mocked(evaluateTypeErasureOverlay).mockReturnValue({
+			applicable: true,
+			newFindings: manyFindings as never,
+		});
+		const result = run(
+			{ file_path: "src/a.ts", content: "x as any" },
+			{ rules: { quality_checks: { strict_typing_block: { enabled: true } } } as never },
+		);
+		if (result.kind !== "block") throw new Error("expected block");
+		expect(result.decision.reason).toContain("(L1, L2, L3, L4, L5)");
+		expect(result.decision.reason).not.toContain("L6");
+	});
 
 	it("does not include a '+N more' summary for a single strict-typing finding", () => {
 		vi.mocked(evaluateTypeErasureOverlay).mockReturnValue({
