@@ -5,14 +5,23 @@
 // raw pkill kills active and orphans alike; this command keeps the active
 // daemon alive by default. Reuses the helper in `commands/harness.ts` that
 // already gates on (a) the active `harness.pid`, (b) the shell/agent ancestor
-// chain, (c) self-pid. Default is dry-run so the user sees the impact before
-// opting in.
+// chain, (c) self-pid, and — since 2026-08-16 — (d) any daemon that ANSWERS
+// its socket, resolved by a live probe rather than inferred from `ps`. That
+// last gate is why this goes through `reapOrphanHarnessesVerified`: reaping a
+// serving daemon opens the guard gap that makes the next blocked caller start
+// another one, which is the 2026-08-15 restart storm. Use `harness stop` to
+// stop a live daemon; a reaper only cleans up the dead. Default is dry-run so
+// the user sees the impact before opting in.
 //
 // Spec: docs/plans/free-cli-adoption/_phase-e-operational-commands.md §1.
 
 import { c } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
-import { type ReapResult, reapOrphanHarnesses } from "./harness.js";
+import {
+	type DaemonControlDeps,
+	reapOrphanHarnessesVerified,
+} from "./harness-daemon-control.js";
+import type { ReapResult } from "./harness.js";
 
 const DECISION_BLOCK = "block";
 void DECISION_BLOCK; // satisfies lint about magic string in conditional — unused
@@ -20,7 +29,9 @@ void DECISION_BLOCK; // satisfies lint about magic string in conditional — unu
 export interface HarnessReapOptions {
 	/** Skip dry-run safety; actually issue SIGTERM. */
 	force?: boolean;
-	/** Also signal the active daemon (equivalent of bash `pkill -f`). */
+	/** Widen scope past the active-pid + ancestor protections (the closest this
+	 *  command gets to `pkill -f`). A daemon that answers its socket is STILL
+	 *  protected — use `interlinked harness stop` to stop a live daemon. */
 	all?: boolean;
 	/** Machine-readable output. */
 	json?: boolean;
@@ -39,7 +50,10 @@ interface ReapOutputJson {
  * SIGTERM. `--all` widens scope to include the active daemon. Combine
  * `--force --all` for the equivalent of `pkill -f` plus state cleanup.
  */
-export async function harnessReapCommand(options: HarnessReapOptions = {}): Promise<void> {
+export async function harnessReapCommand(
+	options: HarnessReapOptions = {},
+	deps: DaemonControlDeps = {},
+): Promise<void> {
 	const mode = getOutputMode(options);
 	const cwd = process.cwd();
 	const dryRun = options.force !== true;
@@ -47,7 +61,7 @@ export async function harnessReapCommand(options: HarnessReapOptions = {}): Prom
 
 	let result: ReapResult;
 	try {
-		result = reapOrphanHarnesses(cwd, { dryRun, killAll });
+		result = await reapOrphanHarnessesVerified(cwd, { dryRun, killAll }, deps);
 	} catch (err) {
 		outputError(mode, err instanceof Error ? err.message : String(err));
 		return;

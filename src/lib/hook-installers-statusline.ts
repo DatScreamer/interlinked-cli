@@ -15,7 +15,7 @@ import { CLIENT_CLAUDE, CLIENT_COPILOT } from "./hook-types.js";
 import type { JsonObject } from "./json-types.js";
 import { STATUSLINE_SHELL_HELPERS } from "./statusline-shell-helpers.js";
 import type { ClientName } from "./settings.js";
-import { downBranchBash, resolveReviveBakes } from "./statusline-revive.js";
+import { downBranchBash, pidDiscoveryBash, resolveReviveBakes } from "./statusline-revive.js";
 
 const STATUSLINE_SCRIPT_NAME = "statusline-interlinked.sh";
 
@@ -81,7 +81,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     IL="$DIR/.interlinked"
     if [ -f "$IL/config.json" ] || [ -f "$IL/config.local.json" ] || [ -S "$IL/harness.sock" ] || [ -S "$IL/harness-default.sock" ]; then
         ROOT="$DIR"
-        [ -f "$IL/harness.pid" ] && PID=$(cat "$IL/harness.pid" 2>/dev/null)
+        ${pidDiscoveryBash()}
         break
     fi
     P=$(dirname "$DIR")

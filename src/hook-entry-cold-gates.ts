@@ -195,7 +195,13 @@ export function coldGraphShardBlockReason(event: UnifiedHookEvent): string | nul
 				"[interlinked:graph-pred][harness-offline] Cannot evaluate the graph-prediction protocol because the harness daemon is unreachable (or did not respond in time), but " +
 				abs +
 				" has a fresh Supermodel shard colocated. Edits to E-fresh files MUST go through the predict/reveal/reconcile loop. " +
-				"Start the harness with: interlinked harness start  (or restart it). Once it's up, retry your edit. " +
+				// NO "run `interlinked harness start`" here. Every blocked caller
+				// followed that advice at once on 2026-08-15; the simultaneous
+				// starts raced, killed the incumbent, and re-opened the gap for
+				// hours. The supervisor brings exactly one daemon back.
+				"Retry your edit in a few seconds — the daemon supervisor restarts the harness for you. " +
+				"Do NOT start one by hand; concurrent starts race each other. Only if it is still down " +
+				"after 30 seconds, run: interlinked harness start. " +
 				"Override (advanced, defeats the protocol): set INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1."
 			);
 		} catch {

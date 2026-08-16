@@ -147,7 +147,14 @@ export function formatEnforcementGapWarning(gaps: EnforcementGap[], nowMs: numbe
 		return (
 			`[interlinked:enforcement] Gates have been OFF for ${humanMs(nowMs - ongoing.from)} — ${why}. ` +
 			"Edits are proceeding UNCHECKED (the guard fails open). " +
-			"Run `interlinked harness reap` then `interlinked harness start`; if a pid file names a live process that serves nothing, kill that pid first."
+			// Do NOT tell every reader to run `harness start`. This warning goes to
+			// EVERY actor in the gap at once, and on 2026-08-15 they all followed
+			// that advice inside the same second: the concurrent starts raced,
+			// reaped the winner, and re-opened the gap for hours. The supervisor
+			// restarts one daemon under the startup mutex; patience is the fix.
+			"Retry in a few seconds — the daemon supervisor restarts the harness under a startup mutex. " +
+			"Do NOT start one by hand; concurrent starts race each other. Only if it is still off after " +
+			"30 seconds, run `interlinked harness reap` then `interlinked harness start`."
 		);
 	}
 	return (

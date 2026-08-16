@@ -22,6 +22,7 @@ import { methodForPhase, type RpcMethod } from "./harness/daemon-protocol.js";
 import { callLegacyHarness, isLegacyHarnessSocket } from "./harness/legacy-client.js";
 import { recordPayloadKeys } from "./harness/payload-key-census.js";
 import type { HarnessDecision } from "./harness/types.js";
+import { resetSupervisorBackoff } from "./harness/supervisor-backoff.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
 import {
 	coldDestructiveCommandBlockReason,
@@ -35,6 +36,7 @@ import {
 	coldDaemonUnreachableBlockReason,
 	findRepoRoot,
 } from "./hook-entry-daemon-gate.js";
+import { coldDaemonUnreachableBlockReasonFresh } from "./hook-entry-daemon-probe.js";
 import { defaultTimeoutForPhase, isCodeEditEvent } from "./hook-entry-deadlines.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
 import { nonNull } from "./lib/non-null.js";
@@ -103,7 +105,7 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	if (!socketPath) {
 		// No daemon available at all — cold fallback (which itself fails closed
 		// when a daemon was running here and crashed; see encodeColdFallback).
-		return encodeColdFallback(adapter, event, "daemon socket not found", gateCwd, opts.env);
+		return await encodeColdFallback(adapter, event, "daemon socket not found", gateCwd, opts.env);
 	}
 
 	const method = methodForPhase(event.phase);
@@ -118,9 +120,14 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 			: await safeCallDaemon({ socketPath, method, event, timeoutMs });
 	if (result.ok) {
 		decision = result.decision;
+		// A served RPC proves the daemon is healthy, so every earlier failed
+		// self-heal is history: clear the supervisor's backoff ladder. Without
+		// this reset the decay would persist across a full recovery and delay
+		// the NEXT real outage's first heal by up to a minute.
+		resetSupervisorBackoff(dirname(dirname(socketPath)));
 	} else {
 		writeNoHarnessArtifact(dirname(socketPath), event, Date.now() - callStartMs);
-		const cold = encodeColdFallback(adapter, event, result.reason, gateCwd, opts.env);
+		const cold = await encodeColdFallback(adapter, event, result.reason, gateCwd, opts.env);
 		return cold;
 	}
 
@@ -328,13 +335,26 @@ function coldBlockResult(
 	};
 }
 
-function encodeColdFallback(
+/** True when the runner's native payload marked this a simulated event
+ *  (`interlinked harness test --write/--edit`). The unified event carries no
+ *  `dry_run` field of its own, so the raw payload is the only source. Every
+ *  evaluator that PERSISTS must honor this — a read-only probe that mutates
+ *  state is how three simulated writes opened real transient debt on 2026-08-04. */
+function isDryRunEvent(event: UnifiedHookEvent): boolean {
+	const raw = event.raw;
+	if (typeof raw !== "object" || raw === null) return false;
+	// SAFETY: object-ness checked above; the field is read as unknown and
+	// compared to `true`, so a non-boolean value can never be trusted.
+	return (raw as { dry_run?: unknown }).dry_run === true;
+}
+
+async function encodeColdFallback(
 	adapter: RunnerAdapter,
 	event: UnifiedHookEvent,
 	reason: string,
 	cwd?: string,
 	env: NodeJS.ProcessEnv = process.env,
-): HookEntryResult {
+): Promise<HookEntryResult> {
 	// Cold fallback: allow the action and report the skipped evaluator only
 	// on stderr. Do not put timeout/socket failures in decision warnings:
 	// Claude routes PreToolUse warnings into model-visible additionalContext,
@@ -350,11 +370,20 @@ function encodeColdFallback(
 	// guard layer is a security failure, not a degraded-mode convenience.
 	// Pre-tool only, with an explicit env escape hatch. (Distinct from "no
 	// daemon ever ran here", which preserves the allow path below.)
-	const daemonDownReason = coldDaemonUnreachableBlockReason(event, cwd, env);
+	// One fresh socket connect before the outage stands: the file evidence
+	// (pid, socket, ledger tail) went stale under us on 2026-08-15 and refused
+	// a Write while a live daemon was answering. See hook-entry-daemon-probe.ts.
+	const daemonDownReason = await coldDaemonUnreachableBlockReasonFresh(event, cwd, env);
 	if (daemonDownReason) {
-		// Self-heal: respawn the daemon (lock-guarded, no rebuild) so the NEXT call is
-		// guarded again; block THIS one. attemptDaemonSelfHeal never throws.
-		attemptDaemonSelfHeal(cwd ?? event.context?.cwd, env);
+		// Self-heal: respawn the daemon (lock-guarded, backoff-throttled, no
+		// rebuild) so the NEXT call is guarded again; block THIS one.
+		// attemptDaemonSelfHeal never throws. A dry-run event must not advance the
+		// supervisor's spawn ladder — a simulated write is a probe, not a caller.
+		attemptDaemonSelfHeal(
+			cwd ?? event.context?.cwd,
+			env,
+			isDryRunEvent(event) ? { dryRun: true } : {},
+		);
 		return coldBlockResult(adapter, event, reason, "harness-offline", daemonDownReason);
 	}
 

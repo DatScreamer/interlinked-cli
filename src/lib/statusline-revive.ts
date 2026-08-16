@@ -49,6 +49,24 @@ export function resolveReviveBakes(): ReviveBakes {
  * string as the rest of the script, so `\${...}` survives as a shell
  * expansion and `\\n` as a printf newline — identical conventions.
  */
+/**
+ * PID discovery for the statusline: first LIVE pid across every
+ * `harness*.pid` wins (raw + framed/session). Reading only `harness.pid`
+ * painted "restarting" forever whenever a stale raw file named a corpse next
+ * to a healthy framed daemon (the 2026-08-16 perpetual-restart illusion).
+ * Falls back to the first pid file at all (even dead) so the down branch can
+ * still show a pid. Same escaping contract as {@link downBranchBash}.
+ */
+export function pidDiscoveryBash(): string {
+	return `for PF in "$IL"/harness.pid "$IL"/harness-*.pid; do
+            [ -f "$PF" ] || continue
+            CAND=$(cat "$PF" 2>/dev/null)
+            case "$CAND" in ''|*[!0-9]*) continue;; esac
+            [ -z "$PID" ] && PID="$CAND"
+            if ps -p "$CAND" > /dev/null 2>&1; then PID="$CAND"; break; fi
+        done`;
+}
+
 export function downBranchBash(b: ReviveBakes): string {
 	return `# Debounce transient restart windows. A self-healing respawn (or a SessionStart
 # relaunch) leaves harness.pid pointing at a dead process for ~1-3s; without a
@@ -56,14 +74,10 @@ export function downBranchBash(b: ReviveBakes): string {
 # though the cold-path gate is already blocking edits fail-closed.
 DOWN_MARK="$ID/.statusline-down-since"
 DOWN_GRACE_SECS=6
-# Auto-revive: this script is the daemon's only idle-time heartbeat, so past
-# the grace window it SPAWNS the daemon rather than only alarming. Throttled
-# by a marker file; the daemon's own anti-stomp arbitrates races (a loser
-# exits and writes its own ledger row). Paths are baked at generation time.
-REVIVE_NODE="${b.nodeBin}"
-REVIVE_SERVER="${b.serverJs}"
+# No auto-revive here (2026-08-16): the hook supervisor (startup mutex +
+# exponential backoff) is the ONE process manager. See downBranchBash's
+# display-only comment for the incident this replaces.
 REVIVE_MARK="$ID/.statusline-revive-at"
-REVIVE_THROTTLE_SECS=20
 REVIVE_ALARM_SECS=45
 if [ "$ALIVE" = "0" ]; then
     NOW=$(date +%s)
@@ -80,20 +94,17 @@ if [ "$ALIVE" = "0" ]; then
         printf '%s\\n%s' "$LINE1" "$LINE2"
         exit 0
     fi
-    # Past grace: attempt revival, at most once per throttle window.
-    LAST_TRY=0
-    [ -f "$REVIVE_MARK" ] && LAST_TRY=$(cat "$REVIVE_MARK" 2>/dev/null)
-    case "$LAST_TRY" in *[!0-9]*|"") LAST_TRY=0;; esac
-    if [ "$((NOW - LAST_TRY))" -ge "$REVIVE_THROTTLE_SECS" ] && [ -n "$REVIVE_SERVER" ] && [ -x "$REVIVE_NODE" ] && [ -f "$REVIVE_SERVER" ]; then
-        echo "$NOW" > "$REVIVE_MARK" 2>/dev/null
-        # Subshell-level redirects matter: without them the daemon inherits the
-        # statusline's stdout PIPE and holds it open — every render then hangs
-        # waiting for EOF until the runner's timeout (caught live 2026-07-28).
-        ( cd "$ROOT" 2>/dev/null && "$REVIVE_NODE" --max-old-space-size=${b.heapMb} --expose-gc "$REVIVE_SERVER" --cwd "$ROOT" --protocol dual --session-id default </dev/null >/dev/null 2>&1 & ) </dev/null >/dev/null 2>&1
-    fi
+    # DISPLAY-ONLY past grace (2026-08-16): this statusline no longer spawns a
+    # daemon. It used to be a second, unmutexed supervisor — every render on
+    # every open session raced a raw \`node server.js\` against the hook
+    # supervisor's mutexed self-heal, each loser overwrote harness.pid on its
+    # way out, and the stale pid made the NEXT render spawn again: a perpetual
+    # "restarting" illusion next to a healthy daemon. One daemon, ONE
+    # supervisor — the hook's (startup mutex + exponential backoff). The
+    # statusline's job is to tell the truth, not to manage processes.
     if [ "$((NOW - SINCE))" -lt "$REVIVE_ALARM_SECS" ]; then
-        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness down — auto-reviving…\${RESET}"
-        LINE2="\${DIM}respawn fires from this statusline every \${REVIVE_THROTTLE_SECS}s — edits blocked until it's back\${RESET}"
+        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness down — hook supervisor restarting it…\${RESET}"
+        LINE2="\${DIM}edits blocked (fail-closed) until it's back\${RESET}"
         printf '%s\\n%s' "$LINE1" "$LINE2"
         exit 0
     fi

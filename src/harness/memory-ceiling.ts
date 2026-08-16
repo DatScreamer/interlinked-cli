@@ -36,8 +36,18 @@
  *  ("Reached heap limit", row-less ledger deaths). Must stay comfortably
  *  BELOW the RSS ceiling (pinned by test) or the recycler fires before GC
  *  does and every loaded daemon churns. Override with
- *  INTERLINKED_HARNESS_HEAP_MB. */
-export const DEFAULT_DAEMON_HEAP_MB = 1536;
+ *  INTERLINKED_HARNESS_HEAP_MB.
+ *
+ *  RE-SIZED 1536 → 2560 (2026-08-16, restart-storm postmortem): the live set
+ *  grew past the July measurement — idle baseline alone reached 640–825MB
+ *  (graphs + caches + disposition ledger), and one in-process tsc-overlay
+ *  burst on a src edit peaked the heap past 1536, so EVERY src edit killed
+ *  the daemon ("signal, unplanned" at rss 1.6–2.6GB) and the supervisor
+ *  storm sustained itself for hours. 2560 fits today's measured
+ *  baseline + one tsc burst + one manifest parse with GC headroom. The
+ *  structural fix (out-of-process typecheck worker) is tracked; this buys
+ *  correctness at today's footprint. */
+export const DEFAULT_DAEMON_HEAP_MB = 2560;
 
 const BYTES_PER_MB = 1024 * 1024;
 
@@ -48,8 +58,10 @@ const BYTES_PER_MB = 1024 * 1024;
  *  override), and recycling with handover is the right exit. The structural
  *  shrink (manifest sharding, index residency) is tracked work — this pairing
  *  buys availability at today's measured footprint, not a small daemon.
- *  Override with INTERLINKED_HARNESS_RSS_CEILING_MB; 0 disables. */
-export const DEFAULT_RSS_CEILING_BYTES = 1800 * 1024 * 1024;
+ *  Override with INTERLINKED_HARNESS_RSS_CEILING_MB; 0 disables.
+ *  Raised 2600 → 3584 with the heap re-size (2026-08-16) to preserve the
+ *  same regulator-below-backstop gap; the pinning test derives from both. */
+export const DEFAULT_RSS_CEILING_BYTES = 3584 * 1024 * 1024;
 
 /**
  * Is this process over its memory budget?

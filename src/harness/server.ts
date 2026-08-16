@@ -36,7 +36,7 @@ import { CohortManager, setActiveCohort } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner } from "./content-scanner/types.js";
-import { recordDaemonEvent } from "./daemon-ledger.js";
+import { recordDaemonEvent, recordDaemonExit } from "./daemon-ledger.js";
 import { ErrorHistory } from "./error-history.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { type FilePriority } from "./file-priority.js";
@@ -54,10 +54,9 @@ import { ReservationManager } from "./reservations.js";
 import { RouteMap } from "./route-map.js";
 import { loadRules, watchRulesFiles } from "./rules-loader.js";
 import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity-writer.js";
-import { type AntiStompDeps, loseAntiStompRace, reapZombieIncumbent } from "./server/anti-stomp.js";
+import { antiStompDepsFor, settleIncumbentAtBind } from "./server/incumbent-check.js";
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
-import { installCrashResilience } from "./server/crash-resilience.js";
 import { installDaemonTimers } from "./server/daemon-timers.js";
 import {
 	buildStartupMessage,
@@ -76,8 +75,8 @@ import { createStatusWriters } from "./server/status-writers.js";
 import { createServerBridge, type ServerBridge } from "./server-bridge.js";
 import { createEventLoop } from "./server-event-loop.js";
 import { createSocketLifecycle } from "./server-socket-lifecycle.js";
-import { DaemonOwnershipConflictError, startSessionDaemon } from "./session-daemon.js";
-import { daemonPathsFor, isDaemonSocketServing, liveForeignDaemonPid } from "./session-paths.js";
+import { createStartupGuard, runStartupSelfCheck, startFramedDaemonOrExit } from "./server/startup-guard.js";
+import { daemonPathsFor } from "./session-paths.js";
 import { SessionTracker } from "./session-state.js";
 import { watchSettingsFiles } from "./settings-watcher.js";
 import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/runtime.js";
@@ -152,10 +151,13 @@ function _earlyShutdown(): void {
 }
 process.on("SIGTERM", _earlyShutdown);
 process.on("SIGINT", _earlyShutdown);
-installCrashResilience(); // survive uncaught/async throws (crash-loop fix); see ./server/crash-resilience.ts
 const PROTOCOL_MODE: HarnessProtocolMode = parseProtocolMode(stringArg(args.protocol));
 const RUN_RAW_SOCKET = PROTOCOL_MODE !== "framed";
 const RUN_FRAMED_SOCKET = PROTOCOL_MODE !== "raw";
+// Arms the process-level survival handlers (crash-loop fix) with a STARTUP
+// exception: an uncaught error before every socket is bound is fatal, not
+// survivable — surviving it is how a deaf daemon is born (F1, 2026-08-14).
+const startupGuard = createStartupGuard({ cwd: CWD, runRaw: RUN_RAW_SOCKET, runFramed: RUN_FRAMED_SOCKET, logAlways });
 const FRAMED_SESSION_ID = stringArg(args["session-id"]) || process.env.INTERLINKED_SESSION_ID || "default";
 const FRAMED_PATHS = daemonPathsFor(CWD, FRAMED_SESSION_ID);
 // Always-on by default. Per-session Maps (classifierSessions, autoCoordStates,
@@ -539,16 +541,7 @@ const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = cr
 const DAEMON_STARTED_MS = Date.now();
 recordDaemonEvent(CWD, { at: DAEMON_STARTED_MS, pid: process.pid, event: "start" });
 const shutdownWith = (reason: string): void => {
-	recordDaemonEvent(CWD, {
-		at: Date.now(),
-		pid: process.pid,
-		event: "exit",
-		reason,
-		rss_mb: Math.round(process.memoryUsage().rss / 1048576),
-		heap_mb: Math.round(process.memoryUsage().heapUsed / 1048576),
-		ext_mb: Math.round((process.memoryUsage().external + process.memoryUsage().arrayBuffers) / 1048576),
-		uptime_s: Math.round((Date.now() - DAEMON_STARTED_MS) / 1000),
-	});
+	recordDaemonExit(CWD, reason, DAEMON_STARTED_MS);
 	shutdown();
 };
 const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, setUnwatchers } =
@@ -570,51 +563,16 @@ const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, 
 // Start Server
 // ===========================================
 
-// Shared anti-stomp loser contract (server/anti-stomp.ts): log, record the
-// ledger row, exit — deliberately NOT the full shutdown(), since nothing
-// bound in THIS process yet and shutdown()'s cleanup unconditionally unlinks
-// the raw socket a WINNER may already be live on.
-const antiStompDeps: AntiStompDeps = {
-	logAlways,
-	recordExit: () =>
-		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" }),
-	exit: () => process.exit(0),
-};
-
-// Refuse to start if a live daemon already owns this project's raw socket —
-// `cleanupSocket()` unconditionally unlinks `harness.sock`, so a second
-// `node server.js` for the same project used to silently delete the live
-// daemon's socket out from under it. A stale pid (dead process) returns
-// null (crash-restart proceeds); a live pid with no socket file also proceeds.
-//
-// A live PID alone is NOT proof of a healthy incumbent: `installCrashResilience()`
-// deliberately keeps the process running through an unexpected error, so a
-// daemon whose socket LISTENER died (but not the process) still passes
-// `liveForeignDaemonPid` forever — measured in production as a daemon alive
-// 9+ hours with `lsof` showing no bound listener, while every new start lost
-// this race and exited (220 starts/hour). Confirm the incumbent actually
-// ANSWERS before deferring to it; a live-but-silent PID is reaped and taken
-// over instead.
-const __foreignDaemonPid = liveForeignDaemonPid(PID_PATH);
-if (__foreignDaemonPid !== null && existsSync(SOCKET_PATH)) {
-	let __incumbentServing: boolean;
-	try {
-		__incumbentServing = await isDaemonSocketServing(SOCKET_PATH);
-	} catch {
-		// Fail safe: an unexpected throw from the probe itself is not proof
-		// the incumbent is dead — prefer deferring (the pre-fix behavior)
-		// over stomping a possibly-healthy daemon's socket.
-		__incumbentServing = true;
-	}
-	if (__incumbentServing) {
-		loseAntiStompRace({ ownerPid: __foreignDaemonPid, detail: "the raw socket", cwd: CWD, deps: antiStompDeps });
-	} else {
-		logAlways(
-			`[interlinked] PID ${__foreignDaemonPid} holds ${PID_PATH} but its raw socket is not answering — reaping the zombie and taking over.`,
-		);
-		reapZombieIncumbent(__foreignDaemonPid, logAlways);
-	}
-}
+// Who owns this socket? The verdict comes from a CONNECT, never from the pid
+// table (see server/incumbent-check.ts, which carries the full history): a
+// socket that accepts proves a live incumbent — deferred to, never stomped,
+// never signalled, this process exits 0 as "already running". A socket that
+// refuses proves a corpse whatever the pid file claims: it is unlinked, and a
+// live-but-deaf owner is reaped, before this process binds. That second branch
+// is what ends the "every newcomer exits startup-failed on the same stale
+// socket while nothing serves" deadlock measured 2026-08-15.
+const antiStompDeps = antiStompDepsFor(CWD, logAlways);
+await settleIncumbentAtBind({ socketPath: SOCKET_PATH, pidPath: PID_PATH, cwd: CWD, logAlways });
 
 // Clean up stale raw socket from previous run. Framed startup performs its own
 // PID-aware stale-artifact check before removing `harness-*.sock`.
@@ -782,9 +740,13 @@ process.on("SIGHUP", () => {
 const tsgoRunner = createTsgoRunner();
 
 if (RUN_FRAMED_SOCKET) {
-	try {
-		setFramedDaemon(
-			await startSessionDaemon({
+	// Both failure modes (ownership conflict → anti-stomp exit 0; anything
+	// else → loud exit 78 + ledger row) resolve inside the helper. Nothing
+	// rethrows: a throw out of this top-level await is what used to reach
+	// installCrashResilience()'s survive handler and leave a deaf daemon.
+	setFramedDaemon(
+		await startFramedDaemonOrExit(
+			{
 				paths: FRAMED_PATHS,
 				session_id: FRAMED_SESSION_ID,
 				idle_shutdown_ms: IDLE_TIMEOUT_MS,
@@ -802,26 +764,18 @@ if (RUN_FRAMED_SOCKET) {
 					}),
 					evaluateHook: evaluateUnifiedViaRuntime,
 				},
-			}),
-		);
-	} catch (err) {
-		// Sibling daemon won the session's ownership race — see server/anti-stomp.ts.
-		if (!(err instanceof DaemonOwnershipConflictError)) throw err;
-		loseAntiStompRace({
-			ownerPid: err.ownerPid,
-			detail: `the framed session "${FRAMED_SESSION_ID}"`,
-			cwd: CWD,
-			deps: antiStompDeps,
-		});
-	}
+			},
+			{ cwd: CWD, antiStomp: antiStompDeps, startup: startupGuard },
+		),
+	);
 }
 
 if (RUN_RAW_SOCKET) {
-	startRawServer();
+	startRawServer(startupGuard);
 }
 
 writeProtocolStatus();
-
+await runStartupSelfCheck({ cwd: CWD, evaluate: evaluateEventLine, log: logAlways, recordEvent: (e) => recordDaemonEvent(CWD, e) });
 logAlways(
 	buildStartupMessage({
 		protocol: PROTOCOL_MODE,

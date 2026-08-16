@@ -7,8 +7,46 @@
 // (with a filesystem-walk fallback when git is unavailable).
 
 import { execSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+
+/** Extensions worth trigram-indexing from gitignored scratch/ — code and prose
+ *  an agent would grep for. Deliberately EXCLUDES data extensions (.json,
+ *  .jsonl, .txt, .log): campaign output there reached 290MB and ballooned the
+ *  postings 16x, which the daemon then expanded to ~1.6GB of heap at startup
+ *  (finding #21, 2026-08-16 restart-storm postmortem). */
+const SCRATCH_INDEXABLE_EXT_RE = /\.(ts|tsx|mts|cts|js|mjs|cjs|jsx|py|rs|go|rb|sh|zsh|md)$/i;
+
+/** Hard cap on scratch/ files admitted to the index. The count, not the bytes,
+ *  is what explodes the posting lists: the 2026-08 mutation campaign left
+ *  17,157 near-identical generated probe files in scratch/ (the tracked repo
+ *  itself has ~2,700) and the builder OOM'd at 4GB on them even after the
+ *  extension filter. A human/agent greps recent drafts, not campaign bulk, so
+ *  when over cap we keep the most recently modified files and say so. */
+const SCRATCH_INDEX_MAX_FILES = 2000;
+
+/** Bound scratch candidates to {@link SCRATCH_INDEX_MAX_FILES}, newest first.
+ *  Loud by design: truncation prints one stderr line naming the dropped count —
+ *  a silent cap would read as "scratch is indexed" while most of it is not. */
+function boundScratchCandidates(cwd: string, files: string[]): string[] {
+	if (files.length <= SCRATCH_INDEX_MAX_FILES) return files;
+	const byMtime = files
+		.map((f) => {
+			let mtime = 0;
+			try {
+				mtime = statSync(join(cwd, f)).mtimeMs;
+			} catch (err) {
+				void err; // unstattable → mtime stays 0 → sorts oldest, dropped first
+			}
+			return { f, mtime };
+		})
+		.sort((a, b) => b.mtime - a.mtime);
+	const kept = byMtime.slice(0, SCRATCH_INDEX_MAX_FILES).map((e) => e.f);
+	process.stderr.write(
+		`[interlinked:index] scratch/ over cap: indexing newest ${SCRATCH_INDEX_MAX_FILES} of ${files.length} code files (${files.length - SCRATCH_INDEX_MAX_FILES} older ones skipped)\n`,
+	);
+	return kept;
+}
 
 /** Get list of tracked files via `git ls-files`. Falls back to filesystem walk. */
 export function getTrackedFiles(cwd: string): string[] {
@@ -49,6 +87,13 @@ export function getTrackedFiles(cwd: string): string[] {
 		// session/agent scripts (operator decision 2026-07-07: scratch work is
 		// first-class — gated, greppable via the root .ignore negation, and
 		// indexed here so the grep ACCELERATOR sees what plain rg now sees).
+		// CODE/PROSE EXTENSIONS ONLY (2026-08-16, finding #21): `--others` lists
+		// gitignored files too, so campaign DATA in scratch/ (receipts .jsonl,
+		// probe output .json/.txt) went into the index — 290MB of it ballooned
+		// the postings 9.7MB → 153MB, the daemon expanded that to ~1.6GB at
+		// startup (at its own 1536MB heap cap), and every later allocation
+		// became the OOM/restart storm. Data files are queryable via
+		// `interlinked query`; the trigram index is for code search.
 		try {
 			const extra = execSync("git ls-files -z --others -- scratch/", {
 				cwd,
@@ -56,10 +101,13 @@ export function getTrackedFiles(cwd: string): string[] {
 				timeout: 5_000,
 				maxBuffer: 5 * 1024 * 1024,
 			});
-			const untracked = extra
-				.toString("utf-8")
-				.split("\0")
-				.filter((f) => f.length > 0);
+			const untracked = boundScratchCandidates(
+				cwd,
+				extra
+					.toString("utf-8")
+					.split("\0")
+					.filter((f) => f.length > 0 && SCRATCH_INDEXABLE_EXT_RE.test(f)),
+			);
 			if (untracked.length > 0) {
 				tracked.push(...untracked);
 			}

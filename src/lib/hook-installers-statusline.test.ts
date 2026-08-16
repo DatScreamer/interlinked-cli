@@ -166,68 +166,48 @@ describe("installStatusLine — script generation", () => {
 	// killed during idle (jetsam on a swap-pinned box) stayed dead for hours,
 	// statusline red, until the next tool call fired a hook. These pins hold
 	// the down-branch to its revival duty.
-	describe("auto-revive block — positive (must revive)", () => {
-		const seededServer = join(process.cwd(), "dist", "harness", "server.js");
-		beforeEach(() => {
-			// getHarnessServerPath probes real candidates through the mocked fs;
-			// seed the source-checkout dist path so generation bakes a real one.
-			files.set(seededServer, "// compiled server");
-		});
-
-		it("P1: bakes the generating process's absolute node binary", () => {
-			installStatusLine(["claude"]);
-			const script = files.get(SCRIPT_PATH) as string;
-			expect(script).toContain(`REVIVE_NODE="${process.execPath}"`);
-		});
-
-		it("P2: bakes the resolved absolute harness server entry", () => {
-			installStatusLine(["claude"]);
-			const script = files.get(SCRIPT_PATH) as string;
-			expect(script).toContain(`REVIVE_SERVER="${seededServer}"`);
-		});
-
-		it("P3: spawns with the canonical heap regulator and expose-gc flags", () => {
-			installStatusLine(["claude"]);
-			const script = files.get(SCRIPT_PATH) as string;
-			expect(script).toContain("--max-old-space-size=");
-			expect(script).toContain("--expose-gc");
-		});
-
-		it("P4: throttles attempts via a marker file, spaced at least 20s apart", () => {
-			installStatusLine(["claude"]);
-			const script = files.get(SCRIPT_PATH) as string;
-			expect(script).toContain('REVIVE_MARK="$ID/.statusline-revive-at"');
-			expect(script).toContain("REVIVE_THROTTLE_SECS=20");
-		});
-
-		it("P5: renders a calm auto-reviving row first, alarms only past the threshold", () => {
+	// 2026-08-16: the statusline is DISPLAY-ONLY. It used to be a second,
+	// unmutexed supervisor — every render raced a raw `node server.js` against
+	// the hook supervisor, losers overwrote harness.pid on the way out, and the
+	// stale pid made the next render spawn again (perpetual "restarting" next
+	// to a healthy daemon). One daemon, ONE supervisor: the hook's.
+	describe("down branch — positive (must display honestly)", () => {
+		it("P1: renders the hook-supervisor down row first, alarms only past the threshold", () => {
 			installStatusLine(["claude"]);
 			const script = files.get(SCRIPT_PATH) as string;
 			expect(script).toContain("REVIVE_ALARM_SECS=45");
-			expect(script).toContain("auto-reviving");
+			expect(script).toContain("hook supervisor restarting it");
 			expect(script).toContain("harness offline");
 		});
 
-		it("P6: revival targets the walked-to repo root and is fully detached + silenced", () => {
+		it("P2: discovers the first LIVE pid across raw AND framed/session pid files", () => {
 			installStatusLine(["claude"]);
 			const script = files.get(SCRIPT_PATH) as string;
-			const spawnLine = script
-				.split("\n")
-				.find((l) => l.includes('"$REVIVE_SERVER" --cwd'));
-			expect(spawnLine).toBeDefined();
-			expect(spawnLine).toContain('--cwd "$ROOT"');
-			expect(spawnLine).toContain(">/dev/null 2>&1 &");
+			expect(script).toContain('"$IL"/harness.pid "$IL"/harness-*.pid');
+			expect(script).toContain('if ps -p "$CAND" > /dev/null 2>&1; then PID="$CAND"; break; fi');
 		});
 	});
 
-	describe("auto-revive block — negative (must degrade safely)", () => {
-		it("N1: with no resolvable server entry the script still generates, with an empty bake the bash guards", () => {
-			// No dist seeded: getHarnessServerPath returns "" and the spawn
-			// condition requires -n "$REVIVE_SERVER", so revival simply no-ops.
+	describe("down branch — negative (must never manage processes)", () => {
+		it("N1: the generated script spawns no daemon (display-only contract)", () => {
 			installStatusLine(["claude"]);
 			const script = files.get(SCRIPT_PATH) as string;
-			expect(script).toContain('REVIVE_SERVER=""');
-			expect(script).toContain('-n "$REVIVE_SERVER"');
+			expect(script).not.toContain("REVIVE_SERVER");
+			expect(script).not.toContain("REVIVE_NODE");
+			expect(script).not.toContain("--expose-gc");
+			expect(script).not.toContain("REVIVE_THROTTLE_SECS");
+		});
+
+		it("N2: a stale raw pid file next to a live framed pid must not read as dead", () => {
+			// The pure-bash guarantee is pinned structurally: the loop prefers a
+			// live candidate (break) and only falls back to the first pid file.
+			installStatusLine(["claude"]);
+			const script = files.get(SCRIPT_PATH) as string;
+			const loopStart = script.indexOf('for PF in "$IL"/harness.pid');
+			const loopEnd = script.indexOf("done", loopStart);
+			const loop = script.slice(loopStart, loopEnd);
+			expect(loop).toContain('[ -z "$PID" ] && PID="$CAND"');
+			expect(loop.indexOf('[ -z "$PID" ]')).toBeLessThan(loop.indexOf("ps -p"));
 		});
 	});
 

@@ -11,8 +11,18 @@
 import { spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { DEFAULT_DAEMON_HEAP_MB } from "../harness/memory-ceiling.js";
+import {
+	acquireStartupLock,
+	type StartupLockResult,
+	waitForDaemonSocket,
+} from "../harness/startup-lock.js";
 import { c, kvLine } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
+import {
+	type DaemonControlDeps,
+	reapOrphanHarnessesVerified,
+	stopAllDaemons,
+} from "./harness-daemon-control.js";
 import {
 	closeDaemonStderrLog,
 	getHarnessServerPath,
@@ -21,7 +31,6 @@ import {
 	isHarnessRunning,
 	openDaemonStderrLog,
 	readDaemonStderrLog,
-	reapOrphanHarnesses,
 } from "./harness-process.js";
 import {
 	expectedSocketPaths,
@@ -29,6 +38,38 @@ import {
 	type HarnessProtocolMode,
 	type HarnessProtocolStatus,
 } from "./harness-status-helpers.js";
+
+/**
+ * What a startup-lock LOSER does: wait for the winner's socket, then report.
+ *
+ * The one thing it must not do is start anything. Before the mutex, every
+ * concurrent `harness start` bound (or tried to), and the losers wrote
+ * `startup-failed` rows while reaping the winner — the storm. A loser now polls
+ * and says either "already running" or "start pending", and nobody dies.
+ */
+export async function reportPendingStart(
+	cwd: string,
+	holderPid: number | null,
+	opts: { json?: boolean },
+): Promise<void> {
+	const mode = getOutputMode(opts);
+	const live = await waitForDaemonSocket(cwd);
+	const who = holderPid === null ? "another process" : `PID ${holderPid}`;
+	output(
+		mode,
+		{ already_running: live, start_pending: !live, starter_pid: holderPid },
+		{
+			json: () => ({ status: live ? "already_running" : "start_pending", starter_pid: holderPid }),
+			normal: () =>
+				live
+					? c.green(`Harness already running (started by ${who})`)
+					: c.yellow(
+							`A harness start is already in flight (${who}); it has not answered yet. ` +
+								"Retry in a few seconds — do not start another one.",
+						),
+		},
+	);
+}
 
 /** Grace after SIGKILL before declaring the process unkillable. The kernel
  *  reaps within milliseconds in normal cases; one second is generous. */
@@ -184,39 +225,28 @@ export async function stopRunningHarnessForRestart(
 	cwd: string,
 	mode: ReturnType<typeof getOutputMode>,
 ): Promise<{ oldPid: number | undefined; survived: boolean }> {
+	// Finding #22 (2026-08-16): the old single-pid path here read only the RAW
+	// pid file, so a framed daemon (harness-default.pid) survived the "stop"
+	// holding its socket, and the fresh start exited anti-stomp — a restart
+	// that un-restarts. `stopAllDaemons` is the stop verb's own path: it
+	// enumerates raw + framed/session pid files AND orphans, protects this
+	// process's ancestors, and owns the TERM→wait→KILL escalation.
 	const status = isHarnessRunning(cwd);
-	if (!status.running || !status.pid) return { oldPid: undefined, survived: false };
-	const oldPid = status.pid;
-	try {
-		process.kill(status.pid, "SIGTERM");
-	} catch {
-		// intentional: already dead between status check and signal — fall through to the start path.
+	const priorPid = status.running ? status.pid : undefined;
+	const { stopped, survived } = await stopAllDaemons(cwd);
+	if (stopped.length === 0 && survived.length === 0) {
+		return { oldPid: undefined, survived: false };
 	}
-	await waitForHarnessExit(cwd, HARNESS_RESTART_MAX_WAIT_MS, HARNESS_RESTART_POLL_MS);
-	if (isHarnessRunning(cwd).running) {
-		if (mode === "normal") {
-			process.stderr.write(
-				c.yellow(
-					`PID ${status.pid} ignored SIGTERM after ${HARNESS_RESTART_MAX_WAIT_MS}ms — escalating to SIGKILL\n`,
-				),
-			);
-		}
-		try {
-			process.kill(status.pid, "SIGKILL");
-		} catch {
-			// intentional: permission denied or already gone — last-ditch fall-through.
-		}
-		await waitForHarnessExit(cwd, HARNESS_RESTART_KILL_WAIT_MS, HARNESS_RESTART_POLL_MS);
-		if (isHarnessRunning(cwd).running) {
-			outputError(
-				mode,
-				`PID ${status.pid} survived SIGKILL — possibly a kernel-protected process. Investigate manually.`,
-			);
-			return { oldPid, survived: true };
-		}
+	const oldPid = priorPid ?? stopped[0];
+	if (survived.length > 0) {
+		outputError(
+			mode,
+			`PID(s) ${survived.join(", ")} survived SIGKILL — possibly kernel-protected. Investigate manually.`,
+		);
+		return { oldPid, survived: true };
 	}
 	if (mode === "normal") {
-		process.stderr.write(c.dim(`Stopped harness (was PID ${status.pid})\n`));
+		process.stderr.write(c.dim(`Stopped harness (was PID ${stopped.join(", ")})\n`));
 	}
 	return { oldPid, survived: false };
 }
@@ -226,9 +256,19 @@ export async function stopRunningHarnessForRestart(
  * pid files left by a previous crash. Without this a stale pid+sock pair can make
  * the new daemon double-bind on the socket or confuse `isHarnessRunning` callers.
  * Run on the happy path too — a fresh restart should never inherit dirt.
+ *
+ * LIVENESS-VERIFIED (2026-08-16). This was one of the last two reapers that
+ * still picked victims straight out of `ps`, so a healthy daemon this repo's
+ * pid file did not name was SIGTERM'd by every restart — exactly the kill that
+ * opens the guard gap the 2026-08-15 storm fed on. It now goes through
+ * `reapOrphanHarnessesVerified`, which probes each candidate's socket first and
+ * protects whatever answers. Async for that probe; callers must await.
  */
-export function cleanStaleRestartFiles(cwd: string): void {
-	reapOrphanHarnesses(cwd);
+export async function cleanStaleRestartFiles(
+	cwd: string,
+	deps: DaemonControlDeps = {},
+): Promise<void> {
+	await reapOrphanHarnessesVerified(cwd, {}, deps);
 	const socketPath = getSocketPath(cwd);
 	if (existsSync(socketPath) && !isHarnessRunning(cwd).running) {
 		try {
@@ -306,6 +346,43 @@ export async function inlineJsonRestartStart(
 			normal: () => "",
 		},
 	);
+}
+
+export interface RestartStartDeps {
+	acquire?: (cwd: string) => StartupLockResult;
+	start?: typeof inlineJsonRestartStart;
+	reportPending?: typeof reportPendingStart;
+}
+
+/**
+ * The JSON restart's spawn, behind the SAME startup mutex the human path uses.
+ *
+ * `harness restart --json` called {@link inlineJsonRestartStart} directly, so it
+ * was the one start path outside the lock: two concurrent restarts (or a restart
+ * racing a hook self-heal) both bound, one died `EADDRINUSE`, and the loser's
+ * reaper took the winner with it. A loser now waits on the winner's socket and
+ * reports `start_pending` — one JSON document either way, which is the contract
+ * this branch exists to keep.
+ */
+export async function lockedJsonRestartStart(
+	cwd: string,
+	opts: { verbose?: boolean; json?: boolean },
+	protocol: HarnessProtocolMode,
+	sessionId: string,
+	oldPid: number | undefined,
+	mode: ReturnType<typeof getOutputMode>,
+	deps: RestartStartDeps = {},
+): Promise<void> {
+	const lock = (deps.acquire ?? acquireStartupLock)(cwd);
+	if (!lock.acquired) {
+		await (deps.reportPending ?? reportPendingStart)(cwd, lock.holder?.pid ?? null, opts);
+		return;
+	}
+	try {
+		await (deps.start ?? inlineJsonRestartStart)(cwd, opts, protocol, sessionId, oldPid, mode);
+	} finally {
+		lock.release();
+	}
 }
 
 /** Protocol sub-lines for the human-readable status report (caller guards non-null). */

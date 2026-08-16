@@ -47,7 +47,16 @@ describe("shouldRecycle", () => {
 	});
 
 	it("keeps the ceiling a bounded backstop (not disabled, not runaway)", () => {
-		expect(DEFAULT_RSS_CEILING_BYTES).toBeLessThan(2048 * 1024 * 1024);
+		// Raised 1800 → 2600MB (2026-08-11): under sustained multi-agent fleet
+		// load the daemon legitimately reaches ~2.5GB and is NOT leaking, so a
+		// 1800 ceiling recycled it every ~60s — each recycle a fail-closed gap
+		// with no memory reclaimed. Raised 2600 → 3584MB (2026-08-16, restart-
+		// storm postmortem) alongside the heap re-size 1536 → 2560: idle
+		// baseline reached 640–825MB and one in-process tsc-overlay burst per
+		// src edit peaked past the old heap cap, so every src edit killed the
+		// daemon. The bound stays a real backstop (a true runaway is many GB);
+		// the upper limit tracks the default with headroom.
+		expect(DEFAULT_RSS_CEILING_BYTES).toBeLessThan(4096 * 1024 * 1024);
 		expect(DEFAULT_RSS_CEILING_BYTES).toBeGreaterThan(200 * 1024 * 1024);
 	});
 

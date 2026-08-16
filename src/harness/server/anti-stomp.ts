@@ -26,12 +26,30 @@
 // door. A bare exit is safe: `process.exit()` tears down every
 // timer/watcher/interval this script has registered so far, ref'd or not.
 
+import { readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { recordDaemonEvent } from "../daemon-ledger.js";
+
 export interface AntiStompDeps {
 	logAlways: (msg: string) => void;
 	/** Appends the `anti-stomp` exit row for THIS process to the daemon ledger. */
 	recordExit: () => void;
 	/** Terminates the process. */
 	exit: () => void;
+}
+
+/** The real deps for a daemon process: its own stderr logger, the `anti-stomp`
+ *  exit row for THIS pid (not the winner's — matching the start/handover
+ *  rows' convention), and a plain exit 0. Losing a race is an ORDERLY
+ *  outcome, so the code is 0; a startup that could not bind exits non-zero
+ *  instead (see ./startup-guard.ts). Tests build the interface directly. */
+export function antiStompDepsFor(cwd: string, logAlways: (msg: string) => void): AntiStompDeps {
+	return {
+		logAlways,
+		recordExit: () =>
+			recordDaemonEvent(cwd, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" }),
+		exit: () => process.exit(0),
+	};
 }
 
 export interface AntiStompLossArgs {
@@ -43,11 +61,22 @@ export interface AntiStompLossArgs {
 	deps: AntiStompDeps;
 }
 
-/** The loser's full contract, in order: log, record, exit. Callers decide
- *  WHETHER this fires (the two checks above have different trigger
- *  conditions); this function only owns WHAT happens once that's decided. */
+/** The loser's full contract, in order: clean own pid litter, log, record,
+ *  exit. Callers decide WHETHER this fires (the two checks above have
+ *  different trigger conditions); this function only owns WHAT happens once
+ *  that's decided.
+ *
+ *  The pid-litter sweep exists because a dual-protocol newcomer writes the
+ *  RAW `harness.pid` before it loses the FRAMED race — without the sweep
+ *  that file permanently names a corpse, every `harness.pid` reader (the
+ *  statusline glyph, the cold gate's pid discovery) concludes "daemon dead"
+ *  next to a healthy incumbent, and the statusline's revive loop
+ *  manufactures a fresh corpse every throttle window (the perpetual
+ *  "restarting" of 2026-08-16). Ownership rule: remove a pid file ONLY when
+ *  it names THIS process — the winner's files are never touched. */
 export function loseAntiStompRace(args: AntiStompLossArgs): void {
 	const { ownerPid, detail, cwd, deps } = args;
+	removeOwnPidLitter(cwd);
 	deps.logAlways(
 		`[interlinked] A harness daemon (PID ${ownerPid}) already owns ${detail} for ${cwd}. ` +
 			"Refusing to start a second one (would stomp its socket). " +
@@ -55,6 +84,28 @@ export function loseAntiStompRace(args: AntiStompLossArgs): void {
 	);
 	deps.recordExit();
 	deps.exit();
+}
+
+/** Remove every `.interlinked/harness*.pid` whose content is THIS process's
+ *  pid. Best-effort and never throws — this runs on an exit path. Foreign
+ *  pids (the winner's, or garbage) are left untouched. */
+export function removeOwnPidLitter(cwd: string, ownPid: number = process.pid): void {
+	const dir = join(cwd, ".interlinked");
+	let names: string[] = [];
+	try {
+		names = readdirSync(dir).filter((n) => /^harness(-.+)?\.pid$/.test(n));
+	} catch (err) {
+		void err; // unreadable dir — nothing to clean
+		return;
+	}
+	for (const name of names) {
+		const p = join(dir, name);
+		try {
+			if (Number.parseInt(readFileSync(p, "utf-8").trim(), 10) === ownPid) unlinkSync(p);
+		} catch (err) {
+			void err; // unreadable/gone/permission — leave it; foreign files must survive
+		}
+	}
 }
 
 // ===========================================

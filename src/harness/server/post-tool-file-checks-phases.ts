@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { checkAssertionDensity, runBehavioralChecks } from "../behavioral-checks.js";
+import type { ProjectWideSweepResult } from "../quality-checks.js";
 import {
 	countSuppressionDirectives,
 	findProjectRoot,
@@ -23,6 +24,7 @@ import {
 } from "../quality-checks.js";
 import { acknowledgeChecks, isAcknowledged } from "../session-state.js";
 import { runStructureChecks } from "../structure/structure-checks.js";
+import { sweepExpiredTransientDebts } from "../transient-debt-expiry.js";
 import { formatStructureWarnings } from "../structure/structure-formatter.js";
 import { loadStructureConfig } from "../structure/structure-loader.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
@@ -155,6 +157,36 @@ export async function runQualityPhase(
 }
 
 /**
+ * Retire transient debts the whole-project tsc run no longer reproduces.
+ *
+ * Split out so the sweep phase stays under the complexity ratchet, and so the
+ * "never throw on the check path" contract is stated once: a ledger write
+ * failure must degrade to a stale warning, never to a lost PostToolUse
+ * response. Callers must only invoke this when tsc actually ran.
+ */
+function expireTransientDebtsAfterSweep(
+	sweepResult: ProjectWideSweepResult,
+	cwd: string,
+	log: (message: string) => void,
+): void {
+	try {
+		const expired = sweepExpiredTransientDebts(
+			cwd,
+			sweepResult.findings.map((f) => ({ file: f.file, message: f.message })),
+		);
+		if (expired.length > 0) {
+			log(
+				`Transient debt: expired ${expired.length} debt(s) a clean project typecheck no longer reproduces: ${expired
+					.map((d) => `${d.file} [${d.detector ?? "?"}]`)
+					.join(", ")}`,
+			);
+		}
+	} catch {
+		/* intentional: expiry is hygiene — never fail a PostToolUse response for it */
+	}
+}
+
+/**
  * Project-wide sweep phase (cross-file tsc/biome). Fires at most once per
  * event; debounced by edit cadence or export-surface change. Ends with the
  * `project_wide_sweep` phase mark.
@@ -197,6 +229,15 @@ export async function runProjectWideSweepPhase(
 					CWD,
 				);
 
+				// A whole-project tsc run is the ONLY authoritative "does this
+				// still reproduce?" evidence the harness produces, so it is also
+				// the only thing that can retire a transient debt on a file no
+				// edit will reach again. Guarded on tsc having actually run —
+				// an empty finding list from a sweep that skipped tsc means "no
+				// evidence", not "clean", and would discharge everything.
+				if (sweepResult.toolsRun.includes("tsc")) {
+					expireTransientDebtsAfterSweep(sweepResult, CWD, log);
+				}
 				if (sweepResult.findings.length > 0) {
 					const sweepWarnings = formatQualityWarnings(sweepResult.findings);
 					decision.warnings = [

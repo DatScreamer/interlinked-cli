@@ -4,8 +4,9 @@
 
 import { existsSync } from "node:fs";
 import { distStaleness, stalenessWarning } from "../harness/build-staleness.js";
-import { readRecentDaemonEvents } from "../harness/daemon-ledger.js";
+import { readRecentDaemonEvents, recordDaemonEvent } from "../harness/daemon-ledger.js";
 import { detectEnforcementGaps, formatEnforcementGapWarning } from "../harness/enforcement-gap.js";
+import { acquireStartupLock } from "../harness/startup-lock.js";
 import { c, header, kvLine } from "../lib/formatter.js";
 import type { JsonObject } from "../lib/json-types.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -13,11 +14,19 @@ import { getOutputMode, output, outputError } from "../lib/output.js";
 // per-file line cap. Behavior is byte-identical; these are the same functions
 // the start / restart / status commands have always called.
 import {
+	classifyHarnessLiveness,
+	livenessStatusValue,
+	probeHarnessLive,
+	zombieWarningLine,
+} from "./harness-liveness.js";
+import { reapOrphanHarnessesVerified, stopAllDaemons } from "./harness-daemon-control.js";
+import {
 	buildHarnessSpawnArgs,
 	cleanStaleRestartFiles,
+	reportPendingStart,
 	daemonizeHarness,
 	framedSocketLines,
-	inlineJsonRestartStart,
+	lockedJsonRestartStart,
 	protocolStatusLines,
 	startHarnessForeground,
 	stopRunningHarnessForRestart,
@@ -28,7 +37,6 @@ import {
 	getHarnessServerPath,
 	getSocketPath,
 	isHarnessRunning,
-	reapOrphanHarnesses,
 } from "./harness-process.js";
 import {
 	parseHarnessProtocol,
@@ -65,8 +73,6 @@ export {
 	reapOrphanHarnesses,
 } from "./harness-process.js";
 
-/** Delay after SIGTERM to let the harness process exit cleanly before we check its status. */
-const HARNESS_SHUTDOWN_WAIT_MS = 1000;
 
 // ===========================================
 // harness start
@@ -84,6 +90,17 @@ export async function harnessStartCommand(opts: {
 	const protocol = parseHarnessProtocol(opts.protocol);
 	const sessionId = opts.sessionId || "default";
 
+	// STARTUP MUTEX (2026-08-15). Concurrent starts — an agent, a hook self-heal,
+	// a build-refresh handover, all inside one second — used to race to bind, and
+	// the losers reaped the winner on their way past. One winner binds; everyone
+	// else waits on the socket and reports. Losers must NOT reap, bind, or record
+	// a startup failure, so this gate is the FIRST thing the command does.
+	const lock = acquireStartupLock(cwd);
+	if (!lock.acquired) {
+		await reportPendingStart(cwd, lock.holder?.pid ?? null, opts);
+		return;
+	}
+
 	try {
 		// Reap BEFORE the already-running check. The reap below (line ~120) only
 		// ran on the spawn path, so the most common call in a long session — a
@@ -94,7 +111,9 @@ export async function harnessStartCommand(opts: {
 		// first makes every `start` a cleanup, which is what the docs already
 		// promise ("`interlinked harness start` reaps orphans and reports what it
 		// reaped").
-		const reaped = reapOrphanHarnesses(cwd);
+		// Liveness-verified: a daemon that ANSWERS its socket is never a reap
+		// victim, whatever `ps` or the pid files say.
+		const reaped = await reapOrphanHarnessesVerified(cwd);
 		const status = isHarnessRunning(cwd);
 		if (status.running) {
 			output(
@@ -131,8 +150,8 @@ export async function harnessStartCommand(opts: {
 		// Reap orphan daemons before binding our own socket. Without this,
 		// each `interlinked harness start` over a session lifetime accumulates
 		// a stale daemon (oldest seen in production: 28 daemons across 4 days,
-		// ~1.8 GB stale RSS). See `reapOrphanHarnesses` for selection rules.
-		reapOrphanHarnesses(cwd);
+		// ~1.8 GB stale RSS). Serving daemons are protected (verified sweep).
+		await reapOrphanHarnessesVerified(cwd);
 
 		if (opts.daemon !== false) {
 			await daemonizeHarness({
@@ -149,6 +168,8 @@ export async function harnessStartCommand(opts: {
 		}
 	} catch (err) {
 		outputError(mode, err instanceof Error ? err.message : String(err));
+	} finally {
+		lock.release();
 	}
 }
 
@@ -156,13 +177,22 @@ export async function harnessStartCommand(opts: {
 // harness stop
 // ===========================================
 
+/**
+ * Stop EVERY daemon this repo owns, not just the one named in `harness.pid`.
+ *
+ * Measured 2026-08-15: `interlinked disable` stopped the pid-file daemon and
+ * left two orphan daemons running — a stood-down repo still being guarded by
+ * processes nothing tracked. `stopAllDaemons` enumerates the per-session pid
+ * files AND the `ps`-visible orphans, records one `explicit-stop` ledger marker
+ * so the resulting exits classify as PLANNED, and signals them all.
+ */
 export async function harnessStopCommand(opts: { json?: boolean }): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
 
 	try {
-		const status = isHarnessRunning(cwd);
-		if (!status.running || !status.pid) {
+		const { stopped, survived } = await stopAllDaemons(cwd);
+		if (stopped.length === 0 && survived.length === 0) {
 			output(
 				mode,
 				{ stopped: false },
@@ -174,27 +204,21 @@ export async function harnessStopCommand(opts: { json?: boolean }): Promise<void
 			return;
 		}
 
-		process.kill(status.pid, "SIGTERM");
-
-		// Wait for shutdown
-		await new Promise((resolve) => setTimeout(resolve, HARNESS_SHUTDOWN_WAIT_MS));
-
-		// Verify it stopped
-		const afterStatus = isHarnessRunning(cwd);
 		output(
 			mode,
-			{ stopped: !afterStatus.running },
+			{ stopped: survived.length === 0, pids: stopped, survived },
 			{
 				json: () => ({
-					status: afterStatus.running ? "still_running" : "stopped",
-					pid: status.pid,
+					status: survived.length > 0 ? "still_running" : "stopped",
+					pids: stopped,
+					survived,
 				}),
 				normal: () =>
-					afterStatus.running
+					survived.length > 0
 						? c.yellow(
-								`Harness still running (PID ${status.pid}). Try: kill -9 ${status.pid}`,
+								`Stopped ${stopped.length} daemon(s); still running: ${survived.join(", ")}. Try: kill -9 ${survived.join(" ")}`,
 							)
-						: c.green(`Harness stopped (was PID ${status.pid})`),
+						: c.green(`Harness stopped (${stopped.length} daemon(s): ${stopped.join(", ")})`),
 			},
 		);
 	} catch (err) {
@@ -219,16 +243,29 @@ export async function harnessRestartCommand(opts: {
 	const sessionId = opts.sessionId || "default";
 
 	try {
+		// A restart is a PLANNED exit. Record the intent first so the daemon's
+		// own `signal` exit row is upgraded to `explicit-restart` by
+		// `describeLastExit` — otherwise an operator restart is indistinguishable
+		// in the ledger from a reaper killing a healthy daemon (the storm).
+		recordDaemonEvent(cwd, {
+			at: Date.now(),
+			pid: process.pid,
+			event: "handover",
+			reason: "explicit-restart",
+		});
 		// SIGTERM → escalate to SIGKILL if wedged. The helper owns its stderr
 		// nudges and the survived-SIGKILL fatal error; on survival we abort.
 		const { oldPid, survived } = await stopRunningHarnessForRestart(cwd, mode);
 		if (survived) return;
 
-		cleanStaleRestartFiles(cwd);
+		await cleanStaleRestartFiles(cwd);
 
-		// Start fresh — but for JSON mode, emit a single combined payload
+		// Start fresh — but for JSON mode, emit a single combined payload. Both
+		// branches respawn under the startup mutex: the human branch through
+		// `harnessStartCommand`, the JSON branch through `lockedJsonRestartStart`
+		// (which was the last unlocked start path — see its doc comment).
 		if (mode === "json") {
-			await inlineJsonRestartStart(cwd, opts, protocol, sessionId, oldPid, mode);
+			await lockedJsonRestartStart(cwd, opts, protocol, sessionId, oldPid, mode);
 		} else {
 			await harnessStartCommand(opts);
 		}
@@ -249,21 +286,17 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 		const processStatus = isHarnessRunning(cwd);
 		const socketExists = existsSync(getSocketPath(cwd));
 
-		// Try to get status from harness via socket
-		let _harnessInfo: JsonObject | null = null;
-		if (socketExists) {
-			_harnessInfo = await queryHarness(cwd, {
-				hook_event: "StatusQuery",
-				session_id: "cli-status",
-				agent_source: "claude" as const,
-				timestamp: new Date().toISOString(),
-			});
-		}
+		// A pid is not evidence. Ask the socket to ANSWER — that (plus any
+		// framed daemon's health RPC below) is what decides the three states
+		// this report can print. Before this, "running (PID …)" was printed on
+		// pid-liveness alone, directly above "Socket: not found", with no line
+		// admitting the two together mean the guard is off (audit F1/F12).
+		const rawAnswered = await probeHarnessLive(cwd, processStatus.running);
 
 		// Operational signals: orphan count, RSS of active daemon, configured
 		// mode, last-event timestamp. Each is best-effort — a missing data
 		// point shouldn't fail the whole status call.
-		const orphanInfo = reapOrphanHarnesses(cwd, { dryRun: true });
+		const orphanInfo = await reapOrphanHarnessesVerified(cwd, { dryRun: true });
 		const rssMb =
 			processStatus.running && processStatus.pid !== undefined
 				? readRssMb(processStatus.pid)
@@ -273,9 +306,19 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 		const protocolStatus = readProtocolStatus(cwd);
 		const framedSockets = await readFramedSocketStatuses(cwd);
 		const staleness = distStaleness(cwd);
+		// A framed daemon that returned its health RPC also answered — a
+		// framed-only deployment has no raw socket to probe, and calling that
+		// a zombie would be the same lie in the other direction.
+		const socketAnswered = rawAnswered || framedSockets.some((f) => f.health !== null);
+		const liveness = classifyHarnessLiveness({
+			processRunning: processStatus.running,
+			socketAnswered,
+		});
 
 		const result = {
 			running: processStatus.running,
+			liveness,
+			socket_answered: socketAnswered,
 			pid: processStatus.pid,
 			socket: socketExists,
 			socket_path: getSocketPath(cwd),
@@ -303,20 +346,17 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 			normal: () => {
 				const lines: string[] = [];
 				lines.push(header("Harness Status"));
-				lines.push(
-					kvLine(
-						"Status",
-						processStatus.running
-							? c.green(`running (PID ${processStatus.pid})`)
-							: c.dim("not running"),
-					),
-				);
+				lines.push(kvLine("Status", livenessStatusValue(liveness, processStatus.pid)));
 				lines.push(
 					kvLine(
 						"Socket",
 						socketExists ? c.green(getSocketPath(cwd)) : c.dim("not found"),
 					),
 				);
+				// The pairing the audit called self-contradictory now always
+				// carries its explanation: a live pid with nothing answering is
+				// named, in one place, as the guard being OFF.
+				if (liveness === "zombie") lines.push(c.red(`  ${zombieWarningLine(processStatus.pid)}`));
 				if (protocolStatus) lines.push(...protocolStatusLines(protocolStatus));
 				lines.push(...framedSocketLines(framedSockets));
 				if (rssMb !== null) {

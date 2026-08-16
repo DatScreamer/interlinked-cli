@@ -16,7 +16,7 @@
 // `shutdown()` is only wired to process signals after those setters have run,
 // so the disposers are always present by the time `shutdownAsync` calls them.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import type { AsyncAnalysisManager } from "./async-analysis.js";
 import type { ContentScanner } from "./content-scanner/types.js";
@@ -51,6 +51,21 @@ export interface SocketLifecycleDeps {
 	readonly logAlways: (msg: string) => void;
 }
 
+/** How the raw listener reports its BIND OUTCOME — bound, or failed to bind.
+ *  Kept structural (rather than importing `StartupGuard` from
+ *  ./server/startup-guard.js) so this module stays decoupled from the startup
+ *  policy that consumes it; the guard satisfies this shape as-is.
+ *
+ *  `note` fires on Node's 'listening' event, NOT when `listen()` returns —
+ *  `listen()` resolves before the bind does, so "startup ran to the end" is
+ *  not evidence that anything is answering. That distinction is the whole
+ *  point: it is what lets the daemon tell a pre-listen failure (fatal) from a
+ *  post-listen one (survivable). */
+export interface RawListenReporter {
+	note: (which: "raw" | "framed") => void;
+	fail: (what: string, err: unknown) => void;
+}
+
 /** Public surface server.ts drives. `shutdown` is bound to process signals and
  *  called from the idle timer; `cleanupSocket` / `writePidFile` run during
  *  startup; `startRawServer` binds the raw listener; the two setters supply the
@@ -59,7 +74,7 @@ export interface SocketLifecycle {
 	cleanupSocket: (path?: string) => void;
 	writePidFile: () => void;
 	shutdown: () => void;
-	startRawServer: () => void;
+	startRawServer: (reporter?: RawListenReporter) => void;
 	setFramedDaemon: (handle: SessionDaemonHandle | null) => void;
 	setUnwatchers: (unwatchRules: () => void, unwatchSettings: () => void) => void;
 }
@@ -104,6 +119,9 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 	 *  Each phase races against this window; the SHUTDOWN_GRACE_MS umbrella
 	 *  catches anything that escapes both. */
 	const SHUTDOWN_STEP_TIMEOUT_MS = 500;
+	/** Cadence of the raw-pid-file ownership re-assert (writePidFile doc). */
+	const PID_HEAL_INTERVAL_MS = 60_000;
+	let pidHealTimer: NodeJS.Timeout | null = null;
 
 	function cleanupSocket(path: string = SOCKET_PATH): void {
 		cleanupSocketAt(path);
@@ -117,6 +135,31 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 		// existing owner, causing it to remove the live socket and rebind.
 		ensureDirectory(PID_PATH);
 		writeFileSync(PID_PATH, String(process.pid));
+		// Self-heal: a dual-protocol newcomer overwrites this file before losing
+		// the framed anti-stomp race; its exit-path sweep (anti-stomp.ts
+		// removeOwnPidLitter) normally cleans that litter, but a writer killed
+		// mid-exit leaves a corpse pid behind and every reader (statusline
+		// glyph, cold gate) then diagnoses a dead daemon next to a healthy one
+		// (the perpetual-"restarting" of 2026-08-16). The serving daemon
+		// re-asserts ownership each tick so the file converges within a minute.
+		// unref() so the timer never holds the process open at shutdown.
+		if (pidHealTimer === null) {
+			pidHealTimer = setInterval(() => {
+				try {
+					const onDisk = readFileSync(PID_PATH, "utf-8").trim();
+					if (Number.parseInt(onDisk, 10) === process.pid) return;
+				} catch (err) {
+					void err; // missing/unreadable — rewrite ours below
+				}
+				try {
+					ensureDirectory(PID_PATH);
+					writeFileSync(PID_PATH, String(process.pid));
+				} catch (err) {
+					void err; // read-only dir — nothing to heal with
+				}
+			}, PID_HEAL_INTERVAL_MS);
+			pidHealTimer.unref();
+		}
 	}
 
 	function removePidFile(): void {
@@ -247,7 +290,7 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 	/** Bind the raw listener and stash the server instance so shutdown can close
 	 *  it. Mirrors the prior inline `const rawServer = createRawSocketServer();
 	 *  socketServer = rawServer; rawServer.listen(SOCKET_PATH);` startup block. */
-	function startRawServer(): void {
+	function startRawServer(reporter?: RawListenReporter): void {
 		const rawServer = createRawSocketServer();
 		socketServer = rawServer;
 		// A bind failure (EADDRINUSE against a still-live listener, a
@@ -266,11 +309,20 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 		// normal auto-revive path spawn a real replacement instead of a
 		// silent zombie.
 		rawServer.on("error", (err: NodeJS.ErrnoException) => {
+			// A reporter owns the whole terminal contract (loud log + the
+			// `daemon-events.jsonl` row + a distinct exit code); the legacy
+			// path below stays for any caller that passes none. Either way the
+			// process leaves — a listen failure is never survivable.
+			if (reporter) {
+				reporter.fail("raw socket bind", err);
+				return;
+			}
 			logAlways(
 				`[interlinked] Raw socket listen failed (${err.code ?? err.message}) — exiting so auto-revive can spawn a working daemon.`,
 			);
 			process.exit(1);
 		});
+		if (reporter) rawServer.on("listening", () => reporter.note("raw"));
 		rawServer.listen(SOCKET_PATH);
 	}
 

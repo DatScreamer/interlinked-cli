@@ -112,6 +112,18 @@ describe("formatEnforcementGapWarning", () => {
 		expect(msg).toContain("harness reap");
 	});
 
+	// test-contract: bug — this warning reaches every actor in the gap at once.
+	// Telling all of them to run `harness start` is what turned a 40s outage
+	// into the multi-hour 2026-08-15 restart storm.
+	it("P1b: an ongoing gap tells the reader to WAIT before it mentions any start", () => {
+		const gaps = detectEnforcementGaps([ev(0, "listening"), ev(5, "exit", "crash")], T0 + 125 * MIN);
+		const msg = formatEnforcementGapWarning(gaps, T0 + 125 * MIN) ?? "";
+		expect(msg).toContain("Retry in a few seconds");
+		expect(msg).toContain("Do NOT start one by hand");
+		expect(msg).toContain("Only if it is still off after 30 seconds");
+		expect(msg.indexOf("Retry in a few seconds")).toBeLessThan(msg.indexOf("harness start"));
+	});
+
 	it("P2: an ongoing thrash names the anti-stomp cause rather than a reason code", () => {
 		const events = [ev(0, "listening"), ev(1, "exit", "anti-stomp")];
 		for (let i = 2; i < 20; i++) {
