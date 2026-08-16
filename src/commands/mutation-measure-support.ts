@@ -59,9 +59,25 @@ export const spawnVitestSuite: SuiteRunner = ({ tests, cwd }) =>
 export function testScopeNote(scope: MutationTestScopeResult): string {
 	if (scope.tests) return `test scope: ${scope.tests.length} test(s) via the import graph\n`;
 	if (scope.reason === "over_cap") {
+		if (scope.companionScope && scope.companionScope.length > 0) {
+			return `test scope: graph selected ${scope.uncappedCount} test(s), over cap — shipping the target's ${scope.companionScope.length} companion kill test(s) instead of a lossy filename glob\n`;
+		}
 		return `test scope: graph selected ${scope.uncappedCount} test(s), over cap — falling back to filename-glob scope\n`;
 	}
 	return "";
+}
+
+/**
+ * The measurement regime a scope result was actually run under — the honest
+ * provenance stamp. `import_graph` when the full graph set fit; `companion_fallback`
+ * when it was over cap but the target's own companion kill tests still shipped
+ * (a strict subset, comparable to neither of the other two); `glob_fallback`
+ * otherwise (the runner chose its own filename-stem set — no scope was sent).
+ */
+export function measurementScopeFor(scope: MutationTestScopeResult): MeasurementScope {
+	if (scope.tests) return "import_graph";
+	if (scope.companionScope && scope.companionScope.length > 0) return "companion_fallback";
+	return "glob_fallback";
 }
 
 /**
@@ -146,7 +162,17 @@ export async function maybeRecordMeasurement(args: {
 	// The write — and ONLY the write. `saveManifest` is the library's own fs
 	// persister (manifest.ts); this command never touches mutation-manifest.json
 	// through any other path.
-	if (rec.recorded && rec.manifest) saveManifest(args.configDir, rec.manifest);
+	//
+	// The survivors-index sidecar is written in the SAME operation, immediately
+	// after, so it can never be stale relative to the manifest on disk (see
+	// harness/mutation/survivors-index.ts's freshness contract). The daemon reads
+	// only the sidecar; a persist that skipped it would silently freeze every
+	// Stop-time consumer at the previous generation.
+	if (rec.recorded && rec.manifest) {
+		const { writeSurvivorsIndex } = await import("../harness/mutation/survivors-index.js");
+		saveManifest(args.configDir, rec.manifest);
+		writeSurvivorsIndex(args.configDir, rec.manifest);
+	}
 	return {
 		recorded: rec.recorded,
 		...(rec.reason !== undefined ? { reason: rec.reason } : {}),
@@ -262,7 +288,12 @@ export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneRe
 	// a hub file's real tests are often not named after it. Computed BEFORE the
 	// overlay set so the overlays can close over every test the runner loads.
 	const scope = computeMutationTestScopeForRepo({ editedRelPath: key, projectRoot: args.cwd });
-	const scopeTests = scope.tests ?? [];
+	// The full graph scope when it fit; else, on an over-cap decline, the target's
+	// own companion kill tests (test-scope.ts::companionScope) — never `[]` when a
+	// companion exists, so an over-cap file still ships `<base>.mutation-kill.test.ts`
+	// in both the overlay closure below and the runner `testScope` sent later,
+	// instead of collapsing to the runner's lossy four-stem filename glob.
+	const scopeTests = scope.tests ?? scope.companionScope ?? [];
 	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(args.cwd, p)), scopeTests);
 	const notes = overlayNotes({ key, scope, scoped, runnerCount: endpointCfg.endpoints.length });
 	// Emitted BEFORE the run, not returned after it: these lines exist to tell an
@@ -301,7 +332,10 @@ export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneRe
 		endpoints: endpointCfg.endpoints,
 		...(endpointCfg.token !== undefined ? { token: endpointCfg.token } : {}),
 		...(args.budgetMs !== undefined && Number.isFinite(args.budgetMs) ? { deadlineMs: args.budgetMs } : {}),
-		...(scope.tests ? { testScope: scope.tests } : {}),
+		// Forward whichever scope `scopeTests` resolved to — the full graph set,
+		// or the over-cap companion fallback. Either overrides the runner's own
+		// filename-stem guess; only a truly empty scope lets the runner fall back.
+		...(scopeTests.length > 0 ? { testScope: scopeTests } : {}),
 	});
 
 	const record = await maybeRecordMeasurement({
@@ -314,9 +348,11 @@ export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneRe
 		// Stamp HOW this ran. Two survivor counts for the same file are only
 		// comparable when they were measured the same way, and this pipeline's
 		// import-graph scope kills far more mutants than the runner's own
-		// filename-glob guess — 186 survivors vs 18 on one unedited file.
+		// filename-glob guess — 186 survivors vs 18 on one unedited file. An
+		// over-cap companion fallback is its OWN third regime (see
+		// `measurementScopeFor`), comparable to neither.
 		provenance: {
-			scope: scope.tests ? "import_graph" : "glob_fallback",
+			scope: measurementScopeFor(scope),
 			testCount: scopeTests.length,
 			surface: args.surface ?? "measure",
 		},

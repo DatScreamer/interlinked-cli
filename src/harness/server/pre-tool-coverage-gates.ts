@@ -37,7 +37,17 @@ import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import type { MutationRunner, PerEditMutationConfig } from "../mutation/gate.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
+// NOTE: `loadManifest` (the strict, 44MB-parsing loader) survives HERE and only
+// here on the daemon side, deliberately. This is a BLOCKING gate: it must judge
+// against the exact manifest generation, never a summary, and it needs full
+// `SymbolRecord`s (symbol hashes, per-mutant identity, instability) that the
+// survivors-index sidecar does not carry. The fast path that keeps it off the
+// hot path is the `cfg?.enabled` guard a few lines below `runMutationWriteGate`'s
+// entry: `per_edit_mutation` is default-OFF, so an unconfigured daemon never
+// reaches the load at all. Every ADVISORY consumer (Stop nudges, pulse lines)
+// reads the sidecar instead — see harness/mutation/survivors-index.ts.
 import { emptyManifest, loadManifest, makeManifestPersister } from "../mutation/manifest.js";
+import { makeManifestPersisterWithIndex } from "../mutation/survivors-index.js";
 import { overlayHash, pendingRegistry } from "../mutation/pending-registry.js";
 import { recordPending } from "../mutation/pending-runs.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
@@ -258,7 +268,10 @@ export async function runMutationWriteGate(
 		readDisk: (file) => readDiskSafe(resolve(ctx.cwd, file)),
 		// Measured-clean passes persist the refreshed manifest + a receipt line
 		// (spec §4/§12); the gate itself guarantees dirty/unmeasured runs never do.
-		persist: makeManifestPersister(interlinkedDir),
+		// Decorated so the survivors-index sidecar is rewritten in the SAME
+		// operation — the daemon's advisory consumers read only the sidecar, so a
+		// persist that skipped it would strand them on the previous generation.
+		persist: makeManifestPersisterWithIndex(interlinkedDir, makeManifestPersister(interlinkedDir)),
 		// A run that outlives the budget keeps computing on the runner. Recording
 		// its handles here is what lets the PostToolUse window claim work this
 		// window paid for — without it the engine's output is simply discarded.

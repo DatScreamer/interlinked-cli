@@ -193,6 +193,13 @@ function parseManifestShell(value: unknown): MutationManifest | null {
 	};
 }
 
+// A short-lived `loadManifestStaleOk` (5-min stale-tolerant reader) bridged
+// the 2026-08-16 daemon-killer window between diagnosing the per-Stop ~1.7GB
+// manifest parse and landing the survivors-index sidecar
+// (./survivors-index.ts). The sidecar removed every advisory consumer from
+// this module, so the bridge was deleted the same day — advisory readers use
+// the sidecar; only blocking gates load the manifest, and only off the hot
+// path. History: repair-followups.txt #25.
 export function loadManifest(dir: string): MutationManifest | null {
 	const path = mutationManifestPath(dir);
 	if (!existsSync(path)) return null;
