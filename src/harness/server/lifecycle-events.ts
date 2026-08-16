@@ -5,15 +5,11 @@
 // in server.ts. Handles every non-tool hook event — SessionStart,
 // SessionEnd, Stop, UserPromptSubmit, Subagent*, Skill*.
 //
-// 2026-05 refactor: the original ~400-line switch body was extracted into
-// per-event handlers + helpers inside `handleStop` (`buildStopWarnings`,
-// `buildVerificationStopWarnings` with 8 sub-checks, `persistSessionTrajectory`,
-// `cleanupSessionState`). The dispatcher is now a short switch; each handler
-// is independently testable.
-//
-// 2026-06 refactor: stop verification helpers extracted to
-// lifecycle-stop-warnings.ts; buildStopWarnings and its wiring imports
-// remain here so source-text regression tests continue to pass.
+// 2026-05/06 refactors: the original ~400-line switch body became per-event
+// handlers + `handleStop` helpers, and the stop verification helpers moved to
+// lifecycle-stop-warnings.ts. The dispatcher is a short switch and each handler
+// is independently testable; buildStopWarnings and its wiring imports stay here
+// so source-text regression tests continue to pass.
 //
 // `handleLifecycleEvent` returns:
 //   - a `HarnessDecision` when the lifecycle branch produced an early
@@ -41,10 +37,8 @@ import {
 	maybeCaptureFromPreToolUse,
 	maybeCaptureFromUserPromptSubmit,
 } from "../plan-capture.js";
-import {
-	detectPlanDrift,
-	formatPlanDriftWarning,
-} from "../plan-drift.js";
+import { detectPlanDrift, formatPlanDriftWarning } from "../plan-drift.js";
+import { runSessionEndBaselineAutoFold } from "../baseline-autofold.js";
 import { recordHarnessMissed } from "../recurrence.js";
 import { runSessionEndScratchpadArchive } from "../scratchpad-archive.js";
 import {
@@ -66,6 +60,11 @@ import {
 } from "../trajectory/session-rework.js";
 import { buildTurnEndSummary, formatTurnEndWarnings } from "../turn-end.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
+import {
+	clearWorkspaceEffectSession,
+	consumeWorkspaceResidue,
+	formatWorkspaceResidueWarning,
+} from "../workspace-effects.js";
 import { captureBackgroundTasks } from "../background-task-log.js";
 import { captureAgentEvent } from "./agent-event-capture.js";
 import {
@@ -292,31 +291,41 @@ function handleSessionEnd(ctx: ServerRuntime, event: HarnessEvent): HarnessDecis
 	const { sessions } = ctx;
 	// Archive the session scratchpad before the OS purges it (scratchpad-
 	// governance Phase 1). Never-throw by contract; bounded by config caps.
-	runSessionEndScratchpadArchive({
-		cwd: ctx.cwd,
-		sessionId: event.session_id,
-		rules: ctx.rules,
-		log: ctx.log,
-	});
-	// Good-citizen resource plan + fire-and-forget background jobs (job 4:
-	// recurrence scan). Compute BEFORE state removal so the cohort count is
-	// accurate; the jobs self-skip when the governor defers or env opts out.
+	runSessionEndScratchpadArchive({ cwd: ctx.cwd, sessionId: event.session_id, rules: ctx.rules, log: ctx.log });
+	// Good-citizen resource plan + fire-and-forget background jobs (job 4: recurrence
+	// scan). Computed BEFORE state removal so the cohort count is accurate.
 	const resourcePlan = runSessionEndResourcePlan(ctx, event);
 	if (resourcePlan) {
 		runSessionEndJobs(ctx, resourcePlan);
 		runSessionEndHeavyJobs(ctx, event, resourcePlan); // fuzz-smoke + bench (run-if-exists)
 	}
-	// Evidence bundle (job 5): honest closeout from the session's observed
-	// signals — written BEFORE removal, while the counts are still present.
+	// Evidence bundle (job 5) + the TIGHTEN-ONLY baseline auto-fold (harness-internal
+	// `fs` raises — baseline-autofold.ts): both read the session's signals BEFORE removal.
 	const endedSession = sessions.get(event.session_id);
 	if (endedSession) writeSessionEndEvidence(ctx.cwd, endedSession);
+	const folds = runSessionEndBaselineAutoFold({ cwd: ctx.cwd, rules: ctx.rules, log: ctx.log, event, session: endedSession });
 	sessions.remove(event.session_id);
 	ctx.asyncFindings.clearSession(event.session_id);
 	clearArchive(ctx.cwd, event.session_id);
 	deleteLiveSnapshot(ctx.cwd, event.session_id);
 	ctx.classifierSessions.delete(event.session_id);
 	ctx.autoCoordStates.delete(event.session_id);
-	return { decision: "allow" };
+	clearWorkspaceEffectSession(event.session_id);
+	return folds.length > 0 ? { decision: "allow", warnings: folds } : { decision: "allow" };
+}
+
+function reconcileStopWorkspaceEffects(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+): string[] {
+	// Pre/Post snapshots are always rooted at the daemon workspace. A runner's
+	// event.cwd may be a subdirectory, so using it here would compare unrelated
+	// relative-path namespaces and manufacture create/delete residue.
+	const residue = consumeWorkspaceResidue(event.session_id, ctx.cwd);
+	for (const effect of residue?.files ?? []) session.files_written.add(effect.path);
+	const warning = residue ? formatWorkspaceResidueWarning(residue) : null;
+	return warning ? [warning] : [];
 }
 
 /** Stop body — turn-end reflection + trajectory persistence + cleanup.
@@ -340,6 +349,7 @@ async function handleStop(
 	session: SessionTrajectory,
 ): Promise<HarnessDecision> {
 	const { log } = ctx;
+	const residueWarnings = reconcileStopWorkspaceEffects(ctx, event, session);
 	const turnSummary = buildTurnEndSummary(session, 0, 0);
 	const turnWarnings = formatTurnEndWarnings(turnSummary);
 	if (turnWarnings.length > 0) {
@@ -348,6 +358,7 @@ async function handleStop(
 	for (const w of buildStopWarnings(ctx, event, session)) {
 		turnWarnings.push(w);
 	}
+	turnWarnings.push(...residueWarnings);
 	// Plan-drift reflection (PB&J item #6) — compare session.declared_plan
 	// against the actual tool_sequence; advisory-only, never blocks.
 	const driftReport = detectPlanDrift(session);

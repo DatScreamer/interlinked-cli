@@ -179,6 +179,50 @@ When the live gate reports:
 - **Over site limit:** split the patch into smaller behavioral changes with their tests.
 - **Not measured:** check runner configuration/reachability, test selection, budget, and the target repo's Stryker setup. Do not describe it as a pass.
 
+### Full-manifest census and survivor rounds
+
+Use `mutation measure <file> --record` for one source file. Use `mutation sweep` for a ranked
+survivor batch. For a genuinely current whole-repo manifest, take one cutoff after proving the
+exact working tree green, then reuse it across every restart:
+
+```bash
+cutoff="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+interlinked mutation sweep --all-eligible --measured-before "$cutoff" --dry-run
+interlinked mutation sweep --all-eligible --measured-before "$cutoff" --limit 20 \
+  --runner-url http://runner-a:8790 --runner-url http://runner-b:8790 \
+  --budget-ms 1200000 --skip-preflight
+```
+
+Repeat the second command with the **same cutoff**. Each successful record gets newer provenance
+and drops out of the next batch. `--all-eligible` inventories JS/TS product source under `src/`,
+including absent and previously measured-clean files; it excludes test/spec paths and `.d.ts`.
+Repeated runner URLs create worker lanes pulling from one queue, so one CLI process owns manifest
+writes. Use `--skip-preflight` only after this exact overlay/tree passed its suite; otherwise a red
+suite can falsely report mutants killed. Keep `not_measurable` and errors as explicit census residue.
+
+After the census, rank work with `interlinked mutation survivors`. Add or strengthen tests in
+small file/symbol batches, remeasure each target with `mutation measure --record`, and run an
+independent final census from a new cutoff. A baseline is fully current only when every eligible
+file has qualifying provenance from that final round; a high score alone does not prove that.
+
+For a file-scoped survivor report, the CLI also prints the mutation-test grounding form. Put one
+receipt immediately before every new case in a mutation-directed JS/TS test:
+
+```ts
+// test-contract: <public-api|invariant|bug|security|boundary> — <specific reference or rationale>
+```
+
+The write hook now surfaces `test_legitimacy` before a mutation-directed test edit lands; then run
+`interlinked verify --all-checks --details` for the full audit. The advisory check reviews
+missing/generic receipts, broad truthiness, incidental call order, and explicitly private/internal
+imports (including multiline named imports); a companion warning catches cast-based private-member
+access. Exact CLI/help/policy strings can be the public contract. “Kills mutant X” cannot: a
+mutation kill proves sensitivity to an injected fault, not that the asserted distinction is a
+supported behavior. The wider branch/partition, property/model, hermetic-repeat,
+refactor-resistance, and blinded-review protocol is currently a design workflow, not a shipped
+single command; see `docs/design/session-2026-08-11-synthesis.md` Part 6. Do not claim those
+evidence layers ran merely because `mutation measure` succeeded.
+
 **Baseline-integrity** — a PreToolUse block on any edit that loosens a water-line file (below).
 Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline change with
 `INTERLINKED_DISABLE_BASELINE_GUARD=1` (logged). A commit-gate backstop closes the
@@ -192,6 +236,9 @@ Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline 
 | `interlinked caps explain [metric]` | Definition, default, fix hint per metric. |
 | `interlinked coverage check [--update-baseline] [--json]` | Full-suite per-file coverage ratchet vs `coverage-baseline.json`. |
 | `interlinked mutation check [--report <p>] [--update-baseline]` | Per-file mutation-score ratchet vs `mutation-baseline.json` (needs a Stryker report). |
+| `interlinked mutation measure <file> [--record]` | Measure one source file; `--record` promotes a clean runner result into the manifest. |
+| `interlinked mutation survivors [--file <substr>]` | Rank open manifest survivors by file, symbol, and mutator. |
+| `interlinked mutation sweep [--all-eligible] [--measured-before <iso>]` | Re-measure ranked debt or run a restartable full-source census; repeat `--runner-url` for worker lanes. |
 | `interlinked metrics [--top <n>] [--json]` | Read-only whole-repo scan: companion-test, coverage, cyclomatic, CRAP hotspots + gate verdicts. |
 | `interlinked debt list \| show <file> \| resolve <file>` | The obligation ledger — coverage / red-suite debts AND `transient` debts (the deferred tsc/registry findings a coordinated edit opens). All three verbs see every kind; `resolve` is the human override for a debt no future edit will clear. |
 | `interlinked adopt [--dry-run] [--suite-baseline]` | Seed the supported adoption artifacts from the repo's current state (see below; mutation state is excluded). |
@@ -213,6 +260,36 @@ The integrity gate matches these eight files; direction is **per-file**:
 | `metric-caps.json` | `max_*`/`crap_threshold` may only **tighten**; `min_coverage` may only **rise**. Includes `max_predicate_drift` — see below. |
 | `skipped-tests-baseline.json` | `max_skipped` may only **tighten**; a grandfather count may only **shrink**. |
 | `mutation-manifest.json` | the accepted-survivor set may only **shrink**. |
+
+### SessionEnd baseline auto-fold (added 2026-08-16)
+
+Three of those water-lines used to go stale, because refreshing them needed a human to
+remember a manual full run — measured 2026-08-16, the coverage and untested-files
+baselines were 49 and 66 days old, and one `interlinked adopt` dropped 38 exemptions
+that had been earned weeks earlier. The daemon now folds the session's own evidence
+back in at **SessionEnd**, so the bar tracks the tree instead of lagging it:
+
+| Fold | What it does | Refusal direction |
+|---|---|---|
+| coverage | raises per-file high-waters from a **fresh** `coverage/coverage-summary.json` | a pct that FELL is held at its high-water, never lowered |
+| untested-files | drops the exemption for a file you wrote that now has a companion test | never ADDS an exemption |
+| large-files | drops (or lowers) the grandfather count for a file you brought back under the cap | never adds a new entry, never raises a count |
+
+Each fold is independent and skippable; the whole pass is time-bounded (~2s) and never
+throws into SessionEnd. When something folds, the session shows one line —
+`[interlinked:baseline-fold] coverage +N raised, untested -M dropped, large-files -K dropped`
+— and one JSONL row per fold lands in `.interlinked/baseline-folds.jsonl`. A dry run
+(`interlinked harness test`) writes nothing.
+
+The fold writes through plain `fs` from inside the daemon, so it does not pass the
+PreToolUse baseline-integrity gate — the same sanctioned carve-out `coverage-ratchet.ts`
+and `interlinked adopt` use. That is safe only because the loosening direction is refused
+in the planners themselves, not merely avoided.
+
+**Opt out** with `{"baseline_autofold": {"enabled": false}}` in
+`.interlinked/guard-rules.local.json` (default ON). This does not replace
+`interlinked adopt` — adopt still seeds a repo from scratch and folds metrics the
+auto-fold leaves alone.
 
 ### `max_predicate_drift` — ratchet the unchecked-assertion count to zero (added 2026-08-09)
 
@@ -277,9 +354,11 @@ public `interlinked mutation adopt` command.
 - **Mutation has two configs and two states.** `check-policy*.json → mutation_gate` controls the
   report score floor; `guard-rules*.json → per_edit_mutation` controls the live survivor gate.
   `mutation-baseline.json` and `mutation-manifest.json` are not substitutes.
-- **Interlinked does not choose the mutator strength.** Pin the Stryker operator set and test
-  scope in the target repo; changing either can make scores incomparable without changing the
-  Interlinked baseline schema.
+- **Interlinked does not choose the mutator strength.** Use and pin the mature native engine for
+  the target language (Stryker for this JS/TS repo) plus its operator set and test scope; changing
+  any of them can make scores incomparable without changing the Interlinked baseline schema. The
+  proposed Interlinked-owned cross-language/text mutator is backburner calibration work, not a
+  substitute for native-engine evidence today.
 - **`mutation accept` REFUSES every prose accept — do not plan around it.** (Corrected
   2026-08-07; the previous text here described behavior that no longer exists.) Since typed
   dispositions, `equivalent` status requires a verifier-issued certificate bound to the
@@ -311,6 +390,7 @@ interlinked adopt --dry-run            # preview seeding a legacy repo
 interlinked coverage check             # full-suite coverage ratchet
 interlinked mutation check --report reports/mutation/mutation.json
 interlinked mutation baseline          # inspect report-ratchet high-water scores
+interlinked mutation survivors --short # rank live-manifest survivor debt
 ```
 
 ## Related skills

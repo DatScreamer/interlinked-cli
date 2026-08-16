@@ -34,7 +34,8 @@ Everything is per-`cwd` under `<repo>/.interlinked/`. Key files:
 | `check-policy.json` / `.local.json` | team / local | report-ratchet settings, including the mutation-score floor |
 | `package-allowlist.json` | committed | approved dependencies (default-deny installs) |
 | `verify-suppressions.json` | committed | file/glob check suppressions |
-| `*-baseline.json`, `metric-caps.json` | mixed | ratchet water-lines (coverage/mutation/line-cap/caps) |
+| `*-baseline.json`, `metric-caps.json` | mixed | ratchet water-lines (coverage/mutation/line-cap/caps); the daemon folds session evidence into three of them at SessionEnd, tighten-only — see **interlinked-quality-gates** |
+| `baseline-folds.jsonl` | local | audit row per SessionEnd water-line fold (what tightened, what was refused) |
 | `mutation-manifest.json` | mixed | stable per-mutant state for the live per-edit mutation ratchet |
 | `activity.jsonl`, `collection.jsonl`, `timeline.jsonl` | local | captured agent activity (`enable` gitignores the first two) |
 | `harness.sock` / `harness.pid` | — | the running daemon |
@@ -61,8 +62,8 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 
 | Situation | Load |
 |---|---|
-| Installing / enabling Interlinked, connecting a coding client/hook, daemon down, `doctor` fails, config/mode | **interlinked-setup** |
-| A Bash command or edit was **BLOCKED** by a guard rule; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
+| Installing / enabling Interlinked, connecting a coding client/hook, daemon down or **zombie**, `doctor` fails, config/mode | **interlinked-setup** |
+| A Bash command or edit was **BLOCKED**; a sandbox/effect-residue warning; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
 | Running `interlinked verify`; a `pre_block` check blocked an edit; landing a cross-file refactor; scratch scripts | **interlinked-verify** |
 | Blocked by a **line-cap / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; debt | **interlinked-quality-gates** |
 | An `npm/pip/cargo/…` install or manifest edit was blocked; the package **allowlist** | **interlinked-supply-chain** |
@@ -73,12 +74,16 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 
 ## Quick orientation
 ```bash
+interlinked enable          # canonical way to turn it on (hooks + skills + daemon)
 interlinked status          # dashboard: sessions, recent activity, health
-interlinked doctor          # is everything installed & the daemon running?
-interlinked harness status  # is the guard daemon up?
+interlinked doctor          # is everything installed & the daemon answering?
+interlinked harness status  # liveness: answering / ZOMBIE / not running
 interlinked harness checks   # how many checks / rules are active
 interlinked --help          # full command list
 ```
+
+> `harness status` and `doctor` verify liveness by **round-trip, not PID**. A red `ZOMBIE`
+> (process alive, nothing answering) means the guard is off — `interlinked harness restart`.
 
 ## Golden rules for an agent in a guarded repo
 1. **When blocked, read the `Suggestion:` and take the safe path** — don't rewrite to dodge the pattern.

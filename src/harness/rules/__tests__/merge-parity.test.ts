@@ -119,6 +119,10 @@ const LOCAL_PROBES = {
 		override: { scratchpad_archive: { enabled: false } },
 		changed: (c) => c.scratchpad_archive?.enabled === false,
 	},
+	baseline_autofold: {
+		override: { baseline_autofold: { enabled: false } },
+		changed: (c) => c.baseline_autofold?.enabled === false,
+	},
 	verification_stop_checks: {
 		override: {
 			verification_stop_checks: asCfg<"verification_stop_checks">({
@@ -126,6 +130,10 @@ const LOCAL_PROBES = {
 			}),
 		},
 		changed: (c) => c.verification_stop_checks?.warn_spec_drift === false,
+	},
+	mutation_directed_strict_profile: {
+		override: { mutation_directed_strict_profile: { enabled: true } },
+		changed: (c) => c.mutation_directed_strict_profile?.enabled === true,
 	},
 } as const satisfies Partial<Record<keyof GuardRulesConfig, LocalProbe>>;
 

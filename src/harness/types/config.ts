@@ -298,10 +298,10 @@ export interface GuardRulesConfig {
 		stale_read?: "warn" | "off";
 		blind_edit?: "measure" | "warn" | "off";
 	};
-	/** SessionEnd scratchpad archive sweep (DEFAULT ON) — content-addressed
-	 *  copy of the session scratchpad into `.interlinked/scratchpad-archive/`
-	 *  before the OS purges it. See `scratchpad-archive.ts`. */
+	/** SessionEnd scratchpad archive sweep (DEFAULT ON) — see `scratchpad-archive.ts`. */
 	scratchpad_archive?: ScratchpadArchiveConfig;
+	/** SessionEnd baseline auto-fold, tighten-only (DEFAULT ON) — `baseline-autofold.ts`. */
+	baseline_autofold?: { enabled?: boolean };
 }
 
 /** SessionEnd scratchpad archive sweep settings. Caps exist so a session that
@@ -482,6 +482,11 @@ export interface VerificationStopChecksConfig {
 	/** Stop nudge for ingested review findings with neither a touching edit
 	 *  nor an ack (optional for config back-compat, default on). */
 	warn_review_findings?: boolean;
+	/** Stop nudge for tests observed running slower than expected this
+	 *  session (measurement integrity — a slow test can time out Stryker's
+	 *  mutation dry run and poison kill-measurement for its whole file; see
+	 *  slow-test-stop-check.ts). Optional for config back-compat, default on. */
+	warn_slow_tests?: boolean;
 }
 
 /** Commit-cadence nudge configuration. Two triggers: (a) at Stop /

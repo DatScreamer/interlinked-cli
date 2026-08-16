@@ -184,6 +184,16 @@ export function mergeLocalOverrides(
 	// SessionEnd scratchpad archive (default ON) — local can disable or tune
 	// the caps; shallow-merged so a partial override keeps the other knobs.
 	mergeOptionalSection(config, local, "scratchpad_archive");
+	// SessionEnd baseline auto-fold (default ON) — the documented opt-out is
+	// `{"baseline_autofold": {"enabled": false}}` in guard-rules.local.json;
+	// classified at introduction so the override works on day one.
+	mergeOptionalSection(config, local, "baseline_autofold");
+	// Mutation-directed file-class severity profile (default OFF) — classified
+	// at introduction so a per-dev `{"mutation_directed_strict_profile":
+	// {"enabled": true}}` opt-in in guard-rules.local.json works on day one,
+	// same as every sibling flag added after the silently-dropped bug class
+	// above was found.
+	mergeOptionalSection(config, local, "mutation_directed_strict_profile");
 }
 
 /**
