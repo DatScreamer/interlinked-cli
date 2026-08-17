@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { loadUntestedFilesBaseline } from "../tested-file-policy.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
-import { companionTestCandidates } from "./tdd-new-file-gate.js";
+import { companionTestCandidates } from "./companion-test.js";
 
 const SOURCE_EXT_RE = /\.(ts|tsx)$/;
 const TEST_PATH_RE = /(\.test\.tsx?|\.spec\.tsx?)$|(^|\/)__tests__\//;

@@ -5,8 +5,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scanDeadCode } from "./deadcode.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type DeadCodeReport, deadcodeCommand, scanDeadCode } from "./deadcode.js";
 
 let tmp: string;
 
@@ -60,6 +60,28 @@ describe("scanDeadCode — negative (must not report)", () => {
 	it("N2: test files are excluded from the unreachable list entirely", () => {
 		const r = scanDeadCode(tmp);
 		expect(r.unreachableFiles).not.toContain("src/orphan.test.ts");
+	});
+
+	// test-contract: public-api — the CLI action's --json mode prints ONE
+	// parseable report carrying all four report fields and exits 0
+	it("P2: deadcodeCommand --json prints the full report shape", async () => {
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((l: string) => {
+			lines.push(String(l));
+		});
+		try {
+			const code = await deadcodeCommand({ json: true, cwd: tmp });
+			expect(code).toBe(0);
+			// SAFETY: parsing the command's own --json output; the assertions
+			// below verify every field the cast promises.
+			const report = JSON.parse(lines.join("\n")) as DeadCodeReport;
+			expect(report.unreachableFiles).toContain("src/orphan.ts");
+			expect(report.deadImportBindings.map((b) => b.binding)).toContain("neverTouched");
+			expect(Array.isArray(report.deadExports)).toBe(true);
+			expect(report.scannedFiles).toBeGreaterThan(0);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	// test-contract: bug-class — files consumed ONLY through `export … from`
