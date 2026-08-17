@@ -8,8 +8,9 @@ export default defineConfig({
         // already existed there and NONE of them ran — the glob stopped at
         // `src/`, so 33 passing assertions covering the build/codegen scripts
         // were dead weight nobody could tell was dead. All seven are offline
-        // (URLs appear only as fixture strings), so they are CI-safe.
-        include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
+        // (URLs appear only as fixture strings), so they are CI-safe. The `.mts`
+        // glob covers TypeScript script tests (build-steering-corpus.test.mts).
+        include: ["src/**/*.test.ts", "scripts/**/*.test.mjs", "scripts/**/*.test.mts"],
         // Per-edit property-test budget (DW P0.1). Inert unless the per-edit
         // coverage runner sets INTERLINKED_PROPERTY_NUMRUNS — then fast-check's
         // case count is capped so property tests fit the tight per-edit latency
