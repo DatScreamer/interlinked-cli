@@ -34,6 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	rmSync(tmp, { recursive: true, force: true });
+	vi.restoreAllMocks();
 });
 
 describe("scanDeadCode — positive (must report)", () => {
@@ -66,22 +67,18 @@ describe("scanDeadCode — negative (must not report)", () => {
 	// parseable report carrying all four report fields and exits 0
 	it("P2: deadcodeCommand --json prints the full report shape", async () => {
 		const lines: string[] = [];
-		const spy = vi.spyOn(console, "log").mockImplementation((l: string) => {
+		vi.spyOn(console, "log").mockImplementation((l: string) => {
 			lines.push(String(l));
 		});
-		try {
-			const code = await deadcodeCommand({ json: true, cwd: tmp });
-			expect(code).toBe(0);
-			// SAFETY: parsing the command's own --json output; the assertions
-			// below verify every field the cast promises.
-			const report = JSON.parse(lines.join("\n")) as DeadCodeReport;
-			expect(report.unreachableFiles).toContain("src/orphan.ts");
-			expect(report.deadImportBindings.map((b) => b.binding)).toContain("neverTouched");
-			expect(Array.isArray(report.deadExports)).toBe(true);
-			expect(report.scannedFiles).toBeGreaterThan(0);
-		} finally {
-			spy.mockRestore();
-		}
+		const code = await deadcodeCommand({ json: true, cwd: tmp });
+		expect(code).toBe(0);
+		// SAFETY: parsing the command's own --json output; the assertions
+		// below verify every field the cast promises.
+		const report = JSON.parse(lines.join("\n")) as DeadCodeReport;
+		expect(report.unreachableFiles).toContain("src/orphan.ts");
+		expect(report.deadImportBindings.map((b) => b.binding)).toContain("neverTouched");
+		expect(Array.isArray(report.deadExports)).toBe(true);
+		expect(report.scannedFiles).toBeGreaterThan(0);
 	});
 
 	// test-contract: bug-class — files consumed ONLY through `export … from`
