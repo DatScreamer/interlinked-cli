@@ -19,14 +19,80 @@ vi.mock("../commit-cadence.js", () => ({
 	formatWipCommitsNudge: vi.fn(),
 	readSessionTokens: vi.fn(),
 }));
-vi.mock("../dead-on-arrival.js", () => ({
-	detectDeadOnArrival: vi.fn(),
-	formatDeadOnArrivalWarning: vi.fn(),
-}));
-vi.mock("../fixture-leak.js", () => ({
-	detectFixtureLeaks: vi.fn(),
-	formatFixtureLeakWarning: vi.fn(),
-}));
+// `checkDeadOnArrival` and `checkFixtureLeaks` were relocated INTO these two
+// modules alongside their own detect/format pair (line-cap pressure — see
+// each module's own history comment), so `buildVerificationStopWarnings` now
+// imports and calls them directly instead of composing the mocked leaves
+// itself. The old two-export factory left checkX as `undefined`, which every
+// test reaching either call path threw on ("No \"checkDeadOnArrival\"/
+// \"checkFixtureLeaks\" export is defined on the mock") — the drift this
+// repo's own vitest.stryker.config.ts run surfaces as a whole-file dry-run
+// failure, not a timeout.
+//
+// Tried `importOriginal` (vitest's own suggested fix) first and it does NOT
+// work here: the real checkX's internal calls to detectX/formatX are
+// same-module references that never route through vi.mock's external-import
+// interception, so `mDetectDeadOnArrival.mockReturnValue(...)` etc. below
+// would silently never reach it (proven live: the aggregation-order test's
+// "W5"/"W8" entries went missing — the real detect/format ran against fake
+// paths and found nothing). Hand-composing checkX to call THESE SAME vi.fn()
+// leaves instead reproduces the real function body exactly (cwd resolution,
+// log line, null short-circuit) while staying controllable by every existing
+// mDetectX/mFormatX assertion, unchanged.
+vi.mock("../dead-on-arrival.js", () => {
+	const detectDeadOnArrival = vi.fn();
+	const formatDeadOnArrivalWarning = vi.fn();
+	return {
+		detectDeadOnArrival,
+		formatDeadOnArrivalWarning,
+		checkDeadOnArrival: vi.fn(
+			(ctx: ServerRuntime, event: HarnessEvent, session: SessionTrajectory) => {
+				const cwd = event.cwd || ctx.cwd;
+				const doaHits = detectDeadOnArrival(session.files_written, cwd);
+				const warning = formatDeadOnArrivalWarning(doaHits, cwd);
+				if (warning === null) return null;
+				ctx.log(`Verify-before-stop: dead-on-arrival (${doaHits.length})`);
+				return warning;
+			},
+		),
+	};
+});
+vi.mock("../fixture-leak.js", () => {
+	const detectFixtureLeaks = vi.fn();
+	const formatFixtureLeakWarning = vi.fn();
+	return {
+		detectFixtureLeaks,
+		formatFixtureLeakWarning,
+		checkFixtureLeaks: vi.fn((ctx: ServerRuntime, event: HarnessEvent) => {
+			const leaks = detectFixtureLeaks(event.cwd || ctx.cwd);
+			const warning = formatFixtureLeakWarning({ leaks });
+			if (warning === null) return null;
+			ctx.log(`Verify-before-stop: fixture-leaks (${leaks.length})`);
+			return warning;
+		}),
+	};
+});
+vi.mock("../slow-test-stop-check.js", () => {
+	const detectSlowTests = vi.fn();
+	const formatSlowTestsWarning = vi.fn();
+	return {
+		detectSlowTests,
+		formatSlowTestsWarning,
+		checkSlowTests: vi.fn(
+			(ctx: ServerRuntime, event: HarnessEvent, session: SessionTrajectory) => {
+				// Mirrors the real function's self-gating contract: the config
+				// read lives in checkSlowTests, not in the wiring file.
+				if (ctx.rules.verification_stop_checks?.warn_slow_tests === false) return null;
+				const cwd = event.cwd || ctx.cwd;
+				const hits = detectSlowTests({ cwd, sessionStartedAt: session.started_at });
+				const warning = formatSlowTestsWarning({ hits });
+				if (warning === null) return null;
+				ctx.log(`Verify-before-stop: slow-tests (${hits.length})`);
+				return warning;
+			},
+		),
+	};
+});
 vi.mock("../untested-exports-stop-check.js", () => ({
 	detectUntestedExports: vi.fn(),
 	formatUntestedExportsWarning: vi.fn(),
@@ -61,6 +127,7 @@ import {
 	formatDeadOnArrivalWarning,
 } from "../dead-on-arrival.js";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
+import { detectSlowTests, formatSlowTestsWarning } from "../slow-test-stop-check.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
 import {
 	detectUntestedExports,
@@ -100,6 +167,8 @@ const mDetectDeadOnArrival = vi.mocked(detectDeadOnArrival);
 const mFormatDeadOnArrivalWarning = vi.mocked(formatDeadOnArrivalWarning);
 const mDetectFixtureLeaks = vi.mocked(detectFixtureLeaks);
 const mFormatFixtureLeakWarning = vi.mocked(formatFixtureLeakWarning);
+const mDetectSlowTests = vi.mocked(detectSlowTests);
+const mFormatSlowTestsWarning = vi.mocked(formatSlowTestsWarning);
 const mCountCodeFilesEdited = vi.mocked(countCodeFilesEdited);
 const mCountDocFactSourcesEdited = vi.mocked(countDocFactSourcesEdited);
 const mCountUiFilesEdited = vi.mocked(countUiFilesEdited);
@@ -171,7 +240,8 @@ beforeEach(() => {
 	mDetectDeadOnArrival.mockReturnValue([]);
 	mFormatDeadOnArrivalWarning.mockReturnValue(null);
 	mDetectFixtureLeaks.mockReturnValue([]);
-	mFormatFixtureLeakWarning.mockReturnValue(null);
+	mFormatFixtureLeakWarning.mockReturnValue(null);	mDetectSlowTests.mockReturnValue([]);
+	mFormatSlowTestsWarning.mockReturnValue(null);
 	mCountCodeFilesEdited.mockReturnValue(0);
 	mCountDocFactSourcesEdited.mockReturnValue(0);
 	mCountUiFilesEdited.mockReturnValue(0);
@@ -590,6 +660,27 @@ describe("buildVerificationStopWarnings", () => {
 		buildVerificationStopWarnings(ctx, makeEvent({}), makeSession());
 
 		expect(mDetectFixtureLeaks).toHaveBeenCalledWith("/ctx-cwd");
+	});
+
+	it("includes the slow-test warning when its flag is on and formatter fires (+logs)", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_slow_tests: true }) });
+		mDetectSlowTests.mockReturnValue([{ file: "a.test.ts" }] as never);
+		mFormatSlowTestsWarning.mockReturnValue("SLOW-TEST");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).toContain("SLOW-TEST");
+		expect(logLines.some((l) => l.includes("slow-tests (1)"))).toBe(true);
+	});
+
+	it("omits the slow-test warning when warn_slow_tests is explicitly false", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_slow_tests: false }) });
+		mFormatSlowTestsWarning.mockReturnValue("SLOW-TEST");
+
+		const out = buildVerificationStopWarnings(ctx, makeEvent(), makeSession());
+
+		expect(out).not.toContain("SLOW-TEST");
+		expect(mDetectSlowTests).not.toHaveBeenCalled();
 	});
 
 	// --- always-on checks ---

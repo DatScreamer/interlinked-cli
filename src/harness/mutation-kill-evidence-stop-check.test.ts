@@ -8,11 +8,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	checkMutationKillEvidence,
 	detectMutationKillEvidenceGaps,
 	formatMutationKillEvidenceWarning,
 	type MutationKillEvidenceHit,
 } from "./mutation-kill-evidence-stop-check.js";
 import { writeSurvivorsIndex } from "./mutation/survivors-index.js";
+import type { ServerRuntime } from "./server/runtime-context.js";
+import { recordStopDigestState } from "./stop-digest-state.js";
+import type { HarnessEvent, SessionTrajectory } from "./types.js";
 
 const CWD = "/repo";
 const SHA = "deadbeef";
@@ -303,6 +307,62 @@ describe("detectMutationKillEvidenceGaps — sidecar-backed default reader", () 
 		const hits = detectIn(cwd, "2026-08-16T10:00:00.000Z");
 		expect(hits).toHaveLength(1);
 		expect(hits[0]?.staleMeasurement).toBe(true);
+	});
+
+	// PIPELINE AWARENESS (2026-08-16): a measurement already owed and reported
+	// must not re-print its full explanation at the next Stop.
+	function writeKillFile(cwd: string): void {
+		const dir = join(cwd, "src", "checks");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "foo.mutation-kill.test.ts"), markedCase("kills A"));
+	}
+
+	function checkIn(cwd: string): string | null {
+		const rel = "src/checks/foo.mutation-kill.test.ts";
+		const abs = join(cwd, rel);
+		return checkMutationKillEvidence(
+			// SAFETY: the check reads only `cwd` and `log` off the runtime.
+			{ cwd, log: () => {} } as unknown as ServerRuntime,
+			// SAFETY: the check reads only `cwd` and `session_id` off the event.
+			{ cwd, session_id: "S" } as unknown as HarnessEvent,
+			// SAFETY: the check reads only these four trajectory fields.
+			{
+				session_id: "S",
+				files_written: new Set([abs]),
+				file_write_times: new Map([[abs, "2026-08-16T10:00:00.000Z"]]),
+				git_session_baseline: { head_sha: SHA },
+			} as unknown as SessionTrajectory,
+		);
+	}
+
+	it("P3: prints the FULL nudge at the first stop of a session", () => {
+		const cwd = repoWithSidecar(null);
+		writeKillFile(cwd);
+		expect(checkIn(cwd)).toContain("incomplete kill evidence");
+	});
+
+	it("P4: compresses to ONE acknowledgment line once the tag was reported before", () => {
+		const cwd = repoWithSidecar(null);
+		writeKillFile(cwd);
+		recordStopDigestState({
+			interlinkedDir: join(cwd, ".interlinked"),
+			sessionId: "S",
+			tags: ["mutation-kill-evidence"],
+		});
+		const line = checkIn(cwd) ?? "";
+		expect(line).toContain("still awaiting measurement (reported at previous stop)");
+		expect(line).not.toContain("incomplete kill evidence");
+	});
+
+	it("N3: another session's reported tag does not compress THIS session's nudge", () => {
+		const cwd = repoWithSidecar(null);
+		writeKillFile(cwd);
+		recordStopDigestState({
+			interlinkedDir: join(cwd, ".interlinked"),
+			sessionId: "OTHER",
+			tags: ["mutation-kill-evidence"],
+		});
+		expect(checkIn(cwd)).toContain("incomplete kill evidence");
 	});
 
 	it("N2: never reads mutation-manifest.json — a manifest alone leaves it unmeasured", () => {

@@ -33,13 +33,21 @@ export interface TrackedBaseline {
 
 /**
  * The water-lines a ratchet reads, with the command that regenerates each. A
- * baseline with no refresh path would be a trap, so every entry names one.
+ * baseline with no refresh path would be a trap, so every entry names one — and
+ * every command named here must EXIST, which `baseline-staleness.test.ts` pins
+ * against the CLI's own registrar-built command tree. It did not before
+ * 2026-08-16: this table sent readers to `interlinked metrics --update-baseline`,
+ * a command that has never existed, so the one nudge whose whole job is "your
+ * measurement is out of date" ended in a command-not-found (followup #27a).
+ *
+ * `mutation-baseline.json` is deliberately absent: the per-file mutation score
+ * ratchet it fed was superseded by the per-edit manifest, so nudging anyone to
+ * refresh it would be nudging them to feed a dead gate.
  */
 export const TRACKED_BASELINES: readonly TrackedBaseline[] = [
 	{ file: "coverage-baseline.json", refresh: "interlinked coverage check --update-baseline" },
 	{ file: "coverage-edit-baseline.json", refresh: "interlinked coverage check --update-baseline" },
-	{ file: "mutation-baseline.json", refresh: "interlinked mutation check --update-baseline" },
-	{ file: "untested-files-baseline.json", refresh: "interlinked metrics --update-baseline" },
+	{ file: "untested-files-baseline.json", refresh: "interlinked adopt" },
 ];
 
 export interface BaselineAge {

@@ -75,6 +75,42 @@ Values: `session_start`, `session_end`, `tool_use_start`, `tool_use`, `tool_use_
 session-end batch), `local` (never posts), `manual` (per-event POST, no auto batch — you run
 `interlinked sync`).
 
+## The Stop digest — what end-of-turn stderr actually shows
+
+Every Stop event runs ~20 independent nudge families. They no longer print in
+full: `src/harness/stop-digest.ts` ranks and caps the whole wall to **≤15
+stderr lines**, and everything it trims goes to the spool.
+
+| Position | Contents |
+|---|---|
+| TOP | up to 3 warnings printed in full (≤4 lines each), ordered **actionable → measurement-threatening → reflection** |
+| SUMMARY | one line per remaining category: `[interlinked:digest] <tag> xN (see …)` |
+| POINTER | `.interlinked/stop-digest.jsonl` — the full detail, per-session capped |
+
+Read the spool when a count line is not enough:
+
+```bash
+interlinked query .interlinked/stop-digest.jsonl --where kind=subagent-attributed
+tail -n 40 .interlinked/stop-digest.jsonl | jq -r '[.kind,.tag//.check,.file]|@tsv'
+```
+
+Row kinds: `stop-warning` (a trimmed nudge), `subagent-attributed` (a finding on
+a file a SUBAGENT wrote — attributed via `timeline.jsonl` and kept out of the
+main list), `pre-existing` (present in the session's git baseline), and
+`sanctioned-scratch` (probe-pattern findings under `scratch/`, which the
+scratchpad policy sanctions — still reported by `interlinked verify
+--all-checks`).
+
+Two consequences worth knowing:
+- **The rescan reports introduced-only.** A whole-file scan still runs, but a
+  finding your session did not introduce is spooled, not printed.
+- **A repeat Stop prints only what is new**, plus one `R resolved, S unchanged
+  (suppressed)` line. Per-session state lives in
+  `.interlinked/.stop-digest-state.json` (daemon bookkeeping — do not hand-edit).
+
+Activating a change to any of this needs `npm run build && interlinked harness
+restart`: the daemon serves the build it started with.
+
 ## `interlinked recurrence` — repeating-pattern aggregation
 Deterministic counting/grouping over `.interlinked/recurrences.jsonl` (no LLM), ranked by count.
 Four observation kinds (all filterable via `--kind`):

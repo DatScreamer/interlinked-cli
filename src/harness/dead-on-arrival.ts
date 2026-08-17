@@ -22,7 +22,9 @@
 
 import { relative } from "node:path";
 import { classifyCase } from "./graph-prediction-classifier.js";
+import type { ServerRuntime } from "./server/runtime-context.js";
 import { loadGraphForFile } from "./supermodel-graph.js";
+import type { HarnessEvent, SessionTrajectory } from "./types.js";
 
 export interface DeadOnArrivalHit {
 	/** Resolved absolute path of the dead-on-arrival source file. */
@@ -98,4 +100,22 @@ export function formatDeadOnArrivalWarning(
 		"Each is either a new entry point wired up elsewhere, or dead on arrival. Confirm " +
 		"they're reachable before stopping."
 	);
+}
+
+/** Stop-wiring entry point — relocated from lifecycle-stop-warnings.ts (line-cap
+ *  pressure) alongside its own detect/format pair, matching the co-located
+ *  pattern fixture-leak.ts / untested-exports-stop-check.ts already use.
+ *  Behavior unchanged: same name, same signature, so the call site in
+ *  buildVerificationStopWarnings needed no edit, only its import source. */
+export function checkDeadOnArrival(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+): string | null {
+	const cwd = event.cwd || ctx.cwd;
+	const doaHits = detectDeadOnArrival(session.files_written, cwd);
+	const warning = formatDeadOnArrivalWarning(doaHits, cwd);
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: dead-on-arrival (${doaHits.length})`);
+	return warning;
 }

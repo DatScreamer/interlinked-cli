@@ -40,6 +40,11 @@ export type {
 	StubMatch,
 	VerificationSignal,
 } from "./verification-stop-checks-predicates.js";
+// Mutation-kill-evidence nudge: detector + formatter live together in the
+// sibling file (mockable-in-one-module reasons — see its docstring); only
+// the formatter is re-exported here to keep this file's public surface
+// complete without pushing it over the per-file line cap.
+export { formatMutationKillEvidenceWarning } from "./mutation-kill-evidence-stop-check.js";
 export {
 	classifyBrowserToolName,
 	classifyVerificationCommand,

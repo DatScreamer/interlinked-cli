@@ -21,12 +21,11 @@ import {
 	formatWipCommitsNudge,
 	readSessionTokens,
 } from "../commit-cadence.js";
-import {
-	detectDeadOnArrival,
-	formatDeadOnArrivalWarning,
-} from "../dead-on-arrival.js";
+import { checkDeadOnArrival } from "../dead-on-arrival.js";
 import { formatDebtEvasionStopLine } from "../debt-evasion.js";
-import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
+import { checkFixtureLeaks } from "../fixture-leak.js";
+import { checkSlowTests } from "../slow-test-stop-check.js";
+import { checkMutationKillEvidence } from "../mutation-kill-evidence-stop-check.js";
 import {
 	formatReviewFindingsWarning,
 	formatSpecDriftWarning,
@@ -174,6 +173,7 @@ export function buildVerificationStopWarnings(
 		warnings,
 		vsc.warn_fixture_leaks ? checkFixtureLeaks(ctx, event) : null,
 	);
+	pushIfNotNull(warnings, checkSlowTests(ctx, event, session));
 	pushIfNotNull(warnings, checkTddRegression(ctx, session));
 	// Always-on like the tdd-regression nudge: fires only when the session ran
 	// inline-exec (node -e / python -c) AFTER a debt-focus block (debt-evasion.ts).
@@ -193,6 +193,7 @@ export function buildVerificationStopWarnings(
 	pushIfNotNull(warnings, checkWipCommits(ctx, event, session));
 	pushIfNotNull(warnings, checkUntestedExports(ctx, event, session));
 	pushIfNotNull(warnings, checkDeadOnArrival(ctx, event, session));
+	pushIfNotNull(warnings, checkMutationKillEvidence(ctx, event, session));
 	pushIfNotNull(warnings, checkDocMarkerDrift(ctx, session));
 	pushIfNotNull(warnings, checkSpecDrift(ctx, session));
 	pushIfNotNull(warnings, checkReviewFindings(ctx));
@@ -289,17 +290,8 @@ function checkStubsIntroduced(ctx: ServerRuntime, session: SessionTrajectory): s
 	return warning;
 }
 
-/** Fixture leaks — untracked src/**\/_*.ts whose basename appears in a
- *  writeFixture()-shaped call in a tracked test file. The test's afterAll
- *  cleanup didn't run (killed mid-test, helper threw, runner panicked).
- *  Deterministic; no session state. */
-function checkFixtureLeaks(ctx: ServerRuntime, event: HarnessEvent): string | null {
-	const leaks = detectFixtureLeaks(event.cwd || ctx.cwd);
-	const warning = formatFixtureLeakWarning({ leaks });
-	if (warning === null) return null;
-	ctx.log(`Verify-before-stop: fixture-leaks (${leaks.length})`);
-	return warning;
-}
+// checkFixtureLeaks relocated to fixture-leak.ts (line-cap pressure) — same
+// name/signature, co-located with its own detect/format pair.
 
 /** TDD regression — a test that was green earlier this session is now red,
  *  so this session's edits broke working behavior. */
@@ -442,22 +434,8 @@ function checkBisectNotReset(
 	return warning;
 }
 
-/** Dead-on-arrival — a file edited this session whose fresh Supermodel
- *  `.graph` shard reports zero dependent files and no callers. Plan 08
- *  §3c. Freshness-gated (only E-fresh shards), so a stale or missing
- *  shard yields no finding — zero false positives. */
-function checkDeadOnArrival(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	session: SessionTrajectory,
-): string | null {
-	const cwd = event.cwd || ctx.cwd;
-	const doaHits = detectDeadOnArrival(session.files_written, cwd);
-	const warning = formatDeadOnArrivalWarning(doaHits, cwd);
-	if (warning === null) return null;
-	ctx.log(`Verify-before-stop: dead-on-arrival (${doaHits.length})`);
-	return warning;
-}
+// checkDeadOnArrival relocated to dead-on-arrival.ts (line-cap pressure) —
+// same name/signature, co-located with its own detect/format pair.
 
 /** Doc-fact drift — a gen-marker source (a built-in rule family, the runner
  *  registry, or the modes type) was edited this session but docs:build /

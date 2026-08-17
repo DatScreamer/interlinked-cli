@@ -20,6 +20,8 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import type { ServerRuntime } from "./server/runtime-context.js";
+import type { HarnessEvent } from "./types.js";
 
 /** Underscore-prefixed source-code basename. The convention is project-
  *  specific: `_multi_edit_case_a.ts` / `_case_b.tsx` / `_fixture_x.py`. */
@@ -142,4 +144,17 @@ export function formatFixtureLeakWarning(opts: FormatFixtureLeakOpts): string | 
 		"threw, the runner was killed mid-test, or the file path drifted from the helper). " +
 		"Either fix the cleanup helper or `rm` the listed files before stopping."
 	);
+}
+
+/** Stop-wiring entry point — relocated from lifecycle-stop-warnings.ts (line-cap
+ *  pressure) alongside its own detect/format pair, matching the co-located
+ *  pattern dead-on-arrival.ts / untested-exports-stop-check.ts already use.
+ *  Behavior unchanged: same name, same signature, so the call site in
+ *  buildVerificationStopWarnings needed no edit, only its import source. */
+export function checkFixtureLeaks(ctx: ServerRuntime, event: HarnessEvent): string | null {
+	const leaks = detectFixtureLeaks(event.cwd || ctx.cwd);
+	const warning = formatFixtureLeakWarning({ leaks });
+	if (warning === null) return null;
+	ctx.log(`Verify-before-stop: fixture-leaks (${leaks.length})`);
+	return warning;
 }

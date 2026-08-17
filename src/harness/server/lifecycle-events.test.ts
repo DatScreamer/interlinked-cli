@@ -7,6 +7,7 @@ import { nonNull } from "../../lib/non-null.js";
 import { CohortManager } from "../cohort.js";
 import { SessionTracker } from "../session-state.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
+import { rememberWorkspaceSnapshot } from "../workspace-effects.js";
 import { handleLifecycleEvent, resolveParentSessionId } from "./lifecycle-events.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
@@ -32,6 +33,36 @@ vi.mock("../../lib/settings-validator.js", () => ({
 	autoStripAllScopes: vi.fn(() => ({ totalStripped: 0, entries: [] })),
 	defaultStripAuditLogPath: vi.fn(() => "/repo/.interlinked/permission-rule-strips.jsonl"),
 	describeReason: vi.fn((r: string) => `reason:${r}`),
+}));
+vi.mock("../recurrence.js", () => ({
+	recordHarnessMissed: vi.fn(),
+}));
+vi.mock("./agent-event-capture.js", () => ({
+	captureAgentEvent: vi.fn(),
+}));
+vi.mock("../gate-reach-collect.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../gate-reach-collect.js")>();
+	return {
+		...actual,
+		buildGateReachStopWarning: vi.fn(actual.buildGateReachStopWarning),
+	};
+});
+vi.mock("./stop-nudge-throttle.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./stop-nudge-throttle.js")>();
+	return { ...actual, suppressRepeatedNudges: vi.fn(actual.suppressRepeatedNudges) };
+});
+vi.mock("./session-end-batch.js", () => ({
+	runSessionEndJobs: vi.fn(),
+	runSessionEndResourcePlan: vi.fn(() => ({
+		maxJobs: 1,
+		background: false,
+		commandPrefix: "",
+		defer: false,
+		reason: "test",
+	})),
+}));
+vi.mock("./session-end-heavy-jobs.js", () => ({
+	runSessionEndHeavyJobs: vi.fn(),
 }));
 vi.mock("../content-scanner/prompt-scan.js", () => ({
 	// scanUserPrompt resolves to `PromptScanResult | undefined` (never null);
@@ -187,6 +218,13 @@ describe("handleLifecycleEvent", () => {
 		const session = ctx.sessions.recordEvent(ev({ hook_event: "SessionStart" }));
 		const out = await handleLifecycleEvent(ctx, ev({ hook_event: "SessionStart" }), session);
 		expect(out?.warnings?.some((w) => w.includes("[interlinked:fuzz]"))).toBe(true);
+		expect(mRecordHarnessMissed).toHaveBeenCalledWith(
+			expect.objectContaining({
+				signature: "fuzz_smoke_failure",
+				check_id: "fuzz_smoke",
+				cwd: tmp,
+			}),
+		);
 	});
 
 	it("returns null (fall-through) for an unrecognized non-tool event", async () => {
@@ -225,7 +263,8 @@ describe("handleLifecycleEvent", () => {
 	});
 
 	it("SessionEnd returns an allow decision and removes the session", async () => {
-		const ctx = makeCtx();
+		const drain = vi.fn(async () => undefined);
+		const ctx = makeCtx({ asyncAnalysis: { drain } as never });
 		const session = ctx.sessions.recordEvent(ev({ hook_event: "SessionEnd" }));
 		const out = await handleLifecycleEvent(
 			ctx,
@@ -234,6 +273,10 @@ describe("handleLifecycleEvent", () => {
 		);
 		expect(out?.decision).toBe("allow");
 		expect(ctx.sessions.get("s")).toBeUndefined();
+		expect(drain).not.toHaveBeenCalled();
+		expect(readFileSync(join(tmp, ".interlinked", "evidence", "s.json"), "utf8")).toContain(
+			'"session_id": "s"',
+		);
 	});
 });
 
@@ -354,6 +397,9 @@ import {
 	autoStripAllScopes,
 	defaultStripAuditLogPath,
 } from "../../lib/settings-validator.js";
+import { recordHarnessMissed } from "../recurrence.js";
+import { captureAgentEvent } from "./agent-event-capture.js";
+import { buildGateReachStopWarning } from "../gate-reach-collect.js";
 import { scanUserPrompt } from "../content-scanner/prompt-scan.js";
 import { resetProjectSetupWarningsCache } from "../evaluator/pre-tool.js";
 import { refreshPriorityIfStale } from "../file-priority.js";
@@ -373,6 +419,12 @@ import {
 	buildStaleBaselineNudge,
 	buildVerificationStopWarnings,
 } from "./lifecycle-stop-warnings.js";
+import {
+	runSessionEndJobs,
+	runSessionEndResourcePlan,
+} from "./session-end-batch.js";
+import { runSessionEndHeavyJobs } from "./session-end-heavy-jobs.js";
+import { suppressRepeatedNudges } from "./stop-nudge-throttle.js";
 import { peekTrajectoryState, trajectoryShadowWarnings } from "./trajectory-shadow.js";
 
 const mMkdir = vi.mocked(mkdir);
@@ -396,6 +448,13 @@ const mBuildCadence = vi.mocked(buildCommitCadenceNudge);
 const mBuildStaleBaseline = vi.mocked(buildStaleBaselineNudge);
 const mBuildVsc = vi.mocked(buildVerificationStopWarnings);
 const mSanitize = vi.mocked(sanitizeSessionId);
+const mRecordHarnessMissed = vi.mocked(recordHarnessMissed);
+const mCaptureAgentEvent = vi.mocked(captureAgentEvent);
+const mBuildGateReach = vi.mocked(buildGateReachStopWarning);
+const mRunSessionEndJobs = vi.mocked(runSessionEndJobs);
+const mRunSessionEndResourcePlan = vi.mocked(runSessionEndResourcePlan);
+const mRunSessionEndHeavyJobs = vi.mocked(runSessionEndHeavyJobs);
+const mSuppressRepeatedNudges = vi.mocked(suppressRepeatedNudges);
 
 const bLog: string[] = [];
 const bLogAlways: string[] = [];
@@ -492,6 +551,14 @@ beforeEach(() => {
 	mBuildCadence.mockReturnValue(null);
 	mBuildStaleBaseline.mockReturnValue(null);
 	mBuildVsc.mockReturnValue([]);
+	mRunSessionEndResourcePlan.mockReturnValue({
+		maxJobs: 1,
+		background: false,
+		commandPrefix: "",
+		defer: false,
+		reason: "test",
+	});
+	mSuppressRepeatedNudges.mockImplementation((_key, warnings) => [...warnings]);
 	// Restore the genuine sanitize behavior after clearAllMocks wiped the
 	// wrapped implementation. Mirrors session-paths.ts::sanitizeSessionId
 	// (whitelist charset + 64-char cap); the one branch-forcing test overrides
@@ -590,6 +657,12 @@ describe("handleLifecycleEvent — dispatch branches", () => {
 		expect(bLog.some((l) => l.includes("Plan capture:"))).toBe(false);
 	});
 
+	it("does not run PreToolUse plan capture for a lifecycle event", async () => {
+		const ctx = bCtx();
+		await handleLifecycleEvent(ctx, bEvent({ hook_event: "SessionStart" }), bSession());
+		expect(mCapturePre).not.toHaveBeenCalled();
+	});
+
 	it("SubagentStart: joins cohort, logs the name, returns null", async () => {
 		const ctx = bCtx();
 		const out = await handleLifecycleEvent(
@@ -629,6 +702,11 @@ describe("handleLifecycleEvent — dispatch branches", () => {
 		expect(out).toBeNull();
 		expect(fnOf(ctx.cohort.recordActivity)).toHaveBeenCalledWith(
 			expect.objectContaining({ hook_event: "TaskCompleted", agent_name: "sub-x" }),
+		);
+		expect(mCaptureAgentEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ hook_event: "TaskCompleted", agent_name: "sub-x" }),
+			ctx.cwd,
+			ctx.log,
 		);
 	});
 });
@@ -742,8 +820,16 @@ describe("SessionStart handler — branch coverage", () => {
 		const ctx = bCtx();
 		const out = await start(ctx);
 		expect(out?.decision).toBe("allow");
-		expect(out?.warnings?.[0]).toContain("Auto-stripped 2 malformed permission rule(s)");
-		expect(out?.warnings?.[0]).toContain(".interlinked/permission-rule-strips.jsonl");
+		const warning = out?.warnings?.[0] ?? "";
+		expect(warning).toContain("Auto-stripped 2 malformed permission rule(s)");
+		expect(warning).toContain(
+			'  - .claude/settings.json permissions.allow[0] = "Bash(-d *)" (reason:paren_imbalance)',
+		);
+		expect(warning).toContain(
+			"These rules came from Claude Code's permission UI; the upstream extractor occasionally emits bad parens / empty / missing-Tool() entries.",
+		);
+		expect(warning).toContain("\nThese rules came from Claude Code's permission UI");
+		expect(warning).toContain(".interlinked/permission-rule-strips.jsonl");
 		expect(mResetSetupCache).toHaveBeenCalledTimes(1);
 		expect(bLog.some((l) => l.includes("Auto-stripped 2 malformed permission rule(s)"))).toBe(true);
 	});
@@ -759,6 +845,21 @@ describe("SessionStart handler — branch coverage", () => {
 		mAutoStrip.mockReturnValue({ totalStripped: 7, entries: entries as never });
 		const out = await start(bCtx());
 		expect(out?.warnings?.[0]).toContain("...and 2 more");
+	});
+
+	it("does not append an empty or fabricated remainder for exactly five entries", async () => {
+		const entries = Array.from({ length: 5 }, (_v, i) => ({
+			file: "/repo/.claude/settings.json",
+			bucket: "allow" as const,
+			index: i,
+			rule: `Bash(r${i})`,
+			reason: "paren_imbalance" as const,
+		}));
+		mAutoStrip.mockReturnValue({ totalStripped: 5, entries: entries as never });
+		const warning = (await start(bCtx()))?.warnings?.[0] ?? "";
+		expect(warning).toContain("\nThese rules came from Claude Code's permission UI");
+		expect(warning).not.toContain("...and");
+		expect(warning).not.toContain("Stryker was here");
 	});
 
 	it("uses the audit path verbatim when it is not under cwd", async () => {
@@ -779,6 +880,25 @@ describe("SessionStart handler — branch coverage", () => {
 		expect(out?.warnings?.[0]).toContain("/elsewhere/audit.jsonl");
 	});
 
+	it("renders a cwd-relative audit path for the warning receipt", async () => {
+		mDefaultAudit.mockReturnValue("/repo/.interlinked/audit.jsonl");
+		mAutoStrip.mockReturnValue({
+			totalStripped: 1,
+			entries: [
+				{
+					file: "/repo/.claude/settings.json",
+					bucket: "allow",
+					index: 0,
+					rule: "bad",
+					reason: "missing_tool_prefix",
+				},
+			] as never,
+		});
+		const warning = (await start(bCtx({ cwd: "/repo" })))?.warnings?.[0] ?? "";
+		expect(warning).toContain("(full audit at .interlinked/audit.jsonl)");
+		expect(warning).not.toContain("(full audit at /repo/.interlinked/audit.jsonl)");
+	});
+
 	it("returns null and skips the cache reset when nothing was stripped", async () => {
 		mAutoStrip.mockReturnValue({ totalStripped: 0, entries: [] });
 		expect(await start(bCtx())).toBeNull();
@@ -796,6 +916,22 @@ describe("SessionStart handler — branch coverage", () => {
 
 // ───────────────────────────── handleSessionEnd ───────────────────────────
 describe("SessionEnd handler — branch coverage", () => {
+	it("runs the planned background lanes before removing the session", async () => {
+		const event = bEvent({ hook_event: "SessionEnd", session_id: "s1" });
+		const plan = {
+			maxJobs: 2,
+			background: true,
+			commandPrefix: "nice -n 19 ",
+			defer: false,
+			reason: "quiet",
+		};
+		mRunSessionEndResourcePlan.mockReturnValue(plan);
+		const ctx = bCtx({ sessions: bSessions({ get: vi.fn(() => bSession()) }) });
+		await handleLifecycleEvent(ctx, event, bSession());
+		expect(mRunSessionEndJobs).toHaveBeenCalledWith(ctx, plan);
+		expect(mRunSessionEndHeavyJobs).toHaveBeenCalledWith(ctx, event, plan);
+	});
+
 	it("runs every defensive cleanup primitive and returns allow", async () => {
 		const sessions = bSessions();
 		const ctx = bCtx({
@@ -829,14 +965,18 @@ describe("Stop handler — branch coverage", () => {
 		expect(out).toEqual({ decision: "allow", warnings: undefined });
 		expect(fnOf(ctx.cohort.agentLeft)).toHaveBeenCalled();
 		expect(fnOf(ctx.asyncAnalysis.drain)).toHaveBeenCalled();
-		expect(bLog.some((l) => l.includes("Agent left:"))).toBe(true);
+		expect(bLog).toContain("Agent left: s1");
 	});
 
+	// Stop output now passes through the digest (stop-digest.ts): the head of
+	// each category prints in full and the rest collapse to one count line, so
+	// these assertions check the head plus the count rather than every string.
 	it("logs turn patterns and surfaces turn-end warnings when present", async () => {
 		mBuildTurnSummary.mockReturnValue({ turn_patterns: ["churn", "thrash"] } as never);
 		mFormatTurnEnd.mockReturnValue(["TE-1", "TE-2"]);
 		const out = await stop(bCtx());
-		expect(out?.warnings).toEqual(expect.arrayContaining(["TE-1", "TE-2"]));
+		expect(out?.warnings).toEqual(expect.arrayContaining(["TE-1"]));
+		expect(out?.warnings?.some((w) => w.includes("other x2"))).toBe(true);
 		expect(bLog.some((l) => l.includes("Turn-end patterns: churn, thrash"))).toBe(true);
 	});
 
@@ -845,16 +985,72 @@ describe("Stop handler — branch coverage", () => {
 		mBuildVsc.mockReturnValue(["VSC-1"]);
 		mBuildRescan.mockReturnValue(["RESCAN-1"]);
 		mRunSeq.mockReturnValue([{ id: "seq-a" }] as never);
-		const out = await stop(bCtx(), { cwd: "/event-cwd" });
-		expect(out?.warnings).toEqual(
-			expect.arrayContaining(["CADENCE", "VSC-1", "RESCAN-1", 'seq:{"id":"seq-a"}']),
+		const ctx = bCtx();
+		const out = await stop(ctx, { cwd: "/event-cwd", session_id: "session-123" });
+		// All four are untagged, so the digest treats them as one category:
+		// the head prints in full, the remaining three become a count line.
+		expect(out?.warnings).toEqual(expect.arrayContaining(["CADENCE"]));
+		expect(out?.warnings?.some((w) => w.includes("other x4"))).toBe(true);
+		expect(mBuildRescan).toHaveBeenCalledWith(
+			expect.anything(),
+			"/event-cwd",
+			expect.objectContaining({ sessionId: "session-123" }),
 		);
-		expect(mBuildRescan).toHaveBeenCalledWith(expect.anything(), "/event-cwd");
+		expect(mRunSeq).toHaveBeenCalledWith({
+			phase: "stop",
+			trajectory: expect.anything(),
+			candidate: expect.objectContaining({ hook_event: "Stop", cwd: "/event-cwd" }),
+		});
+		expect(mBuildGateReach).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "session-123",
+				perEditCoverageEnabled: true,
+			}),
+		);
+		expect(mSuppressRepeatedNudges).toHaveBeenCalledWith(
+			{ projectRoot: ctx.cwd, sessionId: "session-123" },
+			expect.any(Array),
+		);
 	});
 
 	it("falls back to ctx.cwd for the rescan cwd when event.cwd is absent", async () => {
 		await stop(bCtx({ cwd: "/ctx-cwd" }), {});
-		expect(mBuildRescan).toHaveBeenCalledWith(expect.anything(), "/ctx-cwd");
+		expect(mBuildRescan).toHaveBeenCalledWith(
+			expect.anything(),
+			"/ctx-cwd",
+			expect.any(Object),
+		);
+	});
+
+	// test-contract: boundary — Stop reconciliation stays rooted at the daemon workspace when event.cwd is a nested runner directory
+	it("reconciles workspace residue against ctx.cwd, not a nested event.cwd", async () => {
+		const nested = join(tmp, "nested");
+		mkdirSync(nested);
+		writeFileSync(join(tmp, "baseline.ts"), "baseline\n");
+		const ctx = bCtx({ cwd: tmp });
+
+		// No filesystem effect occurred. Comparing against event.cwd would make
+		// the daemon workspace file look deleted and fabricate residue.
+		rememberWorkspaceSnapshot({ sessionId: "no-effect", root: tmp });
+		const clean = await stop(
+			ctx,
+			{ session_id: "no-effect", cwd: nested },
+			bSession({ session_id: "no-effect", files_written: new Set<string>() }),
+		);
+		expect(clean?.warnings ?? []).not.toContainEqual(expect.stringContaining("effect-residue"));
+
+		// A real write after the pre-call snapshot must still be surfaced even
+		// though the Stop payload reports the nested directory.
+		rememberWorkspaceSnapshot({ sessionId: "real-effect", root: tmp });
+		writeFileSync(join(tmp, "unreconciled.ts"), "real\n");
+		const residue = await stop(
+			ctx,
+			{ session_id: "real-effect", cwd: nested },
+			bSession({ session_id: "real-effect", files_written: new Set<string>() }),
+		);
+		expect(residue?.warnings ?? []).toContainEqual(
+			expect.stringContaining("created:unreconciled.ts"),
+		);
 	});
 
 	it("surfaces the gate-reach meta-metric when a quality gate is disabled", async () => {
@@ -872,6 +1068,33 @@ describe("Stop handler — branch coverage", () => {
 			expect(warnings.some((w) => w.includes("[interlinked:gate-reach]"))).toBe(true);
 			expect(warnings.some((w) => w.includes("gate=per_edit_coverage"))).toBe(true);
 			expect(warnings.some((w) => w.includes("disabled=true"))).toBe(true);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("records the Stop session identity and enabled-gate state in the reach ledger", async () => {
+		const repo = mkdtempSync(join(tmpdir(), "lifecycle-gate-ledger-"));
+		try {
+			mkdirSync(join(repo, "src"), { recursive: true });
+			writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n", "utf-8");
+			const ctx = bCtx({
+				cwd: repo,
+				rules: { per_edit_coverage: { enabled: true } },
+			});
+			await stop(ctx, { cwd: repo, session_id: "ledger-session" });
+			const rows = readFileSync(join(repo, ".interlinked", "gate-reach.jsonl"), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { session_id: string; gates: Array<Record<string, unknown>> });
+			const snapshot = rows.at(-1);
+			expect(snapshot?.session_id).toBe("ledger-session");
+			expect(snapshot?.gates).toEqual(
+				expect.arrayContaining([expect.objectContaining({ gate: "per_edit_coverage" })]),
+			);
+			const perEdit = snapshot?.gates.find((gate) => gate.gate === "per_edit_coverage");
+			expect(perEdit?.status).toBe("source_unavailable");
+			expect(perEdit?.disabled).toBeUndefined();
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}
@@ -960,10 +1183,12 @@ describe("Stop handler — branch coverage", () => {
 	});
 
 	it("pushes a plan-drift warning when a drift report formats to text", async () => {
-		mDetectPlanDrift.mockReturnValue({ kind: "drift" } as never);
+		const report = { kind: "drift" };
+		mDetectPlanDrift.mockReturnValue(report as never);
 		mFormatPlanDrift.mockReturnValue("PLAN-DRIFT");
 		const out = await stop(bCtx());
 		expect(out?.warnings).toContain("PLAN-DRIFT");
+		expect(mFormatPlanDrift).toHaveBeenCalledWith({ report });
 	});
 
 	it("does not push a plan-drift warning when the report formats to null", async () => {
@@ -991,6 +1216,7 @@ describe("Stop handler — branch coverage", () => {
 		const ctx = bCtx({ reservations });
 		await stop(ctx, { agent_name: "event-agent" }, bSession({ agent_name: "session-agent" }));
 		expect(reservations.releaseAllForAgent).toHaveBeenCalledWith("event-agent", ctx.cohort);
+		expect(bLog).toContain("Agent left: event-agent");
 	});
 
 	// persistSessionTrajectory branches
@@ -1100,6 +1326,14 @@ describe("UserPromptSubmit handler — branch coverage", () => {
 		mCaptureUser.mockResolvedValue(null);
 		await ups(bCtx({ rules: {} }));
 		expect(mCaptureUser.mock.calls[0]?.[0]).toMatchObject({ enabled: true, parseUserPrompt: false });
+	});
+
+	it("passes an explicitly disabled plan-capture setting through", async () => {
+		await ups(bCtx({ rules: { plan_capture: { enabled: false } } }));
+		expect(mCaptureUser.mock.calls[0]?.[0]).toMatchObject({
+			enabled: false,
+			parseUserPrompt: false,
+		});
 	});
 
 	it("returns a redacted prompt when the content scanner finds spans", async () => {

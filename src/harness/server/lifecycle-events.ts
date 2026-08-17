@@ -52,6 +52,7 @@ import {
 	recordSkillLeave,
 	type SessionTracker,
 } from "../session-state.js";
+import { buildStopDigest } from "../stop-digest.js";
 import { buildPatternRescanWarnings } from "../stop-rescan.js";
 import { clearArchive } from "../trajectory/fingerprint-archive.js";
 import {
@@ -370,10 +371,11 @@ async function handleStop(
 	await ctx.asyncAnalysis.drain(ASYNC_ANALYSIS_DRAIN_TIMEOUT_MS);
 	cleanupSessionState(ctx, event, session);
 	log(`Agent left: ${event.agent_name || event.session_id}`);
-	return {
-		decision: "allow",
-		warnings: turnWarnings.length > 0 ? turnWarnings : undefined,
-	};
+	// Rank + cap the WHOLE Stop wall (stop-digest.ts): actionable first, ≤15
+	// stderr lines, full detail spooled to .interlinked/stop-digest.jsonl.
+	const stopCwd = event.cwd || ctx.cwd;
+	const digest = buildStopDigest({ warnings: turnWarnings, cwd: stopCwd, sessionId: event.session_id, dryRun: event.dry_run });
+	return { decision: "allow", warnings: digest.length > 0 ? digest : undefined };
 }
 
 /** UserPromptSubmit — cohort tracking + PII scan with redacted-prompt
@@ -445,17 +447,14 @@ function buildStopWarnings(
 	for (const w of buildVerificationStopWarnings(ctx, event, session)) {
 		warnings.push(w);
 	}
-	// Deterministic pattern rescan over every file the agent touched this
-	// turn. Surfaces inline-detector findings that PERSISTED into Stop —
-	// either pre-existing in a touched file (per
-	// `[[feedback_fix_pre_existing_in_touched_files]]`) or introduced
-	// during the turn and not addressed before end. Findings carrying a
-	// `// interlinked: defer <check-id>` (or `# ...`) marker are logged
-	// but not amplified. Per `[[feedback_safety_continuity]]`, errors in
-	// individual detectors are swallowed inside the rescan; this branch
-	// never throws.
+	// Deterministic pattern rescan over every file the agent touched this turn.
+	// Filtering, actor attribution and ranking live in stop-rescan-report.ts;
+	// detector errors are swallowed inside, so this branch never throws.
 	const cwd = event.cwd || ctx.cwd;
-	for (const w of buildPatternRescanWarnings(session, cwd)) {
+	for (const w of buildPatternRescanWarnings(session, cwd, {
+		sessionId: event.session_id,
+		dryRun: event.dry_run,
+	})) {
 		warnings.push(w);
 	}
 	// Gate reach (plan 16 §4) — each quality gate's coverage OF ITSELF, so a gate
@@ -487,13 +486,10 @@ function buildStopWarnings(
 		const reworkNudge = formatSessionReworkNudge(sessionReworkSummary(trajectoryState));
 		if (reworkNudge !== null) warnings.push(reworkNudge);
 	}
-	// Say each distinct nudge ONCE per session. A Stop reflection that repeats
-	// verbatim with nothing changed is a loop, not a reminder — and it trapped a
-	// real install: the agent was waiting on a HUMAN decision, so no nudge could
-	// advance it, and every turn re-fired the identical text until the user
-	// interrupted. Applied here, at the outermost assembler, so it covers every
-	// nudge family rather than one. Each nudge renders its own state into its
-	// text, so genuine change reads as different text and speaks again.
+	// Say each distinct nudge ONCE per session: a Stop reflection that repeats
+	// verbatim with nothing changed is a loop, not a reminder (it trapped a real
+	// install waiting on a HUMAN decision). Applied at the outermost assembler
+	// so it covers every nudge family, not one. See stop-nudge-throttle.ts.
 	return suppressRepeatedNudges({ projectRoot: ctx.cwd, sessionId: event.session_id ?? "unknown" }, warnings);
 }
 

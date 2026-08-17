@@ -220,96 +220,108 @@ describe("rescanSessionFiles", () => {
 	});
 });
 
-describe("buildPatternRescanWarnings", () => {
-	it("returns an empty array when the rescan produces no findings", () => {
-		mockBuildChecks.mockReturnValue([]);
-		expect(buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo")).toEqual([]);
-	});
+// The rescan SCAN is unchanged; its REPORT now runs through
+// `stop-rescan-report.ts` (2026-08-16). Per-file blocks are collapsed into one
+// digest warning, findings are filtered to introduced-only, and subagent-owned
+// files leave the main list. `dryRun: true` keeps these unit tests off disk;
+// the state/spool behavior has its own suite in stop-digest-state.test.ts.
+describe("buildPatternRescanWarnings — positive (must fire)", () => {
+	function warn(session: SessionTrajectory): string[] {
+		return buildPatternRescanWarnings(session, "/repo", {
+			dryRun: true,
+			interlinkedDir: "/repo/.interlinked",
+		});
+	}
 
-	it("emits a single unaddressed-warning block listing each finding", () => {
+	it("P1: emits ONE digest block naming the file and each introduced finding", () => {
 		mockBuildChecks.mockReturnValue([
 			detector("eval_usage", [
 				{ line: 4, text: "eval(a)" },
 				{ line: 9, text: "eval(b)" },
 			]),
 		]);
-		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
+		const warnings = warn(makeSession(["x.ts"]));
 		expect(warnings).toHaveLength(1);
 		const w = warnings[0] ?? "";
-		expect(w).toContain("[interlinked:stop-rescan] x.ts — 2 open finding(s)");
-		// Provenance honesty: whole-file scan, so the message must not claim the
-		// agent AUTHORED the findings — only that the file was touched.
-		expect(w).toContain("some may predate your edits");
-		expect(w).toContain("  eval_usage:4 — eval(a)");
-		expect(w).toContain("  eval_usage:9 — eval(b)");
+		expect(w).toContain("[interlinked:stop-rescan] 1 file(s) you touched");
+		expect(w).toContain("x.ts — 2 introduced finding(s)");
+		expect(w).toContain("eval_usage:4 — eval(a)");
 		expect(w).toContain("// interlinked: defer <check-id>");
 	});
 
-	it("emits only a deferred block (no unaddressed block) when all findings are acknowledged", () => {
+	it("P2: collapses an all-deferred file to a single acknowledged count line", () => {
 		mockScanDeferrals.mockReturnValue(
 			new Map([[4, new Map([["eval_usage", "intentional"]])]]),
 		);
-		mockBuildChecks.mockReturnValue([
-			detector("eval_usage", [{ line: 4, text: "eval(a)" }]),
-		]);
-		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
-		expect(warnings).toHaveLength(1);
-		const w = warnings[0] ?? "";
-		expect(w).toContain("1 acknowledged-deferred finding(s) (logged, not escalated)");
-		expect(w).toContain("  eval_usage:4 — intentional");
-		expect(w).not.toContain("unaddressed");
+		mockBuildChecks.mockReturnValue([detector("eval_usage", [{ line: 4, text: "eval(a)" }])]);
+		const w = warn(makeSession(["x.ts"])).join(String.fromCharCode(10));
+		expect(w).toContain("1 acknowledged-deferred finding(s)");
+		expect(w).not.toContain("eval_usage:4");
 	});
 
-	it("omits the reason suffix on a deferred line when no justification was supplied", () => {
-		mockScanDeferrals.mockReturnValue(
-			new Map<number, Map<string, string | null>>([[4, new Map([["eval_usage", null]])]]),
-		);
-		mockBuildChecks.mockReturnValue([
-			detector("eval_usage", [{ line: 4, text: "eval(a)" }]),
-		]);
-		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
-		const w = warnings[0] ?? "";
-		expect(w).toContain("acknowledged-deferred");
-		// The deferred line ends right after the `checkId:line` token — no
-		// " — <reason>" suffix is appended when deferReason is null.
-		expect(w).toMatch(/ {2}eval_usage:4$/);
-		expect(w).not.toMatch(/eval_usage:4 —/);
-	});
-
-	it("emits BOTH an unaddressed and a deferred block for one file with mixed findings", () => {
-		mockScanDeferrals.mockReturnValue(
-			new Map([[7, new Map([["eval_usage", "ack"]])]]),
-		);
-		mockBuildChecks.mockReturnValue([
-			detector("eval_usage", [
-				{ line: 4, text: "eval(live)" }, // unaddressed
-				{ line: 7, text: "eval(deferred)" }, // deferred
-			]),
-		]);
-		const warnings = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo");
-		expect(warnings).toHaveLength(2);
-		expect(warnings[0]).toContain("1 open finding(s)");
-		expect(warnings[0]).toContain("  eval_usage:4 — eval(live)");
-		expect(warnings[1]).toContain("1 acknowledged-deferred finding(s)");
-		expect(warnings[1]).toContain("  eval_usage:7 — ack");
-	});
-
-	it("groups findings per file (existing-list branch) and emits a block per file", () => {
-		// Two distinct files, each returning one finding. Exercises both the
-		// new-list and existing-list branches of the byFile grouping.
+	it("P3: keeps one block per file when two files carry findings", () => {
 		mockBuildChecks.mockReturnValue([
 			detector("c", [
 				{ line: 1, text: "m1" },
 				{ line: 2, text: "m2" },
 			]),
 		]);
+		const w = warn(makeSession(["a.ts", "b.ts"])).join(String.fromCharCode(10));
+		expect(w).toContain("a.ts — 2 introduced finding(s)");
+		expect(w).toContain("b.ts — 2 introduced finding(s)");
+	});
+
+	it("P4: lists live findings and counts deferred ones in the same file block", () => {
+		mockScanDeferrals.mockReturnValue(new Map([[7, new Map([["eval_usage", "ack"]])]]));
+		mockBuildChecks.mockReturnValue([
+			detector("eval_usage", [
+				{ line: 4, text: "eval(live)" },
+				{ line: 7, text: "eval(deferred)" },
+			]),
+		]);
+		const w = warn(makeSession(["x.ts"])).join(String.fromCharCode(10));
+		expect(w).toContain("eval_usage:4 — eval(live)");
+		expect(w).toContain("(1 acknowledged-deferred, not escalated)");
+	});
+});
+
+describe("buildPatternRescanWarnings — negative (must not fire)", () => {
+	it("N1: returns an empty array when the rescan produces no findings", () => {
+		mockBuildChecks.mockReturnValue([]);
+		expect(
+			buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo", { dryRun: true }),
+		).toEqual([]);
+	});
+
+	it("N2: drops a finding the git baseline already carried", () => {
+		mockBuildChecks.mockReturnValue([detector("eval_usage", [{ line: 4, text: "eval(a)" }])]);
+		const session = makeSession(["x.ts"]);
+		// The introduced-only filter needs a session-start anchor; without a HEAD
+		// sha the detector deliberately has no baseline and everything is new.
+		session.git_session_baseline = {
+			head_sha: "abc123",
+			modified: new Set<string>(),
+			staged: new Set<string>(),
+			untracked: new Set<string>(),
+		};
 		const warnings = buildPatternRescanWarnings(
-			makeSession(["a.ts", "b.ts"]),
+			session,
 			"/repo",
+			// A session baseline exists AND the baseline file content produces the
+			// same finding, so nothing was introduced this session.
+			{ dryRun: true, interlinkedDir: "/repo/.interlinked", gitShow: () => "file body" },
 		);
-		// One unaddressed block per file (two findings each).
-		expect(warnings).toHaveLength(2);
-		expect(warnings.some((w) => w.includes("a.ts — 2 open finding(s)"))).toBe(true);
-		expect(warnings.some((w) => w.includes("b.ts — 2 open finding(s)"))).toBe(true);
+		expect(warnings).toEqual([]);
+	});
+
+	it("N3: moves a subagent-owned file out of the main list into one summary line", () => {
+		mockBuildChecks.mockReturnValue([detector("eval_usage", [{ line: 4, text: "eval(a)" }])]);
+		const w = buildPatternRescanWarnings(makeSession(["x.ts"]), "/repo", {
+			dryRun: true,
+			interlinkedDir: "/repo/.interlinked",
+			attribution: { byFile: new Map([["x.ts", ["agentA"]]]), agents: new Set(["agentA"]) },
+		}).join(String.fromCharCode(10));
+		expect(w).toContain("touched by 1 subagent(s)");
+		expect(w).not.toContain("eval_usage:4");
 	});
 });

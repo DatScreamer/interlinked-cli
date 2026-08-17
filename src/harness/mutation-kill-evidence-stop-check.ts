@@ -75,6 +75,11 @@ import { checkTestLegitimacy, MUTATION_DIRECTED_PATH } from "./checks/test-legit
 import { loadSurvivorsIndex } from "./mutation/survivors-index.js";
 import { splitIntroduced } from "./pre-block-gate.js";
 import type { ServerRuntime } from "./server/runtime-context.js";
+import {
+	loadStopDigestState,
+	priorSnapshot,
+	wasTagReported,
+} from "./stop-digest-state.js";
 import type { HarnessEvent, SessionTrajectory } from "./types.js";
 
 const GIT_TIMEOUT_MS = 1_500;
@@ -86,6 +91,10 @@ const GIT_TIMEOUT_MS = 1_500;
 const MISSING_CONTRACT_PREFIX = "missing test-contract for mutation-directed case:";
 
 const MUTATION_KILL_EVIDENCE_MAX_SHOWN = 5;
+
+/** This check's `[interlinked:<tag>]` prefix. Named once so the warning text
+ *  and the digest's per-session "already reported" record cannot drift. */
+const MUTATION_KILL_EVIDENCE_TAG = "mutation-kill-evidence";
 
 /** `git show <ref>` content-reader shape — injected so tests never shell out
  *  to a real git process. Returns null on any failure (path absent from
@@ -284,6 +293,26 @@ export function formatMutationKillEvidenceWarning(
 }
 
 /**
+ * PIPELINE AWARENESS: a mutation measurement is not instant, so a second Stop
+ * while one is still owed does not need the full explanation again — the agent
+ * has already read it and cannot act faster by being told twice. Returns the
+ * one-line acknowledgment when this tag was reported at a PRIOR Stop of this
+ * session, else null (meaning: print the full warning).
+ *
+ * Reads the digest's existing per-session tag record (stop-digest-state.ts).
+ * No new state field anywhere, and no new capture on the hook path.
+ */
+function acknowledgedRepeatLine(opts: {
+	cwd: string;
+	sessionId: string;
+	hitCount: number;
+}): string | null {
+	const prior = priorSnapshot(loadStopDigestState(join(opts.cwd, ".interlinked")), opts.sessionId);
+	if (!wasTagReported(prior, MUTATION_KILL_EVIDENCE_TAG)) return null;
+	return `[interlinked:${MUTATION_KILL_EVIDENCE_TAG}] ${opts.hitCount} file(s) still awaiting measurement (reported at previous stop).`;
+}
+
+/**
  * Stop-event wiring for this check — co-located with the detector it drives,
  * the same shape `checkDeadOnArrival` (dead-on-arrival.ts) uses. Lives here
  * rather than in server/lifecycle-stop-warnings.ts so the detector, its
@@ -295,14 +324,20 @@ export function checkMutationKillEvidence(
 	event: HarnessEvent,
 	session: SessionTrajectory,
 ): string | null {
+	const cwd = event.cwd || ctx.cwd;
 	const hits = detectMutationKillEvidenceGaps({
 		filesWritten: session.files_written,
 		fileWriteTimes: session.file_write_times,
 		gitHeadSha: session.git_session_baseline?.head_sha,
-		cwd: event.cwd || ctx.cwd,
+		cwd,
 	});
 	const warning = formatMutationKillEvidenceWarning(hits);
 	if (warning === null) return null;
-	ctx.log(`Verify-before-stop: mutation-kill-evidence (${hits.length} file(s))`);
-	return warning;
+	ctx.log(`Verify-before-stop: ${MUTATION_KILL_EVIDENCE_TAG} (${hits.length} file(s))`);
+	const repeat = acknowledgedRepeatLine({
+		cwd,
+		sessionId: session.session_id,
+		hitCount: hits.length,
+	});
+	return repeat ?? warning;
 }
