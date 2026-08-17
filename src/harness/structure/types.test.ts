@@ -18,38 +18,106 @@ describe("structure types (constants)", () => {
 		expect(VALID_MODES).toEqual(["minimal", "standard", "strict"]);
 	});
 
-	it("MODE_DEFAULTS has an entry for every valid mode", () => {
-		for (const m of VALID_MODES) {
-			expect(MODE_DEFAULTS[m]).toBeTruthy();
-		}
+	it("MODE_DEFAULTS exposes the complete defaults for every mode", () => {
+		expect(MODE_DEFAULTS).toEqual({
+		minimal: {
+			verify: {
+				fail_on_deterministic: false,
+				fail_on_invalid_structure: true,
+				fail_on_partial: false,
+				fail_on_heuristic: false,
+			},
+			posttooluse: {
+				emit_deterministic: true,
+				emit_partial: true,
+				emit_heuristic: true,
+				max_heuristics: 3,
+			},
+		},
+		standard: {
+			verify: {
+				fail_on_deterministic: true,
+				fail_on_invalid_structure: true,
+				fail_on_partial: false,
+				fail_on_heuristic: false,
+			},
+			posttooluse: {
+				emit_deterministic: true,
+				emit_partial: true,
+				emit_heuristic: true,
+				max_heuristics: 3,
+			},
+		},
+		strict: {
+			verify: {
+				fail_on_deterministic: true,
+				fail_on_invalid_structure: true,
+				fail_on_partial: false,
+				fail_on_heuristic: false,
+			},
+			posttooluse: {
+				emit_deterministic: true,
+				emit_partial: true,
+				emit_heuristic: true,
+				max_heuristics: 3,
+			},
+		},
+	});
 	});
 
-	it("VALID_ARTIFACT_KINDS includes the core artifact kinds", () => {
-		expect(VALID_ARTIFACT_KINDS).toContain("public_symbol");
-		expect(VALID_ARTIFACT_KINDS).toContain("env_key");
-		expect(VALID_ARTIFACT_KINDS).toContain("doc");
-		expect(VALID_ARTIFACT_KINDS).toContain("test");
+	it("VALID_ARTIFACT_KINDS enumerates every artifact kind", () => {
+		expect(VALID_ARTIFACT_KINDS).toEqual([
+		"module",
+		"public_symbol",
+		"package",
+		"env_key",
+		"config_key",
+		"test",
+		"doc",
+		"example",
+		"term",
+		"layer",
+	]);
 	});
 
-	it("VALID_SYMBOL_KINDS / VALID_STABILITY / VALID_DOC_KINDS / VALID_TEST_KINDS are non-empty", () => {
-		expect(VALID_SYMBOL_KINDS.length).toBeGreaterThan(0);
-		expect(VALID_STABILITY.length).toBeGreaterThan(0);
-		expect(VALID_DOC_KINDS.length).toBeGreaterThan(0);
-		expect(VALID_TEST_KINDS.length).toBeGreaterThan(0);
+	it("validation arrays enumerate their complete allowed values", () => {
+		expect(VALID_SYMBOL_KINDS).toEqual([
+		"function",
+		"class",
+		"type",
+		"interface",
+		"const",
+		"enum",
+		"default_export",
+	]);
+		expect(VALID_STABILITY).toEqual(["public", "beta", "internal"]);
+		expect(VALID_DOC_KINDS).toEqual(["reference", "guide", "concept", "readme", "runbook"]);
+		expect(VALID_TEST_KINDS).toEqual(["unit", "integration", "contract", "golden", "smoke"]);
 	});
 
-	it("DEFAULT_ADOPTION_THRESHOLDS is a record of numeric thresholds", () => {
-		for (const v of Object.values(DEFAULT_ADOPTION_THRESHOLDS)) {
-			expect(typeof v).toBe("number");
-			expect(v).toBeGreaterThanOrEqual(0);
-			expect(v).toBeLessThanOrEqual(1);
-		}
+	it("DEFAULT_ADOPTION_THRESHOLDS defines each category's coverage threshold", () => {
+		expect(DEFAULT_ADOPTION_THRESHOLDS).toEqual({
+			public_api: 0.6,
+			env: 0.8,
+			config: 0.8,
+			tests: 0.5,
+			docs: 0.5,
+			examples: 0.3,
+			glossary: 0.4,
+			layers: 0.7,
+			packages: 1.0,
+		});
 	});
 
-	it("DEFAULT_BUILTINS has every rule family as a boolean flag", () => {
-		for (const [name, enabled] of Object.entries(DEFAULT_BUILTINS)) {
-			expect(typeof enabled, `${name} flag`).toBe("boolean");
-		}
+	it("DEFAULT_BUILTINS enables every built-in rule family", () => {
+		expect(DEFAULT_BUILTINS).toEqual({
+			public_symbol_companions: true,
+			env_key_companions: true,
+			config_key_companions: true,
+			layer_boundary_violations: true,
+			glossary_residue: true,
+			package_boundary_violations: true,
+		});
 	});
 
 	it("LOCAL_ID_PATTERN accepts valid identifiers", () => {

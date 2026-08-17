@@ -3,7 +3,9 @@ import { MutationNotMeasurableError } from "./cloud-runner.js";
 import {
 	type FileOverlay,
 	type MutationGateContext,
+	type MutationRange,
 	type MutationRunner,
+	type PendingHandle,
 	type PerEditMutationConfig,
 	mutationTargetFor,
 	primaryCodeFile,
@@ -465,5 +467,460 @@ describe("mutationTargetFor — a test edit measures the code it protects", () =
 
 	it("N4: does not treat a non-code test-named file as a target", () => {
 		expect(mutationTargetFor(["src/fixtures/foo.test.json"], anyExists)).toBeNull();
+	});
+});
+
+// ===========================================
+// Mutation-kill campaign (pass-1, W6 residue) — exact-observable assertions
+// against gate.ts survivors. Each case is grounded via a `test-contract`
+// receipt naming the real behavior it pins, never "kills mutant X".
+// ===========================================
+
+describe("describeRunnerFailure (via the not-measured warning) — exact message text", () => {
+	// test-contract: invariant — a runner rejection with no Error at all (a bare
+	// throw of `undefined`) must still resolve to the generic not-measured
+	// message, not crash the gate. Exercises every `?.` guard on the raw `err`
+	// value across describeRunnerFailure/isRunnerBusy/notMeasurableReasonOf.
+	it("resolves the generic message, without throwing, when the rejection carries no value at all", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(undefined));
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed"]);
+	});
+
+	// test-contract: invariant — a genuine Error's message is appended VERBATIM,
+	// not replaced by a generic string, once it is confirmed to be a non-empty
+	// string.
+	it("appends the real error text verbatim for a normal Error rejection", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("connection refused")));
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed — connection refused"]);
+	});
+
+	// test-contract: invariant — a `.message` that is a non-string value (here a
+	// number) must still be reported as a generic failure, never fed to
+	// `.trim()` (which would throw on a number).
+	it("falls back to the generic message when .message is a non-string value", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx({ message: 42 }));
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed"]);
+	});
+
+	// test-contract: invariant — a whitespace-only message trims to empty and is
+	// therefore reported as the generic failure, not as "failed — " with a
+	// trailing blank.
+	it("treats a whitespace-only message as empty, not as real text", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("   ")));
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed"]);
+	});
+
+	// test-contract: invariant — the appended text is the TRIMMED message, so
+	// incidental leading/trailing whitespace around the real text never leaks
+	// into the reader-facing warning.
+	it("trims surrounding whitespace from the appended message text", async () => {
+		const d = await runPerEditMutationGate(nmGateCtx(new Error("  connection refused  ")));
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed — connection refused"]);
+	});
+});
+
+describe("isRunnerBusy (via the not-measured warning) — busy vs plain-failure boundary", () => {
+	// test-contract: invariant — the busy verdict is keyed on the error's own
+	// `name`, not merely on message text that happens to look like an HTTP
+	// status. A busy-named error whose message carries NO "HTTP 503" text must
+	// still read as busy.
+	it("reads as busy from the error name alone, even when the message doesn't mention HTTP 503", async () => {
+		const busyErr = Object.assign(new Error("temporarily overloaded"), { name: "MutationRunnerBusyError" });
+		const d = await runPerEditMutationGate(nmGateCtx(busyErr));
+		expect(d?.warnings).toEqual([
+			"[mutation:not-measured] the mutation runner is busy with another job right now — not measured this edit, and NOT evidence this file has no tests (retry on the next edit)",
+		]);
+	});
+
+	// test-contract: boundary — the message-based busy check short-circuits on a
+	// non-string `.message` (never calling the regex against it). A boxed
+	// `String` object is `typeof "object"`, so its own `toString()` text
+	// (which incidentally matches the busy pattern) must NOT leak through a
+	// regex coercion that only a broken guard would allow.
+	it("does not classify a non-string message as busy even when its coerced text matches the HTTP-503 pattern", async () => {
+		const trickyErr: unknown = { name: "WeirdError", message: new String("gateway HTTP 503") };
+		const d = await runPerEditMutationGate(nmGateCtx(trickyErr));
+		expect(d?.warnings).toEqual(["[mutation:not-measured] the mutation runner failed"]);
+	});
+});
+
+describe("mutationTargetFor — boundary cases beyond the P/N suite", () => {
+	const anyExists = (): boolean => true;
+
+	// test-contract: boundary — a file that merely LIVES under a `__tests__/`
+	// directory (the broad, directory-based test convention) but carries no
+	// `.test.`/`.spec.` infix in its own name has no naming-convention
+	// "source" to resolve to; it must never be returned as a target.
+	it("does not resolve a __tests__/ helper file whose own filename carries no .test./.spec. infix", () => {
+		expect(mutationTargetFor(["src/__tests__/helpers.ts"], anyExists)).toBeNull();
+	});
+
+	// test-contract: boundary — stripping ONE test/spec infix from a
+	// double-infixed name (`foo.spec.test.ts`) yields `foo.spec.ts`, which is
+	// STILL a test path by the naming convention. Such a "source" must never
+	// be treated as a valid mutation target.
+	it("does not resolve a double .spec.test. infix whose stripped remainder is itself still a test path", () => {
+		expect(mutationTargetFor(["src/foo.spec.test.ts"], anyExists)).toBeNull();
+	});
+});
+
+describe("primaryCodeFile — path-separator normalization before the scratch check", () => {
+	// test-contract: boundary — a backslash-separated (Windows-style) path must
+	// be normalized to forward slashes BEFORE the `scratch/` prefix check, or a
+	// scratch probe stops being recognized as scratch and gets treated as a
+	// real mutation target.
+	it("still recognizes a backslash-separated scratch path as scratch, not as a target", () => {
+		expect(primaryCodeFile(["scratch\\probe.ts"])).toBeNull();
+	});
+});
+
+describe("failClosed — exact wire shape (spec §9)", () => {
+	// test-contract: public-api — the fail-closed decision's reason, rule_id,
+	// severity, and category are the contract other tooling (and the agent
+	// reading the block) matches on; every field must carry its real value,
+	// not a blanked-out placeholder.
+	it("returns the exact block decision when the runner is unavailable and unavailable_behavior is block", async () => {
+		const d = await runPerEditMutationGate(ctx({ runner: null, config: cfg({ unavailable_behavior: "block" }) }));
+		expect(d).toEqual({
+			decision: "block",
+			reason: "[interlinked:mutation] BLOCKED: mutation could not be measured (unavailable_behavior=block).",
+			rule_id: "per-edit-mutation",
+			severity: "medium",
+			category: "mutation",
+		});
+	});
+});
+
+describe("runPerEditMutationGate — exact not-measured wire shape when no runner is configured", () => {
+	// test-contract: public-api — the honest-disclosure warning text (spec
+	// §12) must name the real reason, not a blanked-out placeholder.
+	it("returns the exact not-measured decision", async () => {
+		const d = await runPerEditMutationGate(ctx({ runner: null }));
+		expect(d).toEqual({
+			decision: "allow",
+			warnings: ["[mutation:not-measured] no mutation runner configured"],
+			rule_id: "per-edit-mutation",
+			category: "mutation",
+		});
+	});
+});
+
+describe("runPerEditMutationGate — edit-scope range threading (measure the diff, not the file)", () => {
+	const LINES = Array.from({ length: 20 }, (_, i) => `L${i + 1}`);
+	const BEFORE = LINES.join("\n");
+	const AFTER = LINES.map((l, i) => (i === 9 ? "CHANGED" : l)).join("\n");
+	const SCOPED_FILE = "src/scoped.ts";
+
+	// test-contract: invariant — a small, localized edit inside a large-enough
+	// file must be measured as a SPAN (the changed line ± context, clamped to
+	// the file), and that exact range — not the whole file — is what the
+	// runner receives as its 4th argument.
+	it("passes the exact computed span as the runner's range argument for a small localized edit", async () => {
+		let capturedRange: MutationRange | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, _overlays, range) => {
+				capturedRange = range;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: SCOPED_FILE, content: AFTER },
+				readDisk: (p) => (p === SCOPED_FILE ? BEFORE : null),
+				runner: capturing,
+			}),
+		);
+		expect(capturedRange).toEqual({ start: 7, end: 13 });
+	});
+});
+
+describe("runPerEditMutationGate — onPending is gated strictly on real pending handles", () => {
+	// test-contract: invariant — a run that outlives its budget hands the exact
+	// target file, exact overlay content, and exact handle list to onPending —
+	// this is the only channel PostToolUse has to claim work this window paid
+	// for but could not wait for.
+	it("invokes onPending with the exact target/content/handles for a genuine budget-expiry", async () => {
+		const pendingErr = Object.assign(new Error("pending"), { jobId: "j1", runnerUrl: "http://runner/" });
+		const calls: Array<{ file: string; content: string; pending: readonly PendingHandle[] }> = [];
+		const d = await runPerEditMutationGate({
+			...nmGateCtx(pendingErr),
+			onPending: (file, content, pending) => calls.push({ file, content, pending }),
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.file).toBe("src/a.ts");
+		expect(calls[0]?.content).toBe("export const b = 1;\n");
+		expect(calls[0]?.pending).toHaveLength(1);
+		expect(calls[0]?.pending[0]?.jobId).toBe("j1");
+		expect(calls[0]?.pending[0]?.runnerUrl).toBe("http://runner/");
+		expect(d?.warnings?.join("\n")).toContain("still running past the budget");
+	});
+
+	// test-contract: invariant — a plain (non-pending) failure must NEVER
+	// invoke onPending, even when a callback is provided — there is nothing
+	// pending to claim, and calling it anyway would fabricate a handle.
+	it("never invokes onPending for a plain failure with no pending handles", async () => {
+		const calls: unknown[] = [];
+		const d = await runPerEditMutationGate({
+			...nmGateCtx(new Error("connection refused")),
+			onPending: (...args: unknown[]) => calls.push(args),
+		});
+		expect(calls).toEqual([]);
+		expect(d?.decision).toBe("allow");
+	});
+});
+
+describe("runPerEditMutationGate — cwd threading resolves the manifest key, not process.cwd()", () => {
+	// test-contract: invariant — the explicit `cwd` must reach manifest-key
+	// resolution (manifest.ts's `normalizeManifestKey`), so an absolute
+	// `file_path` under that cwd is recorded under its REPO-RELATIVE key, not
+	// under some other resolution of the real process cwd.
+	it("keys the persisted manifest by the repo-relative path resolved against the explicit cwd", async () => {
+		let capturedManifest: MutationManifest | undefined;
+		const d = await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: "/repo/src/z.ts", content: "export const z = 1;\n" },
+				readDisk: () => "export const z = 1;\n",
+				runner: fakeRunner([survivor("killed")]),
+				baseManifest: emptyManifest(META),
+				cwd: "/repo",
+				persist: (m) => {
+					capturedManifest = m;
+				},
+			}),
+		);
+		expect(d?.decision).toBe("allow");
+		expect(Object.keys(capturedManifest?.files ?? {})).toEqual(["src/z.ts"]);
+	});
+});
+
+describe("runPerEditMutationGate — persistence-failure warning is the ONLY warning on an otherwise-clean allow", () => {
+	// test-contract: invariant — a clean measured-allow starts with no
+	// warnings; a persistence failure must APPEND to that (empty) list, not
+	// seed it with an unrelated placeholder entry.
+	it("carries exactly one warning: the real persistence-failure text", async () => {
+		const persist = (): void => {
+			throw new Error("disk full");
+		};
+		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist }));
+		expect(d?.warnings).toEqual([
+			"[interlinked:mutation] manifest persistence failed (disk full) — allow stands; next run re-measures.",
+		]);
+	});
+});
+
+describe("runPerEditMutationGate — site_count_threshold is threaded through, not silently defaulted", () => {
+	// test-contract: invariant — an explicitly configured (truthy) threshold
+	// must be the value the oversize check actually compares against; silently
+	// substituting the module default would let an intentionally-tight
+	// small-scope limit go unenforced.
+	it("blocks with the OVERSIZE reason (naming the configured threshold) rather than a generic survivor reason", async () => {
+		const d = await runPerEditMutationGate(ctx({ config: cfg({ site_count_threshold: -5 }) }));
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toBe(
+			"[interlinked:mutation] BLOCKED: this edit changes 1 mutation sites in one patch (over the -5-site small-scope limit). Split it into smaller behavioral changes — each with its test — so the gate stays inside its budget. (spec §6)",
+		);
+	});
+});
+
+describe("runPerEditMutationGate — test-edit-effect warning fires on a real delta (spec: does the new test kill anything)", () => {
+	const SRC = "src/y.ts";
+	const TEST = "src/y.test.ts";
+
+	function priorSourceManifest(): MutationManifest {
+		return {
+			...emptyManifest(META),
+			files: {
+				[SRC]: {
+					"sym-y": {
+						symbolId: "sym-y",
+						qualifiedName: "y",
+						symbolHash: "stale-hash",
+						mutants: {
+							"mut-1": {
+								mutantId: "mut-1",
+								siteId: "site-1",
+								mutator: "Eq",
+								originalLexeme: ">",
+								replacement: ">=",
+								ordinalWithinSymbol: 0,
+								status: "survived",
+								firstSeen: META.authoritativeAt,
+							},
+						},
+						instability: { events: [], consecutiveStableRuns: 0, quarantined: false },
+					},
+				},
+			},
+		};
+	}
+
+	// test-contract: invariant — editing ONLY the companion test measures the
+	// source it protects against the PRIOR recorded survivor count; a run that
+	// kills the recorded survivor must say so, by exact text, not stay silent.
+	it("reports the exact before/after survivor delta for a test-only edit", async () => {
+		const d = await runPerEditMutationGate(
+			ctx({
+				toolName: "Edit",
+				toolInput: { file_path: TEST, old_string: "old", new_string: "new" },
+				readDisk: (p) =>
+					p === SRC ? "export function y(x: number): boolean { return x > 0; }\n" : p === TEST ? "old test\n" : null,
+				runner: fakeRunner([survivor("killed")]),
+				baseManifest: priorSourceManifest(),
+			}),
+		);
+		const effectWarning = d?.warnings?.find((w) => w.startsWith("[mutation:test-effect]"));
+		expect(effectWarning).toBe(`[mutation:test-effect] ${TEST} killed 1 mutant(s) in ${SRC} (1 → 0 surviving).`);
+	});
+});
+
+describe("applyMode — warn-mode downgrade preserves the real decision content", () => {
+	// test-contract: invariant — mode=warn must NEVER touch a decision that is
+	// already an allow; wrapping it in the block-downgrade shape would inject
+	// a fabricated generic warning where none belongs.
+	it("leaves an already-clean allow untouched when mode is warn", async () => {
+		const d = await runPerEditMutationGate(ctx({ config: cfg({ mode: "warn" }), runner: fakeRunner([survivor("killed")]) }));
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings).toBeUndefined();
+	});
+
+	// test-contract: invariant — downgrading a block to a warning must carry
+	// the REAL block reason verbatim, never a generic fallback string, so the
+	// agent reading the warning gets the same actionable detail a block would
+	// have given it.
+	it("preserves the real block reason text verbatim when downgrading to a warning", async () => {
+		const blocked = await runPerEditMutationGate(ctx());
+		const warned = await runPerEditMutationGate(ctx({ config: cfg({ mode: "warn" }) }));
+		expect(blocked?.decision).toBe("block");
+		expect(warned?.decision).toBe("allow");
+		expect(warned?.warnings?.[0]).toBe(blocked?.reason);
+	});
+});
+
+describe("buildOverlays / overlayContentFor — a test-only edit's overlay set (spec §7)", () => {
+	const SRC = "src/foo.ts";
+	const TEST = "src/foo.test.ts";
+	const SRC_CONTENT = "export const foo = 1;\n";
+
+	// test-contract: invariant — when the edit is on the COMPANION TEST, the
+	// primary (source) overlay must reflect unchanged disk content (the source
+	// itself was not touched), while the test overlay in the SAME set must
+	// carry the EDITED test body — never the stale, pre-edit disk copy, and
+	// never a duplicate entry.
+	it("carries the unchanged source plus the freshly-edited companion test, in that order, with no duplicates", async () => {
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolName: "Edit",
+				toolInput: { file_path: TEST, old_string: "OLD", new_string: "NEW" },
+				readDisk: (p) => (p === SRC ? SRC_CONTENT : p === TEST ? "OLD test body\n" : null),
+				runner: capturing,
+				baseManifest: emptyManifest(META),
+			}),
+		);
+		expect(captured).toEqual([
+			{ path: SRC, content: SRC_CONTENT },
+			{ path: TEST, content: "NEW test body\n" },
+		]);
+	});
+
+	// test-contract: invariant — when the companion test does not exist on
+	// disk at all, the overlay set must carry ONLY the primary — never a
+	// phantom companion entry with null/undefined content.
+	it("does not add a companion overlay entry when the companion doesn't exist on disk", async () => {
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: FILE, content: CONTENT },
+				readDisk: (p) => (p === FILE ? CONTENT : null),
+				runner: capturing,
+			}),
+		);
+		expect(captured).toEqual([{ path: FILE, content: CONTENT }]);
+	});
+});
+
+describe("addLocalDeps — walks BOTH the target's and the companion's own imports", () => {
+	const TARGET2 = "src/dep-walk-target.ts";
+	const COMPANION2 = "src/dep-walk-target.test.ts";
+	const TARGET_ONLY_DEP = "src/dep-walk-target-only.ts";
+	const COMPANION_ONLY_DEP = "src/dep-walk-companion-only.ts";
+
+	// test-contract: invariant — a local dependency reachable ONLY through the
+	// companion test's own imports (not the target's) must still be carried in
+	// the overlay set; walking just the target would silently drop it.
+	it("carries a dep imported only by the companion test, not only the target's own deps", async () => {
+		const targetContent = 'import "./dep-walk-target-only.js";\nexport const z = 1;\n';
+		const files: Record<string, string> = {
+			[TARGET2]: targetContent,
+			[COMPANION2]: 'import "./dep-walk-companion-only.js";\nexport {};\n',
+			[TARGET_ONLY_DEP]: "export const a = 1;\n",
+			[COMPANION_ONLY_DEP]: "export const b = 1;\n",
+		};
+		const readDisk = (p: string): string | null => files[p] ?? null;
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: TARGET2, content: targetContent },
+				runner: capturing,
+				readDisk,
+			}),
+		);
+		expect(captured?.map((o) => o.path)).toEqual([TARGET2, COMPANION2, TARGET_ONLY_DEP, COMPANION_ONLY_DEP]);
+	});
+
+	const TARGET3 = "src/dep-dup-target.ts";
+	const COMPANION3 = "src/dep-dup-target.test.ts";
+
+	// test-contract: invariant — the have-set that prevents duplicate overlay
+	// entries must track REAL paths already in the overlay (including the
+	// companion added earlier in the same call), not merely a same-length
+	// placeholder collection; a dep that resolves back to an already-carried
+	// path must be skipped, not appended again.
+	it("does not duplicate the companion overlay when the target's own imports resolve back to it", async () => {
+		const targetContent = 'import "./dep-dup-target.test.js";\nexport const w = 1;\n';
+		const files: Record<string, string> = {
+			[TARGET3]: targetContent,
+			[COMPANION3]: "export {};\n",
+		};
+		const readDisk = (p: string): string | null => files[p] ?? null;
+		let captured: FileOverlay[] | undefined;
+		const capturing: MutationRunner = {
+			available: () => true,
+			run: (_f, _o, overlays) => {
+				captured = overlays;
+				return Promise.resolve({ mutants: [survivor("killed")] });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolInput: { file_path: TARGET3, content: targetContent },
+				runner: capturing,
+				readDisk,
+			}),
+		);
+		expect(captured?.map((o) => o.path)).toEqual([TARGET3, COMPANION3]);
 	});
 });

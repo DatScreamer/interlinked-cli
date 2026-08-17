@@ -101,6 +101,137 @@ describe("findClosestSpans", () => {
 			expect(nonNull(misses[0]).similarity).toBeGreaterThan(nonNull(misses[1]).similarity);
 		}
 	});
+
+	it("returns no matches when content is empty even if target is only whitespace", () => {
+		// A whitespace-only target is truthy as a string, so this exercises the
+		// `!content` half of the guard specifically (not just `!target`).
+		expect(findClosestSpans("", " ")).toEqual([]);
+	});
+
+	it("finds a match when the file has exactly as many lines as the target", () => {
+		// Boundary: fileLines.length === targetLines.length must NOT early-return.
+		const misses = findClosestSpans("a\nb", "a\nb");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(1);
+		expect(nonNull(misses[0]).similarity).toBe(1);
+	});
+
+	it("does not fuzzy-match a multi-line target against unrelated single lines", () => {
+		// Guards against the multi-line-short-target heuristic incorrectly
+		// applying to a 2-line target: only "abxcd" has any bigram overlap with
+		// the raw "ab\ncd" string, and only via the (incorrect) single-line scan.
+		const content = ["zzzzz", "abxcd", "wwwww"].join("\n");
+		expect(findClosestSpans(content, "ab\ncd")).toEqual([]);
+	});
+
+	it("finds a match anchored at the very last valid window position", () => {
+		const content = ["xxxx", "5555", "alpha", "beta"].join("\n");
+		const misses = findClosestSpans(content, "alpha\nbeta");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(3);
+		expect(nonNull(misses[0]).endLine).toBe(4);
+		expect(nonNull(misses[0]).similarity).toBe(1);
+	});
+
+	it("finds an exact multi-line match with the correct line range and content", () => {
+		const content = ["A", "B", "C", "D", "E"].join("\n");
+		const misses = findClosestSpans(content, "C\nD");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(3);
+		expect(nonNull(misses[0]).endLine).toBe(4);
+		expect(nonNull(misses[0]).lines).toEqual(["C", "D"]);
+		expect(nonNull(misses[0]).similarity).toBe(1);
+	});
+
+	it("includes a window match exactly at the similarity threshold, correctly averaged", () => {
+		// "abc" vs "bcde" has Dice similarity exactly 0.4; both lines of the
+		// window average to exactly MIN_SIMILARITY, which must be INCLUDED
+		// (>= threshold), and the averaging must be a division, not something
+		// else that would push it out of range.
+		const content = ["zzzz", "bcde", "bcde", "wwww"].join("\n");
+		const misses = findClosestSpans(content, "abc\nabc");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(2);
+		expect(nonNull(misses[0]).similarity).toBeCloseTo(0.4, 10);
+	});
+
+	it("sorts results by similarity even when the best match sits on a later line", () => {
+		const content = [
+			"function fooo(x: string): string { return x; }",
+			"unrelated1",
+			"unrelated2",
+			"function foo(x: number): number { return x; }",
+		].join("\n");
+		const target = "function foo(x: number): number { return x; }";
+		const misses = findClosestSpans(content, target, 3);
+		expect(nonNull(misses[0]).line).toBe(4);
+		expect(nonNull(misses[0]).similarity).toBe(1);
+		expect(nonNull(misses[1]).line).toBe(1);
+	});
+
+	it("matches across leading/trailing whitespace on both sides of the comparison", () => {
+		// Line 1 of the target has leading whitespace the file line lacks;
+		// line 2 of the FILE has leading/trailing whitespace the target lacks.
+		// Both sides must be trimmed for this to score a perfect match.
+		const content = ["xxx", "foo", "  bar  ", "yyy"].join("\n");
+		const misses = findClosestSpans(content, "  foo\nbar");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(2);
+		expect(nonNull(misses[0]).endLine).toBe(3);
+		expect(nonNull(misses[0]).similarity).toBe(1);
+	});
+
+	it("does not report a match between two unrelated single characters", () => {
+		// Both "x" and "y" have empty bigram sets; the fallback for that case
+		// must not fall through to a 0/0 division.
+		expect(findClosestSpans("zzz\ny\nzzz", "x")).toEqual([]);
+	});
+
+	it("requires real shared bigrams, not just a shared prefix, to score high", () => {
+		const content = ["xxxx", "abcd", "yyyy"].join("\n");
+		const misses = findClosestSpans(content, "abc");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).line).toBe(2);
+		expect(nonNull(misses[0]).similarity).toBeCloseTo(0.8, 10);
+	});
+
+	it("truncates the snippet to 120 characters and trims surrounding whitespace", () => {
+		const longLine = `  ${"A".repeat(150)}  `;
+		const content = [longLine, "BBB"].join("\n");
+		const misses = findClosestSpans(content, "AAA\nBBB");
+		expect(misses.length).toBe(1);
+		expect(nonNull(misses[0]).snippet.length).toBe(120);
+		expect(nonNull(misses[0]).snippet.startsWith(" ")).toBe(false);
+	});
+
+	it("caps results at n and keeps the highest-similarity non-overlapping matches", () => {
+		const content = [
+			"ALPHA",
+			"BETA",
+			"junk1",
+			"junk2",
+			"ALPHA",
+			"BETA",
+			"junk3",
+			"junk4",
+			"ALPHA",
+			"BETA",
+		].join("\n");
+		const misses = findClosestSpans(content, "ALPHA\nBETA", 2);
+		expect(misses.map((m) => m.line)).toEqual([1, 5]);
+	});
+
+	it("collapses adjacent single-line matches into one", () => {
+		const content = ["ALPHA", "ALPHA", "junk", "junk"].join("\n");
+		const misses = findClosestSpans(content, "ALPHA", 3);
+		expect(misses.map((m) => m.line)).toEqual([1]);
+	});
+
+	it("keeps two single-line matches that sit exactly at the overlap boundary apart", () => {
+		const content = ["ALPHA", "junk", "ALPHA", "junk2"].join("\n");
+		const misses = findClosestSpans(content, "ALPHA", 3);
+		expect(misses.map((m) => m.line)).toEqual([1, 3]);
+	});
 });
 
 describe("formatNearMisses", () => {
@@ -134,6 +265,13 @@ describe("firstDivergenceLine", () => {
 	it("returns the 1-based index of the first differing line", () => {
 		expect(firstDivergenceLine("a\nb\nc", ["a", "X", "c"])).toBe(2);
 	});
+
+	it("detects a divergence in the extra length when the span is shorter than the target", () => {
+		// max(targetLines.length, spanLines.length) must scan the LONGER side —
+		// the extra target line 3 has nothing to compare against (undefined),
+		// which must count as a divergence at that index, not be skipped.
+		expect(firstDivergenceLine("a\nb\nc", ["a", "b"])).toBe(3);
+	});
 });
 
 describe("countOccurrences", () => {
@@ -162,6 +300,12 @@ describe("findOccurrenceLines", () => {
 
 	it("returns an empty array when nothing matches", () => {
 		expect(findOccurrenceLines("no match here", "zzz")).toEqual([]);
+	});
+
+	it("counts newlines strictly before the match, not at its own leading newline", () => {
+		// The match itself starts with "\n" (target = "\nbbb"). That leading
+		// newline must NOT be counted as occurring "before" the match.
+		expect(findOccurrenceLines("aaa\n\nbbb", "\nbbb")).toEqual([2]);
 	});
 });
 
@@ -230,6 +374,129 @@ describe("formatRescue", () => {
 		expect(rescue).toContain("line 0");
 		expect(rescue).toContain("line 59");
 	});
+
+	it("reports the exact number of elided lines (60 total, 15 head + 15 tail)", () => {
+		const longLines = Array.from({ length: 60 }, (_, i) => `line ${i}`);
+		const misses = [{ line: 1, endLine: 60, snippet: "line 0", lines: longLines, similarity: 1 }];
+		const rescue = formatRescue(misses, longLines.join("\n"));
+		expect(rescue).toContain("(30 lines elided)");
+	});
+
+	it("does not elide a short span", () => {
+		const misses = [{ line: 1, endLine: 2, snippet: "a", lines: ["a", "b"], similarity: 1 }];
+		const rescue = formatRescue(misses, "a\nb");
+		expect(rescue).not.toContain("elided");
+	});
+
+	it("does not elide exactly at the 40-line cap", () => {
+		const lines40 = Array.from({ length: 40 }, (_, i) => `line${i}`);
+		const misses = [{ line: 1, endLine: 40, snippet: "line0", lines: lines40, similarity: 1 }];
+		const rescue = formatRescue(misses, lines40.join("\n"));
+		expect(rescue).not.toContain("elided");
+	});
+
+	it("elides when the byte cap is exceeded even though the line count is small", () => {
+		const bigLines = Array.from({ length: 5 }, () => "x".repeat(700));
+		const misses = [{ line: 1, endLine: 5, snippet: "x", lines: bigLines, similarity: 1 }];
+		const rescue = formatRescue(misses, bigLines.join("\n"));
+		expect(rescue).toContain("elided");
+	});
+
+	it("does not elide exactly at the 3000-byte boundary", () => {
+		// 3 lines * (999 chars + 1 newline byte) = 3000 exactly.
+		const lines = Array.from({ length: 3 }, () => "y".repeat(999));
+		const misses = [{ line: 1, endLine: 3, snippet: "y", lines, similarity: 1 }];
+		const rescue = formatRescue(misses, lines.join("\n"));
+		expect(rescue).not.toContain("elided");
+	});
+
+	it("elides once the byte count crosses the cap via longer lines", () => {
+		// 3 lines * (1001 chars + 1) = 3006, just over the 3000-byte cap.
+		const lines = Array.from({ length: 3 }, () => "z".repeat(1001));
+		const misses = [{ line: 1, endLine: 3, snippet: "z", lines, similarity: 1 }];
+		const rescue = formatRescue(misses, lines.join("\n"));
+		expect(rescue).toContain("elided");
+	});
+
+	it("escapes an indented code-fence line with the alternate fence", () => {
+		const misses = [
+			{
+				line: 1,
+				endLine: 2,
+				snippet: "```ts",
+				lines: ["  ```ts", "code"],
+				similarity: 1,
+			},
+		];
+		const rescue = formatRescue(misses, "  ```ts\ncode");
+		expect(rescue).toContain("~~~~");
+	});
+
+	it("starts with the closest-match header, not a placeholder", () => {
+		const misses = [{ line: 1, endLine: 2, snippet: "a", lines: ["a", "b"], similarity: 1 }];
+		const rescue = formatRescue(misses, "a\nb");
+		expect(rescue.startsWith("Closest match")).toBe(true);
+	});
+
+	it("includes the exact copy-verbatim instruction sentence", () => {
+		const misses = [{ line: 1, endLine: 2, snippet: "a", lines: ["a", "b"], similarity: 1 }];
+		const rescue = formatRescue(misses, "a\nb");
+		expect(rescue).toContain(
+			"Current file content for that range — copy it EXACTLY (including whitespace) as your old_string:",
+		);
+	});
+
+	it("does not call out a divergence line when the span is unchanged and multi-line", () => {
+		const misses = [{ line: 2, endLine: 3, snippet: "a", lines: ["a", "b"], similarity: 1 }];
+		const rescue = formatRescue(misses, "a\nb");
+		expect(rescue).not.toContain("First line differing");
+	});
+
+	it("does not call out a divergence line for a differing single-line span", () => {
+		const misses = [
+			{ line: 5, endLine: 5, snippet: "const x = 2;", lines: ["const x = 2;"], similarity: 0.8 },
+		];
+		const rescue = formatRescue(misses, "const x = 1;");
+		expect(rescue).not.toContain("First line differing");
+	});
+
+	it("excludes the best match from its own list of runners-up", () => {
+		const misses = [
+			{ line: 1, endLine: 1, snippet: "ALPHA", lines: ["ALPHA"], similarity: 0.9 },
+			{ line: 10, endLine: 10, snippet: "BETA", lines: ["BETA"], similarity: 0.5 },
+		];
+		const rescue = formatRescue(misses, "ALPHA");
+		const alsoSimilar = rescue.split("Also similar:")[1] ?? "";
+		expect(alsoSimilar).not.toContain("ALPHA");
+		expect(alsoSimilar).toContain("BETA");
+	});
+
+	it("omits the also-similar section when there is only one match", () => {
+		const misses = [{ line: 1, endLine: 2, snippet: "a", lines: ["a", "b"], similarity: 1 }];
+		const rescue = formatRescue(misses, "a\nb");
+		expect(rescue).not.toContain("Also similar");
+	});
+
+	it("joins multiple runners-up with a trimmed semicolon separator", () => {
+		const misses = [
+			{ line: 1, endLine: 1, snippet: "BEST", lines: ["BEST"], similarity: 0.95 },
+			{ line: 5, endLine: 5, snippet: "X", lines: ["X"], similarity: 0.6 },
+			{ line: 8, endLine: 8, snippet: "Y", lines: ["Y"], similarity: 0.5 },
+		];
+		const rescue = formatRescue(misses, "BEST");
+		// A tight "; L8" (single space, no leading indent) only appears if the
+		// runner-up segments were both trimmed AND joined with "; ".
+		expect(rescue).toContain("; L8");
+	});
+
+	it("renders the rescue block across multiple lines", () => {
+		const misses = [
+			{ line: 1, endLine: 1, snippet: "BEST", lines: ["BEST"], similarity: 0.95 },
+			{ line: 5, endLine: 5, snippet: "X", lines: ["X"], similarity: 0.6 },
+		];
+		const rescue = formatRescue(misses, "BEST");
+		expect(rescue).toContain("\n");
+	});
 });
 
 describe("buildNearMissWarning", () => {
@@ -283,5 +550,32 @@ describe("suggestUniqueAnchor", () => {
 		const block = ["same", "same", "same", "TARGET", "same", "same", "same"].join("\n");
 		const content = `${block}\n${block}`;
 		expect(suggestUniqueAnchor(content, "TARGET")).toBeNull();
+	});
+
+	it("does not try to extend a target that is already unique, even with newlines nearby", () => {
+		// Exactly one occurrence: the <=1 short-circuit must fire immediately
+		// rather than falling through to a (redundant, incorrect) extension.
+		expect(suggestUniqueAnchor("prefix\nUNIQUE_TARGET\nsuffix", "UNIQUE_TARGET")).toBeNull();
+	});
+
+	it("extends forward through the end of file when there is no trailing newline", () => {
+		const content = "NEEDLE end\nNEEDLE end";
+		expect(suggestUniqueAnchor(content, "NEEDLE")).toBe(content);
+	});
+
+	it("extends backward past the immediately preceding newline to the line before it", () => {
+		// Forward fails (both occurrences share the last line). Backward must
+		// skip the newline directly before "NEEDLE" and land on "BBB\nNEEDLE",
+		// not re-find the same adjacent newline (a no-op) or overshoot by one
+		// character.
+		const anchor = suggestUniqueAnchor("AAA\nBBB\nNEEDLE NEEDLE", "NEEDLE");
+		expect(anchor).toBe("BBB\nNEEDLE");
+	});
+
+	it("returns null when only one line precedes the match and it still cannot disambiguate", () => {
+		// Only "before" precedes the match's line, with no newline before that.
+		// The bail-out guard must actually stop the search here rather than
+		// wrapping/underflowing into a bogus non-null anchor.
+		expect(suggestUniqueAnchor("before\nNEEDLE NEEDLE", "NEEDLE")).toBeNull();
 	});
 });

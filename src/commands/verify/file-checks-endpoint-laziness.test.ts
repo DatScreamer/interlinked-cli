@@ -61,4 +61,30 @@ describe("runEndpointAndLazinessChecks", () => {
 		expect(c.r.stubNotImplementedThrow).toHaveLength(0);
 		expect(c.r.deadBranchLiteral).toHaveLength(0);
 	});
+
+	it("flags a mutation-directed test without a contract marker", () => {
+		const c = ctx(
+			'import { normalize } from "../../lib/normalization.js";\n\n' +
+			'test("normalizes the public value", () => {\n' +
+			'\texpect(normalize(" value ")).toBe("value");\n' +
+			'});\n',
+			"/tmp/normalization.mutation-kill.test.ts",
+		);
+		runEndpointAndLazinessChecks(c);
+		expect(c.r.testLegitimacy.length).toBeGreaterThan(0);
+		expect(nonNull(c.r.testLegitimacy[0]).check).toBe("test_legitimacy");
+	});
+
+	it("accepts a mutation-directed test with a directly preceding contract marker", () => {
+		const c = ctx(
+			'import { normalize } from "../../lib/normalization.js";\n\n' +
+			'// test-contract: public-api — exported normalization result\n' +
+			'test("normalizes the public value", () => {\n' +
+			'\texpect(normalize(" value ")).toBe("value");\n' +
+			'});\n',
+			"/tmp/normalization.mutation-kill.test.ts",
+		);
+		runEndpointAndLazinessChecks(c);
+		expect(c.r.testLegitimacy).toHaveLength(0);
+	});
 });

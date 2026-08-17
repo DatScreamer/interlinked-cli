@@ -2,21 +2,33 @@
 // Thorough coverage lives in generic-checks-extended.test.ts (tests run
 // against the re-exported symbols, which come from this module).
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
+	__setPackageRootForTesting,
 	findEnclosingScope,
 	getExtension,
 	isCliFile,
 	isGeneratedFile,
+	isPatternDataFile,
 	isScriptOrCliPath,
+	isStrictTestFile,
+	isTestSourcePath,
 	isTestFile,
+	JS_TS_ALL_EXTS,
+	JS_TS_EXTS,
 	isTypeOnlyModule,
+	isVendoredOrFixturePath,
 	lineHasNoqaSuppression,
 	scanLinesStripped,
 	stripComments,
 	stripCommentsAndStrings,
 	stripStrings,
 } from "./shared.js";
+
+// Boundary receipts for shared predicates: every case below pins a public
+// contract that callers rely on, including both the positive and adjacent
+// negative shape. This keeps path/data exemptions observable without copying
+// private implementation details into the assertions.
 
 describe("findEnclosingScope", () => {
 	test("names the enclosing function declaration", () => {
@@ -92,6 +104,135 @@ describe("shared helpers", () => {
 		expect(isTestFile("src/foo.ts")).toBe(false);
 	});
 
+	test("JS/TS extension exports stay in lockstep and include every supported suffix", () => {
+		const expected = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts"];
+		expect(JS_TS_ALL_EXTS).toEqual(expected);
+		expect([...JS_TS_EXTS].sort()).toEqual([...expected].sort());
+		expect(JS_TS_ALL_EXTS.every((ext) => JS_TS_EXTS.has(ext))).toBe(true);
+	});
+
+	test("isStrictTestFile recognizes each filename convention without widening nearby source files", () => {
+		const testPaths = [
+			"test_parser.py",
+			"parser_test.py",
+			"parser_test.go",
+			"widget.test.ts",
+			"widget.spec.tsx",
+			"WidgetTest.java",
+			"WidgetTests.java",
+			"WidgetTest.swift",
+			"WidgetTests.swift",
+			"test_widget.swift",
+		];
+		for (const path of testPaths) expect(isStrictTestFile(path)).toBe(true);
+
+		const sourcePaths = [
+			"mytests/helper.ts",
+			"test_parser.js",
+			"parser_test.rb",
+			"parser.go",
+			"widget.test.ts.bak",
+			"widget.spec.css",
+			"WidgetTester.java",
+			"WidgetTester.swift",
+			"contest_widget.swift",
+		];
+		for (const path of sourcePaths) expect(isStrictTestFile(path)).toBe(false);
+		expect(isStrictTestFile("src\\__tests__\\fixture.ts")).toBe(true);
+	});
+
+	test("isTestSourcePath uses anchored directories and the broad test/spec suffix contract", () => {
+		const testPaths = [
+			"tests/helper.ts",
+			"test/fixture.ts",
+			"__tests__/fixture.rb",
+			"src/fixture.test.rb",
+			"src/test_fixture.py",
+			"src/fixture_test.go",
+			"src/FixtureTests.swift",
+		];
+		for (const path of testPaths) expect(isTestSourcePath(path)).toBe(true);
+
+		const sourcePaths = [
+			"mytests/helper.ts",
+			"contest/fixture.ts",
+			"src/testimony.ts",
+			"src/fixture.testing.ts",
+		];
+		for (const path of sourcePaths) expect(isTestSourcePath(path)).toBe(false);
+	});
+
+	test("isVendoredOrFixturePath requires directory boundaries and recognizes generated asset suffixes", () => {
+		const exemptPaths = [
+			"node_modules/pkg/index.js",
+			"vendor/lib.ts",
+			"third_party/lib.cjs",
+			"src/__fixtures__/payload.ts",
+			"src/__mocks__/client.ts",
+			"dist/app.js",
+			"build/app.mjs",
+			"coverage/report.js",
+			"src/app.min.js",
+			"src/app.bundle.css",
+		];
+		for (const path of exemptPaths) expect(isVendoredOrFixturePath(path)).toBe(true);
+		expect(isVendoredOrFixturePath("src/myvendor/app.ts")).toBe(false);
+		expect(isVendoredOrFixturePath("src/app.min.ts")).toBe(false);
+		expect(isVendoredOrFixturePath("src/app.bundle.ts")).toBe(false);
+	});
+
+		test("pattern-data exemptions are scoped to the package root and fail closed", () => {
+		__setPackageRootForTesting("/workspace/interlinked-cli");
+		expect(
+			isPatternDataFile("/workspace/interlinked-cli/src/harness/rules/catalog.ts"),
+		).toBe(true);
+		expect(
+			isPatternDataFile("/workspace/interlinked-cli/src/harness/check-registry/catalog.ts"),
+		).toBe(true);
+		expect(
+			isPatternDataFile("/workspace/interlinked-cli/src/harness/check-metadata.ts"),
+		).toBe(true);
+		expect(
+			isPatternDataFile("/workspace/interlinked-cli/src/harness/checks/catalog.ts"),
+		).toBe(true);
+		expect(
+			isPatternDataFile("/workspace/interlinked-cli/src/harness/evaluator/write-content-guards-extra.ts"),
+		).toBe(true);
+		for (const path of [
+			"/workspace/interlinked-cli/src/harness/signatures-patterns.ts",
+			"/workspace/interlinked-cli/src/harness/signatures.ts",
+			"/workspace/interlinked-cli/src/harness/quality-checks/secret-detection.ts",
+			"/workspace/interlinked-cli/src/harness/verification-stop-checks.ts",
+			"/workspace/interlinked-cli/src/hook-template-chunks/guards-inline.ts",
+		]) {
+			expect(isPatternDataFile(path)).toBe(true);
+		}
+		expect(
+			isPatternDataFile("\\workspace\\interlinked-cli\\src\\harness\\checks\\catalog.ts"),
+		).toBe(true);
+		expect(isPatternDataFile("/workspace/user-project/src/harness/rules/catalog.ts")).toBe(false);
+
+		__setPackageRootForTesting(null);
+		expect(isPatternDataFile("/workspace/interlinked-cli/src/harness/checks/catalog.ts")).toBe(false);
+		expect(isTestFile("/workspace/interlinked-cli/src/harness/checks/catalog.test.ts")).toBe(true);
+	});
+
+	test("relative pattern-data paths are resolved against the active package root", () => {
+		__setPackageRootForTesting(process.cwd());
+		expect(isPatternDataFile("src/harness/checks/shared.ts")).toBe(true);
+		expect(isPatternDataFile("src/lib/ordinary-source.ts")).toBe(false);
+	});
+
+	test("package-root discovery finds this checkout when the override is cleared", () => {
+		__setPackageRootForTesting(undefined);
+		expect(isPatternDataFile("src/harness/checks/shared.ts")).toBe(true);
+		expect(isPatternDataFile("src/lib/ordinary-source.ts")).toBe(false);
+	});
+
+	afterEach(() => {
+		__setPackageRootForTesting(undefined);
+	});
+
 	// Harness-internals exemption (`src/harness/rules/*`, `*/check-registry/*`,
 	// `*/check-metadata*`, `*/ubs-language-specific.*`) is now scoped to
 	// interlinked-cli's resolved package root — the relative-path form this
@@ -106,6 +247,23 @@ describe("shared helpers", () => {
 		expect(isCliFile("repo/bin/tool")).toBe(true);
 		expect(isCliFile("cli/src/index.ts")).toBe(true);
 		expect(isCliFile("lib/util.ts")).toBe(false);
+	});
+
+	test("isCliFile recognizes rooted CLI directories but not lookalike segments", () => {
+		for (const path of [
+			"/cli/src/index.ts",
+			"/bin/index.js",
+			"/cmd/index.py",
+			"/commands/run.ts",
+		]) {
+			expect(isCliFile(path)).toBe(true);
+		}
+		expect(isCliFile("src/cli-helper.ts")).toBe(false);
+		expect(isCliFile("src/index.ts.bak")).toBe(false);
+		expect(isCliFile("lib/tools/index.ts")).toBe(false);
+		expect(isCliFile("lib/index.ts")).toBe(false);
+		expect(isCliFile("/cli/lib/index.ts")).toBe(true);
+		expect(isCliFile("src\\commands\\run.ts")).toBe(true);
 	});
 
 	test("getExtension returns lowercase extension with dot", () => {
@@ -163,6 +321,11 @@ describe("shared helpers", () => {
 		expect(out).toContain("cleanup()");
 		expect(out).toContain("fetch(");
 		expect(out).not.toContain("api.example.com");
+	});
+
+	test("isGeneratedFile scans the first 20 lines rather than only the first characters", () => {
+		const code = ["header", "// auto-generated", "export const value = 1;"].join("\n");
+		expect(isGeneratedFile(code)).toBe(true);
 	});
 
 	test("scanLinesStripped reports original text but tests stripped", () => {
@@ -286,6 +449,27 @@ describe("isScriptOrCliPath", () => {
 		expect(isScriptOrCliPath("docs/tutorials/getting-started.md")).toBe(true);
 	});
 
+	test("root-level singular and plural script-like directories are recognized", () => {
+		for (const path of [
+			"scripts/build.ts",
+			"script/build.ts",
+			"bin/tool.ts",
+			"cli/tool.ts",
+			"tools/tool.ts",
+			"tool/tool.ts",
+			"tutorial/intro.md",
+			"tutorials/intro.md",
+			"example/demo.ts",
+			"examples/demo.ts",
+			"demo/run.ts",
+			"demos/run.ts",
+			"sample/data.ts",
+			"samples/data.ts",
+		]) {
+			expect(isScriptOrCliPath(path)).toBe(true);
+		}
+	});
+
 	// Positive cases — real source paths must NOT be matched.
 
 	test("src/ application code", () => {
@@ -341,6 +525,32 @@ describe("lineHasNoqaSuppression", () => {
 		const line = `subprocess.run(cmd, shell=True)  # noqa: S602, S605`;
 		expect(lineHasNoqaSuppression(line, "ubs_subprocess_shell_true")).toBe(true);
 		expect(lineHasNoqaSuppression(line, "child_process_exec_user_input")).toBe(true);
+	});
+
+	test("comma-separated codes also allow no whitespace after the comma", () => {
+		const line = "subprocess.run(cmd, shell=True)  # noqa: S602,S605";
+		expect(lineHasNoqaSuppression(line, "child_process_exec_user_input")).toBe(true);
+	});
+
+	test("every mapped Bandit code suppresses only its documented check", () => {
+		const cases: Array<[string, string]> = [
+			["S102", "ubs_eval_input_tainted"],
+			["S301", "ubs_pickle_untrusted_load"],
+			["S307", "ubs_eval_input_tainted"],
+			["S310", "ubs_unchecked_redirect"],
+			["S314", "ubs_xml_external_entity"],
+			["S320", "ubs_xml_external_entity"],
+			["S324", "weak_hash"],
+			["S501", "tls_verify_disabled"],
+			["S602", "ubs_subprocess_shell_true"],
+			["S603", "ubs_subprocess_shell_true"],
+			["S605", "child_process_exec_user_input"],
+			["S608", "ubs_sql_string_concat"],
+		];
+		for (const [code, checkId] of cases) {
+			expect(lineHasNoqaSuppression(`# noqa: ${code}`, checkId)).toBe(true);
+		}
+		expect(lineHasNoqaSuppression("# noqa: S311", "ubs_eval_input_tainted")).toBe(false);
 	});
 
 	test("bare `# noqa` suppresses any check (flake8 convention)", () => {

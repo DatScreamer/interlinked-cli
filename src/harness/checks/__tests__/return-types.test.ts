@@ -97,6 +97,33 @@ describe("checkMissingReturnTypes — Pattern 1 (export function)", () => {
 		expect(lines(matches)).toEqual([1]);
 	});
 
+	it("handles repeated signature whitespace and multi-character generics", () => {
+		const code = [
+			"  export  function spaced  (x: number) { return x; }",
+			"export async  function asyncSpaced(x: number) { return x; }",
+			"export function  keywordSpaced(x: number) { return x; }",
+			"export function generic<LongType>(x: LongType) { return x; }",
+		].join("\n");
+		expect(lines(checkMissingReturnTypes(code, TS))).toEqual([1, 2, 3, 4]);
+	});
+
+	it("requires an export-function declaration at the start of the line", () => {
+		const code = 'const source = "export function fake(x: number) { return x; }";';
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	// test-contract: boundary — only an export-function declaration at the line boundary may produce a public finding
+	it("does not treat an export-function fragment after executable code as a declaration", () => {
+		const code = "if (enabled) export function fake(x: number) { return x; }";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	// test-contract: boundary — malformed punctuation between an exported function name and its parameters is not a finding
+	it("does not accept punctuation as part of an exported function name", () => {
+		const code = "export function fake-name(x: number) { return x; }";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
 	it("does NOT flag a generic exported function WITH a return type", () => {
 		const code = "export function identity<T>(x: T): T { return x; }";
 		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
@@ -144,6 +171,29 @@ describe("checkMissingReturnTypes — Pattern 1 (export function)", () => {
 		const code = "export function weird(a: number):  { return a; }";
 		const matches = checkMissingReturnTypes(code, TS);
 		expect(lines(matches)).toEqual([1]);
+	});
+
+	it("trims and truncates the finding text to 150 characters", () => {
+		const code = `  export function ${"longName".repeat(30)}(a: number) { return a; }`;
+		const matches = checkMissingReturnTypes(code, TS);
+		expect(matches[0]?.text).toBe(code.trim().slice(0, 150));
+	});
+
+	it("handles multiple spaces before the opening brace", () => {
+		const code = "export function spaced(a: number):   { return a; }";
+		expect(lines(checkMissingReturnTypes(code, TS))).toEqual([1]);
+	});
+
+	// test-contract: boundary — a directly adjacent opening brace still closes an unannotated exported signature and must be reported
+	it("flags an unannotated function when its opening brace touches the closing paren", () => {
+		const code = "export function compact(a: number){ return a; }";
+		expect(lines(checkMissingReturnTypes(code, TS))).toEqual([1]);
+	});
+
+	// test-contract: boundary — unrelated non-whitespace text between parameters and a brace is not mistaken for a return annotation
+	it("ignores a malformed function signature with text between the paren and brace", () => {
+		const code = "export function malformed(a: number)junk{ return a; }";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
 	});
 });
 
@@ -208,6 +258,40 @@ describe("checkMissingReturnTypes — Pattern 2 (arrow const)", () => {
 		].join("\n");
 		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
 	});
+
+	it("handles repeated declaration whitespace and an arrow with no following space", () => {
+		const code = [
+			"  export  const spaced  = (n: number) => n * 2;",
+			"export const compact = (n: number)=>n * 2;",
+		].join("\n");
+		expect(lines(checkMissingReturnTypes(code, TS))).toEqual([1, 2]);
+	});
+
+	it("recognizes return annotations with spacing variations and long types", () => {
+		const code = [
+			"export const gap = (n: number) : number => n;",
+			"export const noSpace = (n: number):number=>n;",
+			"export const promise = (n: number): Promise<number> => n;",
+		].join("\n");
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	// test-contract: boundary — only an export-const declaration at the line boundary may produce an arrow finding
+	it("does not treat an export-const arrow fragment after executable code as a declaration", () => {
+		const code = "if (enabled) export const fake = (n: number) => n;";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	it("requires an export-const declaration at the start of the line", () => {
+		const code = 'const source = "export const fake = (n: number) => n;";';
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	it("trims and truncates arrow finding text", () => {
+		const code = `  export const ${"longName".repeat(30)} = (a: number) => a;`;
+		const matches = checkMissingReturnTypes(code, TS);
+		expect(matches[0]?.text).toBe(code.trim().slice(0, 150));
+	});
 });
 
 // ===========================================
@@ -261,6 +345,37 @@ describe("checkMissingReturnTypes — Pattern 3 (const = function expr)", () => 
 		const code = "export const run = function (a: number):  { return a; };";
 		const matches = checkMissingReturnTypes(code, TS);
 		expect(lines(matches)).toEqual([1]);
+	});
+
+	it("handles repeated declaration and function-expression whitespace", () => {
+		const code = [
+			"  export  const run  = async  function  named (a: number) { return a; };",
+			"export const other = function  (a: number) { return a; };",
+		].join("\n");
+		expect(lines(checkMissingReturnTypes(code, TS))).toEqual([1, 2]);
+	});
+
+	it("requires an export-const function expression at the start of the line", () => {
+		const code = 'const source = "export const fake = function (a: number) { return a; }";';
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	// test-contract: boundary — only an export-const function expression at the line boundary may produce a finding
+	it("does not treat an export-const function fragment after executable code as a declaration", () => {
+		const code = "if (enabled) export const fake = function (a: number) { return a; };";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	// test-contract: boundary — punctuation immediately after the function keyword is not a valid exported function expression
+	it("does not accept punctuation as a function-expression delimiter", () => {
+		const code = "export const fake = function!(a: number) { return a; };";
+		expect(checkMissingReturnTypes(code, TS)).toEqual([]);
+	});
+
+	it("trims and truncates function-expression finding text", () => {
+		const code = `  export const ${"longName".repeat(30)} = function (a: number) { return a; };`;
+		const matches = checkMissingReturnTypes(code, TS);
+		expect(matches[0]?.text).toBe(code.trim().slice(0, 150));
 	});
 });
 

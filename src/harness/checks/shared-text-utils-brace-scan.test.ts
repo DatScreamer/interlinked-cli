@@ -96,3 +96,158 @@ describe("stripForBraceScan — regex vs. division disambiguation (precedingWord
 		expect(out).toBe(src);
 	});
 });
+
+// These branch-focused cases live in the filename-convention companion so
+// mutation runners that use the fallback `<source>.test.ts` scope discover
+// them. (The reverse import graph for this barrel intentionally exceeds the
+// mutation scope cap.) Exact outputs were cross-checked against the pristine
+// scanner and shadow builds of the corresponding mutants.
+describe("stripForBraceScan — regex preceder character membership", () => {
+	const chars = [
+		"", "(", "[", "{", ",", ";", ":", "=", "!", "&", "|", "?", "+", "-", "*", "%", "^", "~", "<", ">",
+	];
+	it.each(chars)("blanks a regex body after %j", (preceder) => {
+		expect(stripForBraceScan(`${preceder}/{}/`)).toBe(`${preceder}    `);
+	});
+});
+
+describe("stripForBraceScan — regex preceder keyword membership", () => {
+	const words = ["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "do", "else", "yield", "await", "case"];
+	it.each(words)("blanks a regex body after keyword %j", (word) => {
+		expect(stripForBraceScan(`${word} /{}/`)).toBe(`${word}     `);
+	});
+});
+
+describe("stripForBraceScan — stepStr branch behavior", () => {
+	it("blanks both a string escape and its escaped character", () => {
+		expect(stripForBraceScan('"\\Q"')).toBe("    ");
+	});
+	it("continues after closing a string", () => {
+		expect(stripForBraceScan('"a"//c')).toBe("      ");
+	});
+	it("treats slash after a closed string as division", () => {
+		expect(stripForBraceScan('"a"/b/')).toBe("   /b/");
+	});
+	it("advances past an unterminated string newline", () => {
+		expect(stripForBraceScan('"a`\ndef')).toBe("   \ndef");
+	});
+});
+
+describe("stripForBraceScan — stepBlock branch behavior", () => {
+	it("closes only at an adjacent star-slash", () => {
+		expect(stripForBraceScan("/* abc */ def")).toBe("          def");
+	});
+	it("does not close after a bare star", () => {
+		expect(stripForBraceScan("/*a*b*/c")).toBe("       c");
+	});
+	it("does not close after a bare slash", () => {
+		expect(stripForBraceScan("/*a/b*/c")).toBe("       c");
+	});
+});
+
+describe("stripForBraceScan — stepCodeBrace interpolation tracking", () => {
+	it("keeps nested braces inside an interpolation balanced", () => {
+		expect(stripForBraceScan("`${{}}`")).toBe("   {}  ");
+	});
+	it("preserves a top-level close and treats following slash as division", () => {
+		expect(stripForBraceScan("{}/x/")).toBe("{}/x/");
+	});
+	it("preserves an interpolation expression's code while blanking its close", () => {
+		expect(stripForBraceScan("`${value}`")).toBe("   value  ");
+	});
+});
+
+describe("stripForBraceScan — stepCodeOpener frame selection", () => {
+	it("opens single-quoted strings", () => {
+		expect(stripForBraceScan("'a'")).toBe("   ");
+	});
+	it("does not open a frame at a regex preceder that is not a slash", () => {
+		expect(stripForBraceScan("(x")).toBe("(x");
+	});
+	it("does not treat a star followed by a non-slash as a block opener", () => {
+		expect(stripForBraceScan("x*y")).toBe("x*y");
+	});
+	it("opens line comments and preserves their newline", () => {
+		expect(stripForBraceScan("// {comment}\n{}")).toBe("            \n{}");
+	});
+});
+
+describe("stripForBraceScan — stepRegex character classes and close", () => {
+	it("does not close on slash inside a character class", () => {
+		expect(stripForBraceScan("/[/]/ x")).toBe("      x");
+	});
+	it("closes after leaving a character class", () => {
+		expect(stripForBraceScan("/[a/]/ x")).toBe("       x");
+	});
+	it("continues after a regex close", () => {
+		expect(stripForBraceScan('/x/"y"')).toBe("      ");
+	});
+	it("treats slash after a regex close as division", () => {
+		expect(stripForBraceScan("/x//y/")).toBe("   /y/");
+	});
+	it("advances past an unterminated regex newline", () => {
+		expect(stripForBraceScan('/x\n"y"')).toBe("  \n   ");
+	});
+	it("does not move backward after an unterminated regex", () => {
+		expect(stripForBraceScan("/a`\ndef")).toBe("   \ndef");
+	});
+});
+
+describe("stripForBraceScan — stepTmpl interpolation and closure", () => {
+	it("keeps interpolation code visible", () => {
+		expect(stripForBraceScan("`${x}`")).toBe("   x  ");
+	});
+	it("does not open interpolation for a lone dollar", () => {
+		expect(stripForBraceScan("`a$b{c}`")).toBe("        ");
+	});
+	it("continues after a template close", () => {
+		expect(stripForBraceScan('`x`"y"')).toBe("      ");
+	});
+	it("treats slash after a template close as division", () => {
+		expect(stripForBraceScan("`x`/y/")).toBe("   /y/");
+	});
+	it("blanks an escaped template character without closing", () => {
+		expect(stripForBraceScan("`a\\`b`{}")).toBe("      {}");
+	});
+});
+
+describe("stripForBraceScan — precedingWord boundaries", () => {
+	it("recognizes a keyword beginning at index zero", () => {
+		expect(stripForBraceScan("instanceof /x/")).toBe("instanceof    ");
+	});
+	it("recognizes a keyword after whitespace", () => {
+		expect(stripForBraceScan("return   /x/")).toBe("return      ");
+	});
+	it("does not recognize a non-keyword identifier", () => {
+		const src = "identifier /x/";
+		expect(stripForBraceScan(src)).toBe(src);
+	});
+	it("recognizes a keyword after multiple spaces from the slash", () => {
+		expect(stripForBraceScan("return     /x/")).toBe("return        ");
+	});
+	it("keeps a slash after punctuation in an expression as division", () => {
+		const src = "}/x/";
+		expect(stripForBraceScan(src)).toBe(src);
+	});
+});
+
+describe("stripForBraceScan — remaining frame-boundary contracts", () => {
+	it("keeps the synthetic value marker after an interpolation close", () => {
+		// With prevChar="v", this slash is division. If the close returns an
+		// empty marker, the empty marker is treated as a regex preceder instead.
+		expect(stripForBraceScan("`${x}`/y/")).toBe("   x  /y/");
+	});
+	it("keeps a top-level closing brace on the initialized code frame", () => {
+		expect(stripForBraceScan("}")).toBe("}");
+	});
+	it("preserves LF and CR while blanking template text", () => {
+		expect(stripForBraceScan("`a\n b`")).toBe("  \n   ");
+		expect(stripForBraceScan("`a\r b`")).toBe("  \r   ");
+	});
+	it("blanks every character in a line comment before its newline", () => {
+		expect(stripForBraceScan("//abc\n{}")).toBe("     \n{}");
+	});
+	it("advances beyond a block-comment close and resumes code", () => {
+		expect(stripForBraceScan("/*abc*/{}")).toBe("       {}");
+	});
+});

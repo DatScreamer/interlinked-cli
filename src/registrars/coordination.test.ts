@@ -177,6 +177,129 @@ describe("registerCoordinationCommands — structure", () => {
 			["--assignee", "--full", "--json", "--limit", "--priority", "--short", "--status"].sort(),
 		);
 	});
+
+	it("preserves the public help descriptions for every coordination command and option", () => {
+		const program = build();
+		const optionDescriptions = (command: Command) =>
+			Object.fromEntries(command.options.map((option) => [option.long, option.description]));
+		const command = (parent: string, name: string) =>
+			sub(program, parent).commands.find((candidate) => candidate.name() === name) ??
+				(() => {
+					throw new Error(`missing command: ${parent} ${name}`);
+				})();
+		const top = (name: string) =>
+			program.commands.find((candidate) => candidate.name() === name) ??
+				(() => {
+					throw new Error(`missing command: ${name}`);
+				})();
+
+		expect(top("attach").description()).toBe(
+			"Attach local CLI settings to workspace/agent and link remote identity",
+		);
+		expect(optionDescriptions(top("attach"))).toEqual({
+			"--server": "Server URL",
+			"--workspace": "Active workspace ID (ws_...)",
+			"--workspace-key": "Default internal workspace_key for MCP tool calls",
+			"--project": "Default internal project_key for MCP tool calls",
+			"--agent": "Agent identity to attach",
+			"--auto": "Derive workspace_key/project from git repo",
+			"--json": "Machine-readable output",
+		});
+
+		expect(sub(program, "reminder").description()).toBe(
+			"File reminder management (warnings when files are touched)",
+		);
+		expect(command("reminder", "add").description()).toBe("Add a file reminder");
+		expect(optionDescriptions(command("reminder", "add"))).toEqual({
+			"--glob": "File glob pattern to match",
+			"--message": "Reminder message",
+			"--ops": "Comma-separated operations (Edit,Write,Read)",
+			"--once": "Fire once per session (default)",
+			"--no-once": "Fire every time the file is touched",
+			"--id": "Stable ID (auto-generated from glob if omitted)",
+			"--team": "Write to guard-rules.json instead of local",
+			"--json": "Machine-readable output",
+		});
+		expect(command("reminder", "list").description()).toBe("List active file reminders");
+		expect(optionDescriptions(command("reminder", "list"))).toEqual({
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+			"--full": "Detailed output",
+		});
+		expect(command("reminder", "remove").description()).toBe("Remove a file reminder by id or glob");
+		expect(optionDescriptions(command("reminder", "remove"))).toEqual({
+			"--team": "Remove from guard-rules.json instead of local",
+			"--all": "Remove all reminders",
+			"--json": "Machine-readable output",
+		});
+
+		expect(sub(program, "skill").description()).toBe(
+			"Skill marker management (scopes distilled rules via active_when)",
+		);
+		expect(command("skill", "enter").description()).toBe("Mark a skill as active for the current session(s)");
+		expect(optionDescriptions(command("skill", "enter"))).toEqual({
+			"--ttl": "TTL like 30m, 1h, 90s (default 30m, capped at 4h)",
+			"--session": "Target a specific session (default: broadcast)",
+			"--source": "cli | hook | manual (default cli)",
+			"--json": "Machine-readable output",
+		});
+		expect(command("skill", "leave").description()).toBe("Clear a skill marker");
+		expect(optionDescriptions(command("skill", "leave"))).toEqual({
+			"--session": "Target a specific session (default: broadcast)",
+			"--json": "Machine-readable output",
+		});
+		expect(command("skill", "list").description()).toBe("Show currently-active skills across all sessions");
+		expect(optionDescriptions(command("skill", "list"))).toEqual({
+			"--session": "Show only one session",
+			"--json": "Machine-readable output",
+		});
+
+		expect(top("handoff").description()).toBe("Explicit agent-to-agent handoff with context transfer");
+		expect(optionDescriptions(top("handoff"))).toEqual({
+			"--include-files": "Include file context in handoff",
+			"--json": "Machine-readable output",
+		});
+		expect(top("send").description()).toBe("Send a message to an agent");
+		expect(optionDescriptions(top("send"))).toEqual({
+			"--file": "Send file contents as message body",
+			"--importance": "Message importance: normal, urgent",
+			"--json": "Machine-readable output",
+		});
+
+		expect(sub(program, "tasks").description()).toBe("Task management via the server");
+		expect(command("tasks", "list").description()).toBe("List tasks");
+		expect(optionDescriptions(command("tasks", "list"))).toEqual({
+			"--status": "Filter by status",
+			"--assignee": "Filter by assignee",
+			"--priority": "Filter by priority",
+			"--limit": "Max entries",
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+			"--full": "Detailed output",
+		});
+		expect(command("tasks", "create").description()).toBe("Create a new task");
+		expect(optionDescriptions(command("tasks", "create"))).toEqual({
+			"--description": "Task description",
+			"--assignee": "Assign to agent",
+			"--priority": "Task priority",
+			"--json": "Machine-readable output",
+		});
+		for (const [name, description] of [
+			["show", "Show task detail"],
+			["claim", "Claim a task"],
+			["complete", "Mark a task as complete"],
+		] as const) {
+			expect(command("tasks", name).description()).toBe(description);
+			expect(optionDescriptions(command("tasks", name))).toEqual({ "--json": "Machine-readable output" });
+		}
+
+		expect(sub(program, "workspace").description()).toBe("Registry workspace management (ws_ IDs)");
+		expect(command("workspace", "list").description()).toBe("Show workspaces");
+		expect(optionDescriptions(command("workspace", "list"))).toEqual({
+			"--json": "Machine-readable output",
+		});
+		expect(command("workspace", "switch").description()).toBe("Change active workspace");
+	});
 });
 
 // ---------------------------------------------------------------------------

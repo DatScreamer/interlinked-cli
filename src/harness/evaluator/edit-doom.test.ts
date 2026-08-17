@@ -72,6 +72,44 @@ describe("analyzeStrReplaceDoom — missing anchor", () => {
 		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
 		expect(reason).toMatch(/entry 2 of 2/);
 		expect(reason).toMatch(/MultiEdit is atomic — nothing was applied/);
+		expect(reason).toContain("Entries 1–1 would have applied");
+		expect(reason).toContain("(checked against the file with earlier entries applied)");
+	});
+
+	it("rejects a MultiEdit whose first entry is missing without pretending it was checked after edits", () => {
+		const doom = analyzeStrReplaceDoom("MultiEdit", {
+			file_path: target,
+			edits: [
+				{ old_string: "not in the file", new_string: "x" },
+				{ old_string: "console.log(msg);", new_string: "report(msg);" },
+			],
+		});
+		expect(doom?.entryIndex).toBe(1);
+		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
+		expect(reason).not.toContain("checked against the file with earlier entries applied");
+	});
+
+	it("does not add entry or atomicity wording to a bare Edit reason", () => {
+		const doom = analyzeStrReplaceDoom("Edit", {
+			file_path: target,
+			old_string: "not in the file",
+			new_string: "x",
+		});
+		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
+		expect(reason).toMatch(/^Edit will fail: old_string not found/);
+		expect(reason).not.toContain("entry 1 of 1");
+		expect(reason).not.toContain("MultiEdit is atomic");
+	});
+
+	it("does not fabricate rescue material when no near miss exists", () => {
+		const doom = analyzeStrReplaceDoom("Edit", {
+			file_path: target,
+			old_string: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+			new_string: "x",
+		});
+		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
+		expect(reason).not.toContain("Stryker was here");
+		expect(reason).not.toContain("```");
 	});
 });
 
@@ -101,6 +139,30 @@ describe("analyzeStrReplaceDoom — ambiguous anchor", () => {
 		expect(reason).toMatch(/unique anchor exists/);
 		expect(reason).toContain("const tail = 1;\nconst tail = 1;");
 	});
+
+	it("caps ambiguous sites at five and reports the number omitted", () => {
+		writeFileSync(target, Array.from({ length: 7 }, () => "duplicate").join("\n"));
+		const doom = analyzeStrReplaceDoom("Edit", {
+			file_path: target,
+			old_string: "duplicate",
+			new_string: "replacement",
+		});
+		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
+		expect(reason).toContain("matches 7 times");
+		expect(reason).toContain("(L1, L2, L3, L4, L5 (+2 more))");
+		expect(reason).not.toContain("L6");
+	});
+
+	it("does not report a zero-sized omitted-site suffix", () => {
+		const doom = analyzeStrReplaceDoom("Edit", {
+			file_path: target,
+			old_string: "const tail = 1;",
+			new_string: "x",
+		});
+		const reason = formatDoomReason(doom as NonNullable<typeof doom>);
+		expect(reason).toContain("L5, L6");
+		expect(reason).not.toContain("+0 more");
+	});
 });
 
 describe("analyzeStrReplaceDoom — fail-open negatives", () => {
@@ -123,6 +185,59 @@ describe("analyzeStrReplaceDoom — fail-open negatives", () => {
 				replace_all: true,
 			}),
 		).toBeNull();
+	});
+
+	it("rejects incomplete bare Edit payloads and malformed MultiEdit entries", () => {
+		expect(
+			analyzeStrReplaceDoom("Edit", {
+				file_path: target,
+				old_string: "const tail = 1;",
+			} as never),
+		).toBeNull();
+		expect(
+			analyzeStrReplaceDoom("Edit", {
+				file_path: target,
+				new_string: "console.warn(msg);",
+			} as never),
+		).toBeNull();
+
+		for (const malformed of [
+			{ old_string: "console.log(msg);", new_string: 42 },
+			{ old_string: 42, new_string: "console.warn(msg);" },
+		]) {
+			const doom = analyzeStrReplaceDoom("MultiEdit", {
+				file_path: target,
+				edits: [malformed, { old_string: "not in the file", new_string: "x" }],
+			} as never);
+			expect(doom).toBeNull();
+		}
+	});
+
+	it("rejects empty edits, null entries, and function-shaped entries", () => {
+		expect(analyzeStrReplaceDoom("MultiEdit", { file_path: target, edits: [] })).toBeNull();
+		expect(
+			analyzeStrReplaceDoom("MultiEdit", { file_path: target, edits: [null] } as never),
+		).toBeNull();
+		const callable = Object.assign(() => undefined, {
+			old_string: "console.log(msg);",
+			new_string: "console.warn(msg);",
+		});
+		expect(
+			analyzeStrReplaceDoom("MultiEdit", { file_path: target, edits: [callable] } as never),
+		).toBeNull();
+	});
+
+	it("preserves array-entry replace_all semantics", () => {
+		const ambiguous = analyzeStrReplaceDoom("MultiEdit", {
+			file_path: target,
+			edits: [{ old_string: "const tail = 1;", new_string: "const tail = 2;" }],
+		});
+		expect(ambiguous?.kind).toBe("ambiguous");
+		const replaceAll = analyzeStrReplaceDoom("MultiEdit", {
+			file_path: target,
+			edits: [{ old_string: "const tail = 1;", new_string: "const tail = 2;", replace_all: true }],
+		});
+		expect(replaceAll).toBeNull();
 	});
 
 	it("does not doom a MultiEdit entry whose anchor is created by an earlier entry", () => {
@@ -149,6 +264,16 @@ describe("analyzeStrReplaceDoom — fail-open negatives", () => {
 		expect(
 			analyzeStrReplaceDoom("Write", { file_path: target, old_string: "a", new_string: "b" }),
 		).toBeNull();
+	});
+
+	it("fails open for a non-string path even when Node would accept the path value", () => {
+		const bufferPath = Buffer.from(target) as unknown as string;
+		const doom = analyzeStrReplaceDoom("Edit", {
+			file_path: bufferPath,
+			old_string: "const tail = 1;",
+			new_string: "x",
+		});
+		expect(doom).toBeNull();
 	});
 });
 
@@ -193,6 +318,64 @@ describe("analyzeApplyPatchDoom", () => {
 			]),
 		});
 		expect(warnings).toEqual([]);
+	});
+
+	it("ignores non-update sections and non-apply_patch tools", () => {
+		const mismatch = patchFor([" function greet(nom) {"]);
+		expect(analyzeApplyPatchDoom("Edit", { command: mismatch })).toEqual([]);
+		expect(
+			analyzeApplyPatchDoom("apply_patch", {
+				command: [
+					"*** Begin Patch",
+					`*** Add File: ${join(dir, "new.js")}`,
+					"+one",
+					`*** Update File: ${target}`,
+					" function greet(nom) {",
+					"*** End Patch",
+				].join("\n"),
+			}),
+		).toHaveLength(1);
+	});
+
+	it("caps apply_patch warnings and omits rescue when no near miss exists", () => {
+		const command = [
+			"*** Begin Patch",
+			...Array.from({ length: 5 }, (_, i) => [
+				`*** Update File: ${join(dir, `missing-${i}.js`)}`,
+				" qwerty completely unrelated text",
+				"-still unrelated",
+				"+replacement",
+			]).flat(),
+			"*** End Patch",
+		].join("\n");
+		const warnings = analyzeApplyPatchDoom("apply_patch", { command });
+		expect(warnings).toHaveLength(3);
+
+		const noNearMiss = analyzeApplyPatchDoom("apply_patch", {
+			command: patchFor([" qwerty completely unrelated text", "-still unrelated", "+replacement"]),
+		});
+		expect(noNearMiss).toHaveLength(1);
+		expect(noNearMiss[0]?.warning).not.toContain("```");
+	});
+
+	it("keeps the first hunk as rescue context when a later @@ marker appears", () => {
+		const warnings = analyzeApplyPatchDoom("apply_patch", {
+			command: patchFor([
+				" function greet(nom) {",
+				"@@ second hunk",
+				" totally unrelated",
+			]),
+		});
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]?.warning).toContain("function greet(name) {");
+	});
+
+	it("extracts deletion lines without their patch marker for rescue matching", () => {
+		const warnings = analyzeApplyPatchDoom("apply_patch", {
+			command: patchFor(["-function greet(nom) {"]),
+		});
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]?.warning).toContain("function greet(name) {");
 	});
 
 	it("stays silent for non-apply_patch tools and empty payloads", () => {

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendPredictionRow } from "../graph-prediction-cache.js";
+import { appendPredictionRow, findPredictionRow } from "../graph-prediction-cache.js";
 import {
 	classifyCase,
 	resetWorkspaceActiveCache,
@@ -257,6 +257,14 @@ describe("buildReconciliationRow", () => {
 		});
 		expect(row.source_mtime).toBe("2026-01-01T00:00:00.000Z");
 		expect(row.shard_mtime).toBe("2026-01-01T00:00:05.000Z");
+		expect(row.prediction_summary).toEqual({
+			risk: "unknown",
+			direct: "unknown",
+			transitive: "unknown",
+			domains_count: 0,
+			importers_count: 0,
+			callers_count: 0,
+		});
 	});
 
 	it("falls back to empty-string mtimes when the classification has none", () => {
@@ -395,6 +403,10 @@ describe("slugFor", () => {
 		expect(slugFor("bare.ts")).toBe("bare");
 	});
 
+	it("strips only the final extension from a dotted basename", () => {
+		expect(slugFor("src/my.component.test.ts")).toBe("my_component_test");
+	});
+
 	it("falls back to 'target' when stripping leaves an empty string", () => {
 		expect(slugFor(".ts")).toBe("target");
 	});
@@ -417,6 +429,36 @@ describe("buildChallengeReason", () => {
 		const text = buildChallengeReason(missingOne, [...missingOne, other], "sess-1", "/repo");
 		expect(text).toContain("Other files in this edit are observation-only (no challenge):");
 		expect(text).toContain("/repo/b.ts (Case D)");
+	});
+
+	it("emits the complete prediction template and protocol guidance", () => {
+		const text = buildChallengeReason(missingOne, missingOne, "sess-1", "/repo");
+		expect(text).toBe([
+			"[interlinked:graph-pred] graph_prediction required before this edit can proceed.",
+			"",
+			"Authoritative oracle (Supermodel `.graph.*` shard, fresh) for:",
+			"  /repo/a.ts",
+			"    → submit prediction by writing to: .interlinked/predictions/incoming/sess-1/a.yaml",
+			"",
+			"Use the Write tool. Bare YAML; no fences needed. Format:",
+			"  graph_prediction:",
+			"    file: <absolute or repo-relative path to the edit target>",
+			"    deps:",
+			"      imports: [<paths>] | unknown",
+			"      imported_by: [<paths>] | unknown",
+			"    calls:",
+			"      callers: [<\"fn ← caller\">] | unknown",
+			"      callees: [<\"fn → callee\">] | unknown",
+			"    impact:",
+			"      risk: low | medium | high | unknown",
+			"      domains: [<strings>] | unknown",
+			"      direct: <int> | unknown",
+			"      transitive: <int> | unknown",
+			"      affects: [<paths>] | unknown",
+			"",
+			"After the Write succeeds, retry the original edit. See",
+			"`docs/design/graph-prediction-protocol.md §6` for full format spec.",
+		].join("\n"));
 	});
 });
 
@@ -450,6 +492,29 @@ describe("buildAckSentinelInstruction", () => {
 		expect(text).toContain("/repo/src/a.ts");
 		expect(text).toContain(".interlinked/predictions/ack/sess-9/a.yaml");
 		expect(text).toContain("        - risk_underestimated_low_to_high");
+	});
+
+	it("preserves the complete ack template and strips only the final extension", () => {
+		const flagged: ReconciledTarget[] = [
+			{
+				classification: { case: "E-fresh", sourcePath: "/repo/src/a.snapshot.ts", shardPath: "/repo/src/a.snapshot.graph.ts", sourceMtime: "t1", shardMtime: "t2" },
+				severity: { ...fakeSeverity, triggers: ["risk_underestimated_low_to_high", "imported_by_recall_low"] },
+				oracle: null,
+			},
+		];
+		expect(buildAckSentinelInstruction(flagged, "sess-9")).toBe([
+			"",
+			"To acknowledge, Write the bare YAML below to the named sentinel path (one Write per flagged file):",
+			"",
+			"  → .interlinked/predictions/ack/sess-9/a.snapshot.yaml",
+			"    graph_prediction_ack:",
+			"      file: /repo/src/a.snapshot.ts",
+			"      acknowledged_triggers:",
+			"        - risk_underestimated_low_to_high",
+			"        - imported_by_recall_low",
+			"",
+			"After all acks land, retry the original Edit. See `docs/design/graph-prediction-protocol.md §7.6`.",
+		].join("\n").replace(/^/, "\n"));
 	});
 });
 
@@ -486,6 +551,30 @@ describe("buildRevealText", () => {
 		];
 		expect(buildRevealText(reconciled)).not.toContain("triggers:");
 	});
+
+	it("renders every scored section, trigger separator, and line break", () => {
+		const reconciled: ReconciledTarget[] = [
+			{
+				classification: { case: "E-fresh", sourcePath: "/repo/a.ts", shardPath: null, sourceMtime: null, shardMtime: null },
+				severity: {
+					...fakeSeverity,
+					triggers: ["risk_underestimated_low_to_high", "imported_by_recall_low"],
+					per_section_score: { "deps.imports": 1, "impact.risk": 0.7 },
+					weighted_avg: 0.85,
+					severity: "medium",
+				},
+				oracle: null,
+			},
+		];
+		expect(buildRevealText(reconciled)).toBe([
+			"[interlinked:graph-pred] Comparison for /repo/a.ts:",
+			"  deps.imports: 1.00",
+			"  impact.risk: 0.70",
+			"  triggers: risk_underestimated_low_to_high, imported_by_recall_low",
+			"  weighted_avg (telemetry): 0.85",
+			"  severity: medium",
+		].join("\n"));
+	});
 });
 
 // ── isReadOfShard ────────────────────────────────────────────────────────
@@ -497,6 +586,11 @@ describe("isReadOfShard", () => {
 
 	it("true for a 'view' tool call on a shard using 'path' instead of file_path", () => {
 		const event = { ...readEvent("/repo/a.graph", "path"), tool_name: "view" };
+		expect(isReadOfShard(event)).toBe(true);
+	});
+
+	it.each(["ReadFile", "read_file"])("true for the %s tool name", (tool_name) => {
+		const event = { ...readEvent("/repo/a.graph.ts"), tool_name };
 		expect(isReadOfShard(event)).toBe(true);
 	});
 
@@ -527,6 +621,21 @@ describe("isReadOfShard", () => {
 		};
 		expect(isReadOfShard(event)).toBe(false);
 	});
+
+	it("does not treat a shard-looking suffix as a shard path", () => {
+		expect(isReadOfShard(readEvent("/repo/a.graph.ts.backup"))).toBe(false);
+	});
+
+	it("handles an event with no tool_input", () => {
+		const event: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "s",
+			agent_source: "claude",
+			tool_name: "Read",
+			timestamp: "t",
+		};
+		expect(isReadOfShard(event)).toBe(false);
+	});
 });
 
 // ── recordShardRead ────────────────────────────────────────────────────────
@@ -553,6 +662,55 @@ describe("recordShardRead", () => {
 		// ghost.graph.ts pairs with ghost.ts, which does not exist -> Case C.
 		const event = readEvent(join(dir, "src", "ghost.graph.ts"));
 		expect(recordShardRead(event, dir)).toBeNull();
+	});
+
+	it("does not record a read for an E-stale shard, even when a cached row exists", () => {
+		const source = join(dir, "src", "stale.ts");
+		const shard = join(dir, "src", "stale.graph.ts");
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(source, "export {}");
+		writeFileSync(shard, "// @generated");
+		setMtime(source, t);
+		setMtime(shard, t - 120_000);
+		const target = classifyCase(source, dir);
+		expect(target.case).toBe("E-stale");
+		appendPredictionRow(dir, {
+			session_id: "sess-1",
+			file_path: target.sourcePath,
+			source_mtime: target.sourceMtime as string,
+			shard_mtime: target.shardMtime as string,
+			shard_path: target.shardPath as string,
+			emitted_at: "2026-05-10T12:01:00Z",
+			tool_input_hash: "",
+			case: "E-fresh",
+			prediction: { deps: null, calls: null, impact: null },
+			comparison_status: "pending",
+		});
+		expect(recordShardRead(readEvent(shard), dir)).toBeNull();
+	});
+
+	it("rejects a path with extra characters after the shard suffix", () => {
+		const source = join(dir, "src", "suffix.ts");
+		const shard = join(dir, "src", "suffix.graph.ts");
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(source, "export {}");
+		writeFileSync(shard, "// @generated");
+		setMtime(source, t);
+		setMtime(shard, t + 30_000);
+		const target = classifyCase(source, dir);
+		appendPredictionRow(dir, {
+			session_id: "sess-1",
+			file_path: target.sourcePath,
+			source_mtime: target.sourceMtime as string,
+			shard_mtime: target.shardMtime as string,
+			shard_path: target.shardPath as string,
+			emitted_at: "2026-05-10T12:01:00Z",
+			tool_input_hash: "",
+			case: "E-fresh",
+			prediction: { deps: null, calls: null, impact: null },
+			comparison_status: "pending",
+		});
+		expect(recordShardRead(readEvent(`${shard}.backup`), dir)).toBeNull();
 	});
 
 	it("resolves a relative shard path against cwd and records the read", () => {
@@ -676,6 +834,14 @@ describe("recordShardRead", () => {
 		const event = readEvent(target.shardPath as string, "file_path", "");
 		const result = recordShardRead(event, dir);
 		expect(result?.decision).toBe("allow");
+		const row = findPredictionRow(dir, {
+			session_id: "sess-1",
+			file_path: target.sourcePath,
+			source_mtime: target.sourceMtime as string,
+			shard_mtime: target.shardMtime as string,
+		});
+		expect(row?.shard_read_at).toEqual(expect.any(String));
+		expect(row?.shard_read_at).not.toBe("");
 	});
 
 	it("derives the source path for an extension-less shard filename (m[2] undefined)", () => {
@@ -687,6 +853,42 @@ describe("recordShardRead", () => {
 		// No cached row: exercises the m[2]-undefined path through to a clean
 		// "no prior row" null without throwing.
 		const event = readEvent(join(dir, "src", "Makefile.graph"));
+		expect(recordShardRead(event, dir)).toBeNull();
+	});
+
+	it("records an extension-less shard when its cached row exists", () => {
+		const source = join(dir, "src", "PlainName");
+		const shard = join(dir, "src", "PlainName.graph");
+		const t = Date.parse("2026-05-10T12:00:00Z");
+		writeFileSync(source, "export {}");
+		writeFileSync(shard, "// @generated");
+		setMtime(source, t);
+		setMtime(shard, t + 30_000);
+		const target = classifyCase(source, dir);
+		expect(target.case).toBe("E-fresh");
+		appendPredictionRow(dir, {
+			session_id: "sess-1",
+			file_path: target.sourcePath,
+			source_mtime: target.sourceMtime as string,
+			shard_mtime: target.shardMtime as string,
+			shard_path: target.shardPath as string,
+			emitted_at: "2026-05-10T12:01:00Z",
+			tool_input_hash: "",
+			case: "E-fresh",
+			prediction: { deps: null, calls: null, impact: null },
+			comparison_status: "pending",
+		});
+		expect(recordShardRead(readEvent(shard), dir)?.decision).toBe("allow");
+	});
+
+	it("handles an event with no tool_input", () => {
+		const event: HarnessEvent = {
+			hook_event: "PreToolUse",
+			session_id: "s",
+			agent_source: "claude",
+			tool_name: "Read",
+			timestamp: "t",
+		};
 		expect(recordShardRead(event, dir)).toBeNull();
 	});
 });
@@ -706,6 +908,15 @@ describe("buildShardReadRequiredReason", () => {
 		const text = buildShardReadRequiredReason(needsRead);
 		expect(text).not.toContain("/repo/b.ts");
 		expect(text.split("\n")).toHaveLength(4); // header lines only, no per-target line appended
+	});
+
+	it("keeps the full enforced-mode instructions verbatim", () => {
+		expect(buildShardReadRequiredReason([])).toBe([
+			"[interlinked:graph-pred] Read the oracle shard before this Edit can proceed.",
+			"Enforced mode requires the agent to actually consume the .graph.* file so its mental model updates from the source of truth, not just the diff summary.",
+			"",
+			"Call the Read tool on each shard listed below, then retry the Edit:",
+		].join("\n"));
 	});
 });
 
@@ -767,5 +978,37 @@ describe("buildShardInlineText", () => {
 		];
 		const text = buildShardInlineText(reconciled);
 		expect(text).toContain("truncated at 4096 bytes; read the file directly for full contents");
+	});
+
+	it("does not truncate a shard exactly at the byte cap", () => {
+		const shardPath = join(dir, "src", "boundary.graph.ts");
+		writeFileSync(shardPath, "x".repeat(4096));
+		const reconciled: ReconciledTarget[] = [
+			{
+				classification: { case: "E-fresh", sourcePath: join(dir, "src", "boundary.ts"), shardPath, sourceMtime: "t1", shardMtime: "t2" },
+				severity: fakeSeverity,
+				oracle: null,
+			},
+		];
+		const text = buildShardInlineText(reconciled);
+		expect(text).toContain("x".repeat(4096));
+		expect(text).not.toContain("truncated at");
+	});
+
+	it("slices an oversized shard and trims only trailing whitespace", () => {
+		const shardPath = join(dir, "src", "whitespace.graph.ts");
+		writeFileSync(shardPath, `${"x".repeat(4096)}TAIL\n\n`);
+		const reconciled: ReconciledTarget[] = [
+			{
+				classification: { case: "E-fresh", sourcePath: join(dir, "src", "whitespace.ts"), shardPath, sourceMtime: "t1", shardMtime: "t2" },
+				severity: fakeSeverity,
+				oracle: null,
+			},
+		];
+		const text = buildShardInlineText(reconciled);
+		expect(text).toContain("x".repeat(4096));
+		expect(text).not.toContain("TAIL");
+		expect(text).toContain("... (truncated at 4096 bytes; read the file directly for full contents)");
+		expect(text).not.toMatch(/contents\)\s+$/);
 	});
 });

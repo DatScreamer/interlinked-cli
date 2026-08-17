@@ -22,6 +22,7 @@ import { GENERIC_ITERATION_SAFETY_META } from "./generic-iteration-safety.js";
 import { GENERIC_REACT_WARNINGS_META } from "./generic-react-warnings.js";
 import { GENERIC_SWIFT_META } from "./generic-swift.js";
 import { GENERIC_TEST_HYGIENE_META } from "./generic-test-hygiene.js";
+import { GENERIC_TYPE_DISCIPLINE_META } from "./generic-type-discipline.js";
 import { GENERIC_UBS_META } from "./generic-ubs.js";
 import type { CheckMeta } from "./types.js";
 
@@ -250,6 +251,7 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"mocking_the_sut_self",
 			"test_subprocess_default_timeout",
 			"mock_only_test",
+			"test_legitimacy",
 			"happy_path_only_test",
 			"test_platform_conditional",
 			"test_silent_dependency_skip",
@@ -315,6 +317,10 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 			"swift_abbreviations",
 		],
 	},
+	"generic-type-discipline": {
+		meta: GENERIC_TYPE_DISCIPLINE_META,
+		keys: ["conditional_empty_object_spread", "unknown_type_alias"],
+	},
 };
 
 describe("GENERIC_CHECK_META fragments", () => {
@@ -368,14 +374,16 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 231-key total", () => {
+	it("preserves the full 234-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
 		// 217 + cognitive_complexity (2026-07-24) + 8 Bun-regression detector pack
 		// (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2, 2026-07-20)
 		// + raw_control_bytes (2026-07-25) + procfs_probe_in_test (2026-07-31)
-		// + type_predicate_drift (2026-08-09) + homedir_write_escape (2026-08-10).
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(231);
+		// + type_predicate_drift (2026-08-09) + homedir_write_escape (2026-08-10)
+		// + conditional_empty_object_spread + unknown_type_alias (2026-08-14,
+		// type-discipline wave, ported from dmmulroy/anti-slop).
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(234);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(231);
+		expect(fragmentKeyTotal).toBe(234);
 	});
 });

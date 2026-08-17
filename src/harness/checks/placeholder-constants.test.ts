@@ -19,6 +19,17 @@
 //   P15 TS:   confession on the block opener, unstarred continuation closing line
 //   P16 TS:   bare block-comment interior confession above a later declaration
 //   P17 Rust: lifetime + char literal nearby don't derail the scan
+//   P18 all:  every supported confession spelling remains meaningful
+//   P19 Py:   a triple-quote-looking line inside a # comment is not a docstring
+//   P20 Py:   a docstring closes before a real confessing declaration
+//   P21 TS:   escaped backtick keeps a multiline template open
+//   P22 Go:   raw-string backslash does not escape its closing backtick
+//   P23 TS:   same-line block comment closes before the declaration
+//   P24 TS:   finding text is capped at the documented report width
+//   P26 Py:   spaced blank/comment-only lines remain transparent
+//   P27 TS:   malformed single-quoted string does not become multiline state
+//   P28 TS:   escaped template delimiter before code remains inside the template
+//   P29 TS:   a same-line confessing block closes before the declaration
 // Negative (MUST NOT fire):
 //   N1  numeric const with no comment at all
 //   N2  const UNKNOWN = -1; // sentinel  (no temporariness confession)
@@ -41,6 +52,12 @@
 //   N19 Rust: deref assignment of a Provisional-named variant (no comment in file)
 //   N20 TS:  operator-before continuation with a stand-in identifier
 //   N21 Go:  raw-string literal quoting a confessing declaration
+//   N22 all:  punctuation/no-space decoys are not confession spellings
+//   N23 Rust: ordinary code between a confession and declaration breaks attachment
+//   N24 JS:   hash-prefixed code is not a Rust attribute
+//   N25 Py:   triple quotes in a comment do not hide a following declaration
+//   N26 Py:   code containing a confession word is not comment-only
+//   N27 TS:   a code identifier named temporary is not a confession
 // Performance:
 //   PERF1 pathological unterminated escaped-quote line stays linear (adversarial F6)
 
@@ -154,6 +171,204 @@ describe("checkPlaceholderRuntimeConstant — positive (must fire)", () => {
 		).join("\n");
 		const found = run(src);
 		expect(found).toHaveLength(10);
+	});
+
+	it("P18: every supported confession spelling remains meaningful", () => {
+		// Contract receipt: numeric declarations must fire for each documented
+		// temporariness vocabulary, including the less-common regex alternatives.
+		const comments = [
+			"temporary for now",
+			"temporarily reserved",
+			"stand in until Phase B",
+			"to be threaded",
+			"to be wired",
+			"to be computed",
+			"hardcode for now",
+			"hardcoding for now",
+			"nonzero stub",
+			"nonzero stand",
+		];
+		const src = comments.map((comment, i) => `const CAP_${i} = 1; // ${comment}`).join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(comments.length);
+		expect(found.map((match) => match.line)).toEqual(
+			comments.map((_, i) => i + 1),
+		);
+	});
+
+	it("P19: Python comment text containing triple quotes is not a docstring opener", () => {
+		// Contract receipt: only real docstring spans suppress declaration scanning.
+		const src = [
+			'# """ this is still a line comment',
+			"LIMIT = 3  # temporary for now",
+		].join("\n");
+		const found = run(src, "app/settings.py");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("P20: Python docstring closes before a real confessing declaration", () => {
+		// Contract receipt: a closed triple-quoted span must not swallow later module constants.
+		const src = [
+			'"""module documentation',
+			'"""',
+			"LIMIT = 3  # temporary for now",
+		].join("\n");
+		const found = run(src, "app/settings.py");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
+	});
+
+	it("P21: escaped backtick keeps a TypeScript template open", () => {
+		// Contract receipt: declaration-shaped text inside an escaped template remains non-code.
+		const src = [
+			"const tmpl = `",
+			"const FAKE = 1; // temporary for now \\`",
+			"const ALSO_FAKE = 2; // temporary for now",
+			"`;",
+			"const REAL = 3; // temporary for now",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(5);
+		expect(found[0]?.text).toContain("const REAL = 3");
+	});
+
+	it("P22: Go raw-string backslash does not escape its closing backtick", () => {
+		// Contract receipt: Go raw strings close at the next backtick, even after a backslash.
+		const src = [
+			"package main",
+			"const tmpl = `",
+			"const FAKE = 1 // provisional until the pool is tuned",
+			"\\`",
+			"const REAL = 2 // provisional until the pool is tuned",
+		].join("\n");
+		const found = run(src, "server/tmpl.go");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(5);
+		expect(found[0]?.text).toContain("const REAL = 2");
+	});
+
+	it("P23: same-line block comment closes before the declaration", () => {
+		// Contract receipt: comments are blanked while code after a closed block remains scannable.
+		const src = "/* ordinary note */ const LIMIT = 3; // temporary for now";
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("P24: finding text is capped at the documented report width", () => {
+		// Contract receipt: public finding text includes at most 150 trimmed declaration-line characters.
+		const src = `   const LIMIT = 3; // temporary for now ${"x".repeat(300)}`;
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text.endsWith("x".repeat(300))).toBe(false);
+		expect(found[0]?.text).toContain("const LIMIT = 3; // temporary for now");
+		expect(found[0]?.text).not.toContain("—    const LIMIT");
+		expect(found[0]?.text.length).toBeLessThan(
+			"placeholder_runtime_constant: comment confesses this numeric constant is a temporary stand-in — replace it with the real value (or wire it) before shipping — ".length + 150 + 1,
+		);
+	});
+
+	it("P26: Python spaced blank and comment-only lines remain transparent", () => {
+		// Contract receipt: the three-line upward window walks through whitespace and comments.
+		const src = [
+			"# temporary for now",
+			"   ",
+			"    # explanatory note",
+			"LIMIT = 3",
+		].join("\n");
+		const found = run(src, "app/settings.py");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(4);
+	});
+
+	it("P27: malformed single-quoted string does not become multiline state", () => {
+		// Contract receipt: only backtick templates carry string state across JavaScript lines.
+		const src = [
+			"const broken = 'unterminated",
+			"const REAL = 3; // temporary for now",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("P28: escaped template delimiter before code remains inside the template", () => {
+		// Contract receipt: an escaped backtick cannot close a multiline template before its content.
+		const src = [
+			"const tmpl = `",
+			"\\` escaped delimiter",
+			"const FAKE = 1; // temporary for now",
+			"`;",
+			"const REAL = 2; // temporary for now",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(5);
+	});
+
+	it("P29: a same-line confessing block closes before the declaration", () => {
+		// Contract receipt: a confession in a closed block comment attaches to code that follows it.
+		const src = "/* temporary for now */ const LIMIT = 3;";
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+	});
+
+	it("P30: repeated spaces remain valid in every multi-word confession", () => {
+		// Contract receipt: the public vocabulary accepts runs of whitespace, not
+		// only the one-space examples used in the compact fixtures above.
+		const src = [
+			"const A = 1; // standin",
+			"const B = 2; // for   now",
+			"const C = 3; // until   we wire it",
+			"const D = 4; // to   be   wired",
+			"const E = 5; // hardcoded   for   now",
+			"const F = 6; // nonzero   stub",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(6);
+		expect(found.map((match) => match.line)).toEqual([1, 2, 3, 4, 5, 6]);
+	});
+
+	it("P31: report text trims the declaration line before applying the cap", () => {
+		const src = "  \tconst LIMIT = 3; // temporary for now   \t";
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text).toMatch(/— const LIMIT = 3; \/\/ temporary for now$/);
+	});
+
+	it("P32: a closed single-line Python docstring does not hide a declaration", () => {
+		// Contract receipt: two delimiters on one line leave docstring state closed.
+		const src = ['"""module docs"""', "LIMIT = 3  # temporary for now"].join("\n");
+		const found = run(src, "app/settings.py");
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	it("P33: escaped template delimiters do not hide a following confession", () => {
+		// Contract receipt: resume scanning after the real closing delimiter and
+		// retain a comment that follows it on the same line.
+		const src = [
+			"const tmpl = `",
+			"\\` escaped close, then ` // temporary for now",
+			"const LIMIT = 3;",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
+	});
+
+	it("P34: division operators do not open a block comment", () => {
+		const src = [
+			"const ratio = total / limit;",
+			"// temporary for now",
+			"const MAX_ITEMS = 50;",
+		].join("\n");
+		const found = run(src);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(3);
 	});
 });
 
@@ -394,6 +609,81 @@ describe("checkPlaceholderRuntimeConstant — adversarial regressions (must NOT 
 			"const Real = 2",
 		].join("\n");
 		expect(run(src, "server/tmpl.go")).toHaveLength(0);
+	});
+
+	it("N22: punctuation and no-space decoys are not confession spellings", () => {
+		// Contract receipt: only the documented word boundaries and whitespace are actionable.
+		const src = [
+			"const A = 1; // for-now",
+			"const B = 2; // until_we",
+			"const C = 3; // to-be replaced",
+			"const D = 4; // hardcoded-now",
+			"const E = 5; // nonzerostub",
+			"const F = 6; // fornow",
+			"const G = 7; // untilwe",
+		].join("\n");
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("N23: Rust code between a confession and declaration breaks attachment", () => {
+		// Contract receipt: the upward walk stops at unrelated code, including Rust item code.
+		const src = [
+			"// temporary for now",
+			"let unrelated = 0;",
+			"const RETRY_CAP: u32 = 3;",
+		].join("\n");
+		expect(run(src, "src/reset.rs")).toHaveLength(0);
+	});
+
+	it("N24: hash-prefixed JavaScript code is not a Rust attribute", () => {
+		// Contract receipt: attribute transparency is scoped to Rust and must not bridge JS code.
+		const src = [
+			"// temporary for now",
+			"# unrelated directive",
+			"const RETRY_CAP = 3;",
+		].join("\n");
+		expect(run(src, "src/reset.ts")).toHaveLength(0);
+	});
+
+	it("N25: triple quotes in a Python comment do not hide a following declaration", () => {
+		// Contract receipt: a # comment cannot open a docstring state that suppresses later code.
+		const src = [
+			'# """ not a docstring',
+			"VALUE = 1",
+			"LIMIT = 3  # temporary for now",
+		].join("\n");
+		expect(run(src, "app/settings.py")).toHaveLength(1);
+		expect(run(src, "app/settings.py")[0]?.line).toBe(3);
+	});
+
+	it("N26: code containing a confession word is not comment-only", () => {
+		// Contract receipt: a matching word in code cannot attach an earlier confession across that line.
+		const src = [
+			"# temporary for now",
+			"temporary = 1  # ordinary value",
+			"LIMIT = 3",
+		].join("\n");
+		expect(run(src, "app/settings.py")).toHaveLength(0);
+	});
+
+	it("N27: a code identifier named temporary is not a confession", () => {
+		// Contract receipt: only original comment text can confess; code tokens are never evidence.
+		const src = "const temporary = 1; /* ordinary note */";
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("N28: punctuation and unexpected words do not broaden confession matching", () => {
+		const src = [
+			"const A = 1; // stand.in",
+			"const B = 2; // until random",
+			"const C = 3; // nonzeroXstub",
+		].join("\n");
+		expect(run(src)).toHaveLength(0);
+	});
+
+	it("N29: a hash inside a Python string is not a comment confession", () => {
+		const src = ['MESSAGE = "# temporary for now"', "LIMIT = 3"].join("\n");
+		expect(run(src, "app/settings.py")).toHaveLength(0);
 	});
 });
 

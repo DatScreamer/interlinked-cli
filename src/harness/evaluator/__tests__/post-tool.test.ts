@@ -14,6 +14,7 @@ import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../../ty
 import * as verificationStopChecks from "../../verification-stop-checks.js";
 import { STUB_INTRODUCED_CAP } from "../../verification-stop-checks.js";
 import { evaluatePostToolUse } from "../post-tool.js";
+import { collectPostWriteFileWarnings } from "../post-tool-write-warnings.js";
 import * as toolClassifiers from "../tool-classifiers.js";
 
 /** Drops a required config field to `undefined` at the type level, for
@@ -678,6 +679,12 @@ describe("post-write file warnings", () => {
 		expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
 	});
 
+	// test-contract: public-api — a readable under-cap code write returns no post-write warnings at all
+	it("returns exactly no warnings for an under-cap code file", () => {
+		const p = write("small-exact.ts", "export const x = 1;\n");
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
+	});
+
 	it("best-effort: a non-existent written path produces no file-size warning", () => {
 		const ws = warningsOf(makeWriteEvent(join(dir, "missing.ts")));
 		expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
@@ -697,6 +704,25 @@ describe("post-write file warnings", () => {
 		expect(ws.some((w) => w.includes("[interlinked:json-validity]"))).toBe(false);
 	});
 
+	// test-contract: public-api — valid JSON is a clean post-write result, not merely free of the JSON-specific marker
+	it("returns exactly no warnings for valid JSON", () => {
+		const p = write("good-exact.json", '{ "a": 1 }');
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
+	});
+
+	// test-contract: boundary — parser failures explicitly classified as Dynamic require are suppressed as best-effort noise
+	it("suppresses a JSON parser error identified as Dynamic require", () => {
+		const p = write("dynamic-require.json", "not-json");
+		const parseSpy = vi.spyOn(JSON, "parse").mockImplementation(() => {
+			throw new Error("Dynamic require is not supported in this runtime");
+		});
+		try {
+			expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
+		} finally {
+			parseSpy.mockRestore();
+		}
+	});
+
 	it("flags a phantom dependency in package.json", () => {
 		const p = write(
 			"package.json",
@@ -711,6 +737,8 @@ describe("post-write file warnings", () => {
 		expect(hit).toBeDefined();
 		expect(hit).toContain("Phantom dependency");
 		expect(hit).toContain("definitely-unused-pkg-xyz");
+		expect(hit).toContain("If this dependency is intentional, ensure it is imported somewhere.");
+		expect(hit).toContain("primary npm supply chain attack vector");
 	});
 
 	it("flags a typosquatted dependency in package.json", () => {
@@ -729,6 +757,14 @@ describe("post-write file warnings", () => {
 		expect(hit).toBeDefined();
 		expect(hit).toContain("expresss");
 		expect(hit).toContain("express");
+		expect(hit).toContain("common supply chain attack vector");
+		expect(hit).toContain("Double-check the package name");
+	});
+
+	// test-contract: public-api — a package manifest with no phantom or typosquat findings contributes no warning entries
+	it("returns exactly no warnings for a clean package manifest", () => {
+		const p = write("clean-package.json", JSON.stringify({ name: "fixture-pkg", version: "1.0.0" }));
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
 	});
 
 	it("skips supply-chain checks for a package.json under node_modules", () => {
@@ -757,6 +793,12 @@ describe("post-write file warnings", () => {
 		expect(ws.some((w) => w.includes("[interlinked:yaml-validity]"))).toBe(false);
 	});
 
+	// test-contract: public-api — YAML using spaces is a clean post-write result, including the helper’s empty-array contract
+	it("returns exactly no warnings for space-indented YAML", () => {
+		const p = write("clean-config.yml", "root:\n  key: value\n");
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
+	});
+
 	it("emits the soft suppressions line when every disable is justified", () => {
 		// All-justified path: no -unjustified warning, soft [suppressions] only.
 		const p = write(
@@ -768,6 +810,170 @@ describe("post-write file warnings", () => {
 		const soft = ws.find((w) => w.includes("[interlinked:suppressions]"));
 		expect(soft).toBeDefined();
 		expect(soft).toContain("All carry justifications");
+	});
+
+	it("reports a mixed file as unjustified and does not emit the all-clear line", () => {
+		const p = write(
+			"mixed-suppr.ts",
+			["// @ts-ignore: upstream types are wrong", "// @ts-expect-error", "const x = 1;", ""].join("\n"),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		const hard = ws.find((w) => w.includes("[interlinked:suppressions-unjustified]"));
+		expect(hard).toBeDefined();
+		expect(hard).toContain("1x @ts-expect-error (lines: 2)");
+		expect(ws.some((w) => w.includes("[interlinked:suppressions]"))).toBe(false);
+	});
+
+	it("shows only the first five unjustified suppression lines", () => {
+		const p = write(
+			"many-suppr.ts",
+			Array.from({ length: 6 }, () => "// @ts-ignore").join("\n"),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		const hit = ws.find((w) => w.includes("[interlinked:suppressions-unjustified]"));
+		expect(hit).toBeDefined();
+		expect(hit).toContain("6x @ts-ignore (lines: 1, 2, 3, 4, 5, …)");
+		expect(hit).not.toContain("lines: 1, 2, 3, 4, 5, 6");
+	});
+
+	// test-contract: boundary — exactly five unjustified directives fit the inline list without an ellipsis
+	it("does not append an ellipsis at the five-line display boundary", () => {
+		const p = write("five-suppr.ts", Array.from({ length: 5 }, () => "// @ts-ignore").join("\n"));
+		const hit = collectPostWriteFileWarnings(makeWriteEvent(p)).find((w) =>
+			w.includes("[interlinked:suppressions-unjustified]"),
+		);
+		expect(hit).toBeDefined();
+		expect(hit).toContain("5x @ts-ignore (lines: 1, 2, 3, 4, 5)");
+		expect(hit).not.toContain(", …");
+	});
+
+	it("preserves comma separators and the audit-tail text in suppression messages", () => {
+		const p = write(
+			"multiple-suppr.ts",
+			["// @ts-ignore: reason", "// eslint-disable-next-line no-alert -- reason", "const x = 1;", ""].join("\n"),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		const soft = ws.find((w) => w.includes("[interlinked:suppressions]"));
+		expect(soft).toBeDefined();
+		expect(soft).toContain("1x @ts-ignore, 1x eslint-disable");
+		expect(soft).toContain("All carry justifications — consider whether the underlying issue can be fixed instead of silenced.");
+	});
+
+	// test-contract: invariant — a file containing only bare suppressions emits the hard warning and never the all-clear soft warning
+	it("does not emit an all-clear suppression line when every directive is unjustified", () => {
+		const p = write("all-bare-suppr.ts", "// @ts-ignore\n// @ts-expect-error\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("[interlinked:suppressions-unjustified]");
+		expect(ws[0]).not.toContain("[interlinked:suppressions]");
+	});
+
+	it("does not count a bare colon as a suppression justification", () => {
+		const p = write("bare-colon.ts", "// @ts-ignore:\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("[interlinked:suppressions-unjustified]"))).toBe(true);
+	});
+
+	// test-contract: boundary — @ts-expect-error follows the same empty-colon rule as @ts-ignore
+	it("does not treat an empty colon after @ts-expect-error as a reason", () => {
+		const p = write("expect-bare-colon.ts", "// @ts-expect-error:\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("1x @ts-expect-error (lines: 1)");
+	});
+
+	// test-contract: boundary — repeated separator characters are still an empty reason after the full prefix trim
+	it("rejects repeated colon-only reasons for both TypeScript directives", () => {
+		const p = write("double-colon-suppr.ts", "// @ts-ignore::\n// @ts-expect-error::\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("1x @ts-ignore (lines: 1)");
+		expect(ws[0]).toContain("1x @ts-expect-error (lines: 2)");
+	});
+
+	// test-contract: public-api — ordinary text after either TypeScript directive is retained as a justification
+	it("retains ordinary reasons for both TypeScript directives", () => {
+		const p = write("typed-reasons.ts", "// @ts-ignore: reason\n// @ts-expect-error: reason\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("1x @ts-ignore");
+		expect(ws[0]).toContain("1x @ts-expect-error");
+		expect(ws[0]).not.toContain("[interlinked:suppressions-unjustified]");
+	});
+
+	it("recognizes every supported directive and no-space comment spelling", () => {
+		const p = write(
+			"all-suppr.js",
+			[
+				"//@ts-ignore: reason",
+				"//@ts-expect-error: reason",
+				"//@ts-nocheck explanation",
+				"//eslint-disable-next-line no-alert -- reason",
+				"//eslint-disable no-alert -- reason",
+				"//biome-ignore lint/suspicious: reason",
+				"const x = 1;",
+				"",
+			].join("\n"),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		const hard = ws.find((w) => w.includes("[interlinked:suppressions-unjustified]"));
+		const soft = ws.find((w) => w.includes("[interlinked:suppressions]"));
+		expect(hard).toBeUndefined();
+		expect(soft).toBeDefined();
+		expect(soft).toContain("@ts-ignore");
+		expect(soft).toContain("@ts-expect-error");
+		expect(soft).toContain("@ts-nocheck");
+		expect(soft).toContain("eslint-disable");
+		expect(soft).toContain("biome-ignore");
+	});
+
+	// test-contract: public-api — the spaced, suffix-less @ts-nocheck directive is recognized and counted as informational
+	it("recognizes a spaced @ts-nocheck with no trailing text", () => {
+		const p = write("nocheck-bare.ts", "// @ts-nocheck\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("[interlinked:suppressions]");
+		expect(ws[0]).toContain("1x @ts-nocheck");
+	});
+
+	// test-contract: public-api — @ts-nocheck with an explanation remains a counted, justified informational directive
+	it("recognizes @ts-nocheck with a trailing explanation", () => {
+		const p = write("nocheck-explained.ts", "// @ts-nocheck generated compatibility shim\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("1x @ts-nocheck");
+	});
+
+	// test-contract: public-api — bare eslint-disable is accepted by the documented optional suffix grammar
+	it("recognizes bare eslint-disable with a reason", () => {
+		const p = write("eslint-bare.ts", "// eslint-disable no-console -- legacy adapter\nconsole.log('x');\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws).toHaveLength(1);
+		expect(ws[0]).toContain("1x eslint-disable");
+	});
+
+	it("requires a non-whitespace reason for eslint and biome directives", () => {
+		const p = write(
+			"weak-suppr.ts",
+			[
+				"// eslint-disable-next-line no-alert -- ",
+				"// biome-ignore lint/suspicious:",
+				"const x = 1;",
+				"",
+			].join("\n"),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		const hard = ws.find((w) => w.includes("[interlinked:suppressions-unjustified]"));
+		expect(hard).toBeDefined();
+		expect(hard).toContain("eslint-disable");
+		expect(hard).toContain("biome-ignore");
+	});
+
+	it("accepts a biome reason immediately after the required colon", () => {
+		const p = write("compact-biome.ts", "// biome-ignore lint/suspicious:reason\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("[interlinked:suppressions-unjustified]"))).toBe(false);
+		expect(ws.some((w) => w.includes("[interlinked:suppressions]"))).toBe(true);
 	});
 
 	it("does not run suppression detection on non-JS/TS files", () => {
@@ -796,6 +1002,71 @@ describe("post-write file warnings", () => {
 			makeEvent({ tool_name: "Bash", tool_input: { command: `cat ${p}` } }),
 		);
 		expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
+	});
+
+	it("returns no file warnings when a write has no path", () => {
+		const event = makeEvent({ tool_name: "Write", tool_input: { content: "x" } });
+		expect(collectPostWriteFileWarnings(event)).toEqual([]);
+	});
+
+	it("does not treat a non-JSON extension as JSON", () => {
+		const p = write("notes.txt", "{ invalid json }");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("[interlinked:json-validity]"))).toBe(false);
+	});
+
+	it("does not run package checks for a file merely containing package-shaped JSON", () => {
+		const p = write(
+			"metadata.txt",
+			JSON.stringify({ dependencies: { expresss: "^4.0.0" } }),
+		);
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("[interlinked:supply-chain]"))).toBe(false);
+	});
+
+	it("checks both YAML extensions, but not unrelated extensions", () => {
+		const yml = write("config.yml", "root:\n\tkey: value\n");
+		const txt = write("config.txt", "root:\n\tkey: value\n");
+		const ymlWarnings = collectPostWriteFileWarnings(makeWriteEvent(yml));
+		const txtWarnings = collectPostWriteFileWarnings(makeWriteEvent(txt));
+		expect(ymlWarnings.some((w) => w.includes("[interlinked:yaml-validity]"))).toBe(true);
+		expect(txtWarnings.some((w) => w.includes("[interlinked:yaml-validity]"))).toBe(false);
+	});
+
+	it("does not add a file-size warning at exactly the cap", () => {
+		const cap = maxLinesFor(dir);
+		const p = write("at-cap.ts", Array.from({ length: cap }, () => "export const x = 1;").join("\n"));
+		const ws = collectPostWriteFileWarnings({ ...makeWriteEvent(p), cwd: dir });
+		expect(ws.some((w) => w.includes("[interlinked:file-size]"))).toBe(false);
+	});
+
+	it("does not detect suppressions in a path with a code suffix", () => {
+		const p = write("notes.ts.bak", "// @ts-ignore\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("suppressions"))).toBe(false);
+	});
+
+	it("does not emit suppression output for clean code", () => {
+		const p = write("clean.ts", "export const x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("suppressions"))).toBe(false);
+	});
+
+	// test-contract: public-api — a clean code file returns no suppression entries rather than a placeholder warning
+	it("returns exactly no warnings for a clean suppression-bearing file", () => {
+		const p = write("clean-exact.ts", "export const x = 1;\n");
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
+	});
+
+	it("recognizes JavaScript files as suppression-bearing files", () => {
+		const p = write("legacy.js", "// @ts-ignore\nconst x = 1;\n");
+		const ws = collectPostWriteFileWarnings(makeWriteEvent(p));
+		expect(ws.some((w) => w.includes("[interlinked:suppressions-unjustified]"))).toBe(true);
+	});
+
+	it("returns no suppression warnings for an unreadable code path", () => {
+		const p = join(dir, "missing.ts");
+		expect(collectPostWriteFileWarnings(makeWriteEvent(p))).toEqual([]);
 	});
 });
 

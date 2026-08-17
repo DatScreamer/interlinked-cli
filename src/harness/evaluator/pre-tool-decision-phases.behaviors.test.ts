@@ -150,6 +150,49 @@ describe("evaluateSequenceAndLockdown", () => {
 		expect(decision).toBeNull();
 		expect(warnings).toEqual([]);
 	});
+
+	// The documented `// interlinked: defer <id>` hatch, honored here for the
+	// first time (2026-08-16): a latched pre_block detector otherwise refuses
+	// every remaining call of the session with the acknowledgment present.
+	it("P: an exact-id defer marker in the command allows the call and LOGS the acknowledgement", () => {
+		preBlockQueue.push([
+			{ detector_id: "d3", family: "quality", phase: "pre_block", match: { message: "boom" } },
+		]);
+		preWarnQueue.push([]);
+		const warnings: string[] = [];
+		const event = makeEvent({
+			tool_input: { command: "curl https://x.test # interlinked: defer d3 -- our own socket" },
+		});
+		const decision = evaluateSequenceAndLockdown(event, makeSession(), warnings);
+		expect(decision).toBeNull();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("[interlinked:sequence-deferred]");
+		expect(warnings[0]).toContain("our own socket");
+	});
+
+	it("N: a marker naming a DIFFERENT id still blocks, and no marker still blocks", () => {
+		preBlockQueue.push([
+			{ detector_id: "d4", family: "quality", phase: "pre_block", match: { message: "boom" } },
+		]);
+		preWarnQueue.push([]);
+		const wrongId = evaluateSequenceAndLockdown(
+			makeEvent({ tool_input: { command: "curl https://x.test # interlinked: defer d9 -- other" } }),
+			makeSession(),
+			[],
+		);
+		expect(wrongId?.decision).toBe("block");
+
+		preBlockQueue.push([
+			{ detector_id: "d4", family: "quality", phase: "pre_block", match: { message: "boom" } },
+		]);
+		preWarnQueue.push([]);
+		const noMarker = evaluateSequenceAndLockdown(
+			makeEvent({ tool_input: { command: "curl https://x.test" } }),
+			makeSession(),
+			[],
+		);
+		expect(noMarker?.decision).toBe("block");
+	});
 });
 
 // ============================================================

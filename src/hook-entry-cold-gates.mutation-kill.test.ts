@@ -1,3 +1,11 @@
+import { // interlinked: defer test_missing_sut_import -- direct SUT import (5 named exports, used throughout below); the detector's sutBase strips only ".test.ts" from the filename, computing "hook-entry-cold-gates.mutation-kill" (from this file's ".mutation-kill.test.ts" suffix) instead of "hook-entry-cold-gates", so its regex never matches this correct specifier
+	coldDestructiveCommandBlockReason,
+	coldGraphShardBlockReason,
+	coldLargeFileBlockReason,
+	coldMergeConflictBlockReason,
+	coldPackageInstallBlockReason,
+} from "./hook-entry-cold-gates.js";
+
 // Mutation-survivor-kill companion for hook-entry-cold-gates.ts (fleet-r3,
 // W5). Targets the 69 tractable survivors from
 // `npx tsx src/index.ts mutation survivors --file src/hook-entry-cold-gates.ts`
@@ -15,13 +23,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
-import {
-	coldDestructiveCommandBlockReason,
-	coldGraphShardBlockReason,
-	coldLargeFileBlockReason,
-	coldMergeConflictBlockReason,
-	coldPackageInstallBlockReason,
-} from "./hook-entry-cold-gates.js";
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -49,6 +50,7 @@ function makeToolCallEvent(over: {
 		ts: "2026-08-05T00:00:00.000Z",
 		runner: "claude-code",
 		runner_native_event: "PreToolUse",
+		// SAFETY: over.phase is always one of the UnifiedPhase literal strings the test fixtures pass; narrows the widened `string` back to the union.
 		phase: (over.phase ?? "pre-tool") as UnifiedHookEvent["phase"],
 		action: {
 			kind: "tool_call",
@@ -60,7 +62,9 @@ function makeToolCallEvent(over: {
 		raw: {},
 	};
 	return over.noContext
+		// SAFETY: `base` deliberately omits `context` (required on UnifiedHookEvent) — this branch builds the intentionally incomplete noContext fixture.
 		? (base as UnifiedHookEvent)
+		// SAFETY: action.kind/tool_class are widened to `string` in the inferred object-literal type; this narrows them back to the UnifiedAction literal shape.
 		: ({ ...base, context: { cwd: over.cwd ?? cwd } } as UnifiedHookEvent);
 }
 
@@ -78,6 +82,7 @@ function makeFileOpEvent(over: { path?: unknown; omitPath?: boolean; cwd?: strin
 		action,
 		context: { cwd: over.cwd ?? cwd },
 		raw: {},
+		// SAFETY: `action` is typed as a loose Record<string, unknown> (not the real FileOperationAction shape) and can omit `path` entirely (see the omitPath option above) — deliberately incomplete to exercise the gate's tolerance for malformed events.
 	} as unknown as UnifiedHookEvent;
 }
 
@@ -93,6 +98,7 @@ function makeShellCommandEvent(over: { command?: unknown; cwd?: string }): Unifi
 		action: { kind: "shell_command", command: over.command, tool_class: "side-effect" },
 		context: { cwd: over.cwd ?? cwd },
 		raw: {},
+		// SAFETY: `command` carries over.command verbatim, typed `unknown` (not the real `string`) so tests can pass a non-string or omitted command — deliberately malformed to exercise the gate's tolerance.
 	} as unknown as UnifiedHookEvent;
 }
 
@@ -121,6 +127,7 @@ function makeFrankenFileOpEvent(over: { tool_name?: string; tool_input?: unknown
 		},
 		context: { cwd },
 		raw: {},
+		// SAFETY: deliberately builds a "franken" event — a file_operation action carrying tool_call-shaped fields no real adapter would emit together (see the doc comment above this function) — to exercise the gate's own-kind guard.
 	} as unknown as UnifiedHookEvent;
 }
 
@@ -132,6 +139,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 	it("P1: phase gate — a non-pre-tool event never blocks even with a fresh shard", () => {
 		const src = join(cwd, "a.ts");
 		writeFileSync(src, "x");
+		// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 		writeFileSync(join(cwd, "a.graph.ts"), "{}");
 		const event = makeToolCallEvent({ phase: "post-tool", tool_input: { file_path: src } });
 		expect(coldGraphShardBlockReason(event)).toBeNull();
@@ -141,6 +149,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 	it("P2: blocks a write to a file with a fresh colocated .graph shard (exact banner text)", () => {
 		const src = join(cwd, "a.ts");
 		writeFileSync(src, "x");
+		// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 		writeFileSync(join(cwd, "a.graph.ts"), "{}");
 		const reason = coldGraphShardBlockReason(makeToolCallEvent({ tool_input: { file_path: src } }));
 		expect(reason).not.toBeNull();
@@ -163,6 +172,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		// default `edit` tool and the fresh shard is incorrectly blocked.
 		const src = join(cwd, "read-only.ts");
 		writeFileSync(src, "x");
+		// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 		writeFileSync(join(cwd, "read-only.graph.ts"), "{}");
 		expect(
 			coldGraphShardBlockReason(
@@ -178,6 +188,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		// target would be observable through the cold graph gate.
 		const sentinel = join(cwd, "Stryker was here");
 		writeFileSync(sentinel, "x");
+		// interlinked: defer real_io_in_tests -- path is under mkdtemp tmpdir, not the repo
 		writeFileSync(`${sentinel}.graph`, "{}");
 		const event = makeToolCallEvent({
 			tool_name: "apply_patch",
@@ -192,6 +203,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		// sentinel path would resolve to the deliberately sharded file below.
 		const sentinel = join(cwd, "Stryker was here");
 		writeFileSync(sentinel, "x");
+		// interlinked: defer real_io_in_tests -- path is under mkdtemp tmpdir, not the repo
 		writeFileSync(`${sentinel}.graph`, "{}");
 		expect(coldGraphShardBlockReason(makeFileOpEvent({ path: "   " }))).toBeNull();
 	});
@@ -217,6 +229,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 			// treated as non-blank -- a real cwd-level shard here is the trap
 			// that would catch that bug and falsely block. The correct
 			// (pristine) behavior keeps the path list empty and stays null.
+			// interlinked: defer real_io_in_tests -- path is under mkdtemp tmpdir, not the repo
 			writeFileSync(`${cwd}.graph`, "{}");
 			const event = makeToolCallEvent({ tool_input: { file_path: "   " } });
 			expect(coldGraphShardBlockReason(event)).toBeNull();
@@ -233,6 +246,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 	it("P: extractDirectPathInputs' push-site .trim() — a padded REAL path (tool_call file_path) still resolves to the trimmed file", () => {
 		const src = join(cwd, "a.ts");
 		writeFileSync(src, "x");
+		// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 		writeFileSync(join(cwd, "a.graph.ts"), "{}");
 		const event = makeToolCallEvent({ tool_input: { file_path: `  ${src}  ` } });
 		expect(coldGraphShardBlockReason(event)).not.toBeNull();
@@ -241,6 +255,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 	describe("extractColdTargetPaths' file_operation-branch .trim() (path key)", () => {
 		// test-contract: boundary — a whitespace-only file_operation.path is filtered out before resolution, so it can never resolve to and block on the cwd's own shard.
 		it("P1: a whitespace-only file_operation.path is correctly filtered out even when cwd itself HAS a fresh 'trap' shard", () => {
+			// interlinked: defer real_io_in_tests -- path is under mkdtemp tmpdir, not the repo
 			writeFileSync(`${cwd}.graph`, "{}");
 			expect(coldGraphShardBlockReason(makeFileOpEvent({ path: "   " }))).toBeNull();
 		});
@@ -259,6 +274,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		it("P3: a padded REAL file_operation.path still resolves to the trimmed file's shard", () => {
 			const src = join(cwd, "a.ts");
 			writeFileSync(src, "x");
+			// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 			writeFileSync(join(cwd, "a.graph.ts"), "{}");
 			expect(coldGraphShardBlockReason(makeFileOpEvent({ path: `  ${src}  ` }))).not.toBeNull();
 		});
@@ -271,6 +287,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		// ".dot" as the "extension" and look for a nonexistent bogus shard.
 		const src = join(cwd, "multi.dot.ts");
 		writeFileSync(src, "x");
+		// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 		writeFileSync(join(cwd, "multi.dot.graph.ts"), "{}");
 		expect(coldGraphShardBlockReason(makeToolCallEvent({ tool_input: { file_path: src } }))).not.toBeNull();
 	});
@@ -296,6 +313,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		it("P1: extracts BOTH an Update File header and a Move header target", () => {
 			const src = join(cwd, "patched.ts");
 			writeFileSync(src, "x");
+			// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 			writeFileSync(join(cwd, "patched.graph.ts"), "{}");
 			const patch = [
 				"*** Begin Patch",
@@ -314,6 +332,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		it("P2: header text NOT at the start of a line is ignored (^ anchor, Update File)", () => {
 			const src = join(cwd, "patched.ts");
 			writeFileSync(src, "x");
+			// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 			writeFileSync(join(cwd, "patched.graph.ts"), "{}");
 			const patch = `junk text *** Update File: ${src}\n@@\n-old\n+new\n`;
 			const event = makeToolCallEvent({ tool_name: "apply_patch", tool_input: { command: patch } });
@@ -324,6 +343,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		it("P3: header text NOT at the start of a line is ignored (^ anchor, Move to)", () => {
 			const src = join(cwd, "patched.ts");
 			writeFileSync(src, "x");
+			// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 			writeFileSync(join(cwd, "patched.graph.ts"), "{}");
 			const patch = `junk text *** Move to: ${src}\n@@\n-old\n+new\n`;
 			const event = makeToolCallEvent({ tool_name: "apply_patch", tool_input: { command: patch } });
@@ -334,6 +354,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 		it("P4: a Move-to-only patch (no Update/Add/Delete header) still extracts the move target", () => {
 			const src = join(cwd, "patched.ts");
 			writeFileSync(src, "x");
+			// interlinked: defer write_without_mkdir -- parent dir created by mkdtempSync in beforeEach above
 			writeFileSync(join(cwd, "patched.graph.ts"), "{}");
 			const patch = `*** Move to: ${src}\n@@\n-old\n+new\n`;
 			const event = makeToolCallEvent({ tool_name: "apply_patch", tool_input: { command: patch } });
@@ -357,6 +378,7 @@ describe("coldGraphShardBlockReason — mutation kills", () => {
 			// capture group -- which trims to "". The falsy-p guard must
 			// reject it; letting it through would make cwd itself (via
 			// resolvePath(cwd, "")) a spurious "target".
+			// interlinked: defer real_io_in_tests -- path is under mkdtemp tmpdir, not the repo
 			writeFileSync(`${cwd}.graph`, "{}");
 			const patch = "*** Update File:   ";
 			const event = makeToolCallEvent({ tool_name: "apply_patch", tool_input: { command: patch } });

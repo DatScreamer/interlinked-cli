@@ -83,4 +83,39 @@ describe("claimSessionPid — genuine race (node:fs mocked)", () => {
 		// Two writes: the failed `wx` attempt, then the unconditional overwrite.
 		expect(writeFileSyncMock).toHaveBeenCalledTimes(2);
 	});
+
+	it("a raced claim by this same pid is not treated as a foreign owner", () => {
+		let readCallCount = 0;
+		readFileSyncMock.mockImplementation(() => {
+			readCallCount++;
+			if (readCallCount === 1) return "999999999";
+			return String(process.pid);
+		});
+
+		expect(claimSessionPid("/fake/path/self-race.pid", process.pid)).toEqual({ claimed: true });
+	});
+
+	it("a non-EEXIST failure from the exclusive claim is rethrown", () => {
+		existsSyncMock.mockReturnValue(false);
+		writeFileSyncMock.mockImplementation((_path, _data, opts) => {
+			if (opts?.flag === "wx") {
+				const err = new Error("permission denied") as NodeJS.ErrnoException;
+				err.code = "EACCES";
+				throw err;
+			}
+		});
+
+		expect(() => claimSessionPid("/fake/path/denied.pid", process.pid)).toThrow("permission denied");
+	});
+
+	it("a raced missing pid is treated as an available stale claim", () => {
+		let readCallCount = 0;
+		readFileSyncMock.mockImplementation(() => {
+			readCallCount++;
+			if (readCallCount === 1) return "999999999";
+			throw new Error("ENOENT");
+		});
+
+		expect(claimSessionPid("/fake/path/missing-race.pid", process.pid)).toEqual({ claimed: true });
+	});
 });

@@ -81,4 +81,96 @@ describe("parseReviewFindings", () => {
 		// The anchor is still captured structurally.
 		expect(parsed[0]?.file).toBe("src/a.ts");
 	});
+
+	it("rejects absolute paths and URL hosts as file anchors", () => {
+		const parsed = parseReviewFindings(
+			[
+				"1. [high] /tmp/review.ts:7 is not a repository anchor.",
+				"2. [high] https:example.com/report.pdf is not a repository anchor.",
+				"3. [high] [src/review.ts:7] is a repository anchor.",
+			].join("\n"),
+		);
+		expect(parsed[0]).not.toHaveProperty("file");
+		expect(parsed[1]).not.toHaveProperty("file");
+		expect(parsed[2]).toEqual(expect.objectContaining({ file: "src/review.ts", line: 7 }));
+	});
+
+	it("does not materialize an optional line when an anchor omits it", () => {
+		const parsed = parseReviewFindings("1. [low] [src/review.ts] Missing line metadata.");
+		expect(parsed[0]).toEqual(expect.objectContaining({ file: "src/review.ts" }));
+		expect(Object.hasOwn(parsed[0] ?? {}, "line")).toBe(false);
+	});
+
+	it("normalizes severity, inline brackets, anchors, and repeated whitespace", () => {
+		const parsed = parseReviewFindings(
+			"1. [severity:   high]Defect [x]Defect2 [module.ts:21] left    right   ",
+		);
+		expect(parsed[0]).toEqual(
+			expect.objectContaining({
+				severity: "high",
+				file: "module.ts",
+				line: 21,
+				statement: "Defect x Defect2 left right",
+			}),
+		);
+	});
+
+	it("requires TOTAL to be a valid, line-started numeric terminator", () => {
+		expect(
+			parseReviewFindings("1. [low] first\n   Note TOTAL: 99\n2. [low] second\nTOTAL: 2"),
+		).toHaveLength(2);
+		expect(parseReviewFindings("1. [low] first\n   TOTAL: 2\n2. [low] second")).toHaveLength(1);
+		expect(parseReviewFindings("1. [low] first\nTOTAL:1\n2. [low] second")).toHaveLength(1);
+		expect(
+			parseReviewFindings("1. [low] first\nTOTAL: nope\n2. [low] second"),
+		).toHaveLength(2);
+	});
+
+	it("keeps finding-block line breaks and separates body anchors", () => {
+		const parsed = parseReviewFindings(
+			"1. [high] Defect\nsrc/a.ts:17\n\n2. [low] Next",
+		);
+		expect(parsed[0]).toEqual(
+			expect.objectContaining({
+				file: "src/a.ts",
+				line: 17,
+				raw: "[high] Defect\nsrc/a.ts:17",
+			}),
+		);
+	});
+
+	it("selects non-empty evidence and clips it at 300 characters", () => {
+		const quote = "q".repeat(350);
+		const parsed = parseReviewFindings(
+			`1. [high] Defect\n   Evidence:\n   Evidence: ${quote}`,
+		);
+		expect(parsed[0]?.quote).toBe(quote.slice(0, 300));
+
+		const noSpace = parseReviewFindings("1. [high] Defect\n   Evidence:quoted");
+		expect(noSpace[0]?.quote).toBe("quoted");
+
+		const embedded = parseReviewFindings("1. [high] Defect\n   prefix Evidence: quoted");
+		expect(embedded[0]).not.toHaveProperty("quote");
+	});
+
+	it("clips oversized statements and raw provenance", () => {
+		const statement = "a".repeat(350);
+		const parsedStatement = parseReviewFindings(`1. [high] ${statement}`);
+		expect(parsedStatement[0]?.statement).toBe(statement.slice(0, 300));
+
+		const parsedRaw = parseReviewFindings(`1. [high] Defect\n${"x".repeat(2100)}`);
+		expect(parsedRaw[0]?.raw).toHaveLength(2000);
+	});
+
+	it("accepts multi-digit indexes and severity tags without an internal space", () => {
+		const parsed = parseReviewFindings(
+			"12. [severity:high] [src/review.ts:9] Defect without spacing.",
+		);
+		expect(parsed[0]).toEqual(
+			expect.objectContaining({ index: 12, severity: "high", file: "src/review.ts", line: 9 }),
+		);
+
+		const spaced = parseReviewFindings("12.   [severity:high] Defect with outer spacing.");
+		expect(spaced[0]?.raw).toBe("[severity:high] Defect with outer spacing.");
+	});
 });

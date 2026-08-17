@@ -230,6 +230,61 @@ describe("dischargeObligationsAfterGreenRun — the promised relief path", () =>
 		noteRecentRunStart();
 		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([]);
 	});
+
+	it("uses ANY measured report when several reports are present", () => {
+		recordCoverageObligation(tmp, obligation("src/a.ts"));
+		writeLcov("src/a.ts");
+		writeLcov("src/other.ts", "coverage/lcov-python.info");
+		noteRecentRunStart();
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([
+			"src/a.ts",
+		]);
+	});
+
+	it("accepts an unparseable obligation timestamp conservatively as fresh evidence", () => {
+		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", "not-a-timestamp"));
+		writeLcov("src/a.ts");
+		noteRecentRunStart();
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([
+			"src/a.ts",
+		]);
+	});
+
+	it("treats a report written exactly at obligation time as fresh", () => {
+		const report = join(tmp, "coverage", "lcov.info");
+		writeLcov("src/a.ts");
+		const boundary = new Date("2026-06-01T00:00:00.000Z");
+		utimesSync(report, boundary, boundary);
+		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", boundary.toISOString()));
+		noteCoverageSuiteRunStart("sess-1", "2026-05-01T00:00:00.000Z");
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([
+			"src/a.ts",
+		]);
+	});
+
+	it("accepts a report exactly on the observed run-window skew boundary", () => {
+		const report = join(tmp, "coverage", "lcov.info");
+		writeLcov("src/a.ts");
+		const reportTime = new Date("2026-06-01T00:00:00.000Z");
+		utimesSync(report, reportTime, reportTime);
+		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", "2026-05-01T00:00:00.000Z"));
+		noteCoverageSuiteRunStart("sess-1", "2026-06-01T00:00:02.000Z");
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([
+			"src/a.ts",
+		]);
+	});
+
+	// test-contract: boundary — evidence must be newer than both the deferred edit and the observed run start
+	it("keeps a report newer than the run but older than the obligation open", () => {
+		const report = join(tmp, "coverage", "lcov.info");
+		writeLcov("src/a.ts");
+		const reportTime = new Date("2026-06-01T00:00:00.000Z");
+		utimesSync(report, reportTime, reportTime);
+		recordCoverageObligation(tmp, obligation("src/a.ts", "sess-1", "2026-06-02T00:00:00.000Z"));
+		noteCoverageSuiteRunStart("sess-1", "2026-05-31T23:59:59.000Z");
+		expect(dischargeObligationsAfterGreenRun(tmp, "sess-1", "2026-06-09T00:00:00.000Z")).toEqual([]);
+		expect(readOpenCoverageObligations(tmp, "sess-1").map((o) => o.file)).toEqual(["src/a.ts"]);
+	});
 });
 
 describe("readOpenCoverageObligations — netting + cross-session discharges", () => {
@@ -280,6 +335,56 @@ describe("isCoverageSuiteCommand — additional branch coverage", () => {
 
 	it("rejects a comment line (`#`-prefixed head is not a command)", () => {
 		expect(isCoverageSuiteCommand("# vitest run --coverage")).toBe(false);
+	});
+
+	it("handles every supported launcher/runner alias and keeps test-script matching exact", () => {
+		expect(isCoverageSuiteCommand("bunx vitest run --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("npx --yes vitest run --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("py.test --cov")).toBe(true);
+		expect(isCoverageSuiteCommand("nose2 --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("npx c8 node parser.spec.mjs")).toBe(true);
+		expect(isCoverageSuiteCommand("npx c8 node parser.spec.js.bak")).toBe(false);
+		expect(isCoverageSuiteCommand("npx c8 node parser.spec.js notes.txt")).toBe(true);
+		expect(isCoverageSuiteCommand("pnpm test:unit -- --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("yarn test:unit -- --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("bun test --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("bun lint --coverage")).toBe(false);
+		expect(isCoverageSuiteCommand("npm")).toBe(false);
+	});
+
+	it("recognizes coverage flag prefixes, basename commands, and rejects malformed heads", () => {
+		expect(isCoverageSuiteCommand("vitest run --coverage.v8")).toBe(true);
+		expect(isCoverageSuiteCommand("pytest --cov=src")).toBe(true);
+		expect(isCoverageSuiteCommand("pytest --cov-report=term")).toBe(true);
+		expect(isCoverageSuiteCommand("./node_modules/.bin/vitest run --coverage")).toBe(true);
+		expect(isCoverageSuiteCommand("echo llvm-cov --lcov")).toBe(false);
+		expect(isCoverageSuiteCommand("cargo test --coverage")).toBe(false);
+	});
+
+	it("requires the coverage wrapper to have a real command and strips its flags", () => {
+		expect(isCoverageSuiteCommand("c8 --reporter=lcov mocha")).toBe(true);
+		expect(isCoverageSuiteCommand("npx c8 --reporter=lcov node parser.spec.js")).toBe(true);
+		expect(isCoverageSuiteCommand("c8")).toBe(false);
+		expect(isCoverageSuiteCommand("coverage --not-run pytest --cov")).toBe(false);
+		expect(isCoverageSuiteCommand("tool -m coverage run -m pytest")).toBe(false);
+		expect(isCoverageSuiteCommand("python --cov")).toBe(false);
+		expect(isCoverageSuiteCommand("python coverage --cov")).toBe(false);
+	});
+
+	// test-contract: boundary — a launcher with no real command must remain a non-run rather than indexing past its argv
+	it("does not classify an exhausted launcher as a coverage run", () => {
+		expect(isCoverageSuiteCommand("npx")).toBe(false);
+		expect(isCoverageSuiteCommand("bunx --yes")).toBe(false);
+	});
+
+	// test-contract: boundary — only Python-prefixed interpreters may use the `-m pytest` runner form
+	it("rejects non-Python commands that imitate Python module test invocations", () => {
+		expect(isCoverageSuiteCommand("tool -m pytest --coverage")).toBe(false);
+		expect(isCoverageSuiteCommand("my-python -m pytest --coverage")).toBe(false);
+	});
+
+	it("does not classify an empty shell segment before a real command", () => {
+		expect(isCoverageSuiteCommand("; pytest --cov")).toBe(true);
 	});
 });
 
@@ -332,6 +437,16 @@ describe("measuredCoverageFiles — istanbul coverage-final.json branch", () => 
 		expect(reports).toHaveLength(1);
 		expect(reports[0]?.files.has("src/a.ts")).toBe(true);
 		expect(reports[0]?.mtimeMs).toBeGreaterThan(0);
+	});
+
+	it("normalizes absolute LCOV source paths relative to the project root", () => {
+		const absFile = join(tmp, "src", "absolute.ts");
+		writeFileSync(
+			join(tmp, "coverage", "lcov.info"),
+			[`SF:${absFile}`, "DA:1,1", "end_of_record", ""].join("\n"),
+		);
+		const reports = measuredCoverageFiles(tmp);
+		expect(reports[0]?.files.has("src/absolute.ts")).toBe(true);
 	});
 });
 

@@ -247,6 +247,15 @@ describe("checkDuplicateSymbols", () => {
 // =============================================================================
 
 describe("checkDeadImports", () => {
+	it("reads source as UTF-8 before scanning it", () => {
+		mockFs.readFileSync.mockImplementation((_path, encoding) => {
+			if (encoding !== "utf-8") return Buffer.from("not text");
+			return ["import { encoded } from './m';", "", "const n = 1;"].join("\n");
+		});
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`encoded`");
+	});
+
 	it("returns [] when the file cannot be read (catch L123)", () => {
 		mockFs.readFileSync.mockImplementation(() => {
 			throw new Error("ENOENT");
@@ -329,6 +338,41 @@ describe("checkDeadImports", () => {
 		expect(res[0]?.message).toContain("`Thing`");
 	});
 
+	it("handles extra whitespace around default and type-only imports", () => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import   Thing   from './m';",
+				"import type   TypeThing   from './types';",
+				"import   { spacedNamed } from './named';",
+				"import type   { SpacedType } from './type-named';",
+				"",
+				"const s = 1;",
+			].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`Thing`");
+		expect(res[0]?.message).toContain("`TypeThing`");
+		expect(res[0]?.message).toContain("`spacedNamed`");
+		expect(res[0]?.message).toContain("`SpacedType`");
+	});
+
+	it("trims leading indentation from import statements", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["  import { indented } from './m';", "", "const s = 1;"].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`indented`");
+	});
+
+	it("trims a local alias binding after the alias keyword", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["import { orig  as   local   } from './m';", "", "const q = 1;"].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`local`");
+		expect(res[0]?.message).not.toContain("`orig`");
+	});
+
 	it("does not record a binding for a lone `type` token inside braces (L225 false path)", () => {
 		// `import { type } from './m';` — the only comma-part is literally "type",
 		// which L225 refuses to push as a binding. No bindings => empty result.
@@ -387,6 +431,97 @@ describe("checkDeadImports", () => {
 		);
 		// keep is used => no findings, and the scanner survived the comment lines.
 		expect(checkDeadImports(FILE, REL)).toEqual([]);
+	});
+
+	it.each([
+		["", "blank line"],
+		["// comment", "line comment"],
+		["* jsdoc", "jsdoc star"],
+		["/* block", "block opener"],
+		["*/", "block closer"],
+	])("keeps scanning after a %s in the import section", (separator) => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import { first } from './first';",
+				separator,
+				"import { second } from './second';",
+				"",
+				"const value = 1;",
+			].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res).toHaveLength(1);
+		expect(res[0]?.message).toContain("`first`, `second`");
+	});
+
+	it("recognizes that a non-comment prefix ends the import section", () => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import { first } from './first';",
+				"x*/",
+				"import { second } from './second';",
+			].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res).toHaveLength(1);
+		expect(res[0]?.message).toContain("`first`");
+		expect(res[0]?.message).not.toContain("`second`");
+	});
+
+	it("stops scanning after executable code", () => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import { first } from './first';",
+				"const value = 1;",
+				"import { later } from './later';",
+				"first();",
+			].join("\n"),
+		);
+		expect(checkDeadImports(FILE, REL)).toEqual([]);
+	});
+
+	it("does not mistake import-like text for a later import statement", () => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import { real } from './m';",
+				"notimport { fake } from './fake';",
+				"real();",
+			].join("\n"),
+		);
+		expect(checkDeadImports(FILE, REL)).toEqual([]);
+	});
+
+	it("parses a normal import after the scanner's initial state", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["import { initial } from './m';", "", "const value = 1;"].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`initial`");
+	});
+
+	it("keeps a multiline import buffer isolated from the next import", () => {
+		mockFs.readFileSync.mockReturnValue(
+			[
+				"import {",
+				"  firstMulti,",
+				"} from './first';",
+				"import {",
+				"  secondMulti,",
+				"} from './second';",
+				"",
+				"const value = 1;",
+			].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`firstMulti`, `secondMulti`");
+	});
+
+	it("does not treat a name split across body lines as a usage", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["import { splitName } from './m';", "", "split", "Name"].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL);
+		expect(res[0]?.message).toContain("`splitName`");
 	});
 
 	it("stops scanning at the first non-import code line (importSectionEnded L170/L150)", () => {
@@ -451,6 +586,78 @@ describe("checkDeadImports", () => {
 // =============================================================================
 
 describe("checkHallucinatedImports", () => {
+	it.each([
+		"assert",
+		"buffer",
+		"child_process",
+		"cluster",
+		"console",
+		"constants",
+		"crypto",
+		"dgram",
+		"dns",
+		"domain",
+		"events",
+		"fs",
+		"http",
+		"https",
+		"module",
+		"net",
+		"os",
+		"path",
+		"perf_hooks",
+		"process",
+		"punycode",
+		"querystring",
+		"readline",
+		"repl",
+		"stream",
+		"string_decoder",
+		"sys",
+		"timers",
+		"tls",
+		"tty",
+		"url",
+		"util",
+		"v8",
+		"vm",
+		"wasi",
+		"worker_threads",
+		"zlib",
+		"node:assert",
+		"node:buffer",
+		"node:child_process",
+		"node:crypto",
+		"node:dns",
+		"node:events",
+		"node:fs",
+		"node:http",
+		"node:https",
+		"node:net",
+		"node:os",
+		"node:path",
+		"node:perf_hooks",
+		"node:process",
+		"node:querystring",
+		"node:readline",
+		"node:stream",
+		"node:timers",
+		"node:tls",
+		"node:url",
+		"node:util",
+		"node:vm",
+		"node:worker_threads",
+		"node:zlib",
+		"node:test",
+	])("recognizes every Node builtin specifier: %s", (specifier) => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ dependencies: {} }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier, toFile: "" as unknown as string })],
+		});
+		expect(checkHallucinatedImports(FILE, REL, graph)).toEqual([]);
+	});
+
 	it("returns [] when no package.json is found within 10 ancestors (L337)", () => {
 		mockFs.existsSync.mockReturnValue(false); // nothing exists anywhere
 		const graph = makeGraph({ dependencies: [edge({ specifier: "left-pad", toFile: "" as unknown as string })] });
@@ -547,6 +754,7 @@ describe("checkHallucinatedImports", () => {
 		["./util", "relative path"],
 		["/abs/path", "absolute path"],
 		["node:fs", "node-prefixed builtin"],
+		["node:not-a-builtin", "unknown node-prefixed module"],
 		["@/alias", "@/ alias"],
 		["#internal", "# subpath alias"],
 		["~/home-alias", "~/ alias"],
@@ -577,6 +785,49 @@ describe("checkHallucinatedImports", () => {
 			dependencies: [edge({ specifier: "crypto", toFile: "" as unknown as string })],
 		});
 		expect(checkHallucinatedImports(FILE, REL, graph)).toEqual([]);
+	});
+
+	it("recognizes deep imports rooted at a builtin package", () => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ dependencies: {} }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "fs/promises", toFile: "" as unknown as string })],
+		});
+		expect(checkHallucinatedImports(FILE, REL, graph)).toEqual([]);
+	});
+
+	it("does not require a truthy toFile when resolving a bare package name", () => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ dependencies: {} }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "ghost", toFile: undefined as unknown as string })],
+		});
+		const res = checkHallucinatedImports(FILE, REL, graph);
+		expect(res).toHaveLength(1);
+		expect(res[0]?.message).toContain('"ghost" is not in package.json');
+	});
+
+	it("does not search beyond ten package.json ancestors", () => {
+		const file = "/a/b/c/d/e/f/g/h/i/j/k.ts";
+		mockFs.existsSync.mockImplementation((p) => p === "/package.json");
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ dependencies: {} }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "ghost", toFile: "" as unknown as string })],
+		});
+		expect(checkHallucinatedImports(file, "a/b/c/d/e/f/g/h/i/j/k.ts", graph)).toEqual([]);
+	});
+
+	it("uses the UTF-8 encoding when reading package.json", () => {
+		mockFs.existsSync.mockImplementation((p) => String(p).endsWith("package.json"));
+		mockFs.readFileSync.mockImplementation((_path, encoding) => {
+			if (encoding !== "utf-8") return Buffer.from("not text");
+			return JSON.stringify({ dependencies: {} });
+		});
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "ghost", toFile: "" as unknown as string })],
+		});
+		const res = checkHallucinatedImports(FILE, REL, graph);
+		expect(res[0]?.message).toContain('"ghost" is not in package.json');
 	});
 
 	it("extracts the scoped package name and matches it against deps (L364 @ branch)", () => {
@@ -623,6 +874,16 @@ describe("checkHallucinatedImports", () => {
 // =============================================================================
 
 describe("checkCrossPackageImports", () => {
+	it("skips both bare imports and unresolved relative imports", () => {
+		const graph = makeGraph({
+			dependencies: [
+				edge({ specifier: "lodash", toFile: "/proj/node_modules/lodash/index.js" }),
+				edge({ specifier: "../missing", toFile: "" as unknown as string }),
+			],
+		});
+		expect(checkCrossPackageImports(FILE, REL, graph)).toEqual([]);
+	});
+
 	it("skips non-relative specifiers (L396 !startsWith('.'))", () => {
 		const graph = makeGraph({
 			dependencies: [edge({ specifier: "lodash", toFile: "/proj/node_modules/lodash/index.js" })],
@@ -647,6 +908,14 @@ describe("checkCrossPackageImports", () => {
 		expect(mockFs.existsSync).not.toHaveBeenCalled();
 	});
 
+	it("does not walk a same-directory target even when the specifier has ..", () => {
+		mockFs.existsSync.mockImplementation((p) => p === "/proj/package.json");
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "../src/b", toFile: "/proj/src/b.ts" })],
+		});
+		expect(checkCrossPackageImports(FILE, REL, graph)).toEqual([]);
+	});
+
 	it("returns [] when no package.json boundary is crossed (foundBoundary false)", () => {
 		// `../sib/b` => one `..` step. existsSync false everywhere => no boundary.
 		mockFs.existsSync.mockReturnValue(false);
@@ -656,13 +925,52 @@ describe("checkCrossPackageImports", () => {
 		expect(checkCrossPackageImports(FILE, REL, graph)).toEqual([]);
 	});
 
+	it("counts only parent segments in a relative specifier", () => {
+		const importer = "/proj/pkgs/app/a.ts";
+		mockFs.existsSync.mockImplementation((p) => p === "/proj/package.json");
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ name: "root-like-package" }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "./../x", toFile: "/proj/pkgs/x.ts" })],
+		});
+		expect(checkCrossPackageImports(importer, "pkgs/app/a.ts", graph)).toEqual([]);
+	});
+
+	it("does not inspect package boundaries when there are zero parent steps", () => {
+		const importer = "/proj/pkgs/app/a.ts";
+		mockFs.existsSync.mockImplementation((p) => p === "/proj/pkgs/package.json");
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ name: "mid-package" }));
+		const graph = makeGraph({
+			dependencies: [edge({ specifier: "./sibling/x", toFile: "/proj/pkgs/other/x.ts" })],
+		});
+		expect(checkCrossPackageImports(importer, "pkgs/app/a.ts", graph)).toEqual([]);
+	});
+
+	it("enforces the ten-directory safety limit", () => {
+		const importer = "/a/b/c/d/e/f/g/h/i/j/k/l.ts";
+		mockFs.existsSync.mockImplementation((p) => p === "/package.json");
+		mockFs.readFileSync.mockReturnValue(JSON.stringify({ name: "root-like-package" }));
+		const graph = makeGraph({
+			dependencies: [
+				edge({
+					specifier: "../../../../../../../../../../../x",
+					toFile: "/x.ts",
+				}),
+			],
+		});
+		expect(checkCrossPackageImports(importer, "a/b/c/d/e/f/g/h/i/j/k/l.ts", graph)).toEqual([]);
+	});
+
 	it("warns when a relative import crosses a non-root package.json boundary (L431)", () => {
 		// importer /proj/pkgs/app/src/a.ts importing ../../lib/x with package.json
 		// at /proj/pkgs/lib-boundary... simpler: put the boundary at the dir one
 		// level up from the importer and make it a *non-root* package.
 		const importer = "/proj/pkgs/app/a.ts";
 		mockFs.existsSync.mockImplementation((p) => p === "/proj/pkgs/package.json");
-		mockFs.readFileSync.mockReturnValue(JSON.stringify({ name: "@scope/pkgs-mid" }));
+		mockFs.readFileSync.mockImplementation((_path, encoding) =>
+			encoding === "utf-8"
+				? JSON.stringify({ name: "@scope/pkgs-mid" })
+				: JSON.stringify({ private: true }),
+		);
 		const graph = makeGraph({
 			dependencies: [edge({ specifier: "../../lib/x", toFile: "/proj/lib/x.ts" })],
 		});
@@ -675,6 +983,7 @@ describe("checkCrossPackageImports", () => {
 		});
 		expect(res[0]?.message).toContain('relative import "../../lib/x"');
 		expect(res[0]?.message).toContain("crosses a package.json boundary");
+		expect(res[0]?.message).toContain("boundary at pkgs");
 	});
 
 	it("does NOT flag when the boundary package.json is a project root (private:true, L417/L423)", () => {

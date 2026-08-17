@@ -1104,6 +1104,51 @@ describe("checkRegexFromInterpolation — isEscapeCall endsWith-guard mutation c
 	});
 });
 
+// ─── Exported-checker survivor contracts ────────────────────────────────────
+// These cases pin observable boundaries that are otherwise easy to blur while
+// changing the lexer/classifier internals. Each receipt states the public
+// finding contract being protected, rather than naming an implementation site.
+
+describe("checkRegexFromInterpolation — exported-checker survivor contracts", () => {
+	it("RGX-S4: an adjacent identifier ending in RegExp is not a RegExp call site", () => {
+		// Contract receipt: `newXRegExp` is one identifier, not `new` plus a
+		// constructor call. The call-site boundary must reject the word-prefix
+		// rather than treating the suffix as a bare RegExp invocation.
+		const src = "const re = newXRegExp(`${user}`);";
+		expect(run(src, "src/lib/adjacent-ident.ts")).toHaveLength(0);
+	});
+
+	it("RGX-S1: a bare template followed only by whitespace is still the template argument", () => {
+		// Contract receipt: whitespace after the closing backtick is formatting,
+		// not a chained call; the unescaped substitution must still be reported.
+		const src = "const re = new RegExp(`${user}`     );";
+		expect(run(src)).toHaveLength(1);
+	});
+
+	it("RGX-S2: an assignment with no callable right-hand side does not grant escape exemption", () => {
+		// Contract receipt: only an identifier's last assignment from an escape
+		// call is exempt; an incomplete/non-call assignment remains dynamic.
+		const src = [
+			"function f() {",
+			"  let n = escapeForRegex(seed);",
+			"  n = ;",
+			"  return new RegExp(`^${n}`);",
+			"}",
+		].join("\n");
+		expect(run(src, "src/lib/no-rhs.ts").map((finding) => finding.line)).toEqual([4]);
+	});
+
+	it("RGX-S3: a call whose closing paren is exactly at the argument budget is conservatively skipped", () => {
+		// Contract receipt: readFirstArg's bounded scan must not consume a
+		// delimiter at the exclusive budget boundary and invent a finding.
+		const prefix = "`${user}` + ";
+		const arg = prefix + "x".repeat(1500 - prefix.length);
+		const src = `new RegExp(${arg});`;
+		expect(arg).toHaveLength(1500);
+		expect(run(src, "src/lib/budget-boundary.ts")).toHaveLength(0);
+	});
+});
+
 // ─── round 4: K3 fleet mutation-kill sweep (2026-08-10) ──────────────────────
 //
 // Targets the survivor set from `mutation survivors --file regex-interpolation.ts`

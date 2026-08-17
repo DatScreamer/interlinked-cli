@@ -65,6 +65,10 @@ interface FakeServer {
 	 *  fatal) so a test omitting `.on("error", ...)` coverage fails loudly
 	 *  instead of silently no-op'ing. */
 	emitError: (err: unknown) => void;
+	/** Fires the registered `on("listening", ...)` listeners — Node's real
+	 *  signal that the bind RESOLVED, which `listen()` returning does not
+	 *  prove. */
+	emitListening: () => void;
 	__handler: ConnHandler;
 }
 
@@ -72,16 +76,21 @@ let lastServer: FakeServer | null = null;
 
 function buildFakeServer(handler: ConnHandler): FakeServer {
 	const errorListeners: Array<(err: unknown) => void> = [];
+	const listeningListeners: Array<() => void> = [];
 	const server: FakeServer = {
 		listen: vi.fn(),
 		close: vi.fn(),
 		on: vi.fn((event: string, listener: (...args: never[]) => void) => {
 			if (event === "error") errorListeners.push(listener as (err: unknown) => void);
+			if (event === "listening") listeningListeners.push(listener as () => void);
 			return server;
 		}),
 		emitError: (err: unknown) => {
 			if (errorListeners.length === 0) throw err;
 			for (const listener of errorListeners) listener(err);
+		},
+		emitListening: () => {
+			for (const listener of listeningListeners) listener();
 		},
 		__handler: handler,
 	};
@@ -249,6 +258,47 @@ describe("startRawServer + createRawSocketServer connection handling", () => {
 		expect(exitSpy).toHaveBeenCalledWith(1);
 		expect(logAlways).toHaveBeenCalledTimes(1);
 		expect(String(logAlways.mock.calls[0]?.[0])).toContain("EADDRINUSE");
+	});
+
+	// -----------------------------------------------------------------------
+	// Bind-outcome reporting (audit F1). The daemon passes its startup guard
+	// as the reporter, which is how a raw bind failure gets the distinct exit
+	// code + ledger row, and how "we are serving" becomes an observed fact.
+	// -----------------------------------------------------------------------
+
+	// P: a reporter takes over the whole failure contract.
+	it("hands a bind failure to the reporter instead of the legacy exit path", () => {
+		const { deps, logAlways } = makeDeps();
+		const reporter = { note: vi.fn(), fail: vi.fn() };
+		const lc = createSocketLifecycle(deps);
+		lc.startRawServer(reporter);
+
+		const err = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+		lastServer?.emitError(err);
+
+		expect(reporter.fail).toHaveBeenCalledWith("raw socket bind", err);
+		expect(exitSpy).not.toHaveBeenCalled();
+		expect(logAlways).not.toHaveBeenCalled();
+	});
+
+	// P: 'listening' — not `listen()` returning — is what reports success.
+	it("reports the raw bind only when the 'listening' event fires", () => {
+		const { deps } = makeDeps();
+		const reporter = { note: vi.fn(), fail: vi.fn() };
+		const lc = createSocketLifecycle(deps);
+		lc.startRawServer(reporter);
+		expect(reporter.note).not.toHaveBeenCalled();
+
+		lastServer?.emitListening();
+		expect(reporter.note).toHaveBeenCalledWith("raw");
+	});
+
+	// N: with no reporter, nothing subscribes to 'listening' (the legacy
+	// caller shape stays byte-identical).
+	it("registers no 'listening' listener when no reporter is supplied", () => {
+		const { deps } = makeDeps();
+		createSocketLifecycle(deps).startRawServer();
+		expect(lastServer?.on).not.toHaveBeenCalledWith("listening", expect.any(Function));
 	});
 
 	it("on connect: counts the connection and logs the total", () => {

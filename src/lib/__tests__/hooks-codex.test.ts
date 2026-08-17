@@ -115,13 +115,11 @@ describe("hook script generation", () => {
 		writeHookScript("/repo");
 		const generatedScript = String(mockWriteFileSync.mock.calls[0][1]);
 
-		// New restrictive set of mutation tools (still defined for the
-		// successful-Post fast-path skip).
-		expect(generatedScript).toContain("mutationTools");
-		expect(generatedScript).toContain('"Edit"');
-		expect(generatedScript).toContain('"Write"');
-		expect(generatedScript).toContain('"MultiEdit"');
-		expect(generatedScript).toContain('"NotebookEdit"');
+		// Only proven read-only tools fast-path. Bash, edit tools, and unknown
+		// tools all reach the daemon so observed effects decide the work.
+		expect(generatedScript).toContain("knownReadOnlyPostTools");
+		expect(generatedScript).toContain('"Read", "Glob", "Grep"');
+		expect(generatedScript).not.toContain('knownReadOnlyPostTools = new Set(["Bash"');
 
 		// Phase 1: skipPostCheck disarmed so every Post* failure reaches the
 		// harness for triage/recurrence/recovery. The legacy gate that limited
@@ -135,10 +133,7 @@ describe("hook script generation", () => {
 		// failed non-mutation tool) must NOT take the early-return path.
 		expect(generatedScript).toContain('postOutcomeIsError = event.tool_outcome === "error"');
 		expect(generatedScript).toMatch(
-			/if \(isPostTool && !isMutationPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure"\)/,
+			/if \(isPostTool && isKnownReadOnlyPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure"\)/,
 		);
-
-		// Should NOT have the old read-only allowlist approach
-		expect(generatedScript).not.toContain("readOnlyTools");
 	});
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +83,11 @@ function makeAdoptionReport(): AdoptionReport {
 			packages: 1.0,
 		},
 	};
+}
+
+function writeCacheJson(name: string, value: unknown): void {
+	ensureCacheDir(TEST_CWD);
+	writeFileSync(join(getCacheDir(TEST_CWD), name), JSON.stringify(value), "utf-8");
 }
 
 // -------------------------------------------
@@ -201,6 +207,21 @@ describe("CatalogMeta", () => {
 		);
 		expect(readCatalogMeta(TEST_CWD)).toBeNull();
 	});
+
+	it.each(["built_at", "repo_root", "last_scanned_commit", "manifest_hash"])(
+		"returns null when required field %s is missing",
+		(field) => {
+			const bad: Record<string, unknown> = { ...makeCatalogMeta() };
+			delete bad[field];
+			writeCacheJson("catalog-meta.json", bad);
+			expect(readCatalogMeta(TEST_CWD)).toBeNull();
+		},
+	);
+
+	it("returns null when extractor_versions is not an object", () => {
+		writeCacheJson("catalog-meta.json", { ...makeCatalogMeta(), extractor_versions: null });
+		expect(readCatalogMeta(TEST_CWD)).toBeNull();
+	});
 });
 
 describe("CategoryCache", () => {
@@ -245,6 +266,45 @@ describe("CategoryCache", () => {
 		writeFileSync(join(getCacheDir(TEST_CWD), "public_api.json"), JSON.stringify(bad), "utf-8");
 		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
 	});
+
+	it.each(["extracted", "inferred"])("accepts provenance %s", (provenance) => {
+		const catalog = makeCategoryCatalog();
+		catalog.items[0]!.provenance = provenance as "extracted" | "inferred";
+		writeCategoryCache(TEST_CWD, "public_api", catalog);
+		expect(readCategoryCache(TEST_CWD, "public_api")).toEqual(catalog);
+	});
+
+	it.each(["partially_deterministic", "heuristic"])(
+		"accepts determinism ceiling %s",
+		(determinism_ceiling) => {
+			const catalog = makeCategoryCatalog();
+			catalog.items[0]!.determinism_ceiling = determinism_ceiling as
+				| "partially_deterministic"
+				| "heuristic";
+			writeCategoryCache(TEST_CWD, "public_api", catalog);
+			expect(readCategoryCache(TEST_CWD, "public_api")).toEqual(catalog);
+		},
+	);
+
+	it("returns null for a non-object catalog item", () => {
+		writeCacheJson("public_api.json", { schema_version: 1, items: [null] });
+		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
+	});
+
+	it.each(["global_ref", "file", "determinism_ceiling"])(
+		"returns null when catalog item field %s is missing",
+		(field) => {
+			const item: Record<string, unknown> = { ...makeCategoryCatalog().items[0] };
+			delete item[field];
+			writeCacheJson("public_api.json", { schema_version: 1, items: [item] });
+			expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
+		},
+	);
+
+	it("returns null when items is not an array", () => {
+		writeCacheJson("public_api.json", { schema_version: 1, items: {} });
+		expect(readCategoryCache(TEST_CWD, "public_api")).toBeNull();
+	});
 });
 
 describe("Baseline", () => {
@@ -285,6 +345,40 @@ describe("Baseline", () => {
 		writeFileSync(join(getCacheDir(TEST_CWD), "baseline.json"), JSON.stringify(bad), "utf-8");
 		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
 	});
+
+	it("falls back to default for a non-object entry", () => {
+		writeCacheJson("baseline.json", { schema_version: 1, entries: [null] });
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
+
+	it.each(["finding_name", "artifact_ref", "source_file", "determinism"])(
+		"falls back to default when entry field %s is missing",
+		(field) => {
+			const entry: Record<string, unknown> = { ...makeBaselineFile().entries[0] };
+			delete entry[field];
+			writeCacheJson("baseline.json", { schema_version: 1, entries: [entry] });
+			expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+		},
+	);
+
+	it("rejects a mixed companion-file array", () => {
+		const entry = {
+			...makeBaselineFile().entries[0],
+			required_companion_files: ["docs/foo.md", 42],
+		};
+		writeCacheJson("baseline.json", { schema_version: 1, entries: [entry] });
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
+
+	it("falls back to default when entries is not an array", () => {
+		writeCacheJson("baseline.json", { schema_version: 1, entries: {} });
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
+
+	it("falls back to default for a wrong schema version", () => {
+		writeCacheJson("baseline.json", { schema_version: 2, entries: [] });
+		expect(readBaseline(TEST_CWD)).toEqual({ schema_version: 1, entries: [] });
+	});
 });
 
 describe("AdoptionReport", () => {
@@ -322,6 +416,33 @@ describe("AdoptionReport", () => {
 			JSON.stringify(bad),
 			"utf-8",
 		);
+		expect(readAdoptionReport(TEST_CWD)).toBeNull();
+	});
+
+	it("returns null for a non-object report", () => {
+		writeCacheJson("adoption-report.json", null);
+		expect(readAdoptionReport(TEST_CWD)).toBeNull();
+	});
+
+	it("returns null for a wrong schema version", () => {
+		writeCacheJson("adoption-report.json", { ...makeAdoptionReport(), schema_version: 2 });
+		expect(readAdoptionReport(TEST_CWD)).toBeNull();
+	});
+
+	it.each([
+		"public_api",
+		"env",
+		"config",
+		"tests",
+		"docs",
+		"examples",
+		"glossary",
+		"layers",
+		"packages",
+	])("returns null when category %s is not numeric", (category) => {
+		const report = makeAdoptionReport();
+		const categories: Record<string, unknown> = { ...report.categories, [category]: "0.5" };
+		writeCacheJson("adoption-report.json", { schema_version: 1, categories });
 		expect(readAdoptionReport(TEST_CWD)).toBeNull();
 	});
 });
@@ -370,6 +491,33 @@ describe("computeManifestHash", () => {
 		const hash1 = computeManifestHash(TEST_CWD);
 		const hash2 = computeManifestHash(TEST_CWD);
 		expect(hash1).toBe(hash2);
+	});
+
+	it("hashes the root and sorted JSON files, including artifacts only", () => {
+		const manifestDir = join(TEST_CWD, "interlinked");
+		const artifactsDir = join(manifestDir, "artifacts");
+		mkdirSync(artifactsDir, { recursive: true });
+		writeFileSync(join(manifestDir, "structure.json"), "root", "utf-8");
+		// Create files in reverse lexical order so sorting is observable.
+		writeFileSync(join(manifestDir, "z.json"), "z", "utf-8");
+		writeFileSync(join(manifestDir, "a.json"), "a", "utf-8");
+		writeFileSync(join(manifestDir, "notes.txt"), "ignored", "utf-8");
+		writeFileSync(join(artifactsDir, "z.json"), "az", "utf-8");
+		writeFileSync(join(artifactsDir, "a.json"), "aa", "utf-8");
+		writeFileSync(join(artifactsDir, "notes.txt"), "ignored", "utf-8");
+
+		const expected = createHash("sha256")
+			.update("root")
+			.update("a")
+			.update("root")
+			.update("z")
+			.update("aa")
+			.update("az")
+			.digest("hex");
+		expect(computeManifestHash(TEST_CWD)).toBe(expected);
+
+		writeFileSync(join(artifactsDir, "a.json"), "changed", "utf-8");
+		expect(computeManifestHash(TEST_CWD)).not.toBe(expected);
 	});
 });
 

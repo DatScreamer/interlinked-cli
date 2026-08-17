@@ -5,7 +5,8 @@
 // These tests exercise `writeCommand` directly (no subprocess) by mocking the
 // module boundaries it touches:
 //   - `node:fs`              — existsSync / readFileSync / writeFileSync /
-//                              renameSync / unlinkSync (no real disk I/O)
+//                              renameSync / unlinkSync / statSync / chmodSync
+//                              (no real disk I/O)
 //   - `../harness/content-gate.js` — `gateProposedContent` returns a
 //                              deterministic GateResult so the test never spawns
 //                              real biome/tsc. The genuine `formatGateResult`,
@@ -33,7 +34,7 @@
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── Mock node:fs. All five fns the command uses are vi.fn(); defaults set in
+// ── Mock node:fs. All seven fns the command uses are vi.fn(); defaults set in
 //    beforeEach. `Readable`/path stay real. ──────────────────────────────────
 vi.mock("node:fs", async () => {
 	const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -44,6 +45,8 @@ vi.mock("node:fs", async () => {
 		writeFileSync: vi.fn(),
 		renameSync: vi.fn(),
 		unlinkSync: vi.fn(),
+		statSync: vi.fn(),
+		chmodSync: vi.fn(),
 	};
 });
 
@@ -59,7 +62,15 @@ vi.mock("../harness/content-gate.js", async () => {
 	};
 });
 
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import {
 	type GateFailure,
 	type GateResult,
@@ -73,6 +84,8 @@ const mockReadFileSync = vi.mocked(readFileSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockRenameSync = vi.mocked(renameSync);
 const mockUnlinkSync = vi.mocked(unlinkSync);
+const mockStatSync = vi.mocked(statSync);
+const mockChmodSync = vi.mocked(chmodSync);
 const mockGate = vi.mocked(gateProposedContent);
 
 // ── process.exit sentinel. The real handler is `never`-returning; we mimic
@@ -168,6 +181,8 @@ beforeEach(() => {
 	mockWriteFileSync.mockReturnValue(undefined);
 	mockRenameSync.mockReturnValue(undefined);
 	mockUnlinkSync.mockReturnValue(undefined);
+	mockStatSync.mockImplementation(() => ({ mode: 0o644 }) as ReturnType<typeof statSync>);
+	mockChmodSync.mockReturnValue(undefined);
 
 	// Gate passes unless a test overrides.
 	mockGate.mockReturnValue(gateOk());
@@ -451,6 +466,30 @@ describe("interlinked write — batch manifest validation", () => {
 		expect(mockRenameSync).toHaveBeenCalledTimes(2);
 		expect(loggedOut()).toContain("2 files written");
 	});
+
+	// test-contract: boundary — relative and absolute aliases of one target are rejected before gate evaluation or any filesystem write
+	it("rejects duplicate batch targets when relative and absolute aliases resolve to the same path", async () => {
+		const manifest = manifestPath;
+		const relative = "duplicate-target.ts";
+		const absolute = inRepo(relative);
+		manifestRaw(
+			JSON.stringify({
+				version: 1,
+				writes: [
+					{ path: relative, content: "first\n" },
+					{ path: absolute, content: "second\n" },
+				],
+			}),
+		);
+
+		const result = await run(undefined, { batch: manifest });
+
+		expect(result.exitCode).toBe(2);
+		expect(loggedErr()).toContain(`Batch contains the same target more than once: ${absolute}`);
+		expect(mockGate).not.toHaveBeenCalled();
+		expect(mockWriteFileSync).not.toHaveBeenCalled();
+		expect(mockRenameSync).not.toHaveBeenCalled();
+	});
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -607,6 +646,147 @@ describe("interlinked write — atomic write failure", () => {
 		expect(mockUnlinkSync).toHaveBeenCalledTimes(1);
 		const tmpWritten = String(nonNull(mockWriteFileSync.mock.calls[0])[0]);
 		expect(mockUnlinkSync).toHaveBeenCalledWith(tmpWritten);
+	});
+
+	it("restores an existing target when a later batch rename fails", async () => {
+		const manifest = inRepo("batch.json");
+		const a = inRepo("a.ts");
+		const b = inRepo("b.ts");
+		const raw = JSON.stringify({
+			version: 1,
+			writes: [
+				{ path: a, content: "new a\n" },
+				{ path: b, content: "new b\n" },
+			],
+		});
+		mockExistsSync.mockImplementation((path) => [manifest, a, b].includes(String(path)));
+		mockReadFileSync.mockImplementation((path) => {
+			if (String(path) === manifest) return raw;
+			if (String(path) === a) return "old a\n";
+			if (String(path) === b) return "old b\n";
+			return "";
+		});
+		let renames = 0;
+		mockRenameSync.mockImplementation(() => {
+			renames++;
+			if (renames === 2) throw new Error("second rename failed");
+		});
+
+		const result = await run(undefined, { batch: manifest });
+
+		expect(result.exitCode).toBe(1);
+		expect(mockWriteFileSync).toHaveBeenCalledWith(
+			expect.stringContaining("a.ts.interlinked-rollback-"),
+			"old a\n",
+		);
+		expect(mockRenameSync).toHaveBeenLastCalledWith(
+			expect.stringContaining("a.ts.interlinked-rollback-"),
+			a,
+		);
+	});
+
+	// test-contract: invariant — an existing target's mode is applied to both its staged replacement and its rollback restoration temp
+	it("preserves an existing target mode on staged and rollback temps", async () => {
+		const manifest = inRepo("mode-batch.json");
+		const a = inRepo("mode-a.ts");
+		const b = inRepo("mode-b.ts");
+		const raw = JSON.stringify({
+			version: 1,
+			writes: [
+				{ path: a, content: "new a\n" },
+				{ path: b, content: "new b\n" },
+			],
+		});
+		mockExistsSync.mockImplementation((path) => [manifest, a, b].includes(String(path)));
+		mockReadFileSync.mockImplementation((path) => {
+			if (String(path) === manifest) return raw;
+			if (String(path) === a) return "old a\n";
+			if (String(path) === b) return "old b\n";
+			return "";
+		});
+		mockStatSync.mockImplementation((path) => ({
+			// stat.mode includes regular-file type bits; chmod receives only
+			// permission/special bits from the public write behavior.
+			mode: String(path) === a ? 0o100640 : 0o100600,
+		}) as ReturnType<typeof statSync>);
+		let renames = 0;
+		mockRenameSync.mockImplementation(() => {
+			renames++;
+			if (renames === 2) throw new Error("second rename failed");
+		});
+
+		const result = await run(undefined, { batch: manifest });
+
+		expect(result.exitCode).toBe(1);
+		expect(mockChmodSync).toHaveBeenCalledWith(
+			expect.stringContaining("mode-a.ts.interlinked-write-"),
+			0o640,
+		);
+		expect(mockChmodSync).toHaveBeenCalledWith(
+			expect.stringContaining("mode-a.ts.interlinked-rollback-"),
+			0o640,
+		);
+	});
+
+	// test-contract: invariant — a temp path is cleaned up even when writing its contents throws
+	it("cleans up a temp path registered before a partial write failure", async () => {
+		const target = inRepo("partial-write.ts");
+		mockExistsSync.mockImplementation((path) => String(path).includes(".interlinked-write-"));
+		mockWriteFileSync.mockImplementation(() => {
+			throw new Error("disk full after partial write");
+		});
+
+		const result = await withStdin("x\n", () => run(target, { stdin: true }));
+
+		expect(result.exitCode).toBe(1);
+		expect(loggedErr()).toContain("disk full after partial write");
+		const tmpWritten = String(nonNull(mockWriteFileSync.mock.calls[0])[0]);
+		expect(mockUnlinkSync).toHaveBeenCalledWith(tmpWritten);
+	});
+
+	// test-contract: invariant — a failed later commit removes an earlier target that did not exist in the captured pre-write state
+	it("removes a newly-created earlier target when a later batch rename fails", async () => {
+		const manifest = inRepo("new-target-batch.json");
+		const a = inRepo("new-a.ts");
+		const b = inRepo("new-b.ts");
+		const raw = JSON.stringify({
+			version: 1,
+			writes: [
+				{ path: a, content: "new a\n" },
+				{ path: b, content: "new b\n" },
+			],
+		});
+		const renamedTemps = new Set<string>();
+		let aCommitted = false;
+		mockExistsSync.mockImplementation((path) => {
+			const value = String(path);
+			if (value === manifest) return true;
+			if (value === a) return aCommitted;
+			return value.includes(".interlinked-write-") && !renamedTemps.has(value);
+		});
+		mockReadFileSync.mockImplementation((path) => {
+			if (String(path) === manifest) return raw;
+			throw new Error("unexpected target read");
+		});
+		let renames = 0;
+		mockRenameSync.mockImplementation((from, to) => {
+			renames++;
+			if (renames === 1) {
+				renamedTemps.add(String(from));
+				aCommitted = true;
+				return;
+			}
+			throw new Error(`rename ${String(to)} failed`);
+		});
+
+		const result = await run(undefined, { batch: manifest });
+
+		expect(result.exitCode).toBe(1);
+		expect(mockUnlinkSync).toHaveBeenCalledWith(a);
+		expect(mockWriteFileSync).not.toHaveBeenCalledWith(
+			expect.stringContaining(".interlinked-rollback-"),
+			expect.anything(),
+		);
 	});
 
 	it("stringifies a non-Error thrown by rename (String(err) arm of the atomic-write catch)", async () => {

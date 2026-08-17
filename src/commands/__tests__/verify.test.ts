@@ -300,6 +300,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"agent_thumbprint_prose",
 				"untestable_time_in_source",
 				"duplicate_test_names",
+				"test_legitimacy",
 				"test_missing_sut_import",
 				"test_nondeterminism",
 				"demo_data_unmarked",
@@ -326,6 +327,10 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"unjustified_cast",
 				"process_env_outside_config",
 				"top_level_side_effect",
+				// Type-discipline wave (2026-08-14): ported from dmmulroy/anti-slop,
+				// detection algorithm only (docs/external-pulse/anti-slop.md).
+				"conditional_empty_object_spread",
+				"unknown_type_alias",
 				// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling +
 				// two low-not-zero-FP heuristics pending cross-repo calibration.
 				"readme_script_drift",

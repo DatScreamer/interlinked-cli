@@ -157,6 +157,25 @@ describe("extractEditedFilePath", () => {
 });
 
 describe("extractAllEditedFilePaths", () => {
+	it("prefers observed filesystem effects over runner-declared paths", () => {
+		expect(
+			extractAllEditedFilePaths(
+				makeEvent({
+					tool_input: { file_path: "claimed.ts" },
+					change_set: {
+						source: "filesystem-observation",
+						complete: true,
+						before_captured_at: "before",
+						after_captured_at: "after",
+						files: [
+							{ path: "actual.ts", kind: "modified", before_sha256: "a", after_sha256: "b" },
+						],
+					},
+				}),
+			),
+		).toEqual(["actual.ts"]);
+	});
+
 	it("returns every path from a multi-file apply_patch", () => {
 		const patch =
 			"*** Begin Patch\n" +

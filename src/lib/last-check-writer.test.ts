@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
 	deriveLastCheckFields,
 	extractEventFile,
 	formatLastCheckLine,
+	type LastCheckFields,
 	writeLastCheckArtifact,
 	writeNoHarnessArtifact,
 } from "./last-check-writer.js";
@@ -27,7 +28,10 @@ function makeEvent(overrides: {
 					kind: "tool_call" as const,
 					tool_name: overrides.toolName ?? "edit",
 					tool_class: "file_write" as never,
-					tool_input: overrides.toolInput ?? { file_path: "/repo/src/a.ts" },
+					tool_input:
+						"toolInput" in overrides
+							? overrides.toolInput
+							: { file_path: "/repo/src/a.ts" },
 					tool_input_redacted: null,
 				};
 	return {
@@ -55,6 +59,19 @@ describe("formatLastCheckLine", () => {
 		});
 		expect(line).toBe("result=block | tool=Bash | summary=BLOCKED: a   b second line | rule=builtin-x");
 	});
+
+	it("skips nullish values, trims sanitized values, and collapses delimiter runs", () => {
+		// SAFETY: null is intentionally supplied to verify the writer's runtime boundary.
+		const line = formatLastCheckLine({
+			result: "clean",
+			tool: undefined,
+			file: null,
+			summary: "  before|||\r\n\nafter  ",
+			count: 0,
+			ms: 0,
+		} as unknown as LastCheckFields);
+		expect(line).toBe("result=clean | summary=before after | count=0 | ms=0");
+	});
 });
 
 describe("extractEventFile", () => {
@@ -65,6 +82,41 @@ describe("extractEventFile", () => {
 		).toBe("n.ipynb");
 		expect(extractEventFile(makeEvent({ toolInput: { other: 1 } }))).toBe("");
 		expect(extractEventFile(makeEvent({ kind: "shell_command" }))).toBe("");
+	});
+
+	it("rejects malformed or non-tool-call inputs without throwing", () => {
+		const shellWithInput = makeEvent({ kind: "shell_command" });
+		// SAFETY: malformed action shape exercises the public runtime guard.
+		(shellWithInput as unknown as { action: { kind: string; tool_input: unknown } }).action = {
+			kind: "shell_command",
+			tool_input: { file_path: "/repo/should-not-be-used.ts" },
+		};
+		expect(extractEventFile(shellWithInput)).toBe("");
+		expect(extractEventFile(makeEvent({ toolInput: null }))).toBe("");
+		expect(extractEventFile(makeEvent({ toolInput: { file_path: 42 } }))).toBe("");
+
+		const missingAction = makeEvent({});
+		// SAFETY: malformed event shape exercises the public runtime guard.
+		missingAction.action = undefined as never;
+		expect(extractEventFile(missingAction)).toBe("");
+
+		const missingContext = makeEvent({ toolInput: { file_path: "/repo/src/a.ts" } });
+		// SAFETY: malformed event shape exercises the public runtime guard.
+		missingContext.context = undefined as never;
+		expect(extractEventFile(missingContext)).toBe("/repo/src/a.ts");
+	});
+
+	it("only relativizes paths when cwd is non-empty and the path is inside it", () => {
+		expect(
+			extractEventFile(
+				makeEvent({ cwd: "", toolInput: { file_path: "/repo/src/a.ts" } }),
+			),
+		).toBe("/repo/src/a.ts");
+		expect(
+			extractEventFile(
+				makeEvent({ cwd: "/repo", toolInput: { file_path: "/other/src/a.ts" } }),
+			),
+		).toBe("/other/src/a.ts");
 	});
 });
 
@@ -78,6 +130,67 @@ describe("deriveLastCheckFields", () => {
 		const f = deriveLastCheckFields(makeEvent({ kind: "shell_command" }), decision, 12);
 		expect(f).toMatchObject({ result: "block", tool: "Bash", rule: "builtin-kill-multi-pid" });
 		expect(f?.summary).toHaveLength(80);
+	});
+
+	it("uses the fallback summary, splits bare LF lines, and omits empty optional fields", () => {
+		const fallback = deriveLastCheckFields(
+			makeEvent({}),
+			{ decision: "block", reason: "" },
+			12,
+		);
+		expect(fallback).toMatchObject({
+			result: "block",
+			summary: "Blocked by Interlinked guard",
+		});
+
+		const firstLine = deriveLastCheckFields(
+			makeEvent({}),
+			{ decision: "block", reason: "first line\nsecond line" },
+			12,
+		);
+		expect(firstLine?.summary).toBe("first line");
+
+		const emptySummary = deriveLastCheckFields(
+			makeEvent({}),
+			{ decision: "block", reason: "\ncontinued", rule_id: "" },
+			12,
+		);
+		expect(emptySummary).not.toHaveProperty("summary");
+		expect(emptySummary).not.toHaveProperty("rule");
+	});
+
+	it("uses the action tool name and falls back for empty or malformed actions", () => {
+		const named = deriveLastCheckFields(
+			makeEvent({ phase: "post-tool", toolName: "write" }),
+			{ decision: "allow" },
+			9,
+		);
+		expect(named?.tool).toBe("write");
+		const shell = deriveLastCheckFields(
+			makeEvent({ phase: "post-tool", kind: "shell_command" }),
+			{ decision: "allow" },
+			9,
+		);
+		expect(shell?.tool).toBe("Bash");
+
+		const emptyName = deriveLastCheckFields(
+			makeEvent({ phase: "post-tool", toolName: "" }),
+			{ decision: "allow" },
+			9,
+		);
+		expect(emptyName?.tool).toBe("tool");
+
+		const missingAction = makeEvent({ phase: "post-tool" });
+		// SAFETY: malformed event shape exercises tool-label fallback behavior.
+		missingAction.action = undefined as never;
+		const malformed = deriveLastCheckFields(missingAction, { decision: "allow" }, 9);
+		expect(malformed?.tool).toBe("tool");
+	});
+
+	it("treats omitted warnings as clean", () => {
+		expect(
+			deriveLastCheckFields(makeEvent({ phase: "post-tool" }), { decision: "allow" }, 88),
+		).toEqual({ result: "clean", tool: "edit", file: "src/a.ts", ms: 88 });
 	});
 
 	it("maps post-tool warnings to warn (with count) and no warnings to clean (with ms)", () => {
@@ -135,5 +248,22 @@ describe("writeLastCheckArtifact", () => {
 		expect(body).toContain("ms=17");
 		writeNoHarnessArtifact(dir, makeEvent({}), 3);
 		expect(readFileSync(join(dir, "last-check.txt"), "utf8")).toContain("result=no_harness");
+	});
+
+	it("swallows filesystem errors and does not create artifacts for skipped phases", () => {
+		const missingDir = join(dir, "missing");
+		expect(() =>
+			writeNoHarnessArtifact(missingDir, makeEvent({ phase: "post-tool" }), 17),
+		).not.toThrow();
+		expect(() =>
+			writeLastCheckArtifact(missingDir, makeEvent({ phase: "post-tool" }), {
+				decision: "allow",
+				warnings: ["warning"],
+			}, 17),
+		).not.toThrow();
+
+		writeNoHarnessArtifact(dir, makeEvent({}), 3);
+		writeLastCheckArtifact(dir, makeEvent({}), { decision: "allow" }, 3);
+		expect(existsSync(join(dir, "last-check.txt"))).toBe(false);
 	});
 });

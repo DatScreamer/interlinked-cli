@@ -100,6 +100,7 @@ import {
 } from "../behavioral-checks.js";
 import {
 	checkConventionalCommitCoherence,
+	checkTestBlockCountRegression,
 	parseCommitMessageFromBash,
 } from "../behavioral-diff-checks.js";
 import { snapshotCrap } from "../checks/crap-baseline.js";
@@ -230,6 +231,18 @@ describe("runTddCommitGate", () => {
 		expect(checkProdDeltaWithoutTestDelta).not.toHaveBeenCalled();
 	});
 
+	it("does not treat a non-Bash git commit as a commit gate", () => {
+		const pre = allow();
+		runTddCommitGate(
+			makeCtx(),
+			ev({ tool_name: "Read", tool_input: { command: "git commit -m x" } }),
+			makeSession(),
+			pre,
+		);
+		expect(parseCommitMessageFromBash).not.toHaveBeenCalled();
+		expect(checkProdDeltaWithoutTestDelta).not.toHaveBeenCalled();
+	});
+
 	it("does nothing for a Bash command that is not a git commit", () => {
 		const pre = allow();
 		runTddCommitGate(
@@ -239,6 +252,17 @@ describe("runTddCommitGate", () => {
 			pre,
 		);
 		expect(checkProdDeltaWithoutTestDelta).not.toHaveBeenCalled();
+	});
+
+	it("requires whitespace between git and commit in the command", () => {
+		const pre = allow();
+		runTddCommitGate(
+			makeCtx(),
+			ev({ tool_name: "Bash", tool_input: { command: "git  commit -m x" } }),
+			makeSession(),
+			pre,
+		);
+		expect(parseCommitMessageFromBash).toHaveBeenCalledWith("git  commit -m x");
 	});
 
 	it("tolerates a missing command (|| '' fallback) without throwing", () => {
@@ -252,6 +276,30 @@ describe("runTddCommitGate", () => {
 		);
 		expect(checkProdDeltaWithoutTestDelta).not.toHaveBeenCalled();
 		expect(pre.decision).toBe("allow");
+	});
+
+	it("passes the actual command to commit-message parsing", () => {
+		const pre = allow();
+		const command = "git commit -m x";
+		runTddCommitGate(
+			makeCtx(),
+			ev({ tool_name: "Bash", tool_input: { command } }),
+			makeSession(),
+			pre,
+		);
+		expect(parseCommitMessageFromBash).toHaveBeenCalledWith(command);
+	});
+
+	it("uses the warn default when structural_checks is absent", () => {
+		const pre = allow();
+		const session = makeSession({ tdd_cycles: new Map([["x", {} as never]]) });
+		runTddCommitGate(
+			makeCtx({ rules: {} } as unknown as Partial<ServerRuntime>),
+			commitEvent(),
+			session,
+			pre,
+		);
+		expect(checkTddCommitGate).toHaveBeenCalledWith(session, "warn");
 	});
 
 	it("skips the TDD-cycle gate when there are no tdd_cycles, runs the rest", () => {
@@ -348,6 +396,45 @@ describe("runTddCommitGate", () => {
 			subject: "feat: x",
 		});
 	});
+
+	it("forwards the parsed commit type to the test-block gate", () => {
+		vi.mocked(parseCommitMessageFromBash).mockReturnValue({ type: "feat" } as never);
+		const session = makeSession();
+		runTddCommitGate(makeCtx(), commitEvent(), session, allow());
+		expect(checkTestBlockCountRegression).toHaveBeenCalledWith(session, undefined, "feat");
+	});
+
+	it("does not manufacture warnings when all commit gates are clean", () => {
+		const pre = allow();
+		runTddCommitGate(makeCtx(), commitEvent(), makeSession(), pre);
+		expect(pre.warnings).toBeUndefined();
+	});
+
+	it("does not block an enforce-mode commit for warning-only results", () => {
+		vi.mocked(checkProdDeltaWithoutTestDelta).mockReturnValue([
+			check({ severity: "warning", message: "warning only" }),
+		]);
+		const ctx = makeCtx({
+			rules: { structural_checks: { test_first_mode: "enforce" } },
+		} as unknown as Partial<ServerRuntime>);
+		const pre = allow();
+		runTddCommitGate(ctx, commitEvent(), makeSession(), pre);
+		expect(pre.decision).toBe("allow");
+	});
+
+	it("assigns the stable rule id when a null rule id is present", () => {
+		vi.mocked(checkProdTestLocRatio).mockReturnValue([
+			check({ severity: "error", message: "first" }),
+			check({ severity: "error", message: "second" }),
+		]);
+		const ctx = makeCtx({
+			rules: { structural_checks: { test_first_mode: "enforce" } },
+		} as unknown as Partial<ServerRuntime>);
+		const pre: HarnessDecision = { decision: "allow", rule_id: null as never };
+		runTddCommitGate(ctx, commitEvent(), makeSession(), pre);
+		expect(pre.rule_id).toBe("commit-test-first-gate");
+		expect(pre.reason).toBe("BLOCKED: Tests must pass before committing. first second");
+	});
 });
 
 // =====================================================================
@@ -381,11 +468,46 @@ describe("runProjectWideGitGate", () => {
 		expect(checkProjectTypecheckClean).not.toHaveBeenCalled();
 	});
 
+	it("does not treat a non-Bash git command as a project-wide gate", () => {
+		const pre = allow();
+		runProjectWideGitGate(
+			makeCtx(),
+			ev({ tool_name: "Read", tool_input: { command: "git commit -m x" } }),
+			makeSession(),
+			pre,
+		);
+		expect(checkProjectTypecheckClean).not.toHaveBeenCalled();
+		expect(checkProjectTestsClean).not.toHaveBeenCalled();
+	});
+
+	it("recognizes multiple spaces in git commit and git push commands", () => {
+		const commitPre = allow();
+		runProjectWideGitGate(
+			makeCtx(),
+			ev({ tool_name: "Bash", tool_input: { command: "git  commit -m x" } }),
+			makeSession(),
+			commitPre,
+		);
+		expect(checkProjectTypecheckClean).toHaveBeenCalledOnce();
+
+		vi.clearAllMocks();
+		const pushPre = allow();
+		runProjectWideGitGate(
+			makeCtx(),
+			ev({ tool_name: "Bash", tool_input: { command: "git  push origin main" } }),
+			makeSession(),
+			pushPre,
+		);
+		expect(checkProjectTypecheckClean).toHaveBeenCalledOnce();
+		expect(checkProjectTestsClean).toHaveBeenCalledOnce();
+	});
+
 	it("runs the typecheck gate on commit and stays clean when no results", () => {
 		const pre = allow();
 		runProjectWideGitGate(makeCtx(), commit(), makeSession(), pre);
 		expect(checkProjectTypecheckClean).toHaveBeenCalledWith("/repo");
 		expect(pre.decision).toBe("allow");
+		expect(pre.warnings).toBeUndefined();
 		// Commit does not run the push-only test tier.
 		expect(checkProjectTestsClean).not.toHaveBeenCalled();
 	});
@@ -421,6 +543,8 @@ describe("runProjectWideGitGate", () => {
 		expect(pre.reason).toContain("CI will fail on this commit.");
 		expect(pre.reason).toContain("- TS1005 missing semi");
 		expect(pre.reason).toContain("INTERLINKED_SKIP_PROJECT_TYPECHECK=1");
+		expect(pre.reason).toContain("Pre-existing errors in untouched files DO count: every commit must build clean. Fix these first:");
+		expect(pre.reason).toContain("\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR):");
 		// No "...and N more" tail with a single error.
 		expect(pre.reason).not.toContain("more");
 	});
@@ -472,6 +596,29 @@ describe("runProjectWideGitGate", () => {
 		expect(arg.tool_input_summary).toBe("git commit -m x");
 	});
 
+	it("keeps typecheck errors out of the warning list", () => {
+		vi.mocked(checkProjectTypecheckClean).mockReturnValue([
+			check({ name: "tc-error", message: "compile failed", severity: "error" }),
+		]);
+		const pre = allow();
+		runProjectWideGitGate(makeCtx(), commit(), makeSession(), pre);
+		expect(pre.warnings).toBeUndefined();
+	});
+
+	it("reports an absent session agent as an empty name without throwing", () => {
+		vi.mocked(checkProjectTypecheckClean).mockReturnValue([
+			check({ name: "tc", message: "boom", severity: "error" }),
+		]);
+		const reportGuardEvent = vi.fn();
+		const ctx = makeCtx({
+			serverBridge: { reportGuardEvent } as unknown as ServerRuntime["serverBridge"],
+		});
+		expect(() =>
+			runProjectWideGitGate(ctx, commit(), undefined as unknown as SessionTrajectory, allow()),
+		).not.toThrow();
+		expect(reportGuardEvent.mock.calls[0]?.[0].agent_name).toBe("");
+	});
+
 	it("falls back to session.agent_name then '' when event.agent_name absent", () => {
 		vi.mocked(checkProjectTypecheckClean).mockReturnValue([
 			check({ name: "tc", message: "boom", severity: "error" }),
@@ -490,6 +637,7 @@ describe("runProjectWideGitGate", () => {
 		const pre = allow();
 		runProjectWideGitGate(makeCtx(), push(), makeSession(), pre);
 		expect(checkProjectTestsClean).toHaveBeenCalledWith("/repo");
+		expect(pre.warnings).toBeUndefined();
 	});
 
 	it("appends test WARNING results without blocking", () => {
@@ -522,6 +670,8 @@ describe("runProjectWideGitGate", () => {
 		expect(pre.reason).toContain("BLOCKED: Project tests failed (1 failure)");
 		expect(pre.reason).toContain("assert failed in a.test.ts");
 		expect(pre.reason).toContain("INTERLINKED_SKIP_PROJECT_TESTS=1 git push");
+		expect(pre.reason).toContain("Pre-existing test failures DO count: every push must build clean. Failing tests:");
+		expect(pre.reason).toContain("\n\nTo bypass (NOT RECOMMENDED — CI will still fail on the PR):");
 		expect(pre.reason).not.toContain("more");
 	});
 
@@ -563,6 +713,15 @@ describe("runProjectWideGitGate", () => {
 			event_type: "guard_block",
 			reason: "project_tests_clean: 2 failures",
 		});
+	});
+
+	it("keeps test errors out of the warning list", () => {
+		vi.mocked(checkProjectTestsClean).mockReturnValue([
+			check({ name: "test-error", message: "failed", severity: "error" }),
+		]);
+		const pre = allow();
+		runProjectWideGitGate(makeCtx(), push(), makeSession(), pre);
+		expect(pre.warnings).toBeUndefined();
 	});
 
 	it("does not throw when serverBridge is null on a test-failure block", () => {
@@ -794,6 +953,11 @@ describe("captureDiffAwareBaseline", () => {
 		captureDiffAwareBaseline(ctx, ev({ tool_name: "Edit" }), "src/a.ts");
 		const baseline = ctx.preEditBaselines.get("/repo/src/a.ts");
 		expect(baseline?.crapScores).toBe(crap);
+		expect(loadCoverageFinal).toHaveBeenCalledWith("/repo/coverage/coverage-final.json", "/repo");
+		expect(coverageForFile).toHaveBeenCalledWith(
+			{ some: "cache" },
+			"src/a.ts",
+		);
 		// snapshotCrap got the resolved coverage + mtime + threshold.
 		expect(snapshotCrap).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -839,6 +1003,11 @@ describe("captureDiffAwareBaseline", () => {
 		const ctx = makeCtx();
 		captureDiffAwareBaseline(ctx, ev({ tool_name: "Edit" }), "src/a.ts");
 		expect(ctx.preEditBaselines.get("/repo/src/a.ts")?.dryCloneBaseline).toBe(dry);
+		expect(snapshotDryShingles).toHaveBeenCalledWith({
+			preContent: "pre-edit content",
+			filePath: "/repo/src/a.ts",
+			candidates: [],
+		});
 	});
 
 	it("fails open (no baseline stored) when readFileSync throws", () => {
@@ -1022,6 +1191,28 @@ describe("injectStructureContext", () => {
 		expect(pre.warnings).toHaveLength(1);
 		expect(pre.warnings?.[0]).toContain("d1: x.ts");
 		expect(pre.warnings?.[0]).toContain("d2: y.ts");
+		expect(pre.warnings?.[0]).toBe(
+			"[interlinked:structure] Unresolved companion follow-ups from previous edits:\n  - d1: x.ts\n  - d2: y.ts",
+		);
+	});
+
+	it("separates multiple unresolved companion files with commas", () => {
+		vi.mocked(loadStructureConfig).mockReturnValue({
+			config: { mode: "strict" } as never,
+			errors: [],
+			implicit: false,
+		});
+		const session = makeSession({
+			pending_completions: new Map([
+				[
+					"struct:1",
+					pendingStruct({ affected: ["a.ts", "b.ts", "c.ts"], resolved: ["a.ts"] }) as never,
+				],
+			]),
+		});
+		const pre = allow();
+		injectStructureContext(makeCtx(), editEvent(), session, pre, "src/a.ts");
+		expect(pre.warnings?.[0]).toContain("rename foo(): b.ts, c.ts");
 	});
 
 	it("falls back to cwd when findProjectRoot returns null", async () => {

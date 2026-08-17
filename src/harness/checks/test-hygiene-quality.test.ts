@@ -314,6 +314,44 @@ it("does a thing", () => {});
 	});
 });
 
+// Followup #24: the sutBase stripped only `.test.ts` / `.spec.ts`, so every
+// `*.mutation-kill.test.ts` resolved to the phantom SUT `<base>.mutation-kill`
+// and the check false-fired on suites that DO import their SUT. The suffix
+// grammar is now shared with MUTATION_DIRECTED_PATH (checks/test-legitimacy.ts).
+describe("checkTestMissingSutImport — mutation-directed suffix chain — negative (must not fire)", () => {
+	it("N1: a .mutation-kill.test.ts companion importing ./<base>.js passes", () => {
+		const code = `import { foo } from "./foo.js";\nit("kills M1", () => { expect(foo()).toBe(1); });`;
+		expect(checkTestMissingSutImport(code, "src/harness/checks/foo.mutation-kill.test.ts")).toEqual([]);
+	});
+
+	it("N2: the same holds for .mutation-hardening. and .survivors. suffixes", () => {
+		const code = `import { foo } from "./foo.js";`;
+		expect(checkTestMissingSutImport(code, "src/harness/foo.mutation-hardening.test.ts")).toEqual([]);
+		expect(checkTestMissingSutImport(code, "src/harness/foo.survivors.test.ts")).toEqual([]);
+		expect(checkTestMissingSutImport(code, "src/harness/foo.survivor.test.ts")).toEqual([]);
+	});
+
+	it("N3: index.mutation-kill.test.ts is still exempt as a barrel", () => {
+		expect(checkTestMissingSutImport(`it("a")`, "src/lib/index.mutation-kill.test.ts")).toEqual([]);
+	});
+});
+
+describe("checkTestMissingSutImport — mutation-directed suffix chain — positive (must fire)", () => {
+	it("P1: a .mutation-kill.test.ts importing NOTHING still fires, naming the stripped SUT", () => {
+		const matches = checkTestMissingSutImport(
+			`it("kills M1", () => { expect(1).toBe(1); });`,
+			"src/harness/checks/foo.mutation-kill.test.ts",
+		);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.text).toContain("`./foo`");
+	});
+
+	it("P2: a .mutation-kill.test.ts importing only an unrelated sibling still fires", () => {
+		const code = `import { bar } from "./bar.js";\nit("kills M2", () => {});`;
+		expect(checkTestMissingSutImport(code, "src/harness/checks/foo.mutation-kill.test.ts")).not.toEqual([]);
+	});
+});
+
 describe("checkMockingTheSutSelf", () => {
 	it("flags vi.mock(\"./foo\") inside foo.test.ts", () => {
 		const code = `vi.mock("./foo");`;

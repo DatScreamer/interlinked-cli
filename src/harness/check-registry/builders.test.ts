@@ -43,6 +43,38 @@ describe("buildAgentSafetyChecks", () => {
 		}
 	});
 
+	it("promotes test-quality checks to pre_warn while retaining post test-quality checks", () => {
+		const broadTruthiness = `import { load } from "./subject.js";
+test("loads", () => {
+	expect(load()).toBeTruthy();
+});`;
+		const mockOnly = `test("calls dependency", () => {
+	expect(handler).toHaveBeenCalled();
+});`;
+		const truthinessChecks = buildAgentSafetyChecks(
+			broadTruthiness,
+			"subject.test.ts",
+			"pre_warn",
+		);
+		const mockOnlyChecks = buildAgentSafetyChecks(mockOnly, "subject.test.ts", "pre_warn");
+		expect(new Set(truthinessChecks.map((check) => check.name))).toContain("test_legitimacy");
+		expect(new Set(mockOnlyChecks.map((check) => check.name))).toContain("mock_only_test");
+		expect(
+			truthinessChecks.find((check) => check.name === "test_legitimacy")?.fn().length,
+		).toBeGreaterThan(0);
+		expect(mockOnlyChecks.find((check) => check.name === "mock_only_test")?.fn().length).toBeGreaterThan(0);
+
+		const postContent = `test("accepts one", () => { expect(1).toBe(1); });
+test("accepts two", () => { expect(2).toBe(2); });
+test("accepts three", () => { expect(3).toBe(3); });`;
+		const post = buildAgentSafetyChecks(postContent, "subject.test.ts", "post");
+		const postNames = new Set(post.map((check) => check.name));
+		expect(postNames).not.toContain("test_legitimacy");
+		expect(postNames).not.toContain("mock_only_test");
+		expect(postNames).toContain("happy_path_only_test");
+		expect(post.find((check) => check.name === "happy_path_only_test")?.fn().length).toBeGreaterThan(0);
+	});
+
 	it("returns entries with {name, severity, fn}", () => {
 		const [first] = buildAgentSafetyChecks("", "x.ts");
 		expect(first).toHaveProperty("name");

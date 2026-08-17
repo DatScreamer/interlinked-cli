@@ -359,6 +359,7 @@ describe("setup action — branches", () => {
 		expect(loginCommand).not.toHaveBeenCalled();
 		// "Skipping login" line + "Remote agent linked" line.
 		expect(logSpy).toHaveBeenCalledTimes(2);
+		expect(logSpy.mock.calls[0][0]).toContain("Auth token already present. Skipping login.");
 		const linkedLine = logSpy.mock.calls[1][0] as string;
 		expect(linkedLine).toContain("Robo");
 		expect(linkedLine).toContain("@robo");
@@ -371,8 +372,9 @@ describe("setup action — branches", () => {
 		await program.parseAsync(["setup"], { from: "user" });
 		expect(loginCommand).not.toHaveBeenCalled();
 		const linkedLine = logSpy.mock.calls[1][0] as string;
-		expect(linkedLine).toContain("agent");
+		expect(linkedLine).toContain("Remote agent linked: agent");
 		expect(linkedLine).not.toContain("(");
+		expect(linkedLine).not.toContain("Stryker was here!");
 	});
 
 	it("already-authed + not linked: only the skip line, no second log", async () => {

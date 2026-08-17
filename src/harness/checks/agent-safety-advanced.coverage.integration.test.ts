@@ -144,6 +144,391 @@ describe("checkDefaultExport — extra branches", () => {
 		// `[A-Za-z_$]`, so NAMED_FORM.exec returns null (the `named` false branch).
 		expect(checkDefaultExport("export default 42;\n", "/tmp/foo.ts")).toEqual([]);
 	});
+
+	// -------------------------------------------------------------------
+	// Mutant-kill hardening (survivor-kill campaign, agent-safety-advanced).
+	// Each case below is written to distinguish real behavior from one or
+	// more specific surviving mutants, not just to exercise a branch.
+	// -------------------------------------------------------------------
+
+	it("N: a non-JS extension still returns [] even though the content would otherwise flag (guard is load-bearing)", () => {
+		expect(checkDefaultExport("export default function () {}\n", "/tmp/foo.py")).toEqual([]);
+	});
+
+	it("N: a test-file path still returns [] even though the content would otherwise flag (guard is load-bearing)", () => {
+		expect(checkDefaultExport("export default function () {}\n", "/tmp/foo.test.ts")).toEqual([]);
+	});
+
+	it("P: the base-extension regex strips the trailing extension, not an earlier extension-shaped substring", () => {
+		// Without the trailing `$` anchor, `.replace()` removes the FIRST
+		// (leftmost) extension-shaped run — here ".mts" — instead of the real
+		// trailing ".ts", changing the filename embedded in the mismatch text.
+		const out = checkDefaultExport(
+			"export default function Something() {}\n",
+			"/tmp/handler.mts.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Something' does not match filename 'handler.mts' — grep-hostile for cold readers",
+		);
+	});
+
+	it("N: a .js file's named default matching the filename is NOT flagged (jsx? alternation must still strip .js)", () => {
+		expect(checkDefaultExport("export default function Handler() {}\n", "/tmp/handler.js")).toEqual(
+			[],
+		);
+	});
+
+	it("N: vite.config.ts still skips an anonymous default export (config-skip guard is load-bearing)", () => {
+		expect(checkDefaultExport("export default function () {}\n", "/tmp/vite.config.ts")).toEqual([]);
+	});
+
+	it("P: a filename merely ENDING in vite.config (not starting with it) is not treated as a config file", () => {
+		// Without the config regex's leading `^`, "my-vite.config" would
+		// match as a trailing substring, wrongly suppressing this finding.
+		const out = checkDefaultExport("export default function () {}\n", "/tmp/my-vite.config.ts");
+		expect(out.length).toBe(1);
+	});
+
+	it("P: a filename merely STARTING WITH vite.config (with a trailing suffix) is not treated as a config file", () => {
+		// Without the config regex's trailing `$`, "vite.config.foo" would
+		// match as a leading substring, wrongly suppressing this finding.
+		const out = checkDefaultExport("export default function () {}\n", "/tmp/vite.config.foo.ts");
+		expect(out.length).toBe(1);
+	});
+
+	it("P: the anonymous-export match text embeds the full, untouched original source line", () => {
+		const out = checkDefaultExport("export default function () { return 1; }\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.line).toBe(1);
+		expect(out[0]?.text).toBe(
+			"anonymous default export: export default function () { return 1; }",
+		);
+	});
+
+	it("P: flags an anonymous object-literal default export", () => {
+		const out = checkDefaultExport("export default { a: 1, b: 2 };\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: flags an anonymous array-literal default export", () => {
+		const out = checkDefaultExport("export default [1, 2, 3];\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: flags an anonymous arrow-function default export", () => {
+		const out = checkDefaultExport("export default (x) => x + 1;\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the function-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		// The first "export default zzz" doesn't match any ANON_FORMS shape
+		// (falls through to the named-form fallback, capturing "zzz"); an
+		// unanchored regex would instead find the SECOND "export default
+		// function (" and wrongly flag it as anonymous.
+		const out = checkDefaultExport(
+			"export default zzz export default function () {}\n",
+			"/tmp/foo.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace between `default` and `function`", () => {
+		const out = checkDefaultExport("export default  function () { return 1; }\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: tolerates zero whitespace between `function` and `(`", () => {
+		const out = checkDefaultExport("export default function() { return 1; }\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the async-function-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		const out = checkDefaultExport(
+			"export default zzz export default async function () {}\n",
+			"/tmp/foo.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace between `default` and `async`", () => {
+		const out = checkDefaultExport(
+			"export default  async function () { return 1; }\n",
+			"/tmp/foo.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: tolerates extra whitespace between `async` and `function`", () => {
+		const out = checkDefaultExport(
+			"export default async  function () { return 1; }\n",
+			"/tmp/foo.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: tolerates zero whitespace between async `function` and `(`", () => {
+		const out = checkDefaultExport(
+			"export default async function() { return 1; }\n",
+			"/tmp/foo.ts",
+		);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the class-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		const out = checkDefaultExport("export default zzz export default class {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace between `default` and `class`", () => {
+		const out = checkDefaultExport("export default  class {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: flags a plain `class {}` with no extends clause (the extends clause is genuinely optional)", () => {
+		const out = checkDefaultExport("export default class {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: tolerates extra whitespace before `extends`", () => {
+		const out = checkDefaultExport("export default class  extends Base {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: flags a class with a real multi-character superclass name", () => {
+		const out = checkDefaultExport("export default class extends Base {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("P: tolerates zero whitespace between the superclass name and `{`", () => {
+		const out = checkDefaultExport("export default class extends Base{}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the arrow-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		const out = checkDefaultExport("export default zzz export default (x) => x\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace before an arrow-function anonymous default", () => {
+		const out = checkDefaultExport("export default  (x) => x\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the object-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		const out = checkDefaultExport("export default zzz export default { a: 1 }\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace before an object-literal anonymous default", () => {
+		const out = checkDefaultExport("export default  { a: 1 }\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: the array-anon regex's leading anchor prevents matching a LATER occurrence mid-line", () => {
+		const out = checkDefaultExport("export default zzz export default [1, 2]\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("P: tolerates extra whitespace before an array-literal anonymous default", () => {
+		const out = checkDefaultExport("export default  [1, 2]\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
+
+	it("N: NAMED_FORM's leading anchor prevents matching a LATER identifier mid-line", () => {
+		// "42" isn't an identifier start, so with `^` intact nothing is
+		// flagged; without it, the SECOND "export default Widget" would be
+		// found and wrongly flagged.
+		expect(checkDefaultExport("export default 42; export default Widget\n", "/tmp/foo.ts")).toEqual(
+			[],
+		);
+	});
+
+	it("P: tolerates extra whitespace between `default` and a bare named identifier (no async/function/class prefix)", () => {
+		const out = checkDefaultExport("export default  Widget\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Widget' does not match filename 'foo' — grep-hostile for cold readers",
+		);
+	});
+
+	it("P: tolerates extra whitespace between `default` and `async`, named form", () => {
+		const out = checkDefaultExport("export default async  Widget\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Widget' does not match filename 'foo' — grep-hostile for cold readers",
+		);
+	});
+
+	it("P: tolerates whitespace around the generator `*` before a named function default", () => {
+		const out = checkDefaultExport("export default function * Widget() {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Widget' does not match filename 'foo' — grep-hostile for cold readers",
+		);
+	});
+
+	it("P: tolerates extra whitespace between the generator `*` and the function name", () => {
+		const out = checkDefaultExport("export default function*   Widget() {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Widget' does not match filename 'foo' — grep-hostile for cold readers",
+		);
+	});
+
+	it("P: tolerates extra whitespace between `class` and the class name, named form", () => {
+		const out = checkDefaultExport("export default class  Widget {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'Widget' does not match filename 'foo' — grep-hostile for cold readers",
+		);
+	});
+
+	it("caps output at exactly 10 matches, not 11, for 11 anonymous exports", () => {
+		const code = `${Array.from({ length: 11 }, () => "export default function () {}").join("\n")}\n`;
+		const out = checkDefaultExport(code, "/tmp/foo.ts");
+		expect(out.length).toBe(10);
+	});
+
+	it("N: a leading-whitespace-indented default-export line is still recognized (trim before matching)", () => {
+		const out = checkDefaultExport("  export default function () {}\n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+	});
+
+	it("N: a tab between `export` and `default` is NOT recognized as a default-export line", () => {
+		// The outer gate does a literal `.startsWith("export default")` (one
+		// regular space); a tab there fails it even though ANON_FORMS's `\s+`
+		// would happily match a tab if this line were ever reached.
+		expect(
+			checkDefaultExport("export\tdefault function () { return 1; }\n", "/tmp/foo.ts"),
+		).toEqual([]);
+	});
+
+	it("P: truncates a very long anonymous-export line's embedded text to 120 characters", () => {
+		const longSuffix = "a".repeat(200);
+		const code = `export default function () { ${longSuffix} }\n`;
+		const out = checkDefaultExport(code, "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		const expectedFullLine = `export default function () { ${longSuffix} }`;
+		expect(out[0]?.text).toBe(`anonymous default export: ${expectedFullLine.slice(0, 120)}`);
+		expect(out[0]?.text.length).toBeLessThan(expectedFullLine.length);
+	});
+
+	it("P: trims trailing whitespace from the embedded source line in the match text", () => {
+		const out = checkDefaultExport("export default function () {}   \n", "/tmp/foo.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe("anonymous default export: export default function () {}");
+	});
+
+	it("N: recognizes a worker handler even with extra whitespace between `default` and the handler name", () => {
+		const code = [
+			"const handler = {",
+			"  async fetch(req) { return new Response('ok'); },",
+			"};",
+			"export default  handler;",
+		].join("\n");
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	it("N: recognizes a worker handler even with whitespace before the trailing semicolon", () => {
+		const code = [
+			"const handler = {",
+			"  async fetch(req) { return new Response('ok'); },",
+			"};",
+			"export default handler ;",
+		].join("\n");
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	// -- isCloudflareWorkerHandler: each of its 3 detection paths, isolated --
+
+	it("N: recognizes a worker handler via the `satisfies ExportedHandler` type path ALONE", () => {
+		// Neither an anonymous-object nor a const-decl shape is present, so
+		// only the type-annotation path (path 1) can make this a no-op skip.
+		// The annotation lives in a COMMENT — isCloudflareWorkerHandler reads
+		// raw content (before comment-stripping), so this isolates path 1
+		// from the other two paths cleanly.
+		const code = "export default zzz;\n// satisfies ExportedHandler\n";
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	it("P: without the type-annotation match, the same named default is flagged as a mismatch", () => {
+		// Same shape as above but with a typo breaking the TYPE_RE match —
+		// confirms the previous test's [] came from path 1 actually firing,
+		// not from some other guard.
+		const code = "export default zzz;\n// satisfies NotExportedHandler\n";
+		const out = checkDefaultExport(code, "/tmp/worker.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("does not match filename");
+	});
+
+	it("N: recognizes an anonymous worker-handler object literal via the ANON path ALONE", () => {
+		// No `satisfies` annotation and no named export — only the anonymous
+		// object + method-name path (path 2) can make this a no-op skip.
+		const code = ["export default {", "  async fetch(req) { return new Response('ok'); },", "};"].join(
+			"\n",
+		);
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	it("N: recognizes an anonymous worker-handler object literal declared with `queue`", () => {
+		const code = ["export default {", "  async queue(batch, env) { /* … */ },", "};"].join("\n");
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	it("P: a named default's declaration must actually contain a handler method, not just exist", () => {
+		// "helper" resolves via WORKER_HANDLER_NAMED_DEFAULT_RE, but its own
+		// `const helper = {...}` declaration has no fetch/email/queue/etc
+		// method — the decl-shape check (path 3's SECOND half) must still
+		// reject it, not treat "a const declaration exists at all" as enough.
+		const code = ["const helper = {", "  doStuff() { return 1; },", "};", "export default helper;"].join(
+			"\n",
+		);
+		const out = checkDefaultExport(code, "/tmp/worker.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"default export 'helper' does not match filename 'worker' — grep-hostile for cold readers",
+		);
+	});
+
+	it("N: recognizes a worker handler even with zero whitespace before ExportedHandler (satisfies:ExportedHandler)", () => {
+		// `\s*` in WORKER_HANDLER_TYPE_RE must tolerate ZERO whitespace, not
+		// just one-or-more.
+		const code = "export default zzz;\n// satisfiesExportedHandler\n";
+		expect(checkDefaultExport(code, "/tmp/worker.ts")).toEqual([]);
+	});
+
+	it("P: flags an anonymous object default whose only method is unrelated to any worker handler name", () => {
+		// Guards WORKER_HANDLER_METHODS itself: an object literal with SOME
+		// method (just not fetch/email/queue/scheduled/tail/trace) must not
+		// be treated as a worker handler.
+		const code = ["export default {", "  doStuff() { return 1; },", "};"].join("\n");
+		const out = checkDefaultExport(code, "/tmp/worker.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("anonymous default export");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -280,6 +665,159 @@ describe("checkLifecycleCleanup — extra branches", () => {
 		const code = `${filler}\n\n${overloaded}`;
 		const out = checkLifecycleCleanup(code, "src/many-pairs.ts");
 		expect(out.length).toBe(10);
+	});
+
+	// -------------------------------------------------------------------
+	// Mutant-kill hardening (survivor-kill campaign, agent-safety-advanced).
+	// -------------------------------------------------------------------
+
+	it("P: recognizes a class declaration with extra whitespace after `class`", () => {
+		const code = "class  Widget {\n  start() { setInterval(f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setInterval");
+	});
+
+	it("P: recognizes a class declaration with extra whitespace before `extends`", () => {
+		const code =
+			"class Widget  extends Base {\n  start() { setInterval(f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setInterval");
+	});
+
+	it("P: recognizes a class declaration with zero whitespace before the opening brace", () => {
+		const code = "class Widget{\n  start() { setInterval(f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setInterval");
+	});
+
+	it("P: recognizes setInterval() with extra whitespace before the paren as an unclosed subscription", () => {
+		const code = "class P {\n  start() { setInterval (f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setInterval");
+	});
+
+	it("N: recognizes clearInterval() with extra whitespace before the paren as valid cleanup", () => {
+		const code =
+			"class P {\n  start() { setInterval(f,1); }\n  stop() { clearInterval (id); }\n}\n";
+		expect(checkLifecycleCleanup(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("P: recognizes setTimeout() with zero whitespace before the paren as an unclosed subscription", () => {
+		const code = "class P {\n  start() { setTimeout(f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setTimeout");
+	});
+
+	it("P: recognizes setTimeout() with one space before the paren as an unclosed subscription", () => {
+		const code = "class P {\n  start() { setTimeout (f,1); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setTimeout");
+	});
+
+	it("N: recognizes clearTimeout() with extra whitespace before the paren as valid cleanup", () => {
+		const code =
+			"class P {\n  start() { setTimeout(f,1); }\n  stop() { clearTimeout (id); }\n}\n";
+		expect(checkLifecycleCleanup(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("P: recognizes addEventListener() with extra whitespace before the paren as an unclosed subscription", () => {
+		const code = "class P {\n  start() { addEventListener (e,h); }\n  stop() { this.x=1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("addEventListener");
+	});
+
+	it("N: recognizes removeEventListener() with zero whitespace before the paren as valid cleanup", () => {
+		const code =
+			"class P {\n  start() { addEventListener(e,h); }\n  stop() { removeEventListener(e,h); }\n}\n";
+		expect(checkLifecycleCleanup(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("N: recognizes removeEventListener() with one space before the paren as valid cleanup", () => {
+		const code =
+			"class P {\n  start() { addEventListener(e,h); }\n  stop() { removeEventListener (e,h); }\n}\n";
+		expect(checkLifecycleCleanup(code, "src/x.ts")).toEqual([]);
+	});
+
+	it("P: the reported line number and classBody slice are relative to THIS class, not the whole file", () => {
+		// Leading content before the class pushes `bodyStart` to a non-zero
+		// offset; a mutant that used the whole `stripped` string as classBody
+		// (instead of slicing) would corrupt both the reported line number and
+		// the add/clean scan itself.
+		const code = [
+			"const unused = 1;",
+			"class Widget {",
+			"  start() {",
+			"    setInterval(f, 1);",
+			"  }",
+			"  stop() {",
+			"    this.x = 1;",
+			"  }",
+			"}",
+		].join("\n");
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.line).toBe(4);
+		expect(out[0]?.text).toBe(
+			"setInterval() without matching clearInterval in lifecycle method: setInterval(f, 1);",
+		);
+	});
+
+	it("P: truncates a very long violation line's embedded text to 120 characters", () => {
+		const longSuffix = "a".repeat(200);
+		const code = `class P {\n  start() { setInterval(f, 1); ${longSuffix} }\n  stop() { this.x = 1; }\n}\n`;
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		const expectedFullLine = `start() { setInterval(f, 1); ${longSuffix} }`;
+		expect(out[0]?.text).toBe(
+			`setInterval() without matching clearInterval in lifecycle method: ${expectedFullLine.slice(0, 120)}`,
+		);
+		expect(out[0]?.text.length).toBeLessThan(expectedFullLine.length);
+	});
+
+	it("P: trims trailing whitespace from the embedded source line in the match text", () => {
+		const code = "class P {\n  start() { setInterval(f, 1); }   \n  stop() { this.x = 1; }\n}\n";
+		const out = checkLifecycleCleanup(code, "src/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe(
+			"setInterval() without matching clearInterval in lifecycle method: start() { setInterval(f, 1); }",
+		);
+	});
+
+	it("caps output at exactly 10 matches, not 11, across 11 single-violation classes", () => {
+		const oneClass = (n: number) =>
+			[
+				`class C${n} {`,
+				"  start() { setInterval(f,1); }",
+				"  stop() { this.x=1; }",
+				"}",
+			].join("\n");
+		const code = Array.from({ length: 11 }, (_, i) => oneClass(i)).join("\n\n");
+		const out = checkLifecycleCleanup(code, "src/many.ts");
+		expect(out.length).toBe(10);
+	});
+
+	it("P: a cleanup call OUTSIDE the lifecycle method does not count as pairing (body text must be sliced)", () => {
+		// `clearInterval` appears in a plain helper method, never inside the
+		// recognized lifecycle method (`stop`) — collectLifecycleBodies must
+		// push only the SLICED lifecycle-method body, not the whole class, or
+		// this stray call would be wrongly credited as valid cleanup.
+		const code = [
+			"class P {",
+			"  start() { setInterval(f, 1); }",
+			"  helper() { clearInterval(999); }",
+			"  stop() { this.x = 1; }",
+			"}",
+		].join("\n");
+		const out = checkLifecycleCleanup(code, "/tmp/x.ts");
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toContain("setInterval");
 	});
 });
 
@@ -457,6 +995,166 @@ describe("checkCircularImports", () => {
 			if (i === 0) rootContent = content;
 		}
 		expect(checkCircularImports(rootContent, rootPath, dir)).toEqual([]);
+	});
+
+	// -------------------------------------------------------------------
+	// Mutant-kill hardening (survivor-kill campaign, agent-safety-advanced).
+	// Several of these deliberately construct a REAL cycle that a guard
+	// should suppress — an empty-content "does not run on X" case returns
+	// [] regardless of whether the guard actually fired, so it does not
+	// distinguish the guard being disabled from the guard working.
+	// -------------------------------------------------------------------
+
+	it("N: a non-JS extension still returns [] even though a real cycle exists (ext guard is load-bearing)", () => {
+		const aPath = join(dir, "nonjs-a.xyz");
+		const aContent = 'import { b } from "./nonjs-b.xyz";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "nonjs-b.xyz"),
+			'import { a } from "./nonjs-a.xyz";\nexport const b = () => a();\n',
+		);
+		expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+	});
+
+	it("N: a test-file path still returns [] even though a real cycle exists (isTestFile guard is load-bearing)", () => {
+		const aPath = join(dir, "guard.test.ts");
+		const aContent = 'import { b } from "./guard-tf-b.js";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "guard-tf-b.ts"),
+			'import { a } from "./guard.test.js";\nexport const b = () => a();\n',
+		);
+		expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+	});
+
+	it("N: a .d.ts path still returns [] even though a real cycle exists (.d.ts guard is load-bearing)", () => {
+		const aPath = join(dir, "guard.d.ts");
+		const aContent = 'import { b } from "./guard-dts-b.js";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "guard-dts-b.ts"),
+			'import { a } from "./guard.d.js";\nexport const b = () => a();\n',
+		);
+		expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+	});
+
+	it("P: still flags a real cycle when the file lives outside the project root (outside-root guard boundary)", () => {
+		// Points cwd at `dir` while the cycle's own files live in a SEPARATE
+		// temp dir — proves the guard actually fires for a genuine cycle,
+		// not just for empty/no-import content that returns [] either way.
+		const outsideDir = mkdtempSync(join(tmpdir(), "il-cov41-outside-"));
+		try {
+			const aPath = join(outsideDir, "out-a.ts");
+			const aContent = 'import { b } from "./out-b.js";\nexport const a = () => b();\n';
+			writeFileSync(aPath, aContent);
+			writeFileSync(
+				join(outsideDir, "out-b.ts"),
+				'import { a } from "./out-a.js";\nexport const b = () => a();\n',
+			);
+			expect(checkCircularImports(aContent, aPath, dir)).toEqual([]);
+		} finally {
+			rmSync(outsideDir, { recursive: true, force: true });
+		}
+	});
+
+	for (const ext of [".tsx", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]) {
+		it(`P: detects a two-file cycle between ${ext} files`, () => {
+			const aPath = join(dir, `ext-a${ext}`);
+			const aContent = `import { b } from "./ext-b${ext}";\nexport const a = () => b();\n`;
+			writeFileSync(aPath, aContent);
+			writeFileSync(
+				join(dir, `ext-b${ext}`),
+				`import { a } from "./ext-a${ext}";\nexport const b = () => a();\n`,
+			);
+			const out = checkCircularImports(aContent, aPath, dir);
+			expect(out.length).toBeGreaterThanOrEqual(1);
+		});
+	}
+
+	it("P: the cycle path text joins file names with the ' → ' arrow separator", () => {
+		const aPath = join(dir, "sep-a.ts");
+		const aContent = 'import { b } from "./sep-b.js";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(join(dir, "sep-b.ts"), 'import { a } from "./sep-a.js";\nexport const b = () => a();\n');
+		const out = checkCircularImports(aContent, aPath, dir);
+		expect(out.length).toBe(1);
+		expect(out[0]?.text).toBe("import cycle: sep-a.ts → sep-b.ts → sep-a.ts");
+	});
+
+	it("P: finds an 11-file cycle (closing edge discovered at trail depth exactly 10)", () => {
+		// MAX_DEPTH is 10; the closing edge back to the start is only reached
+		// once trail.length reaches 10, which the `> MAX_DEPTH` check must
+		// still allow (an off-by-one `>= MAX_DEPTH` would stop one hop early
+		// and miss this cycle entirely).
+		const N = 11;
+		const p0 = join(dir, "depth11-0.ts");
+		let content0 = "";
+		for (let i = 0; i < N; i++) {
+			const next = (i + 1) % N;
+			const c = `import { v } from "./depth11-${next}.js";\nexport const v${i} = () => v;\n`;
+			writeFileSync(join(dir, `depth11-${i}.ts`), c);
+			if (i === 0) content0 = c;
+		}
+		const out = checkCircularImports(content0, p0, dir);
+		expect(out.length).toBe(1);
+	});
+
+	it("N: does NOT find a 13-file cycle (closing edge would require trail depth 12, past MAX_DEPTH)", () => {
+		const N = 13;
+		const p0 = join(dir, "depth13-0.ts");
+		let content0 = "";
+		for (let i = 0; i < N; i++) {
+			const next = (i + 1) % N;
+			const c = `import { v } from "./depth13-${next}.js";\nexport const v${i} = () => v;\n`;
+			writeFileSync(join(dir, `depth13-${i}.ts`), c);
+			if (i === 0) content0 = c;
+		}
+		expect(checkCircularImports(content0, p0, dir)).toEqual([]);
+	});
+
+	it("P: uses the PASSED-IN content for the starting file, not its on-disk content", () => {
+		// On disk, mismatch-a.ts is acyclic; the CONTENT argument describes a
+		// cyclic version of the same file (the in-flight edit being judged).
+		// Only the first (trail.length===0) call may use `content` directly —
+		// every other file is read from disk via readCached.
+		const aPath = join(dir, "mismatch-a.ts");
+		writeFileSync(aPath, "export const a = 1;\n");
+		writeFileSync(
+			join(dir, "mismatch-b.ts"),
+			'import { a } from "./mismatch-a.js";\nexport const b = () => a;\n',
+		);
+		const cyclicPassedContent =
+			'import { b } from "./mismatch-b.js";\nexport const a = () => b();\n';
+		const out = checkCircularImports(cyclicPassedContent, aPath, dir);
+		expect(out.length).toBe(1);
+	});
+
+	it("N: a file that imports only itself is NOT reported as a cycle (trail must be non-empty)", () => {
+		const aPath = join(dir, "self-a.ts");
+		const content = 'import { a } from "./self-a.js";\nexport const a = () => a;\n';
+		writeFileSync(aPath, content);
+		expect(checkCircularImports(content, aPath, dir)).toEqual([]);
+	});
+
+	it("P: onPath cycle-avoidance does not multiply an already-found real cycle into duplicates", () => {
+		// b imports BOTH a (closes a real a→b→a cycle) and c; c imports b
+		// (an inner cycle that does not involve a). Without onPath correctly
+		// blocking re-entry into b from within c, the DFS bounces b<->c
+		// repeatedly, rediscovering the SAME a→b→a relationship through
+		// progressively longer (and therefore non-deduplicated) trails.
+		const aPath = join(dir, "onpath-a.ts");
+		const aContent = 'import { b } from "./onpath-b.js";\nexport const a = () => b();\n';
+		writeFileSync(aPath, aContent);
+		writeFileSync(
+			join(dir, "onpath-b.ts"),
+			'import { a } from "./onpath-a.js";\nimport { c } from "./onpath-c.js";\nexport const b = () => a() + c();\n',
+		);
+		writeFileSync(
+			join(dir, "onpath-c.ts"),
+			'import { b } from "./onpath-b.js";\nexport const c = () => b();\n',
+		);
+		const out = checkCircularImports(aContent, aPath, dir);
+		expect(out.length).toBe(1);
 	});
 });
 

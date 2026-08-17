@@ -25,6 +25,7 @@ const harnessStartCommand = vi.fn();
 const harnessStopCommand = vi.fn();
 const harnessRestartCommand = vi.fn();
 const harnessStatusCommand = vi.fn();
+const harnessHealthCommand = vi.fn();
 const harnessTestCommand = vi.fn();
 const harnessReapCommand = vi.fn();
 const harnessCleanCommand = vi.fn();
@@ -35,13 +36,18 @@ const scannerOffCommand = vi.fn();
 const scannerToggleCommand = vi.fn();
 const scannerStatusCommand = vi.fn();
 const scannerReviewCommand = vi.fn();
+const harnessChecksCommand = vi.fn();
 
 vi.mock(`../commands/harness.js`, () => ({
 	harnessStartCommand: (...a: unknown[]) => harnessStartCommand(...a),
 	harnessStopCommand: (...a: unknown[]) => harnessStopCommand(...a),
 	harnessRestartCommand: (...a: unknown[]) => harnessRestartCommand(...a),
 	harnessStatusCommand: (...a: unknown[]) => harnessStatusCommand(...a),
+	harnessHealthCommand: (...a: unknown[]) => harnessHealthCommand(...a),
 	harnessTestCommand: (...a: unknown[]) => harnessTestCommand(...a),
+}));
+vi.mock(`../commands/harness-checks.js`, () => ({
+	harnessChecksCommand: (...a: unknown[]) => harnessChecksCommand(...a),
 }));
 vi.mock(`../commands/harness-reap.js`, () => ({
 	harnessReapCommand: (...a: unknown[]) => harnessReapCommand(...a),
@@ -203,6 +209,140 @@ describe("registerHarnessCommands — structure", () => {
 		expect(restart.opts()).toMatchObject({ protocol: "dual", sessionId: "default" });
 		expect(child(harness, "test").opts()).toMatchObject({ tool: "Bash" });
 	});
+
+	it("preserves every command and option help description", () => {
+		const program = build();
+		const harness = sub(program, "harness");
+		const scanner = sub(program, "scanner");
+		const expectHelp = (
+			parent: Command,
+			name: string,
+			description: string,
+			options: Record<string, string>,
+		) => {
+			const command = child(parent, name);
+			expect(command.description()).toBe(description);
+			for (const [flag, optionDescription] of Object.entries(options)) {
+				const option = command.options.find((candidate) => candidate.long === flag);
+				expect(option, `${name} is missing ${flag}`).toBeDefined();
+				expect(option?.description).toBe(optionDescription);
+			}
+		};
+
+		expectHelp(harness, "start", "Start the harness server (background daemon by default)", {
+			"--no-daemon": "Run in foreground instead of background",
+			"--protocol": "Socket protocol: raw, framed, or dual",
+			"--session-id": "Framed socket session id",
+			"--verbose": "Verbose logging",
+			"--json": "Machine-readable output",
+		});
+		expectHelp(harness, "stop", "Stop the harness server", {
+			"--json": "Machine-readable output",
+		});
+		expectHelp(harness, "restart", "Stop and restart the harness server (picks up config changes)", {
+			"--no-daemon": "Run in foreground instead of daemon",
+			"--protocol": "Socket protocol: raw, framed, or dual",
+			"--session-id": "Framed socket session id",
+			"--verbose": "Verbose output",
+			"--json": "Machine-readable output",
+		});
+		expectHelp(harness, "status", "Show harness status, loaded rules, and active agents", {
+			"--json": "Machine-readable output",
+		});
+		expectHelp(
+			harness,
+			"checks",
+			"Show the authoritative check inventory — per-family counts + total (static; no daemon needed)",
+			{
+				"--json": "Machine-readable output",
+				"--short": "One-line summary",
+				"--full": "Include each count's authoritative source",
+			},
+		);
+		expectHelp(
+			harness,
+			"health",
+			"Check-health report from the recurrence log: repeat-rate per check id, probation candidates (demotion signal)",
+			{
+				"--json": "Machine-readable output",
+				"--short": "One-line summary",
+				"--full": "Show every check id (default: top 25 by repeat-rate)",
+			},
+		);
+		expectHelp(
+			harness,
+			"test",
+			"Fire a synthetic PreToolUse event at the running harness and show its decision. Default: a Bash command. Use --write/--edit to test a file operation.",
+			{
+				"--tool": "Tool name to simulate for the positional command",
+				"--write": "Simulate a Write to <file> (pair with --from-file or --stdin)",
+				"--from-file": "Read the proposed Write content from <path>",
+				"--stdin": "Read the proposed Write content from stdin",
+				"--edit": "Simulate an Edit to <file> (pair with --old and --new)",
+				"--old": "old_string for --edit",
+				"--new": "new_string for --edit",
+				"--json": "Machine-readable output",
+			},
+		);
+		expectHelp(
+			harness,
+			"reap",
+			"List (default) or kill orphan harness daemons. --force to SIGTERM. --all also targets the active daemon.",
+			{
+				"--force": "Actually SIGTERM the candidates (default is dry-run)",
+				"--all": "Also target the active daemon (equivalent of pkill -f)",
+				"--json": "Machine-readable output",
+			},
+		);
+		expectHelp(harness, "clean", "Remove stale harness.sock + harness.pid (refuses if a daemon is running)", {
+			"--json": "Machine-readable output",
+		});
+		expectHelp(
+			harness,
+			"mode",
+			"Show or switch the operational tier (budget|quality|ci) — drives HARNESS_POST_TIMEOUT_MS",
+			{"--json": "Machine-readable output"},
+		);
+		expectHelp(harness, "latency", "Show per-event latency report from .interlinked/logs/latency.jsonl", {
+			"--json": "Machine-readable output",
+			"--by-tool": "Include per-tool stats (events count + when-present p50/p99/max)",
+		});
+
+		expectHelp(scanner, "on", "Enable the PII filter (content scanner)", {
+			"--reason": "Why — recorded in content-scanner.audit.jsonl",
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+		});
+		expectHelp(scanner, "off", "Disable the PII filter. The exact timestamp is recorded in the audit log.", {
+			"--reason": "Why — recorded in content-scanner.audit.jsonl",
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+		});
+		expectHelp(scanner, "toggle", "Flip the PII filter on/off and record the transition", {
+			"--reason": "Why — recorded in content-scanner.audit.jsonl",
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+		});
+		expectHelp(scanner, "status", "Show PII filter config + runtime state + recent toggle audit", {
+			"--json": "Machine-readable output",
+			"--short": "One-line summary",
+			"--full": "Detailed output",
+		});
+		expectHelp(
+			scanner,
+			"review",
+			"Review a WebFetch response flagged by the PII filter — pick allow / redact / block",
+			{
+				"--key": "Review a specific cache key (default: newest pending)",
+				"--allow": "Approve the full body (skips interactive prompt)",
+				"--redact": "Replace flagged spans with <CATEGORY> placeholders",
+				"--block": "Withhold the body entirely",
+				"--reason": "Why — recorded in content-scanner.audit.jsonl",
+				"--json": "Machine-readable output",
+				"--short": "One-line summary",
+			},
+		);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -297,6 +437,22 @@ describe("harness lifecycle — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["harness", "status", "--json"], { from: "user" });
 		expect(harnessStatusCommand).toHaveBeenCalledWith({ json: true });
+	});
+
+	it("checks forwards --json --short --full", async () => {
+		const program = build();
+		await program.parseAsync(["harness", "checks", "--json", "--short", "--full"], {
+			from: "user",
+		});
+		expect(harnessChecksCommand).toHaveBeenCalledWith({ json: true, short: true, full: true });
+	});
+
+	it("health forwards --json --short --full", async () => {
+		const program = build();
+		await program.parseAsync(["harness", "health", "--json", "--short", "--full"], {
+			from: "user",
+		});
+		expect(harnessHealthCommand).toHaveBeenCalledWith({ json: true, short: true, full: true });
 	});
 
 	it("test forwards the command positional and the --tool default", async () => {

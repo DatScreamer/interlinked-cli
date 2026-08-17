@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock local-activity
 vi.mock("../local-activity.js", () => ({
@@ -16,6 +16,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 });
 
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 describe("exportTrace", () => {
 	it("exports events as JSON document", () => {
 		mockReadLocal.mockReturnValue([
@@ -27,6 +31,7 @@ describe("exportTrace", () => {
 				summary: "src/index.ts",
 				session: "s1",
 				hook: "PostToolUse",
+				duration_ms: 42,
 			},
 			{
 				ts: "2025-01-01T10:01:00Z",
@@ -46,8 +51,39 @@ describe("exportTrace", () => {
 		expect(doc.version).toBe(1);
 		expect(doc.spans).toHaveLength(2);
 		expect(doc.spans[0].name).toBe("tool_use");
+		expect(doc.spans[0].trace_id).toBe("s1");
 		expect(doc.spans[0].attributes.agent).toBe("agent-1");
 		expect(doc.spans[0].attributes.tool).toBe("Edit");
+		expect(doc.spans[0].attributes.summary).toBe("src/index.ts");
+		expect(doc.spans[0].attributes.hook).toBe("PostToolUse");
+		expect(doc.spans[0].duration_ms).toBe(42);
+	});
+
+	it("uses safe defaults when options are omitted and forwards the complete read filter", () => {
+		mockReadLocal.mockReturnValue([]);
+
+		exportTrace();
+
+		expect(mockReadLocal).toHaveBeenCalledWith({
+			since: undefined,
+			agent: undefined,
+			limit: 10000,
+			cwd: undefined,
+		});
+	});
+
+	it("converts a since duration into a timestamp cutoff", () => {
+		mockReadLocal.mockReturnValue([]);
+		vi.spyOn(Date, "now").mockReturnValue(10_000);
+
+		exportTrace({ since: "5m", agent: "worker", cwd: "/tmp/activity" });
+
+		expect(mockReadLocal).toHaveBeenCalledWith({
+			since: 10_000 - 5 * 60_000,
+			agent: "worker",
+			limit: 10000,
+			cwd: "/tmp/activity",
+		});
 	});
 
 	it("exports as JSONL", () => {
@@ -64,6 +100,7 @@ describe("exportTrace", () => {
 		]);
 
 		const result = exportTrace({ format: "jsonl" });
+		expect(result.endsWith("\n")).toBe(true);
 		const lines = result.trim().split("\n");
 		expect(lines).toHaveLength(1);
 
@@ -99,6 +136,43 @@ describe("exportTrace", () => {
 		const doc = JSON.parse(result);
 		expect(doc.spans[0].attributes.tokens).toEqual({ input: 1000, output: 500 });
 		expect(doc.spans[0].attributes.parent_agent).toBe("lead");
+		expect(doc.spans[0].attributes.subagent_id).toBe("sub-1");
+	});
+
+	it("uses trace and span fallbacks for missing session or timestamp values", () => {
+		mockReadLocal.mockReturnValue([
+			{
+				ts: "2025-01-02T03:04:05.678Z",
+				agent: "agent-1",
+				type: "tool_use",
+				tool: null,
+				summary: null,
+				session: null,
+				hook: null,
+			},
+			{
+				ts: undefined,
+				agent: "agent-1",
+				type: "session_end",
+				tool: null,
+				summary: null,
+				session: null,
+				hook: null,
+			} as any,
+		]);
+
+		const doc = JSON.parse(exportTrace({ format: "json" }));
+
+		expect(doc.spans).toMatchObject([
+			{
+				trace_id: "trace-2025-01-02",
+				span_id: "span-0-20250102030405",
+			},
+			{
+				trace_id: "trace-unknown",
+				span_id: "span-1-1",
+			},
+		]);
 	});
 });
 
@@ -125,6 +199,7 @@ describe("importTrace", () => {
 		expect(result.imported).toBe(1);
 		expect(result.skipped).toBe(0);
 		expect(mockAppendLocal).toHaveBeenCalledOnce();
+		expect(mockReadLocal).toHaveBeenLastCalledWith({ limit: 50000, cwd: undefined });
 	});
 
 	it("imports JSONL format", () => {
@@ -187,6 +262,29 @@ describe("importTrace", () => {
 		const result = importTrace("");
 		expect(result.imported).toBe(0);
 		expect(result.skipped).toBe(0);
+		expect(mockReadLocal).not.toHaveBeenCalled();
+	});
+
+	it("does not accept a non-trace object merely because it contains a spans array", () => {
+		mockReadLocal.mockReturnValue([]);
+		const data = JSON.stringify({
+			format: "other-format",
+			spans: [{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: {} }],
+		});
+
+		expect(importTrace(data)).toEqual({ imported: 0, skipped: 0 });
+		expect(mockReadLocal).not.toHaveBeenCalled();
+		expect(mockAppendLocal).not.toHaveBeenCalled();
+	});
+
+	it("filters invalid JSONL spans instead of passing null into the import loop", () => {
+		mockReadLocal.mockReturnValue([]);
+		const jsonl = [
+			JSON.stringify({ timestamp: "2025-01-01T10:00:00Z", attributes: {} }),
+			JSON.stringify({ name: "tool_use", timestamp: "2025-01-01T10:00:01Z", attributes: {} }),
+		].join("\n");
+
+		expect(importTrace(jsonl)).toEqual({ imported: 1, skipped: 0 });
 	});
 
 	it("round-trips export → import", () => {
@@ -223,6 +321,56 @@ describe("importTrace", () => {
 		};
 		const result = importTrace(JSON.stringify(doc));
 		expect(result.imported).toBe(1);
+	});
+
+	it("preserves valid trace metadata and normalizes wrong-typed metadata", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [
+				{
+					trace_id: "s1",
+					name: "tool_use",
+					timestamp: "2025-01-01T10:00:00Z",
+					attributes: { agent: "a1", tool: "Edit", summary: "file.ts" },
+				},
+				{
+					trace_id: 123,
+					name: "tool_use",
+					timestamp: "2025-01-01T10:00:01Z",
+					attributes: { agent: "a1", tool: 42, summary: false },
+				},
+			],
+		};
+
+		expect(importTrace(JSON.stringify(doc))).toEqual({ imported: 2, skipped: 0 });
+		expect(mockAppendLocal.mock.calls[0]?.[0]).toMatchObject({
+			tool: "Edit",
+			summary: "file.ts",
+			session: "s1",
+		});
+		expect(mockAppendLocal.mock.calls[1]?.[0]).toMatchObject({
+			tool: null,
+			summary: null,
+			session: null,
+		});
+	});
+
+	it("keeps valid spans when a JSON envelope contains a null span", () => {
+		mockReadLocal.mockReturnValue([]);
+		const doc = {
+			format: "interlinked-trace",
+			version: 1,
+			exported_at: "2025-01-01T00:00:00Z",
+			spans: [
+				null,
+				{ name: "tool_use", timestamp: "2025-01-01T10:00:00Z", attributes: {} },
+			],
+		};
+
+		expect(importTrace(JSON.stringify(doc))).toEqual({ imported: 1, skipped: 0 });
 	});
 
 	it("N1: drops a span missing timestamp, keeping the rest of the batch", () => {

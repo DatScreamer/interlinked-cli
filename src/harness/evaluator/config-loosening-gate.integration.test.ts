@@ -8,6 +8,9 @@ import type { HarnessEvent } from "../types.js";
 import {
 	detectConfigLoosening,
 	evaluateConfigLooseningForEvent,
+	readHeadVersion,
+	reconstructEditContent,
+	safeJsonParse,
 } from "./config-loosening-gate.js";
 
 /** Minimal PreToolUse event factory — only the fields the gate reads. */
@@ -126,10 +129,46 @@ describe("detectConfigLoosening — tsconfig.json", () => {
 		const before = `{ "compilerOptions": { "strict": true } }`;
 		const after = `{ "compilerOptions": {} }`;
 		const findings = detectConfigLoosening("tsconfig.json", before, after);
-		// Should fire on `strict` itself plus the 8 implied subflags.
-		expect(findings.length).toBeGreaterThanOrEqual(1);
-		const rules = findings.map((f) => f.rule);
-		expect(rules).toContain("strict");
+		// Should fire on `strict` itself plus every one of the 8 implied
+		// subflags. Keeping this exact catches a stale/missing umbrella entry.
+		const rules = findings.map((f) => f.rule).sort();
+		expect(rules).toEqual([
+			"alwaysStrict",
+			"noImplicitAny",
+			"noImplicitThis",
+			"strict",
+			"strictBindCallApply",
+			"strictFunctionTypes",
+			"strictNullChecks",
+			"strictPropertyInitialization",
+			"useUnknownInCatchVariables",
+		]);
+	});
+
+	it("normalizes Windows separators before recognizing config paths", () => {
+		const findings = detectConfigLoosening(
+			"packages\\api\\tsconfig.json",
+			`{ "compilerOptions": { "strict": true } }`,
+			`{ "compilerOptions": { "strict": false } }`,
+		);
+		expect(findings.map((f) => f.rule)).toContain("strict");
+	});
+
+	it("does not throw for a null compilerOptions object", () => {
+		expect(() =>
+			detectConfigLoosening(
+				"tsconfig.json",
+				`{ "compilerOptions": null }`,
+				`{ "compilerOptions": null }`,
+			),
+		).not.toThrow();
+		expect(
+			detectConfigLoosening(
+				"tsconfig.json",
+				`{ "compilerOptions": null }`,
+				`{ "compilerOptions": null }`,
+			),
+		).toEqual([]);
 	});
 
 	it("does not flag removing a flag that's already false", () => {
@@ -148,12 +187,39 @@ describe("detectConfigLoosening — package.json", () => {
 		expect(nonNull(findings[0]).rule).toBe("engines.node");
 	});
 
+	it("matches a Windows-style nested package.json path", () => {
+		const findings = detectConfigLoosening(
+			"packages\\api\\package.json",
+			`{ "engines": { "node": ">=22.0.0" } }`,
+			`{ "engines": { "node": ">=18.0.0" } }`,
+		);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).file).toBe("packages\\api\\package.json");
+	});
+
 	it("flags engines.node removal entirely (no floor at all)", () => {
 		const before = `{ "engines": { "node": ">=22.0.0" } }`;
 		const after = `{ }`;
 		const findings = detectConfigLoosening("package.json", before, after);
 		expect(findings.length).toBe(1);
 		expect(nonNull(findings[0]).rule).toBe("engines.node");
+	});
+
+	// test-contract: public-api — removing engines.node reports removal (not a version downgrade) and preserves the absent after value
+	it("distinguishes engines.node removal from a lower declared floor", () => {
+		const [finding] = detectConfigLoosening(
+			"package.json",
+			`{ "engines": { "node": ">=22.0.0" } }`,
+			`{ "name": "x" }`,
+		);
+		expect(finding).toEqual({
+			rule: "engines.node",
+			before: ">=22.0.0",
+			after: undefined,
+			file: "package.json",
+			message:
+				"engines.node removed (was >=22.0.0). The package no longer declares a Node version floor; consumers on older Node may install successfully and crash at runtime. Restore the floor or document why no minimum is appropriate.",
+		});
 	});
 
 	it("flags engines block removal", () => {
@@ -213,6 +279,10 @@ describe("reconstructEditContent — Edit tool reconstruction", () => {
 		const result = reconstructEditContent("aa\naa", "aa", "bb");
 		expect(result).toBeNull();
 	});
+
+	it("replaces an old_string at index zero", () => {
+		expect(reconstructEditContent("aa", "aa", "bb")).toBe("bb");
+	});
 });
 
 // ==========================================================================
@@ -266,6 +336,17 @@ describe("detectConfigLoosening — parsing + fail-open edges", () => {
 		const before = `{ /* strict on */ "compilerOptions": { "strictNullChecks": true } }`;
 		const after = `{ /* strict off */ "compilerOptions": { "strictNullChecks": false } }`;
 		expect(detectConfigLoosening("tsconfig.json", before, after).length).toBe(1);
+	});
+
+	it("does not strip // text embedded inside a JSON string", () => {
+		const parsed = safeJsonParse(`{ "message": "hello // keep this text" }`);
+		expect(parsed).toEqual({ message: "hello // keep this text" });
+	});
+
+	it("removes a trailing comma even when no whitespace precedes the closer", () => {
+		expect(safeJsonParse(`{ "compilerOptions": { "strict": true,}}`)).toEqual({
+			compilerOptions: { strict: true },
+		});
 	});
 
 	it("matches a monorepo-nested tsconfig path", () => {
@@ -359,6 +440,57 @@ describe("detectConfigLoosening — package.json semver + script edges", () => {
 		expect(nonNull(finding).before).toBe(">=22.0.0");
 		expect(nonNull(finding).after).toBe(">=18.0.0");
 	});
+
+	it("does not flag equal Node floors", () => {
+		const content = `{ "engines": { "node": ">=22.0.0" } }`;
+		expect(detectConfigLoosening("package.json", content, content)).toEqual([]);
+	});
+
+	it("distinguishes a real two-digit floor drop from first-digit equality", () => {
+		const findings = detectConfigLoosening(
+			"package.json",
+			`{ "engines": { "node": ">=19.0.0" } }`,
+			`{ "engines": { "node": ">=18.0.0" } }`,
+		);
+		expect(findings).toHaveLength(1);
+		expect(nonNull(findings[0]).rule).toBe("engines.node");
+	});
+
+	it("reports removal as removal when the engines block disappears", () => {
+		const [finding] = detectConfigLoosening(
+			"package.json",
+			`{ "engines": { "node": ">=22.0.0" } }`,
+			`{ "name": "x" }`,
+		);
+		expect(nonNull(finding).after).toBeUndefined();
+		expect(nonNull(finding).message).toContain("no longer declares a Node version floor");
+	});
+
+	it("handles a missing engines block on either side without throwing", () => {
+		expect(() =>
+			detectConfigLoosening(
+				"package.json",
+				`{ "name": "x" }`,
+				`{ "engines": { "node": ">=18.0.0" } }`,
+			),
+		).not.toThrow();
+		expect(
+			detectConfigLoosening(
+				"package.json",
+				`{ "name": "x" }`,
+				`{ "engines": { "node": ">=18.0.0" } }`,
+			),
+		).toEqual([]);
+	});
+
+	it("includes the script rule explanation in its finding", () => {
+		const [finding] = detectConfigLoosening(
+			"package.json",
+			`{ "scripts": { "test": "vitest" } }`,
+			`{ "scripts": {} }`,
+		);
+		expect(nonNull(finding).message).toContain("standard entry point");
+	});
 });
 
 // ==========================================================================
@@ -428,6 +560,10 @@ describe("evaluateConfigLooseningForEvent — Write tool against git HEAD", () =
 		expect(decision?.category).toBe("config");
 		expect(decision?.reason).toContain("strict");
 		expect(decision?.reason).toContain("weakens config");
+		expect(decision?.reason).toContain("effectively flipped from true → false");
+		expect(decision?.reason).toContain(
+			"Confirm the loosening is intentional. Strict flags rarely come back once relaxed.",
+		);
 	});
 
 	it("aggregates multiple findings into one reason (engines + script removal)", () => {
@@ -441,7 +577,7 @@ describe("evaluateConfigLooseningForEvent — Write tool against git HEAD", () =
 		);
 		expect(decision?.decision).toBe("ask");
 		expect(decision?.reason).toContain("[engines.node]");
-		expect(decision?.reason).toContain("[scripts.test]");
+		expect(decision?.reason).toContain("\n  [scripts.test]");
 	});
 
 	it("returns null when the Write does not loosen anything (tightening)", () => {
@@ -568,6 +704,18 @@ describe("evaluateConfigLooseningForEvent — Write tool against git HEAD", () =
 		expect(decision?.decision).toBe("ask");
 		expect(decision?.reason).toContain("strictNullChecks");
 	});
+
+	it("reads the exact committed content through the repository-relative path", () => {
+		dir = makeRepoWithCommittedFile("tsconfig.json", `{ "compilerOptions": { "strict": true } }`);
+		expect(readHeadVersion(join(dir, "tsconfig.json"))).toBe(
+			`{ "compilerOptions": { "strict": true } }`,
+		);
+	});
+
+	it("returns an empty baseline for a committed empty file", () => {
+		dir = makeRepoWithCommittedFile("empty.json", "");
+		expect(readHeadVersion(join(dir, "empty.json"))).toBe("");
+	});
 });
 
 describe("evaluateConfigLooseningForEvent — Edit tool reconstruction path", () => {
@@ -596,6 +744,42 @@ describe("evaluateConfigLooseningForEvent — Edit tool reconstruction path", ()
 		expect(decision?.reason).toContain("strict");
 	});
 
+	it("rejects a non-string old_string instead of reconstructing it", () => {
+		dir = makeRepoWithCommittedFile(
+			"tsconfig.json",
+			`{ "compilerOptions": { "strict": true } }`,
+		);
+		const decision = evaluateConfigLooseningForEvent(
+			makeEvent(
+				{
+					file_path: join(dir, "tsconfig.json"),
+					old_string: true,
+					new_string: "false",
+				},
+				dir,
+			),
+		);
+		expect(decision).toBeNull();
+	});
+
+	it("rejects a non-string new_string instead of reconstructing it", () => {
+		dir = makeRepoWithCommittedFile(
+			"tsconfig.json",
+			`{ "compilerOptions": { "strict": true } }`,
+		);
+		const decision = evaluateConfigLooseningForEvent(
+			makeEvent(
+				{
+					file_path: join(dir, "tsconfig.json"),
+					old_string: "true",
+					new_string: false,
+				},
+				dir,
+			),
+		);
+		expect(decision).toBeNull();
+	});
+
 	it("returns null when the Edit's old_string is not found on disk", () => {
 		dir = makeRepoWithCommittedFile(
 			"tsconfig.json",
@@ -607,6 +791,25 @@ describe("evaluateConfigLooseningForEvent — Edit tool reconstruction path", ()
 					file_path: join(dir, "tsconfig.json"),
 					old_string: '"noSuchKey": 1',
 					new_string: '"noSuchKey": 2',
+				},
+				dir,
+			),
+		);
+		expect(decision).toBeNull();
+	});
+
+	// test-contract: boundary — malformed Edit fields are rejected even when a non-string old_string would coerce to a matching disk substring
+	it("does not reconstruct a loosening from a numeric old_string", () => {
+		dir = makeRepoWithCommittedFile(
+			"package.json",
+			`{ "engines": { "node": ">=22.0.0" } }`,
+		);
+		const decision = evaluateConfigLooseningForEvent(
+			makeEvent(
+				{
+					file_path: join(dir, "package.json"),
+					old_string: 22,
+					new_string: "18",
 				},
 				dir,
 			),

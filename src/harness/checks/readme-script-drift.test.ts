@@ -30,6 +30,9 @@ describe("detectReadmeScriptDrift — positive cases (must fire)", () => {
 		const results = detectReadmeScriptDrift(md, MD, scriptsOf("build", "test"));
 		expect(results.length).toBe(1);
 		expect(results[0]?.text).toContain('"deploy"');
+		// Pins the reported COMMAND text, not just the script name: a non-test
+		// script must never be reported as "npm test".
+		expect(results[0]?.text).toContain('"npm run deploy"');
 	});
 
 	it("flags `npm test` when no test script exists", () => {
@@ -37,6 +40,10 @@ describe("detectReadmeScriptDrift — positive cases (must fire)", () => {
 		const results = detectReadmeScriptDrift(md, MD, scriptsOf("build", "lint"));
 		expect(results.length).toBe(1);
 		expect(results[0]?.text).toContain('"test"');
+		// Pins the reported COMMAND text: a bare `npm test` reference must be
+		// reported as "npm test", never rewritten to "npm run test".
+		expect(results[0]?.text).toContain('"npm test"');
+		expect(results[0]?.text).not.toContain('"npm run test"');
 	});
 
 	it("flags a missing script inside an ordinary code fence", () => {

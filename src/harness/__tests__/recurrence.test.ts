@@ -134,6 +134,17 @@ describe("aggregateRecurrences", () => {
 		expect(aggregateRecurrences(events, { check_id: "a" }).reduce((n: number, r: Recurrence) => n + r.count, 0)).toBe(3);
 	});
 
+	it("preserves only present check ids and agent sources, then sorts sources", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "tool_failure", signature: "tool_failure:shared", check_id: "bash", agent_source: "codex" }),
+			ev({ kind: "tool_failure", signature: "tool_failure:shared", check_id: "bash", agent_source: "claude" }),
+			ev({ kind: "tool_failure", signature: "tool_failure:shared", check_id: undefined, agent_source: undefined }),
+		]);
+		expect(rows).toHaveLength(1);
+		expect(nonNull(rows[0]).check_id).toBe("bash");
+		expect(nonNull(rows[0]).agent_sources).toEqual(["claude", "codex"]);
+	});
+
 	it("returns an empty list for an empty input", () => {
 		expect(aggregateRecurrences([])).toEqual([]);
 	});
@@ -270,15 +281,55 @@ describe("aggregateRecurrences", () => {
 		expect(rows.map((r) => r.signature)).toEqual(["harness_missed:good"]);
 	});
 
+	it("includes an event exactly at the since cutoff", () => {
+		const rows = aggregateRecurrences(
+			[
+				ev({ ts: "2026-05-01T00:00:00.000Z", kind: "harness_missed", signature: "exact" }),
+				ev({ ts: "2026-04-30T23:59:59.999Z", kind: "harness_missed", signature: "before" }),
+			],
+			{ since: "2026-05-01T00:00:00.000Z" },
+		);
+		expect(rows.map((r) => r.signature)).toEqual(["harness_missed:exact"]);
+	});
+
+	it("keeps the latest valid timestamp for each file, including malformed-to-valid repair", () => {
+		const rows = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "s", file: "a.ts", ts: "2026-05-10T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "a.ts", ts: "2026-05-01T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "b.ts", ts: "2026-05-05T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "c.ts", ts: "not-a-date" }),
+			ev({ kind: "harness_missed", signature: "s", file: "c.ts", ts: "2026-05-09T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "d.ts", ts: "2026-05-08T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "d.ts", ts: "also-not-a-date" }),
+			ev({ kind: "harness_missed", signature: "s", file: "e.ts", ts: "2026-05-01T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "s", file: "e.ts", ts: "2026-05-06T00:00:00.000Z" }),
+		]);
+		expect(nonNull(rows[0]).sample_files).toEqual(["a.ts", "c.ts", "d.ts", "e.ts", "b.ts"]);
+	});
+
+	it("orders distinct sample files newest first and preserves insertion order for equal timestamps", () => {
+		const unequal = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "unequal", file: "old.ts", ts: "2026-05-01T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "unequal", file: "new.ts", ts: "2026-05-02T00:00:00.000Z" }),
+		]);
+		expect(nonNull(unequal[0]).sample_files).toEqual(["new.ts", "old.ts"]);
+
+		const equal = aggregateRecurrences([
+			ev({ kind: "harness_missed", signature: "equal", file: "first.ts", ts: "2026-05-01T00:00:00.000Z" }),
+			ev({ kind: "harness_missed", signature: "equal", file: "second.ts", ts: "2026-05-01T00:00:00.000Z" }),
+		]);
+		expect(nonNull(equal[0]).sample_files).toEqual(["first.ts", "second.ts"]);
+	});
+
 	it("caps the signature prefix fed to the assembly ranker (round-9 perf hardening)", () => {
 		// Two signatures that agree on their first > SIGNATURE_ASSEMBLY_CAP chars
 		// but diverge after. If the assembly index only sees a bounded prefix,
 		// both rows score identically — a deterministic proof the O(1)-per-row
 		// bound applies (a long user-supplied harness_missed message can't make
 		// the ranker do unbounded work). No timing assertion (those are flaky).
-		const shared = "z".repeat(300); // longer than the 256-char cap
-		const a = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}AAA` })]);
-		const b = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}BBB` })]);
+		const shared = "q7x-k2p-m9w-z3v-r8t".repeat(20).slice(0, 256);
+		const a = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}${"a".repeat(100)}` })]);
+		const b = aggregateRecurrences([ev({ kind: "harness_missed", signature: `${shared}${"abcdefghijklmnopqrstuvwxyz".repeat(4)}` })]);
 		expect(nonNull(a[0]).assembly_significance).toBe(
 			nonNull(b[0]).assembly_significance,
 		);
@@ -389,6 +440,13 @@ describe("proposeAction", () => {
 		expect(a.detail).toContain("guard-rules.local.json");
 	});
 
+	it("falls back to the full signature when a row has no check id", () => {
+		const a = proposeAction(
+			baseRow({ check_id: undefined, signature: "harness_caught:foo:claude" }),
+		);
+		expect(a.headline).toContain("harness_caught:foo:claude");
+	});
+
 	it("harness_missed → scaffold_rule", () => {
 		const a = proposeAction(
 			baseRow({
@@ -399,6 +457,7 @@ describe("proposeAction", () => {
 		);
 		expect(a.kind).toBe("scaffold_rule");
 		expect(a.headline).toContain("raw-sql-concat");
+		expect(a.detail).toContain("deterministic rule or quality check");
 	});
 
 	it("codebase_existing → cleanup_pr", () => {
@@ -406,14 +465,17 @@ describe("proposeAction", () => {
 			baseRow({
 				kind: "codebase_existing",
 				signature: "codebase_existing:foo",
-				check_id: "foo",
+				check_id: undefined,
 				distinct_files: 12,
 				sample_files: ["a.ts", "b.ts", "c.ts"],
 			}),
 		);
 		expect(a.kind).toBe("cleanup_pr");
-		expect(a.headline).toContain("12");
-		expect(a.detail).toContain("a.ts");
+		expect(a.headline).toContain("12 file(s) with codebase_existing:foo");
+		expect(a.detail).toBe("Fix existing findings across sample files: a.ts, b.ts, c.ts.");
+
+		const empty = proposeAction(baseRow({ kind: "codebase_existing", sample_files: [] }));
+		expect(empty.detail).toContain("none recorded");
 	});
 });
 
@@ -459,6 +521,19 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		expect(nonNull(out[0]).kind).toBe("tool_failure");
 		expect(nonNull(out[0]).check_id).toBe("Bash");
 		expect(nonNull(out[0]).signature).toBe("tool_failure:Bash:enoent:cmd");
+	});
+
+	it("recordToolFailure defaults the timestamp when it is omitted", () => {
+		recordToolFailure({
+			tool_name: "Bash",
+			signature: "tool_failure:Bash:enoent:cmd",
+			agent_source: "claude",
+			session_id: "s1",
+			cwd: dir,
+		});
+		const out = loadRecurrenceEvents(dir);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).ts).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/);
 	});
 
 	it("recordToolFailure never throws on an unwritable cwd", () => {
@@ -571,6 +646,25 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		const out = loadRecurrenceEvents(dir);
 		expect(out).toHaveLength(2);
 		expect(readFileSync(path, "utf-8").length).toBeGreaterThan(0);
+	});
+
+	it("skips valid JSON lines that are not recurrence events", () => {
+		const path = join(dir, ".interlinked", "recurrences.jsonl");
+		recordRecurrenceEvent(ev({ ts: "2026-05-01T00:00:00.000Z" }), dir);
+		writeFileSync(
+			path,
+			[
+				JSON.stringify(ev({ ts: "2026-05-01T00:00:00.000Z" })),
+				JSON.stringify({ ts: 123, kind: "harness_caught" }),
+				JSON.stringify({ ts: "2026-05-01T00:00:00.000Z", kind: "not-a-kind" }),
+				JSON.stringify({ ts: "2026-05-01T00:00:00.000Z" }),
+				JSON.stringify(["2026-05-01T00:00:00.000Z", "harness_caught"]),
+			].join("\n"),
+		);
+		const out = loadRecurrenceEvents(dir);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).kind).toBe("harness_caught");
+		expect(nonNull(out[0]).ts).toBe("2026-05-01T00:00:00.000Z");
 	});
 
 	it("recordHarnessCaught swallows storage errors so the PostToolUse hot path is never aborted", () => {

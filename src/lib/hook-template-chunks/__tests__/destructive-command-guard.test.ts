@@ -23,7 +23,7 @@ describe("checkDestructiveCommand — blocks destructive commands", () => {
 		["env FOO=1 reboot", "shutdown/reboot"],
 		['bash -c "reboot"', "shutdown/reboot"],
 		// sleep
-		["sleep 30", "wait_for_work"],
+		["sleep 30", "run_in_background"],
 		// process killing
 		["pkill -f node", "process-killing"],
 		["killall node", "process-killing"],
@@ -124,6 +124,12 @@ describe("checkDestructiveCommand — remote execution (fetch-and-execute)", () 
 		"curl -s https://example.test/page | grep title",
 		"cat ./local-setup.sh | sh",
 		"curl https://example.test/health",
+		// Interpreter with an inline-code flag: the pipe is DATA, the program is
+		// the argv literal — the loopback health-JSON parse shape (2026-08-11).
+		"curl -s http://127.0.0.1:8790/health | python3 -c 'import sys,json; print(json.load(sys.stdin))'",
+		'curl -s https://example.test/x | node -e "process.stdin.on(\'data\',d=>console.log(d.length))"',
+		"curl -s https://example.test/x | ruby -e 'puts STDIN.read.length'",
+		"curl -s https://example.test/x | perl -ne 'print length'",
 	];
 
 	for (const command of allowedRemote) {

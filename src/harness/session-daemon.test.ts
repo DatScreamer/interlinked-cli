@@ -15,6 +15,9 @@ import { nonNull } from "../lib/non-null.js";
 import { encodeFrame, type RpcMessage, splitFrames } from "./daemon-protocol.js";
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
 import {
+	BIND_ATTEMPTS,
+	BIND_BACKOFF_MS,
+	bindSessionSocket,
 	claimSessionPid,
 	DaemonOwnershipConflictError,
 	type SessionDaemonHandle,
@@ -111,7 +114,138 @@ async function roundTrip(
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Bounded bind retry (audit F1). A transient EADDRINUSE at startup used to
+// make the whole daemon fail; the retry converts the common cases (a
+// predecessor's socket file left behind, a slow teardown) into a normal start
+// — but never by stomping a socket that is actually answering.
+// ---------------------------------------------------------------------------
+describe("bindSessionSocket", () => {
+	// P1: a stale socket file blocks the first attempt; the retry clears it and
+	// binds. The point of the whole mechanism.
+	it("clears a stale (non-answering) socket file and succeeds on a retry", async () => {
+		const socketPath = join(tmp, "retry-stale.sock");
+		writeFileSync(socketPath, ""); // a plain file at the socket path → EADDRINUSE
+		const sleep = vi.fn(async () => {});
+		const server = await bindSessionSocket({
+			socketPath,
+			onConnection: () => {},
+			isServing: async () => false,
+			sleep,
+		});
+		expect(server.listening).toBe(true);
+		expect(sleep).toHaveBeenCalledTimes(1);
+		expect(sleep).toHaveBeenCalledWith(BIND_BACKOFF_MS[0]);
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	});
+
+	// N1: a socket that ANSWERS belongs to a live incumbent — never unlink it,
+	// and do not burn the remaining attempts pretending otherwise.
+	it("refuses to stomp a SERVING socket: fails immediately, file intact", async () => {
+		const socketPath = join(tmp, "retry-serving.sock");
+		writeFileSync(socketPath, "incumbent");
+		const sleep = vi.fn(async () => {});
+		await expect(
+			bindSessionSocket({
+				socketPath,
+				onConnection: () => {},
+				isServing: async () => true,
+				sleep,
+			}),
+		).rejects.toThrow(/EADDRINUSE/);
+		expect(sleep).not.toHaveBeenCalled();
+		expect(readFileSync(socketPath, "utf-8")).toBe("incumbent");
+	});
+
+	// N2: the retry is BOUNDED — a permanently unbindable path throws the last
+	// error after exactly `attempts` tries rather than looping.
+	it("gives up after the bounded number of attempts and throws the last error", async () => {
+		const notADir = join(tmp, "retry-not-a-dir");
+		writeFileSync(notADir, "");
+		const sleep = vi.fn(async () => {});
+		await expect(
+			bindSessionSocket({
+				socketPath: join(notADir, "nested.sock"),
+				onConnection: () => {},
+				isServing: async () => false,
+				sleep,
+			}),
+		).rejects.toThrow();
+		// attempts - 1 backoffs for BIND_ATTEMPTS attempts.
+		expect(sleep).toHaveBeenCalledTimes(BIND_ATTEMPTS - 1);
+	});
+
+	// N3: one attempt means no retry at all (the knob is honored).
+	it("honors an explicit attempts=1 (no retry, no backoff)", async () => {
+		const socketPath = join(tmp, "retry-once.sock");
+		writeFileSync(socketPath, "");
+		const sleep = vi.fn(async () => {});
+		await expect(
+			bindSessionSocket({
+				socketPath,
+				onConnection: () => {},
+				attempts: 1,
+				isServing: async () => false,
+				sleep,
+			}),
+		).rejects.toThrow(/EADDRINUSE/);
+		expect(sleep).not.toHaveBeenCalled();
+	});
+
+	// P2: a happy first bind neither sleeps nor probes.
+	it("binds on the first attempt without sleeping or probing", async () => {
+		const sleep = vi.fn(async () => {});
+		const isServing = vi.fn(async () => false);
+		const server = await bindSessionSocket({
+			socketPath: join(tmp, "retry-clean.sock"),
+			onConnection: () => {},
+			isServing,
+			sleep,
+		});
+		expect(server.listening).toBe(true);
+		expect(sleep).not.toHaveBeenCalled();
+		expect(isServing).not.toHaveBeenCalled();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	});
+
+	// P3: a non-EADDRINUSE failure retries without touching the socket path —
+	// the ownership rule only governs the "someone may own this" case.
+	it("retries a non-EADDRINUSE failure without probing or unlinking", async () => {
+		const socketPath = join(tmp, "retry-other.sock");
+		writeFileSync(socketPath, "untouched");
+		const isServing = vi.fn(async () => false);
+		// Binding under a plain file yields ENOTDIR, not EADDRINUSE — the
+		// branch that retries without consulting ownership at all.
+		const sleep = vi.fn(async () => {});
+		await expect(
+			bindSessionSocket({
+				socketPath: join(socketPath, "nested.sock"),
+				onConnection: () => {},
+				isServing,
+				sleep,
+			}),
+		).rejects.toThrow();
+		expect(isServing).not.toHaveBeenCalled();
+		expect(readFileSync(socketPath, "utf-8")).toBe("untouched");
+	});
+});
+
 describe("startSessionDaemon", () => {
+	// P: the daemon's bind goes THROUGH the retry — a stale socket file left by
+	// a dead predecessor no longer fails the start.
+	it("starts over a stale leftover socket file (retry path, end to end)", async () => {
+		const paths = makePaths("stale-retry");
+		mkdirSync(tmp, { recursive: true });
+		writeFileSync(paths.socket, "");
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "stale-retry",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+		expect(existsSync(paths.socket)).toBe(true);
+		expect(existsSync(paths.pid)).toBe(true);
+	});
+
 	it("creates pid + socket files and returns a handle", async () => {
 		const paths = makePaths("t1");
 		daemon = await startSessionDaemon({
@@ -242,6 +376,7 @@ describe("startSessionDaemon", () => {
 		});
 		const asError = response as { error?: { code: string } };
 		expect(asError.error?.code).toBe("bad_request");
+		expect(response.id).toBe("unknown");
 	});
 
 	// -------------------------------------------------------------------------
@@ -276,6 +411,7 @@ describe("startSessionDaemon", () => {
 		// contract instead of the generic survive-on-error crash handler.
 		expect(caught).toBeInstanceOf(DaemonOwnershipConflictError);
 		expect((caught as DaemonOwnershipConflictError).ownerPid).toBe(1);
+		expect((caught as DaemonOwnershipConflictError).name).toBe("DaemonOwnershipConflictError");
 		expect((caught as Error).message).toContain("already running");
 		// A losing claim must never touch the socket or pid path — the
 		// pre-seeded placeholder content proves nothing rebound over them.
@@ -302,6 +438,33 @@ describe("startSessionDaemon", () => {
 		expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
 		expect(existsSync(paths.socket)).toBe(true);
 		killSpy.mockRestore();
+	});
+
+	it("(b2) a failed reap is logged but does not prevent takeover", async () => {
+		const paths = makePaths("owned-zombie-log");
+		writeFileSync(paths.pid, "1");
+		writeFileSync(paths.socket, "");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(false);
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			const error = new Error("operation not permitted") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+		try {
+			daemon = await startSessionDaemon({
+				paths,
+				session_id: "owned-zombie-log",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			});
+			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Could not signal zombie incumbent PID 1"));
+			expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
+		} finally {
+			killSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("(c) a dead pid takes over without probing the socket", async () => {
@@ -395,6 +558,33 @@ describe("startSessionDaemon", () => {
 		const claim = claimSessionPid(pidPath, process.pid);
 		expect(claim).toEqual({ claimed: true });
 		expect(readFileSync(pidPath, "utf-8")).toBe(String(process.pid));
+	});
+
+	it("claimSessionPid: an existing claim by this same pid is re-claimed", () => {
+		const pidPath = join(tmp, "self-claim.pid");
+		writeFileSync(pidPath, String(process.pid));
+
+		expect(claimSessionPid(pidPath, process.pid)).toEqual({ claimed: true });
+		expect(readFileSync(pidPath, "utf-8")).toBe(String(process.pid));
+	});
+
+	it("claimSessionPid: zero is not a valid persisted pid", () => {
+		const pidPath = join(tmp, "zero-claim.pid");
+		writeFileSync(pidPath, "0");
+
+		expect(claimSessionPid(pidPath, process.pid)).toEqual({ claimed: true });
+		expect(readFileSync(pidPath, "utf-8")).toBe(String(process.pid));
+	});
+
+	it("claimSessionPid: a valid foreign pid remains a conflict", () => {
+		const pidPath = join(tmp, "valid-foreign-claim.pid");
+		writeFileSync(pidPath, String(process.pid));
+		const claimingPid = process.pid === 1 ? 2 : 1;
+
+		expect(claimSessionPid(pidPath, claimingPid)).toEqual({
+			claimed: false,
+			ownerPid: process.pid,
+		});
 	});
 
 	it("stop() removes the pid and socket files", async () => {
@@ -549,6 +739,46 @@ describe("startSessionDaemon", () => {
 		expect(existsSync(paths.pid)).toBe(false);
 		expect(existsSync(paths.socket)).toBe(false);
 		daemon = null;
+	});
+
+	it("the idle-shutdown poller stops at the inactivity threshold", async () => {
+		vi.useFakeTimers();
+		try {
+			const paths = makePaths("idle-boundary");
+			daemon = await startSessionDaemon({
+				paths,
+				session_id: "idle-boundary",
+				idle_shutdown_ms: 100,
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			});
+
+			await vi.advanceTimersByTimeAsync(99);
+			expect(existsSync(paths.pid)).toBe(true);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(existsSync(paths.pid)).toBe(false);
+			daemon = null;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("the default idle window does not shut down immediately", async () => {
+		vi.useFakeTimers();
+		try {
+			const paths = makePaths("idle-default");
+			daemon = await startSessionDaemon({
+				paths,
+				session_id: "idle-default",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			});
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(existsSync(paths.pid)).toBe(true);
+			await daemon.stop();
+			daemon = null;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("the idle-shutdown poller does not fire while requests are still in flight (line 202 true side)", async () => {

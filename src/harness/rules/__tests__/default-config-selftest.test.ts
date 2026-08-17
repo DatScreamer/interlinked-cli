@@ -313,7 +313,7 @@ describe("DEFAULT_CONFIG — commit_cadence", () => {
 // ---------------------------------------------------------------------------
 
 describe("DEFAULT_CONFIG — verification_stop_checks", () => {
-	it("pins the whole object — all nine axes on by default", () => {
+	it("pins the whole object — all ten axes on by default", () => {
 		expect(DEFAULT_CONFIG.verification_stop_checks).toEqual({
 			enabled: true,
 			warn_unverified_code: true,
@@ -324,6 +324,7 @@ describe("DEFAULT_CONFIG — verification_stop_checks", () => {
 			warn_unresolved_red: true,
 			warn_spec_drift: true,
 			warn_review_findings: true,
+			warn_slow_tests: true,
 		});
 	});
 });

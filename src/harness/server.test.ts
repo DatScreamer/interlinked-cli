@@ -69,6 +69,11 @@ interface Captured {
 		writeReviewPendingMarker: Mock;
 	};
 	reservationEventSink: ((event: unknown) => void) | null;
+	/** The first constructor arg `ReservationManager` was built with this load
+	 *  (`serverBridge || undefined`) — captured so the `||`/ternary mutants on
+	 *  that expression (server.ts ~line 340) are distinguishable from the
+	 *  bridge itself, which `FakeReservationManager` otherwise discards. */
+	reservationManagerBridgeArg: unknown;
 }
 
 interface StripResult {
@@ -131,6 +136,7 @@ const cap: Captured = {
 		writeReviewPendingMarker: vi.fn(),
 	},
 	reservationEventSink: null,
+	reservationManagerBridgeArg: undefined,
 };
 
 // Per-test override for what loadRules returns (rebuilt fresh in beforeEach).
@@ -347,10 +353,13 @@ vi.mock("./session-paths.js", () => ({
 	// No foreign daemon in the mocked world — the anti-stomp guard must not
 	// read the real repo's live harness.pid and process.exit() the test worker.
 	liveForeignDaemonPid: vi.fn(() => null),
-	// Default: an incumbent (when `liveForeignDaemonPid` returns non-null)
-	// answers its socket — matches the pre-fix behavior for any test that
-	// doesn't override it.
-	isDaemonSocketServing: vi.fn(async () => true),
+	// Default: NOTHING answers the socket path. Since 2026-08-15 the bind-time
+	// verdict comes from a CONNECT rather than the pid file (see
+	// server/incumbent-check.ts), so a default of "serving" would make EVERY
+	// server load in this file take the defer-and-exit(0) branch. A refused
+	// probe is the ordinary "stale socket file, take over" startup.
+	isDaemonSocketServing: vi.fn(async () => false),
+	daemonSocketPaths: vi.fn(() => []),
 }));
 
 // ---------------------------------------------------------------------------
@@ -375,8 +384,9 @@ class FakeReservationManager {
 	getAll = vi.fn(() => []);
 	shutdown = reservationShutdownMock;
 	releaseAllForAgent = releaseAllForAgentMock;
-	constructor(_bridge: unknown, _b: unknown, sink: (e: unknown) => void) {
+	constructor(bridgeArg: unknown, _b: unknown, sink: (e: unknown) => void) {
 		cap.reservationEventSink = sink;
+		cap.reservationManagerBridgeArg = bridgeArg;
 	}
 }
 class FakeErrorHistory {
@@ -476,6 +486,21 @@ vi.mock("./check-pipeline/builtin-verify-passes.js", () => ({
 }));
 vi.mock("./server/collection-writer.js", () => ({
 	writeCollectionRecord: vi.fn(),
+}));
+// activity-writer — real module in production (server.ts imports it directly,
+// unmocked, until this addition). Mocked here so writeCollectionRecord's
+// conditional `if (decision) writeGuardDecisionRecord(...)` branch (mutation
+// hardening below) can be asserted by direct call-presence rather than by
+// sniffing appended file content through several layers of real I/O.
+vi.mock("./server/activity-writer.js", () => ({
+	writeActivityRecord: vi.fn(),
+	writeGuardDecisionRecord: vi.fn(),
+}));
+// mutation/manifest — real module in production. Mocked so shrinkIdleMemory's
+// clearManifestCache() call can be asserted directly instead of only "does
+// not throw" (which a no-op mutant also satisfies).
+vi.mock("./mutation/manifest.js", () => ({
+	clearManifestCache: vi.fn(),
 }));
 vi.mock("./evaluator/pre-tool.js", () => ({
 	resetProjectSetupWarningsCache: vi.fn(),
@@ -645,6 +670,7 @@ beforeEach(() => {
 	cap.sessionDaemonOpts = null;
 	cap.socketLifecycleDeps = null;
 	cap.reservationEventSink = null;
+	cap.reservationManagerBridgeArg = undefined;
 	cap.statusWriters.writeClassifierStatus = vi.fn();
 	cap.statusWriters.writeScannerStatus = vi.fn();
 	cap.statusWriters.writeReviewPendingMarker = vi.fn();
@@ -1294,7 +1320,9 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		const sp = await import("./session-paths.js");
 		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
-		vi.mocked(sp.isDaemonSocketServing).mockReset().mockResolvedValue(true);
+		// Default per test: nobody answers → the ordinary take-over path. Tests
+		// that assert the DEFER branch set this to true themselves.
+		vi.mocked(sp.isDaemonSocketServing).mockReset().mockResolvedValue(false);
 	});
 
 	async function ledgerRows(): Promise<string[]> {
@@ -1308,6 +1336,7 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 	it("raw-legacy path: a live foreign PID on harness.pid exits and records anti-stomp", async () => {
 		const sp = await import("./session-paths.js");
 		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(true);
 
 		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
 		expect(processExitSpy).toHaveBeenCalledWith(0);
@@ -1359,21 +1388,39 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		killSpy.mockRestore();
 	});
 
-	it("raw-legacy path: a dead pid takes over without probing the socket", async () => {
+	// Since 2026-08-15 a socket file is ALWAYS probed, pid file or not: a stale
+	// socket with no pid file is exactly the state that made every newcomer
+	// exit `startup-failed` on EADDRINUSE while nothing served.
+	it("raw-legacy path: a stale socket with no live owner is probed, then taken over", async () => {
 		const sp = await import("./session-paths.js");
 		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
 
 		await loadServer();
 		expect(processExitSpy).not.toHaveBeenCalled();
-		expect(vi.mocked(sp.isDaemonSocketServing)).not.toHaveBeenCalled();
+		expect(vi.mocked(sp.isDaemonSocketServing)).toHaveBeenCalledWith(
+			expect.stringContaining("harness.sock"),
+		);
 		const rows = await ledgerRows();
 		expect(rows.some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+	});
+
+	it("raw-legacy path: a SERVING socket with NO pid file is still deferred to (never stomped)", async () => {
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(null);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(true);
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		expect(killSpy).not.toHaveBeenCalled();
+		killSpy.mockRestore();
 	});
 
 	it("raw-legacy path: a throwing probe fails safe and defers to the incumbent (exits)", async () => {
 		const sp = await import("./session-paths.js");
 		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
-		vi.mocked(sp.isDaemonSocketServing).mockRejectedValue(new Error("unexpected probe failure"));
+		vi.mocked(sp.isDaemonSocketServing).mockImplementation(() => {
+			throw new Error("unexpected probe failure");
+		});
 
 		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
 		expect(processExitSpy).toHaveBeenCalledWith(0);
@@ -1397,13 +1444,108 @@ describe("harness server.ts — anti-stomp loser paths", () => {
 		);
 	});
 
-	it("framed path: a genuine (non-ownership) startup failure is NOT swallowed as anti-stomp", async () => {
+	// P: a genuine (non-ownership) framed startup failure exits LOUDLY with the
+	// distinct startup code and a `startup-failed` ledger row — it is neither
+	// mislabeled anti-stomp nor (the F1 bug) rethrown into
+	// `installCrashResilience()`, which would keep a socket-less process alive.
+	it("framed path: a genuine (non-ownership) startup failure exits 78 and records startup-failed", async () => {
 		const sd = await import("./session-daemon.js");
 		vi.mocked(sd.startSessionDaemon).mockRejectedValueOnce(new Error("disk full"));
 
-		await expect(loadServer()).rejects.toThrow("disk full");
-		expect(processExitSpy).not.toHaveBeenCalled();
-		expect((await ledgerRows()).some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(78\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(78);
+		const rows = await ledgerRows();
+		expect(rows.some((r) => r.includes('"reason":"anti-stomp"'))).toBe(false);
+		expect(
+			rows.some(
+				(r) => r.includes('"reason":"startup-failed"') && r.includes(`"pid":${process.pid}`),
+			),
+		).toBe(true);
+	});
+
+	// P: the raw listener's bind failure takes the same terminal path — the
+	// reporter handed to `startRawServer` is the startup guard itself.
+	it("raw path: a listen failure exits 78 and records startup-failed", async () => {
+		await loadServer();
+		const reporter = cap.socketSetters.startRawServer?.mock.calls[0]?.[0] as
+			| { fail: (what: string, err: unknown) => void }
+			| undefined;
+		expect(reporter).toBeDefined();
+		expect(() =>
+			reporter?.fail("raw socket bind", Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" })),
+		).toThrow(/process\.exit\(78\)/);
+		expect(processExitSpy).toHaveBeenCalledWith(78);
+		expect((await ledgerRows()).some((r) => r.includes('"reason":"startup-failed"'))).toBe(true);
+	});
+
+	// P: the ledger records `listening` only when every socket this protocol
+	// mode runs has REPORTED a bind — the row that lets a reader tell a
+	// serving daemon from one that only got as far as `start`.
+	it("records the `listening` ledger row once both sockets report (dual mode)", async () => {
+		const fs = await import("node:fs");
+		await loadServer();
+		const listeningRows = (): string[] =>
+			vi
+				.mocked(fs.appendFileSync)
+				.mock.calls.map((call) => String(call[1]))
+				.filter((line) => line.includes('"event":"listening"'));
+		// Framed reported during startup; the raw listener has not yet.
+		expect(listeningRows()).toHaveLength(0);
+		const reporter = cap.socketSetters.startRawServer?.mock.calls[0]?.[0] as
+			| { note: (which: "raw" | "framed") => void }
+			| undefined;
+		reporter?.note("raw");
+		expect(listeningRows()).toHaveLength(1);
+		// Idempotent: a second report does not write a second row.
+		reporter?.note("raw");
+		expect(listeningRows()).toHaveLength(1);
+	});
+
+	// -------------------------------------------------------------------------
+	// Log-content hardening (mutation kills for the StringLiteral `detail`
+	// arguments and the zombie-reap message — a passing exit/ledger assertion
+	// alone does not pin what the human-facing log line actually said).
+	// -------------------------------------------------------------------------
+
+	it("raw-legacy anti-stomp log names 'the raw socket' as the contested resource", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(true);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logged).toContain("already owns the raw socket for");
+		errSpy.mockRestore();
+	});
+
+	it("framed anti-stomp log names the framed session id as the contested resource", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const sd = await import("./session-daemon.js");
+		vi.mocked(sd.startSessionDaemon).mockRejectedValueOnce(
+			new sd.DaemonOwnershipConflictError("default", 24680),
+		);
+
+		await expect(loadServer()).rejects.toThrow(/process\.exit\(0\)/);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logged).toContain('already owns the framed session "default" for');
+		errSpy.mockRestore();
+	});
+
+	it("logs the exact zombie-reap message when a live-but-silent incumbent is taken over", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.liveForeignDaemonPid).mockReturnValue(13579);
+		vi.mocked(sp.isDaemonSocketServing).mockResolvedValue(false);
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+		await loadServer();
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logged).toContain(
+			"exists but refuses connections — removing the stale socket (pid 13579 is alive but not serving) and binding.",
+		);
+		killSpy.mockRestore();
+		errSpy.mockRestore();
 	});
 });
 
@@ -1540,3 +1682,782 @@ function makeScanner(
 	};
 	return scanner;
 }
+
+// ===========================================================================
+// Mutation-kill hardening (survivor campaign). Each block below targets one
+// or more specific surviving mutant sites recorded against server.ts, cross-
+// referenced by exact (mutator, siteId) against the committed mutation
+// manifest. Comments name the mutation being killed, not just the behavior.
+// ===========================================================================
+
+describe("harness server.ts — reservation event sink (mutation hardening)", () => {
+	it("appends the exact JSON-serialized event line, and skips mkdirSync, when the dir already exists", async () => {
+		const fs = await import("node:fs");
+		vi.mocked(fs.existsSync).mockReturnValue(true);
+		await loadServer();
+		vi.mocked(fs.appendFileSync).mockClear();
+		vi.mocked(fs.mkdirSync).mockClear();
+		const event = { kind: "grant", file: "z.ts" };
+		cap.reservationEventSink?.(event);
+		// Kills: whole-body wipe, try-block wipe, and the template->`` mutant.
+		expect(vi.mocked(fs.appendFileSync)).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(fs.appendFileSync)).toHaveBeenCalledWith(
+			expect.stringContaining("/.interlinked/reservation-events.jsonl"),
+			`${JSON.stringify(event)}\n`,
+		);
+		// Kills: the two ".interlinked"->"" StringLiteral mutants and the
+		// "reservation-events.jsonl"->"" mutant (all collapse the path above).
+		// Kills: !existsSync(dir)->existsSync(dir), and the ConditionalExpression
+		// ->true variant (both would call mkdirSync despite the dir existing).
+		expect(vi.mocked(fs.mkdirSync)).not.toHaveBeenCalled();
+	});
+
+	it("creates the directory with exactly {recursive:true} only when it is missing", async () => {
+		const fs = await import("node:fs");
+		vi.mocked(fs.existsSync).mockReturnValue(false);
+		await loadServer();
+		vi.mocked(fs.mkdirSync).mockClear();
+		cap.reservationEventSink?.({ kind: "grant" });
+		// Kills: !existsSync(dir)->existsSync(dir), ConditionalExpression->false
+		// (both would skip mkdirSync despite the dir being absent).
+		expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledTimes(1);
+		// Kills: {recursive:true}->{} and the inner true->false BooleanLiteral.
+		expect(vi.mocked(fs.mkdirSync)).toHaveBeenLastCalledWith(expect.any(String), {
+			recursive: true,
+		});
+	});
+});
+
+describe("harness server.ts — rules-reload optional chaining (mutation hardening)", () => {
+	it("tolerates an undefined content_scanner via optional chaining on both enabled and allowlist reads", async () => {
+		await loadServer();
+		const rulesNoScanner = makeRules();
+		delete rulesNoScanner.content_scanner;
+		cap.statusWriters.writeScannerStatus.mockClear();
+		// Kills: `rules.content_scanner?.enabled` -> `.enabled` (no `?.`) and
+		// `rules.content_scanner?.allowlist` -> `.allowlist` (no `?.`) — either
+		// would throw a TypeError reading a property off `undefined`.
+		expect(() => cap.rulesReloadCb?.(rulesNoScanner)).not.toThrow();
+		expect(cap.statusWriters.writeScannerStatus).toHaveBeenCalledWith("disabled");
+	});
+});
+
+describe("harness server.ts — auto_coordination merge (mutation hardening)", () => {
+	it("module-scope autoCoordConfig merges rules.auto_coordination when present", async () => {
+		rulesOverride = makeRules({ auto_coordination: { enabled: true, interval_ms: 42 } as never });
+		await loadServer();
+		const cfg = cap.eventLoopDeps?.ctx.autoCoordConfig as Record<string, unknown>;
+		// Kills (module scope): ConditionalExpression->true/false and the
+		// ||->&& LogicalOperator, and the whole-object-literal->{} mutant —
+		// all of them fail to carry `enabled:true, interval_ms:42` through.
+		expect(cfg).toMatchObject({ enabled: true, interval_ms: 42 });
+	});
+
+	it("rules-reload callback re-merges rules.auto_coordination via Object.assign", async () => {
+		await loadServer();
+		const cfg = cap.eventLoopDeps?.ctx.autoCoordConfig as Record<string, unknown>;
+		cap.rulesReloadCb?.(makeRules({ auto_coordination: { enabled: true, interval_ms: 99 } as never }));
+		// Kills (reload-callback scope): ConditionalExpression->true/false and
+		// the ||->&& LogicalOperator on `rules.auto_coordination || {}`.
+		expect(cfg).toMatchObject({ enabled: true, interval_ms: 99 });
+	});
+});
+
+describe("harness server.ts — log-message content (mutation hardening)", () => {
+	it("reload callback logs the exact rules-active count message (verbose)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]);
+		errSpy.mockClear();
+		cap.rulesReloadCb?.(makeRules({ rules: [{ id: "r1" } as never, { id: "r2" } as never] }));
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `Rules reloaded: ${...} rules active` -> ``.
+		expect(logged).toContain("Rules reloaded: 2 rules active");
+		errSpy.mockRestore();
+	});
+
+	it("logs 'Route map initialized' on the deferred background-init tick (verbose)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: "Route map initialized" -> "".
+		expect(logged).toContain("Route map initialized");
+		errSpy.mockRestore();
+	});
+
+	it("logs the trigram index base commit truncated to 8 chars, not the raw commit", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		trigramLoadResult = {
+			files: ["a.ts"],
+			baseCommit: "abcdef1234567890",
+			incrementalUpdate: vi.fn(() => 0),
+		};
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `trigramIndex.baseCommit.slice(0, 8)` -> `trigramIndex.baseCommit`.
+		expect(logged).toContain("base abcdef12");
+		expect(logged).not.toContain("abcdef1234567890");
+		errSpy.mockRestore();
+	});
+
+	it("logs the exact 'files changed since base commit' message when the index actually updates", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		trigramLoadResult = {
+			files: ["x.ts"],
+			baseCommit: "cafebabe11112222",
+			incrementalUpdate: vi.fn(() => 4),
+		};
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `updated > 0` -> false, the surrounding block -> {}, and the
+		// message template -> ``.
+		expect(logged).toContain("Trigram index updated: 4 files changed since base commit");
+		errSpy.mockRestore();
+	});
+
+	it("logs the exact lost-agent message on the periodic sweep (verbose)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]);
+		errSpy.mockClear();
+		detectLostAgentsMock.mockReturnValueOnce([{ name: "ghost-42" }]);
+		vi.advanceTimersByTime(2 * 60 * 1000);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `Agent lost (no events for 5min): ${agent.name}` -> ``.
+		expect(logged).toContain("Agent lost (no events for 5min): ghost-42");
+		errSpy.mockRestore();
+	});
+
+	it("shutdownWith records reason 'signal' for both the SIGINT and SIGTERM handlers", async () => {
+		const fs = await import("node:fs");
+		await loadServer();
+
+		vi.mocked(fs.appendFileSync).mockClear();
+		lastSignalHandler("SIGINT")?.();
+		let rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		// Kills: the SIGINT handler's own "signal" -> "" StringLiteral.
+		expect(rows.some((r) => r.includes('"event":"exit"') && r.includes('"reason":"signal"'))).toBe(
+			true,
+		);
+
+		vi.mocked(fs.appendFileSync).mockClear();
+		lastSignalHandler("SIGTERM")?.();
+		rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		// Kills: the SIGTERM handler's own, separately-mutated "signal" -> "".
+		expect(rows.some((r) => r.includes('"event":"exit"') && r.includes('"reason":"signal"'))).toBe(
+			true,
+		);
+	});
+});
+
+describe("harness server.ts — log() internals (mutation hardening)", () => {
+	it("stays silent when --verbose is not set (VERBOSE stays false)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(); // no --verbose
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `VERBOSE` -> `true` inside log(), AND the parseArgs `verbose`
+		// option's `default: false` -> `default: true` (both make log() noisy
+		// even when --verbose was never passed).
+		expect(logged).not.toContain("[harness ");
+		errSpy.mockRestore();
+	});
+
+	it("timestamps each verbose line as HH:MM:SS, not the full ISO-8601 string", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `new Date().toISOString().slice(11, 19)` -> `new Date().toISOString()`.
+		expect(logged).toMatch(/\[harness \d{2}:\d{2}:\d{2}\] /);
+		expect(logged).not.toMatch(/\[harness \d{4}-\d{2}-\d{2}T/);
+		errSpy.mockRestore();
+	});
+
+	it("sponsor runtime's log callback actually reaches the daemon's verbose log output", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]);
+		errSpy.mockClear();
+		capturedSponsorOpts?.log("sponsor-probe-xyz");
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `(msg) => log(msg)` -> `() => undefined` for the sponsor
+		// runtime's `log` option — a bare not.toThrow() also passes a no-op.
+		expect(logged).toContain("sponsor-probe-xyz");
+		errSpy.mockRestore();
+	});
+
+	it("parseArgs tolerates an unrecognized flag (strict: false) instead of throwing", async () => {
+		// Kills: the parseArgs `strict: false` -> `strict: true` BooleanLiteral —
+		// Node's parseArgs throws ERR_PARSE_ARGS_UNKNOWN_OPTION in strict mode
+		// for a flag not declared in `options`, which would reject this import.
+		await expect(loadServer(["--not-a-real-flag", "value"])).resolves.toBeUndefined();
+	});
+});
+
+describe("harness server.ts — refreshStatuslineSnapshot (mutation hardening)", () => {
+	it("writes exact indexStatus/indexFiles/serverBridgeConnected fields when the index and bridge are live", async () => {
+		const snap = await import("./statusline-snapshot.js");
+		trigramLoadResult = {
+			files: ["a.ts", "b.ts", "c.ts"],
+			baseCommit: "cafe1234",
+			incrementalUpdate: vi.fn(() => 0),
+		};
+		serverBridgeOverride = { shutdown: vi.fn() };
+		await loadServer();
+		vi.mocked(snap.writeStatuslineArtifacts).mockClear();
+		cap.rulesReloadCb?.(makeRules()); // triggers a fresh refreshStatuslineSnapshot()
+		// Kills: the whole-body -> {} wipe (nothing would be written at all).
+		expect(vi.mocked(snap.writeStatuslineArtifacts)).toHaveBeenCalledTimes(1);
+		const arg = vi.mocked(snap.writeStatuslineArtifacts).mock.calls[0]?.[0] as unknown as Record<
+			string,
+			unknown
+		>;
+		// Kills: "ready" -> "" and the whole-object-argument -> {} mutant.
+		expect(arg.indexStatus).toBe("ready");
+		// Kills: `trigramIndex?.files.length ?? 0` -> `... && 0`.
+		expect(arg.indexFiles).toBe(3);
+		// Kills: `serverBridge !== null` -> false (ConditionalExpression) and
+		// the `!==` -> `===` EqualityOperator mutant.
+		expect(arg.serverBridgeConnected).toBe(true);
+	});
+
+	it("reports indexStatus 'missing', indexFiles 0, and serverBridgeConnected false when idle/local-only", async () => {
+		const snap = await import("./statusline-snapshot.js");
+		trigramLoadResult = null;
+		serverBridgeOverride = null;
+		await loadServer();
+		vi.mocked(snap.writeStatuslineArtifacts).mockClear();
+		cap.rulesReloadCb?.(makeRules());
+		const arg = vi.mocked(snap.writeStatuslineArtifacts).mock.calls[0]?.[0] as unknown as Record<
+			string,
+			unknown
+		>;
+		// Kills: "missing" -> "".
+		expect(arg.indexStatus).toBe("missing");
+		// Kills the `??` -> `&&` mutant from the opposite side (undefined && 0
+		// stays undefined, not 0).
+		expect(arg.indexFiles).toBe(0);
+		// Kills the ConditionalExpression->true and `===` variants from the
+		// opposite side (both would report `true` here).
+		expect(arg.serverBridgeConnected).toBe(false);
+	});
+});
+
+describe("harness server.ts — resetIdleTimer internals (mutation hardening)", () => {
+	it("does not call clearTimeout on the very first arm (idleTimer starts undefined)", async () => {
+		const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+		clearSpy.mockClear();
+		await loadServer(["--idle-timeout", "5000"]);
+		// loadServer's own bottom-of-file resetIdleTimer() call is the first
+		// ever call in this fresh module instance, so idleTimer was undefined.
+		// Kills: `idleTimer` -> `true` (ConditionalExpression).
+		expect(clearSpy).not.toHaveBeenCalled();
+		clearSpy.mockRestore();
+	});
+
+	it("calls clearTimeout to cancel a previously armed timer on a second call", async () => {
+		const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+		await loadServer(["--idle-timeout", "5000"]);
+		clearSpy.mockClear();
+		cap.eventLoopDeps?.resetIdleTimer(); // second call -> idleTimer now truthy
+		// Kills: `idleTimer` -> `false` (ConditionalExpression).
+		expect(clearSpy).toHaveBeenCalledTimes(1);
+		clearSpy.mockRestore();
+	});
+
+	it("idle-timeout expiry logs the exact minutes message and records reason 'idle-timeout'", async () => {
+		const fs = await import("node:fs");
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--idle-timeout", String(2 * 60 * 1000)]); // 2 minutes
+		vi.mocked(fs.appendFileSync).mockClear();
+		cap.eventLoopDeps?.resetIdleTimer();
+		vi.advanceTimersByTime(2 * 60 * 1000);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: the `Shutting down after ${...}min idle` template -> ``, and
+		// `IDLE_TIMEOUT_MS / MS_PER_MINUTE` -> `*` (would print a huge number).
+		expect(logged).toContain("Shutting down after 2min idle");
+		const rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		// Kills: "idle-timeout" -> "" (the shutdownWith reason argument).
+		expect(rows.some((r) => r.includes('"reason":"idle-timeout"'))).toBe(true);
+		errSpy.mockRestore();
+	});
+});
+
+describe("harness server.ts — noteActivityAndResetIdleTimer (mutation hardening)", () => {
+	it("updates lastHookEventAtMs so hasRecentActivity flips true and lastEventAtMs becomes positive", async () => {
+		await loadServer();
+		expect(capturedSponsorOpts?.hasRecentActivity()).toBe(false); // no event recorded yet
+		cap.eventLoopDeps?.resetIdleTimer(); // this callback IS noteActivityAndResetIdleTimer
+		// Kills: the whole function body -> {} (a no-op leaves both signals at
+		// their initial/absent state).
+		expect(capturedSponsorOpts?.hasRecentActivity()).toBe(true);
+		expect(capturedDaemonTimerHooks?.lastEventAtMs?.()).toBeGreaterThan(0);
+	});
+});
+
+describe("harness server.ts — syncRuntimeIn / syncRuntimeOut (mutation hardening)", () => {
+	it("syncRuntimeIn pushes the module-level trigramIndex into the runtime context", async () => {
+		trigramLoadResult = { files: ["p.ts"], baseCommit: "1234567890abcdef", incrementalUpdate: vi.fn(() => 0) };
+		await loadServer();
+		const ctx = cap.eventLoopDeps?.ctx as Record<string, unknown>;
+		// Corrupt the runtime-context copy; syncRuntimeIn must overwrite it back
+		// from the module-level `trigramIndex` let.
+		ctx.trigramIndex = "SENTINEL" as never;
+		cap.eventLoopDeps?.syncRuntimeIn();
+		// Kills: the whole syncRuntimeIn body -> {}.
+		expect(ctx.trigramIndex).not.toBe("SENTINEL");
+		expect((ctx.trigramIndex as { files: string[] } | null)?.files).toEqual(["p.ts"]);
+	});
+
+	it("syncRuntimeOut pulls the runtime context's trigramIndex back into module state (observable via refreshStatuslineSnapshot)", async () => {
+		const snap = await import("./statusline-snapshot.js");
+		await loadServer();
+		const ctx = cap.eventLoopDeps?.ctx as Record<string, unknown>;
+		ctx.trigramIndex = { files: new Array(9).fill("x"), baseCommit: "deadbeef00000000" } as never;
+		cap.eventLoopDeps?.syncRuntimeOut();
+		vi.mocked(snap.writeStatuslineArtifacts).mockClear();
+		// refreshStatuslineSnapshot reads the MODULE-LEVEL `trigramIndex`, not
+		// ctx.trigramIndex directly, so this only reflects the sentinel if
+		// syncRuntimeOut actually ran.
+		cap.rulesReloadCb?.(makeRules());
+		const arg = vi.mocked(snap.writeStatuslineArtifacts).mock.calls[0]?.[0] as unknown as Record<
+			string,
+			unknown
+		>;
+		// Kills: the whole syncRuntimeOut body -> {}.
+		expect(arg.indexFiles).toBe(9);
+	});
+});
+
+describe("harness server.ts — writeCollectionRecord (mutation hardening)", () => {
+	it("forwards the exact event to both the collection writer and the activity mirror", async () => {
+		const cw = await import("./server/collection-writer.js");
+		const aw = await import("./server/activity-writer.js");
+		await loadServer();
+		const event = { hook_event: "PostToolUse", session_id: "s2" };
+		cap.eventLoopDeps?.writeCollectionRecord(event);
+		// Kills: the whole writeCollectionRecord body -> {} (neither writer
+		// would ever be called).
+		expect(vi.mocked(cw.writeCollectionRecord)).toHaveBeenCalledWith(event, expect.any(String));
+		expect(vi.mocked(aw.writeActivityRecord)).toHaveBeenCalledWith(event, expect.any(String));
+	});
+
+	it("calls writeGuardDecisionRecord only when a decision is provided (the `if (decision)` gate)", async () => {
+		const aw = await import("./server/activity-writer.js");
+		await loadServer();
+		// This mock's call history is NOT reset by resetModules() between
+		// tests (it is a bare vi.fn() named-export mock, not a per-import
+		// constructed class instance) — clear explicitly so the count below
+		// reflects only this test's own actions.
+		vi.mocked(aw.writeGuardDecisionRecord).mockClear();
+		const event = { hook_event: "PreToolUse", session_id: "s3" };
+		const decision = { decision: "block", reason: "x" } as unknown as HarnessDecision;
+
+		cap.eventLoopDeps?.writeCollectionRecord(event, decision);
+		// Kills: `decision` -> `false` (ConditionalExpression) — would never
+		// call the guard-decision writer even when a real decision is passed.
+		expect(vi.mocked(aw.writeGuardDecisionRecord)).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(aw.writeGuardDecisionRecord)).toHaveBeenCalledWith(
+			event,
+			decision,
+			expect.any(String),
+		);
+
+		vi.mocked(aw.writeGuardDecisionRecord).mockClear();
+		cap.eventLoopDeps?.writeCollectionRecord(event); // no decision this time
+		// Kills: `decision` -> `true` (ConditionalExpression) — would call the
+		// guard-decision writer even with no decision at all.
+		expect(vi.mocked(aw.writeGuardDecisionRecord)).not.toHaveBeenCalled();
+	});
+});
+
+describe("harness server.ts — shutdownWith arithmetic (mutation hardening)", () => {
+	it("computes exact rss/heap/ext MB and a small uptime_s using the documented divisions", async () => {
+		const fs = await import("node:fs");
+		const memSpy = vi.spyOn(process, "memoryUsage").mockReturnValue({
+			rss: 209_715_200, // 200 MiB
+			heapTotal: 100_000_000,
+			heapUsed: 104_857_600, // 100 MiB
+			external: 15_728_640, // 15 MiB
+			arrayBuffers: 1_048_576, // 1 MiB -> ext total 16 MiB
+		} as never);
+		await loadServer();
+		vi.mocked(fs.appendFileSync).mockClear();
+		vi.advanceTimersByTime(60_000); // 60s of "uptime" for a stable, non-zero window
+		capturedDaemonTimerHooks?.shutdown(); // -> shutdownWith("rss-ceiling")
+		const rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		const exitRow = rows.find(
+			(r) => r.includes('"event":"exit"') && r.includes('"reason":"rss-ceiling"'),
+		);
+		// Kills: the whole ledger-object literal -> {}, "exit" -> "", and
+		// "rss-ceiling" -> "" (shutdown hook's own StringLiteral argument).
+		expect(exitRow).toBeDefined();
+		const row = exitRow as string;
+		// Kills: `rss / 1048576` -> `rss * 1048576`.
+		expect(row).toContain('"rss_mb":200');
+		// Kills: `heapUsed / 1048576` -> `heapUsed * 1048576`.
+		expect(row).toContain('"heap_mb":100');
+		// Kills: `(external + arrayBuffers) / 1048576` -> `* 1048576`, and
+		// `external + arrayBuffers` -> `external - arrayBuffers`.
+		expect(row).toContain('"ext_mb":16');
+		// Kills: `(Date.now() - DAEMON_STARTED_MS) / 1000` -> `* 1000`, and
+		// `Date.now() - DAEMON_STARTED_MS` -> `Date.now() + DAEMON_STARTED_MS`.
+		// A wide sanity band, not an exact-elapsed pin: other real timers
+		// registered during loadServer() (e.g. the lost-agent setInterval)
+		// can consume additional fake-clock time when advanceTimersByTime
+		// processes due callbacks, so the true elapsed value is "a small
+		// number of minutes", not exactly 60s. The `*1000` mutant would
+		// produce a value in the tens of millions; the `+DAEMON_STARTED_MS`
+		// mutant would produce a value near double the current epoch second
+		// count (billions) — both are many orders of magnitude outside this
+		// band regardless of the exact real elapsed time.
+		const uptimeMatch = row.match(/"uptime_s":(-?\d+)/);
+		expect(uptimeMatch).not.toBeNull();
+		const uptimeS = Number(uptimeMatch?.[1]);
+		expect(uptimeS).toBeGreaterThanOrEqual(1);
+		expect(uptimeS).toBeLessThanOrEqual(3600);
+		memSpy.mockRestore();
+	});
+});
+
+describe("harness server.ts — shrinkIdleMemory (mutation hardening)", () => {
+	it("actually clears the manifest cache (not a no-op)", async () => {
+		const mm = await import("./mutation/manifest.js");
+		await loadServer();
+		vi.mocked(mm.clearManifestCache).mockClear();
+		capturedDaemonTimerHooks?.shrinkIdleMemory?.();
+		// Kills: the whole shrinkIdleMemory body -> {} — a bare not.toThrow()
+		// also passes a no-op, so this checks the real call happened.
+		expect(vi.mocked(mm.clearManifestCache)).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("harness server.ts — hasRecentActivity boundary (mutation hardening)", () => {
+	it("is true just under the 5-minute window and false exactly at the boundary (strict <, not <=)", async () => {
+		await loadServer();
+		cap.eventLoopDeps?.resetIdleTimer(); // records lastHookEventAtMs = now
+		vi.advanceTimersByTime(5 * 60 * 1000 - 1); // 1ms under the window
+		// Kills: the whole condition -> false, and `Date.now() - lastHookEventAtMs`
+		// -> `+` (either makes this always false).
+		expect(capturedSponsorOpts?.hasRecentActivity()).toBe(true);
+	});
+
+	it("is false exactly AT the boundary", async () => {
+		await loadServer();
+		cap.eventLoopDeps?.resetIdleTimer();
+		vi.advanceTimersByTime(5 * 60 * 1000); // exactly the window
+		// Kills: `<` -> `<=` (EqualityOperator).
+		expect(capturedSponsorOpts?.hasRecentActivity()).toBe(false);
+	});
+});
+
+describe("harness server.ts — settings-strip callback formatting (mutation hardening)", () => {
+	it("omits the tail with a real empty string, never a placeholder, when entries fit", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer();
+		cap.settingsOnStrip?.({
+			totalStripped: 1,
+			entries: [{ file: "/r/.claude/settings.json", bucket: "allow", index: 0, rule: "z", reason: "r" }],
+		});
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: the `more` ternary's falsy-branch "" -> "Stryker was here!".
+		expect(logged).not.toContain("Stryker was here!");
+		errSpy.mockRestore();
+	});
+
+	it("joins preview lines with a real newline, not a run-together string", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer();
+		cap.settingsOnStrip?.({
+			totalStripped: 2,
+			entries: [
+				{ file: "/r/.claude/settings.json", bucket: "allow", index: 0, rule: "A", reason: "r1" },
+				{ file: "/r/.claude/settings.json", bucket: "deny", index: 1, rule: "B", reason: "r2" },
+			],
+		});
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// The path-strip regex already reduces "/r/.claude/settings.json" to
+		// ".claude/settings.json" before this line is built.
+		const line1 = '  - .claude/settings.json permissions.allow[0] = "A" (reason:r1)';
+		const line2 = '  - .claude/settings.json permissions.deny[1] = "B" (reason:r2)';
+		// Kills: `previews.join("\n")`'s separator "\n" -> "" — without the
+		// newline the two lines would run together with no boundary.
+		expect(logged).toContain(`${line1}\n${line2}`);
+		errSpy.mockRestore();
+	});
+
+	it("builds each preview line with the exact stripped path, bucket, index, rule JSON, and reason", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer();
+		cap.settingsOnStrip?.({
+			totalStripped: 1,
+			entries: [
+				{
+					file: "/home/u/.claude/settings.local.json",
+					bucket: "deny",
+					index: 3,
+					rule: "Bash(rm:*)",
+					reason: "bad-glob",
+				},
+			],
+		});
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: the map callback's whole body -> {} (returns undefined for
+		// every preview line), the per-line template -> ``, and "$1" -> "" in
+		// the path-strip replace() (which would blank the path entirely).
+		// Also kills the c/d regex variants (single-`.` quantifier): with a
+		// multi-segment leading path they fail to strip at all.
+		expect(logged).toContain(
+			'  - .claude/settings.local.json permissions.deny[3] = "Bash(rm:*)" (reason:bad-glob)',
+		);
+		errSpy.mockRestore();
+	});
+
+	it("regex requires both the start anchor and reaching end-of-string past any embedded newline", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer();
+		cap.settingsOnStrip?.({
+			totalStripped: 1,
+			entries: [{ file: "A.claude/B\nC.claude/D", bucket: "allow", index: 0, rule: "R", reason: "r" }],
+		});
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Empirically verified (scratch/probes/server-onstrip-regex-probe.mjs):
+		// with this input the real regex has NO match at all (greedy `.+`
+		// cannot cross the embedded \n to reach `$`, and `^` locks the search
+		// to position 0), so `file` is left completely unstripped.
+		// Kills: dropping the `$` end-anchor (finds a match starting at "C"
+		// once nothing downstream of the \n needs re-reaching the true end)
+		// and dropping the `^` start-anchor (search would retry starting at
+		// "C" once position 0 fails) — both produce a DIFFERENT, partially
+		// stripped string for this exact input.
+		expect(logged).toContain("  - A.claude/B\nC.claude/D permissions.allow[0]");
+		errSpy.mockRestore();
+	});
+});
+
+describe("harness server.ts — module-scoped path constants (mutation hardening)", () => {
+	it("computes INTERLINKED_DIR as <cwd>/.interlinked", async () => {
+		await loadServer();
+		const ctx = cap.eventLoopDeps?.ctx as Record<string, unknown>;
+		// Kills: the INTERLINKED_DIR-site ".interlinked" -> "" StringLiteral —
+		// without the suffix, interlinkedDir would just equal CWD.
+		expect(String(ctx.interlinkedDir)).toMatch(/\.interlinked$/);
+	});
+
+	it("computes the default PID path from INTERLINKED_DIR when --pid-file is not passed", async () => {
+		await loadServer();
+		// Kills: the whole `stringArg(...) || join(...)` -> true/false, the
+		// ||->&& LogicalOperator, and "harness.pid" -> "" (all three collapse
+		// or corrupt the default path below).
+		expect(cap.socketLifecycleDeps?.pidPath).toMatch(/\.interlinked\/harness\.pid$/);
+	});
+
+	it("honors an explicit --pid-file over the computed default", async () => {
+		await loadServer(["--pid-file", "/tmp/custom-harness.pid"]);
+		// Kills: "pid-file" -> "" (would read args[""] instead of the real
+		// flag, silently falling back to the default path even though
+		// --pid-file was passed).
+		expect(cap.socketLifecycleDeps?.pidPath).toBe("/tmp/custom-harness.pid");
+	});
+
+	it("registers the early shutdown handler under the literal 'SIGINT' event name too (not just SIGTERM)", async () => {
+		await loadServer();
+		const earlyTermReg = allOnRegistrations.find((r) => r.event === "SIGTERM");
+		const earlySigintReg = allOnRegistrations.find(
+			(r) => r.event === "SIGINT" && r.listener === earlyTermReg?.listener,
+		);
+		// Kills: "SIGINT" -> "" on the early process.on registration (line
+		// ~154) — the early handler would then be registered under the empty
+		// string instead, and no "SIGINT"-keyed entry with the SAME listener
+		// as the SIGTERM early registration would exist.
+		expect(earlySigintReg).toBeDefined();
+	});
+
+	it("defaults FRAMED_SESSION_ID to 'default' when neither --session-id nor INTERLINKED_SESSION_ID is set", async () => {
+		const prevEnv = process.env.INTERLINKED_SESSION_ID;
+		delete process.env.INTERLINKED_SESSION_ID;
+		try {
+			await loadServer();
+			// Kills: "default" -> "" (the FRAMED_SESSION_ID fallback literal).
+			expect(cap.sessionDaemonOpts?.session_id).toBe("default");
+		} finally {
+			if (prevEnv !== undefined) process.env.INTERLINKED_SESSION_ID = prevEnv;
+		}
+	});
+});
+
+describe("harness server.ts — content-scanner and AST-gate startup logs (mutation hardening)", () => {
+	it("logs the exact content-scanner enabled banner with name and runtime", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		rulesOverride = makeRules({ content_scanner: { enabled: true, runtime: "local" } as never });
+		scannerOverride = makeScanner({ name: "my-scanner-42", runtime: "local" });
+		await loadServer();
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: the `Content scanner: enabled (${name} / ${runtime})` template -> ``.
+		expect(logged).toContain("Content scanner: enabled (my-scanner-42 / local)");
+		errSpy.mockRestore();
+	});
+
+	it("logs 'Cyclomatic gate: AST-accurate' when the AST complexity pass is available (verbose)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		astComplexityAvailableOverride = true;
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `astComplexityAvailable()` -> false (ConditionalExpression),
+		// the true-branch block -> {}, and its message string -> "".
+		expect(logged).toContain("Cyclomatic gate: AST-accurate (typescript resolved)");
+		errSpy.mockRestore();
+	});
+
+	it("includes the exact reinstall hint in the AST-fallback warning", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		astComplexityAvailableOverride = false;
+		await loadServer();
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: "Reinstall without `--omit=optional` to restore AST-accurate
+		// enforcement." -> "".
+		expect(logged).toContain("Reinstall without `--omit=optional` to restore AST-accurate enforcement.");
+		errSpy.mockRestore();
+	});
+});
+
+describe("harness server.ts — server-bridge branch logs and constructor arg (mutation hardening)", () => {
+	it("logs 'Server bridge connected' (and not the local-only line) when a bridge is configured", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		serverBridgeOverride = { shutdown: vi.fn() };
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `serverBridge` -> false, the if-block -> {}, and
+		// "Server bridge connected" -> "".
+		expect(logged).toContain("Server bridge connected");
+		expect(logged).not.toContain("No server configured");
+		errSpy.mockRestore();
+	});
+
+	it("logs 'No server configured' (and not the connected line) when running local-only", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		serverBridgeOverride = null;
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `serverBridge` -> true, the else-block -> {}, and
+		// "No server configured — running in local-only mode" -> "".
+		expect(logged).toContain("No server configured — running in local-only mode");
+		expect(logged).not.toContain("Server bridge connected");
+		errSpy.mockRestore();
+	});
+
+	it("passes the live server bridge (not undefined) as the reservation manager's bridge arg when configured", async () => {
+		serverBridgeOverride = { shutdown: vi.fn() };
+		await loadServer();
+		// Kills: `serverBridge || undefined` -> false (ConditionalExpression)
+		// and the ||->&& LogicalOperator (both would pass undefined/false
+		// instead of the live bridge object).
+		expect(cap.reservationManagerBridgeArg).toBe(serverBridgeOverride);
+	});
+
+	it("passes undefined (not the boolean literal true) as the bridge arg when running local-only", async () => {
+		serverBridgeOverride = null;
+		await loadServer();
+		// Kills: `serverBridge || undefined` -> true (ConditionalExpression).
+		expect(cap.reservationManagerBridgeArg).toBeUndefined();
+	});
+});
+
+describe("harness server.ts — protocol status and runtime-context objects (mutation hardening)", () => {
+	it("passes the exact protocol/socket-path fields to createProtocolStatus at startup", async () => {
+		const ps = await import("./server/protocol-status.js");
+		// This mock's call history persists across tests (bare vi.fn() named
+		// export, not a per-import class instance) — clear before the action
+		// so `.mock.calls[0]` reflects THIS test's own loadServer() call.
+		vi.mocked(ps.createProtocolStatus).mockClear();
+		await loadServer(["--protocol", "raw"]);
+		const call = vi.mocked(ps.createProtocolStatus).mock.calls[0]?.[0] as Record<string, unknown>;
+		// Kills: the whole createProtocolStatus argument object -> {}.
+		expect(call).toMatchObject({
+			protocol: "raw",
+			rawSocketPath: expect.stringContaining("harness.sock"),
+			framedSocketPath: null,
+			framedSessionId: null,
+		});
+	});
+
+	it("serverRuntime carries the full daemon-scoped context (not an empty stub)", async () => {
+		await loadServer();
+		const ctx = cap.eventLoopDeps?.ctx as Record<string, unknown>;
+		// Kills: the whole serverRuntime object literal -> {}.
+		expect(ctx.cwd).toBeDefined();
+		expect(ctx.interlinkedDir).toBeDefined();
+		expect(ctx.rules).toBeDefined();
+		expect(ctx.cohort).toBeDefined();
+		expect(ctx.reservations).toBeDefined();
+		expect(typeof ctx.log).toBe("function");
+		expect(typeof ctx.logAlways).toBe("function");
+	});
+
+	it("passes exact startup-message fields to buildStartupMessage", async () => {
+		const ps = await import("./server/protocol-status.js");
+		vi.mocked(ps.buildStartupMessage).mockClear();
+		rulesOverride = makeRules({ rules: [{ id: "x" } as never, { id: "y" } as never, { id: "z" } as never] });
+		await loadServer(["--idle-timeout", "9000"]);
+		const call = vi.mocked(ps.buildStartupMessage).mock.calls[0]?.[0] as Record<string, unknown>;
+		// Kills: the whole buildStartupMessage argument object -> {}.
+		expect(call).toMatchObject({
+			protocol: "dual",
+			pid: process.pid,
+			ruleCount: 3,
+			idleTimeoutMs: 9000,
+			msPerMinute: 60000,
+		});
+	});
+});
+
+describe("harness server.ts — daemon-ledger start row (mutation hardening)", () => {
+	it("records a 'start' ledger row carrying this process's own pid at startup", async () => {
+		const fs = await import("node:fs");
+		vi.mocked(fs.appendFileSync).mockClear();
+		await loadServer();
+		const rows = vi.mocked(fs.appendFileSync).mock.calls.map((c) => String(c[1]));
+		// Kills: the whole `{at, pid, event:"start"}` object literal -> {},
+		// and "start" -> "".
+		expect(rows.some((r) => r.includes('"event":"start"') && r.includes(`"pid":${process.pid}`))).toBe(
+			true,
+		);
+	});
+});
+
+describe("harness server.ts — stale-snapshot sweep and lost-agent interval (mutation hardening)", () => {
+	it("does not log a reaped-count line when nothing was swept (removed.length === 0)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		await loadServer(["--verbose"]); // default sweepStaleLiveSnapshots mock returns removed: []
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `sweep.removed.length > 0` -> true, and `>` -> `>=` (0 >= 0
+		// is also always true) — both would log "Reaped 0 ..." unconditionally.
+		expect(logged).not.toContain("Reaped");
+		errSpy.mockRestore();
+	});
+
+	it("the lost-agent sweep interval does not fire before 2 minutes have elapsed", async () => {
+		await loadServer();
+		detectLostAgentsMock.mockClear();
+		// Kills: the inner `2 * 60` -> `2 / 60` ArithmeticOperator, which
+		// shortens the setInterval period from 2 minutes to ~33ms — advancing
+		// only 1 minute would then already fire many times.
+		vi.advanceTimersByTime(60 * 1000);
+		expect(detectLostAgentsMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("harness server.ts — policy classifier claude_code branch (mutation hardening)", () => {
+	it("claude_code provider is ready even when resolveApiKey finds no key (short-circuits via ===)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const pc = await import("./policy-classifier.js");
+		vi.mocked(pc.resolveApiKey).mockReturnValueOnce(undefined);
+		rulesOverride = makeRules({
+			policy_classifier: { enabled: true, provider: "claude_code", model: "cc2" } as never,
+		});
+		await loadServer(["--verbose"]);
+		const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		// Kills: `provider === "claude_code"` -> false, and "claude_code" -> ""
+		// (both would fall through to needing a real API key, which this test
+		// deliberately withholds).
+		expect(logged).toContain("Policy classifier: claude_code/cc2 (ready)");
+		errSpy.mockRestore();
+	});
+});
+

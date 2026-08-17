@@ -32,6 +32,20 @@ describe("resolveEditedPaths — positive (must still resolve)", () => {
 		const r = resolveEditedPaths(edit("src/harness/server.ts"));
 		expect(r.editedFilePaths).toContain("src/harness/server.ts");
 	});
+
+	it("P3: observed effects override a shell command's declared or parseable paths", () => {
+		const event = bash("node opaque-generator.js src/decoy.ts");
+		event.change_set = {
+			source: "filesystem-observation",
+			complete: true,
+			before_captured_at: "2026-08-13T00:00:00.000Z",
+			after_captured_at: "2026-08-13T00:00:01.000Z",
+			files: [
+				{ path: "src/actual.ts", kind: "modified", before_sha256: "a", after_sha256: "b" },
+			],
+		};
+		expect(resolveEditedPaths(event).editedFilePaths).toEqual(["src/actual.ts"]);
+	});
 });
 
 describe("resolveEditedPaths — negative (generated output must not be analyzed)", () => {

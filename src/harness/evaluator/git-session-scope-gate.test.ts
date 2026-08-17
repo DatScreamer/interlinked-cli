@@ -247,3 +247,164 @@ describe("evaluateGitScopeGateSync — reason truncation past REASON_FILE_LIMIT"
 		expect(v?.reason).toMatch(/before this session started/);
 	});
 });
+
+// ============================================================
+// Mutation hardening — parser boundaries and force-push delegation
+// ============================================================
+
+describe("parseGitVerb — mutation-sensitive command boundaries", () => {
+	it("rejects a command whose first token merely contains git", () => {
+		expect(parseGitVerb("npm add git x.ts")).toBeNull();
+	});
+
+	it("accepts the plain git executable and rejects a git-suffixed executable", () => {
+		expect(parseGitVerb("git add x.ts")).toEqual({
+			verb: "add",
+			args: ["x.ts"],
+			deferToForcePush: false,
+		});
+		expect(parseGitVerb("/usr/bin/git-wrapper add x.ts")).toBeNull();
+	});
+
+	it("skips both separate and equals-form global options", () => {
+		expect(parseGitVerb("git --git-dir /tmp/repo add x.ts")?.args).toEqual(["x.ts"]);
+		expect(parseGitVerb("git --work-tree /tmp/repo add x.ts")?.args).toEqual(["x.ts"]);
+		expect(parseGitVerb("git --git-dir=/tmp/repo add x.ts")?.args).toEqual(["x.ts"]);
+		expect(parseGitVerb("git --work-tree=/tmp/repo add x.ts")?.args).toEqual(["x.ts"]);
+	});
+
+	it("does not let an add or commit flag trigger force-push deferral", () => {
+		expect(parseGitVerb("git add --force x.ts")?.verb).toBe("add");
+		expect(parseGitVerb("git commit --force -m msg")?.verb).toBe("commit");
+	});
+
+	it("defers every force-push spelling, but not an embedded --force token", () => {
+		expect(parseGitVerb("git push --force")).toMatchObject({ deferToForcePush: true });
+		expect(parseGitVerb("git push -f")).toMatchObject({ deferToForcePush: true });
+		expect(parseGitVerb("git push --force-with-lease")).toMatchObject({ deferToForcePush: true });
+		expect(parseGitVerb("git push --force-if-includes")).toMatchObject({
+			deferToForcePush: true,
+		});
+		expect(parseGitVerb("git push origin--force")).toMatchObject({
+			verb: "push",
+			deferToForcePush: false,
+		});
+	});
+
+	it("preserves a trailing backslash rather than dropping the final character", () => {
+		expect(parseGitVerb("git add trailing\\")?.args).toEqual(["trailing\\"]);
+	});
+});
+
+// ============================================================
+// Mutation hardening — git add resolution
+// ============================================================
+
+describe("evaluateGitScopeGateSync — git add all-form detection", () => {
+	it("keeps a targeted pathspec narrow", () => {
+		writeFile("src/target.ts", "target");
+		writeFile("src/other.ts", "other");
+		const v = evaluateGitScopeGateSync("git add src/target.ts", makeSession(), repo);
+		expect(v?.resolved_files).toEqual(["src/target.ts"]);
+	});
+
+	it.each(["-A", "--all", "-u", "--update"])(
+		"treats %s as an all-form even with a pathspec",
+		(flag) => {
+			writeFile("src/target.ts", "target");
+			writeFile("src/other.ts", "other");
+			const v = evaluateGitScopeGateSync(
+				`git add ${flag} src/target.ts`,
+				makeSession(),
+				repo,
+			);
+			expect(new Set(v?.resolved_files)).toEqual(new Set(["src/target.ts", "src/other.ts"]));
+		},
+	);
+
+	it("treats dot and no pathspec as all-form", () => {
+		writeFile("src/target.ts", "target");
+		writeFile("src/other.ts", "other");
+		for (const command of ["git add .", "git add"]) {
+			const v = evaluateGitScopeGateSync(command, makeSession(), repo);
+			expect(new Set(v?.resolved_files)).toEqual(new Set(["src/target.ts", "src/other.ts"]));
+		}
+	});
+});
+
+// ============================================================
+// Mutation hardening — commit/push resolution and receipts
+// ============================================================
+
+describe("evaluateGitScopeGateSync — commit and push file sets", () => {
+	it("bare commit considers staged files only, not every tracked modification", () => {
+		writeFile("staged.ts", "v1");
+		writeFile("unstaged.ts", "v1");
+		git(["add", "staged.ts", "unstaged.ts"]);
+		git(["commit", "-q", "-m", "seed"]);
+		writeFile("staged.ts", "v2");
+		writeFile("unstaged.ts", "v2");
+		git(["add", "staged.ts"]);
+
+		const v = evaluateGitScopeGateSync("git commit -m wip", makeSession(), repo);
+		expect(v?.resolved_files).toEqual(["staged.ts"]);
+	});
+
+	it("allows a push without an upstream and reports empty file arrays", () => {
+		const v = evaluateGitScopeGateSync("git push", makeSession(), repo);
+		expect(v).toMatchObject({
+			decision: "allow",
+			reason: "no upstream — push will set it; gate skipped.",
+			resolved_files: [],
+			unauthorized_files: [],
+			baseline_files: [],
+		});
+	});
+});
+
+// ============================================================
+// Mutation hardening — reason contents, truncation, and verb labels
+// ============================================================
+
+describe("evaluateGitScopeGateSync — exact ask-reason contract", () => {
+	it("uses the add label and exact separator/suffix for one unknown file", () => {
+		writeFile("src/one.ts", "one");
+		const v = evaluateGitScopeGateSync("git add src/one.ts", makeSession(), repo);
+		expect(v?.reason).toBe(
+			"This git add would include 1 file(s) this session hasn't written (src/one.ts). Confirm intent.",
+		);
+	});
+
+	it("does not add an ellipsis at the five-file boundary", () => {
+		const names = ["a", "b", "c", "d", "e"].map((n) => `src/${n}.ts`);
+		for (const name of names) writeFile(name, "x");
+		const v = evaluateGitScopeGateSync("git add -A", makeSession(), repo);
+		expect(v?.reason).toContain(names.join(", "));
+		expect(v?.reason).not.toContain("…");
+	});
+
+	it("truncates the displayed unknown list while retaining the full count", () => {
+		const names = ["a", "b", "c", "d", "e", "f"].map((n) => `src/${n}.ts`);
+		for (const name of names) writeFile(name, "x");
+		const v = evaluateGitScopeGateSync("git add -A", makeSession(), repo);
+		expect(v?.reason).toContain("6 file(s)");
+		expect(v?.reason).toContain("src/e.ts, …");
+		expect(v?.reason).not.toContain("src/f.ts");
+	});
+
+	it("uses the commit label and baseline-specific wording", () => {
+		writeFile("src/commit.ts", "v1");
+		git(["add", "src/commit.ts"]);
+		git(["commit", "-q", "-m", "seed"]);
+		writeFile("src/commit.ts", "v2");
+		const v = evaluateGitScopeGateSync(
+			"git commit -am wip",
+			makeSession({ baselineModified: ["src/commit.ts"] }),
+			repo,
+		);
+		expect(v?.reason).toBe(
+			"This git commit would include 1 file(s) that existed in the working tree before this session started (src/commit.ts). " +
+			"These weren't written by this session's agent or its subagents — confirm before proceeding.",
+		);
+	});
+});

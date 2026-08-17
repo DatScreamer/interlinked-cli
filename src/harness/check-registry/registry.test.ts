@@ -42,6 +42,33 @@ describe("CHECK_REGISTRY", () => {
 		}
 	});
 
+	it("pins test-quality checks to their intended enforcement phases", () => {
+		const expectedPhases: Record<string, "pre_block" | "pre_warn" | "post"> = {
+			duplicate_test_names: "pre_warn",
+			real_io_in_tests: "pre_warn",
+			test_nondeterminism: "pre_warn",
+			hardcoded_timeout_in_tests: "pre_warn",
+			test_missing_sut_import: "pre_warn",
+			mocking_the_sut_self: "pre_warn",
+			mock_only_test: "pre_warn",
+			test_legitimacy: "pre_warn",
+			private_member_test_access: "pre_warn",
+			test_silent_dependency_skip: "pre_warn",
+			happy_path_only_test: "post",
+			introverted_test: "post",
+			assertion_free_test: "pre_block",
+			tautological_assertion: "pre_block",
+			mocking_the_sut: "pre_block",
+			focused_tests: "pre_block",
+			disabled_tests: "pre_block",
+		};
+
+		const phasesById = new Map(CHECK_REGISTRY.map((check) => [check.id, check.phase]));
+		for (const [id, phase] of Object.entries(expectedPhases)) {
+			expect(phasesById.get(id), `${id} phase`).toBe(phase);
+		}
+	});
+
 	it("every check.fn returns an array for trivial input (smoke test)", () => {
 		for (const c of CHECK_REGISTRY) {
 			const result = c.fn("", "smoke.ts");

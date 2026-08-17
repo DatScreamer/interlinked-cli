@@ -607,6 +607,19 @@ describe("checkMixedSyncAsyncFileApi — negative (must not fire)", () => {
 		).toEqual([]);
 	});
 
+	it("N: a nested helper remains isolated when the parent's sync call follows it", () => {
+		// The detector's public contract is per-function: an async helper must
+		// not be combined with a sync call in its enclosing function. Keeping the
+		// parent call after the helper also pins the nested-body masking boundary,
+		// rather than relying on declaration order.
+		expect(
+			checkMixedSyncAsyncFileApi(
+				"function outer() {\n  const nested = async () => {\n    await fs.readFile(q);\n  };\n  fs.readFileSync(p);\n}",
+				"src/app.js",
+			),
+		).toEqual([]);
+	});
+
 	it("N: module-level sync work plus an async function is not one mixed function", () => {
 		expect(
 			checkMixedSyncAsyncFileApi(

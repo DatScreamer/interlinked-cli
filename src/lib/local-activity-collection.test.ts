@@ -510,6 +510,19 @@ describe("readCollectionActivity — filters and scan bounds", () => {
 		expect(readCollectionActivity({ cwd: tmp })).toHaveLength(3);
 	});
 
+	it("includes a record whose timestamp is exactly the since cutoff", () => {
+		writeCollection(tmp, [
+			toolEvent({ ts: "2026-07-30T09:59:59Z", action: { command: "too-old" } }),
+			toolEvent({ ts: "2026-07-30T10:00:00Z", action: { command: "at-cutoff" } }),
+			toolEvent({ ts: "2026-07-30T10:00:01Z", action: { command: "newest" } }),
+		]);
+		const since = new Date("2026-07-30T10:00:00Z").getTime();
+		expect(readCollectionActivity({ cwd: tmp, since }).map((e) => e.summary)).toEqual([
+			"newest",
+			"at-cutoff",
+		]);
+	});
+
 	it("bounds the tail scan: a small limit cannot see past the 500-line floor", () => {
 		const rows: unknown[] = [
 			toolEvent({ ts: "2026-07-30T09:00:00Z", agent_name: "needle", action: { command: "deep" } }),
@@ -631,6 +644,11 @@ describe("readRecentLines", () => {
 		expect(readRecentLines(file, 10)).toEqual(["two", "one"]);
 	});
 
+	it("trims the final line when it has surrounding whitespace and no newline", () => {
+		writeFileSync(file, "first\n  final  ");
+		expect(readRecentLines(file, 10)).toEqual(["final", "first"]);
+	});
+
 	it("drops blank and whitespace-only lines and trims the rest", () => {
 		writeFileSync(file, "\n  alpha  \n\n\t\n beta\n\n");
 		expect(readRecentLines(file, 10)).toEqual(["beta", "alpha"]);
@@ -641,6 +659,21 @@ describe("readRecentLines", () => {
 		expect(readRecentLines(file, 2)).toEqual(["e", "d"]);
 		expect(readRecentLines(file, 4)).toEqual(["e", "d", "c", "b"]);
 		expect(readRecentLines(file, 5)).toEqual(["e", "d", "c", "b", "a"]);
+	});
+
+	// test-contract: invariant — bounded tail reads never return more than the requested line count
+	it("does not append additional nonblank lines after reaching maxLines", () => {
+		writeFileSync(file, "head\n  middle  \n\n newest \n");
+		expect(readRecentLines(file, 2)).toStrictEqual(["newest", "middle"]);
+	});
+
+	// test-contract: boundary — trailing JSONL fragments are trimmed and whitespace-only fragments omitted
+	it("trims a nonblank trailing fragment but omits a whitespace-only fragment", () => {
+		writeFileSync(file, "head\n  tail  ");
+		expect(readRecentLines(file, 10)).toStrictEqual(["tail", "head"]);
+
+		writeFileSync(file, "head\n   ");
+		expect(readRecentLines(file, 10)).toStrictEqual(["head"]);
 	});
 
 	it("reassembles an ASCII line split across the 64KB chunk boundary", () => {
@@ -822,6 +855,79 @@ describe("parseCollectionOrAgentEvent", () => {
 		});
 	});
 
+	// test-contract: boundary — absent task metadata must not leak an undefined output key
+	it("omits task when an agent_event does not carry task metadata", () => {
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "agent_event",
+				ts: "2026-08-01T00:00:00Z",
+				event: "subagent_stop",
+			}),
+		).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			event: "subagent_stop",
+			agent_type: null,
+			session_id: null,
+		});
+	});
+
+	it("P2b: preserves null task and omits malformed optional agent fields", () => {
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "agent_event",
+				ts: "2026-08-01T00:00:00Z",
+				event: "subagent_stop",
+				provider: 42,
+				agent_name: 42,
+				agent_type: false,
+				session_id: 99,
+				subagent_id: 42,
+				parent_agent: false,
+				agent_transcript_path: 42,
+				last_assistant_message: false,
+				cwd: 42,
+				task: null,
+			}),
+		).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			event: "subagent_stop",
+			agent_type: null,
+			session_id: null,
+			task: null,
+		});
+	});
+
+	it("P2c: keeps a task object but omits an absent or malformed subject", () => {
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "agent_event",
+				ts: "2026-08-01T00:00:00Z",
+				event: "task_completed",
+				task: {},
+			}),
+		).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			event: "task_completed",
+			agent_type: null,
+			session_id: null,
+			task: {},
+		});
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "agent_event",
+				ts: "2026-08-01T00:00:00Z",
+				event: "task_completed",
+				task: { task_subject: 42 },
+			}),
+		).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			event: "task_completed",
+			agent_type: null,
+			session_id: null,
+			task: {},
+		});
+	});
+
 	it("P3: a tool_event with agent_name entirely absent still parses (real-world drift)", () => {
 		// The hand-written hook-runtime collection writer omits agent_name on
 		// most rows — measured against the live .interlinked/collection.jsonl
@@ -834,6 +940,39 @@ describe("parseCollectionOrAgentEvent", () => {
 		});
 		expect(parsed).not.toBeNull();
 		expect(parsed && "agent_name" in parsed).toBe(false);
+	});
+
+	it("P4: normalizes malformed optional tool fields without leaking undefined keys", () => {
+		const parsed = parseCollectionOrAgentEvent({
+			kind: "tool_event",
+			ts: "2026-08-01T00:00:00Z",
+			phase: "during",
+			outcome: "unknown",
+			agent_name: null,
+			provider: 42,
+			provider_tool: 99,
+			session_id: false,
+			action: null,
+			cwd: 42,
+			tool_use_id: false,
+		});
+		expect(parsed).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			agent_name: null,
+			provider_tool: null,
+			session_id: null,
+			action: null,
+		});
+	});
+
+	it("P5: omits a non-object action rather than treating it as null", () => {
+		expect(
+			parseCollectionOrAgentEvent({
+				kind: "tool_event",
+				ts: "2026-08-01T00:00:00Z",
+				action: ["not", "an", "object"],
+			}),
+		).toStrictEqual({ ts: "2026-08-01T00:00:00Z", provider_tool: null, session_id: null });
 	});
 
 	it("N1: rejects a non-object value", () => {
@@ -936,12 +1075,67 @@ describe("parseLocalActivityEvent", () => {
 		expect(parsed).toEqual({ ts: "2026-08-01T00:00:00Z", agent: "alpha", type: "tool_use" });
 	});
 
+	it("P5: preserves explicitly supplied nullable payloads and rejects malformed typed fields", () => {
+		const parsed = parseLocalActivityEvent({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			tool_input: { command: "ls" },
+			tool_response: { stdout: "ok" },
+			error: { message: "nope" },
+			permission_suggestions: ["use a safe command"],
+			guard_warnings: null,
+			cwd: 42,
+			scrubbed: "yes",
+			files_modified: ["ok.ts", 42],
+			tokens: "not-an-object",
+		});
+		expect(parsed).toStrictEqual({
+			ts: "2026-08-01T00:00:00Z",
+			agent: "alpha",
+			type: "tool_use",
+			tool_input: { command: "ls" },
+			tool_response: { stdout: "ok" },
+			error: { message: "nope" },
+			permission_suggestions: ["use a safe command"],
+			guard_warnings: null,
+		});
+	});
+
+	it("P6: accepts every supported schema version and omits invalid versions", () => {
+		for (const version of [2, 3, 4, 5]) {
+			expect(
+				parseLocalActivityEvent({ ts: "t", agent: "a", type: "x", schema_version: version }),
+			).toStrictEqual({ ts: "t", agent: "a", type: "x", schema_version: version });
+		}
+		for (const version of [1, 6, "5", null, undefined]) {
+			const value = { ts: "t", agent: "a", type: "x", schema_version: version };
+			expect(parseLocalActivityEvent(value)).toStrictEqual({ ts: "t", agent: "a", type: "x" });
+		}
+	});
+
+	it("P7: keeps allow/block/ask decisions and drops unknown decisions", () => {
+		for (const decision of ["allow", "block", "ask"]) {
+			expect(
+				parseLocalActivityEvent({ ts: "t", agent: "a", type: "x", guard_decision: decision }),
+			).toStrictEqual({ ts: "t", agent: "a", type: "x", guard_decision: decision });
+		}
+		expect(
+			parseLocalActivityEvent({ ts: "t", agent: "a", type: "x", guard_decision: "warn" }),
+		).toStrictEqual({ ts: "t", agent: "a", type: "x" });
+	});
+
 	it("N1: rejects a record missing ts", () => {
 		expect(parseLocalActivityEvent({ agent: "alpha", type: "tool_use" })).toBeNull();
 	});
 
 	it("N2: rejects a record whose agent is not a string", () => {
 		expect(parseLocalActivityEvent({ ts: "2026-08-01T00:00:00Z", agent: 42, type: "tool_use" })).toBeNull();
+	});
+
+	it("N3: rejects a record whose type is not a string", () => {
+		expect(parseLocalActivityEvent({ ts: "2026-08-01T00:00:00Z", agent: "alpha", type: 42 })).toBeNull();
+		expect(parseLocalActivityEvent({ ts: "2026-08-01T00:00:00Z", agent: "alpha", type: null })).toBeNull();
 	});
 
 	it("N3: rejects a non-object value", () => {

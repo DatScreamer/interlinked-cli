@@ -205,6 +205,7 @@ function makeSession(partial: Record<string, unknown> = {}): SessionTrajectory {
 		tool_sequence: [],
 		taint_sources: [],
 		pending_completions: new Map(),
+		acknowledged_checks: new Set(["shell-sandbox-evidence"]),
 		...partial,
 	} as unknown as SessionTrajectory;
 }

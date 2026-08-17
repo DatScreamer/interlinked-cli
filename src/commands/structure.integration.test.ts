@@ -74,9 +74,9 @@ vi.mock("node:fs", () => ({
 }));
 
 // ---- node:child_process mock: git rev-parse ---------------------------
-const execSyncMock = vi.fn<(cmd: string) => string>();
+const execSyncMock = vi.fn<(cmd: string, opts?: unknown) => string>();
 vi.mock("node:child_process", () => ({
-	execSync: (cmd: string) => execSyncMock(cmd),
+	execSync: (cmd: string, opts?: unknown) => execSyncMock(cmd, opts),
 }));
 
 // ---- ../harness/structure/* mocks -------------------------------------
@@ -1352,5 +1352,948 @@ describe("structureBaselineCommand", () => {
 		await structureBaselineCommand("status", {});
 		expect(stderr()).toContain("structure baseline failed: baseline boom");
 		expect(process.exitCode).toBe(1);
+	});
+});
+
+// ===========================================
+// mutation survivor precision
+// ===========================================
+// These cases intentionally assert complete command contracts (rather than
+// substrings) and use boundary-shaped fixtures.  The command suite above
+// covers the branches; these assertions ensure a changed literal/operator
+// cannot still produce an apparently valid result.
+
+describe("structure.ts mutation survivors", () => {
+	it("init dry-run preserves category separators and its complete human output", async () => {
+		await structureInitCommand({ with: "env,docs" });
+		expect(stdout()).toBe(
+			"Structure init (dry-run)\n\n" +
+			"  Mode: standard\n" +
+			"  Categories: env, docs\n\n" +
+			"Files that would be created:\n" +
+			"  create  interlinked/structure.json\n" +
+			"  create  interlinked/artifacts/env.json\n" +
+			"  create  interlinked/artifacts/docs.json\n\n" +
+			"Run with --write to create files.",
+		);
+	});
+
+	it("init write preserves the artifacts separator and every human output line", async () => {
+		await structureInitCommand({ write: true, mode: "strict", with: "env,docs" });
+		expect(stdout()).toBe(
+			"Structure initialized.\n\n" +
+			"  Mode: strict\n" +
+			"  Config: interlinked/structure.json\n" +
+			"  Artifacts: env, docs\n\n" +
+			"Next: run `interlinked structure scan` to build the artifact catalog.",
+		);
+	});
+
+	it("scan passes exact git metadata options and writes complete node/edge caches", async () => {
+		vi.spyOn(Date, "now").mockReturnValueOnce(1000).mockReturnValueOnce(1015);
+		runAllExtractors.mockReturnValue({
+			nodes: [
+				node({
+					id: ":root",
+					kind: "module",
+					label: "root",
+					provenance: "declared",
+				}),
+			],
+			edges: [{ id: "edge-1", provenance: "extracted" }],
+		});
+		readCatalogMeta.mockReturnValue(null);
+		await structureScanCommand({});
+
+		expect(execSyncMock).toHaveBeenCalledWith("git rev-parse HEAD", {
+			cwd: CWD,
+			encoding: "utf-8",
+		});
+		const writtenMeta = (writeCatalogMeta.mock.calls[0] as unknown[])[1] as CatalogMeta;
+		expect(writtenMeta).toMatchObject({
+			schema_version: 1,
+			cli_version: "0.0.0",
+			repo_root: CWD,
+			last_scanned_commit: "deadbeef",
+			manifest_hash: "hash",
+		});
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"artifact-nodes",
+			{
+				schema_version: 1,
+				items: [
+					{
+						local_id: "root",
+						global_ref: ":root",
+						file: "src/m.ts",
+						provenance: "declared",
+						determinism_ceiling: "fully_deterministic",
+					},
+				],
+			},
+		]);
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"artifact-edges",
+			{
+				schema_version: 1,
+				items: [
+					{
+						local_id: "edge-1",
+						global_ref: "edge-1",
+						file: "",
+						provenance: "extracted",
+						determinism_ceiling: "fully_deterministic",
+					},
+				],
+			},
+		]);
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"modules",
+			{
+				schema_version: 1,
+				items: [
+					{
+						local_id: "root",
+						global_ref: ":root",
+						file: "src/m.ts",
+						provenance: "declared",
+						determinism_ceiling: "fully_deterministic",
+					},
+				],
+			},
+		]);
+		expect(stdout()).toContain("Time:    15ms");
+	});
+
+	it("scan distinguishes a colon at index zero and counts declared adoption", async () => {
+		runAllExtractors.mockReturnValue({
+			nodes: [
+				node({ id: "public_symbol:a#one", kind: "public_symbol", provenance: "declared" }),
+				node({ id: "public_symbol:a#two", kind: "public_symbol", provenance: "declared" }),
+				node({ id: "public_symbol:a#three", kind: "public_symbol", provenance: "extracted" }),
+			],
+			edges: [],
+		});
+		readCatalogMeta.mockReturnValue(null);
+		await structureScanCommand({});
+		const nodesWrite = writeCategoryCache.mock.calls.find(
+			(call) => (call as unknown[])[1] === "artifact-nodes",
+		);
+		const payload = (nodesWrite as unknown[])[2] as CategoryCatalog;
+		expect(payload.items.map((item) => item.local_id)).toEqual(["a#one", "a#two", "a#three"]);
+		const report = (writeAdoptionReport.mock.calls[0] as unknown[])[1] as AdoptionReport;
+		expect(report.categories.public_api).toBeCloseTo(2 / 3);
+	});
+
+	it("scan human output preserves every summary line and newline separator", async () => {
+		runAllExtractors.mockReturnValue({ nodes: [], edges: [] });
+		readCatalogMeta.mockReturnValue(null);
+		await structureScanCommand({});
+		expect(stdout()).toMatch(
+			/^Scan complete\.\n\n  Mode:    full scan\n  Config:  minimal\n  Nodes:   0\n  Edges:   0\n  Time:    \d+ms$/,
+		);
+	});
+
+	it("status renders exact adoption values and separators", async () => {
+		loadStructureConfig.mockReturnValue({ config: fullConfig({ mode: "standard" }), errors: [], implicit: false });
+		readCatalogMeta.mockReturnValue(meta({ built_at: "2026-02-02T00:00:00.000Z" }));
+		isCacheStale.mockReturnValue(false);
+		readAdoptionReport.mockReturnValue({
+			schema_version: 1,
+			categories: { public_api: 0.9, env: 0.6, docs: 0.1 },
+		} as unknown as AdoptionReport);
+		await structureStatusCommand({});
+		expect(stdout()).toBe(
+			"Structure Status\n\n" +
+			"  Mode:     standard\n" +
+			"  Cache:    fresh\n" +
+			"  Built:    2026-02-02T00:00:00.000Z\n\n" +
+			"  Adoption:\n" +
+			"    public_api   90%\n" +
+			"    env          60%\n" +
+			"    docs         10%",
+		);
+	});
+
+	it("accept preserves optional artifact configuration and exact empty skip results", async () => {
+		loadStructureConfig.mockReturnValue({
+			config: { ...fullConfig(), artifacts: undefined },
+			errors: [],
+			implicit: false,
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog([
+						{
+							local_id: "m#s",
+							global_ref: "public_symbol:m#s",
+							file: "src/m.ts",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: name === "env-keys"
+					? catalog([
+								{
+									local_id: "OLD",
+									global_ref: "env_key:OLD",
+									file: ".env",
+									provenance: "extracted",
+									determinism_ceiling: "fully_deterministic",
+								},
+							])
+						: null,
+		);
+		fsFiles[`${CWD}/interlinked/artifacts/env.json`] = JSON.stringify({
+			version: 1,
+			sources: { declarations: [], defaults: [] },
+			keys: [{ name: "OLD" }],
+		});
+		await structureAcceptCommand({ json: true });
+		const parsed = JSON.parse(stdout());
+		expect(parsed.accepted).toEqual([{ category: "public_api", count: 1 }]);
+		expect(parsed.skipped).toEqual([{ category: "env", item: "OLD", reason: "already declared" }]);
+	});
+
+	it("accept human output has no skipped section for a clean accepted batch", async () => {
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog([
+						{
+							local_id: "m#s",
+							global_ref: "public_symbol:m#s",
+							file: "src/m.ts",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: null,
+		);
+		await structureAcceptCommand({});
+		expect(stdout()).toBe("Structure Accept\n  accepted  public_api: 1 items");
+	});
+
+	it("accept reports no zero-count batches when every symbol and key is skipped", async () => {
+		fsFiles[`${CWD}/interlinked/artifacts/public-api.json`] = JSON.stringify({
+			version: 1,
+			modules: [{ id: "m", symbols: [{ name: "s" }] }],
+		});
+		fsFiles[`${CWD}/interlinked/artifacts/env.json`] = JSON.stringify({
+			version: 1,
+			sources: { declarations: [], defaults: [] },
+			keys: [{ name: "OLD" }],
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog([
+						{
+							local_id: "m#s",
+							global_ref: "public_symbol:m#s",
+							file: "src/m.ts",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: name === "env-keys"
+					? catalog([
+								{
+									local_id: "OLD",
+									global_ref: "env_key:OLD",
+									file: ".env",
+									provenance: "extracted",
+									determinism_ceiling: "fully_deterministic",
+								},
+							])
+						: null,
+		);
+		await structureAcceptCommand({ json: true });
+		expect(JSON.parse(stdout())).toEqual({
+			accepted: [],
+			skipped: [
+				{ category: "public_api", item: "m#s", reason: "already declared" },
+				{ category: "env", item: "OLD", reason: "already declared" },
+			],
+		});
+	});
+
+	it("accept truncates exactly ten skips and does not render the eleventh", async () => {
+		const mods = Array.from({ length: 11 }, (_, i) => ({
+			id: `m${i}`,
+			file: "src/x.ts",
+			symbols: [{ name: "s" }],
+		}));
+		fsFiles[`${CWD}/interlinked/artifacts/public-api.json`] = JSON.stringify({ version: 1, modules: mods });
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog(
+						Array.from({ length: 11 }, (_, i) => ({
+							local_id: `m${i}#s`,
+							global_ref: `public_symbol:m${i}#s`,
+							file: "src/x.ts",
+							provenance: "extracted" as const,
+							determinism_ceiling: "fully_deterministic" as const,
+						})),
+					)
+				: null,
+		);
+		await structureAcceptCommand({});
+		const lines = stdout().split("\n");
+		expect(lines).toHaveLength(14);
+		expect(stdout()).toContain("    skip  public_api/m0#s: already declared");
+		expect(stdout()).toContain("    skip  public_api/m9#s: already declared");
+		expect(stdout()).not.toContain("m10#s");
+		expect(stdout()).toContain("    ... and 1 more");
+	});
+
+	it("doctor exits on any error even when warnings are also present", async () => {
+		fsFiles[`${CWD}/interlinked/structure.json`] = "{}";
+		validateStructureJson.mockReturnValue({ valid: false, errors: [{ path: ".mode", message: "required" }] });
+		readCatalogMeta.mockReturnValue(null);
+		await structureDoctorCommand({});
+		expect(process.exitCode).toBe(1);
+		expect(stdout()).toBe(
+			"Structure Doctor: 2 issue(s)\n\n" +
+			"  ERROR  structure.json .mode: required\n" +
+			"  WARN  No scan cache. Run `interlinked structure scan`.",
+		);
+	});
+
+	it("baseline save passes the loaded config, empty rule context, and exact entry shape", async () => {
+		const loadedConfig = fullConfig({ mode: "strict" });
+		loadStructureConfig.mockReturnValue({ config: loadedConfig, errors: [], implicit: false });
+		getImplicitConfig.mockReturnValue(fullConfig({ mode: "minimal" }));
+		readCategoryCache.mockReturnValue(catalog([]));
+		evaluateStructureRules.mockReturnValue([
+			{
+				name: "rule",
+				severity: "warning",
+				message: "missing",
+				file: "src/m.ts",
+				determinism: "fully_deterministic",
+				provenance: "extracted",
+				artifact_kind: "module",
+				artifact_id: "module:m",
+				required_updates: [{ file: "docs/m.md", kind: "doc", reason: "document" }],
+				confidence: 1,
+			},
+		]);
+		await structureBaselineCommand("save", {});
+		expect(readCategoryCache).toHaveBeenCalledWith(CWD, "artifact-nodes");
+		expect(evaluateStructureRules).toHaveBeenCalledWith(expect.any(FakeGraph), loadedConfig, [], CWD);
+		expect(writeBaseline).toHaveBeenCalledWith(CWD, {
+			schema_version: 1,
+			entries: [
+				{
+					finding_name: "rule",
+					artifact_ref: "module:m",
+					source_file: "src/m.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: ["docs/m.md"],
+					context_hash: "",
+				},
+			],
+		});
+	});
+
+	it("baseline catch does not double-report a fatal save error", async () => {
+		readCategoryCache.mockReturnValue(null);
+		await structureBaselineCommand("save", {});
+		expect(stderr()).toBe("Error: No scan cache. Run `interlinked structure scan` first.");
+	});
+
+	it("baseline status preserves complete human output and newline separators", async () => {
+		readBaseline.mockReturnValue({
+			schema_version: 1,
+			entries: [
+				{
+					finding_name: "rule-a",
+					artifact_ref: "m",
+					source_file: "src/m.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+				{
+					finding_name: "rule-a",
+					artifact_ref: "n",
+					source_file: "src/n.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+				{
+					finding_name: "rule-b",
+					artifact_ref: "o",
+					source_file: "src/o.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+			],
+		});
+		await structureBaselineCommand("status", {});
+		expect(stdout()).toBe("Baseline: 3 entries\n\n  rule-a                         2\n  rule-b                         1");
+	});
+});
+
+// ===========================================
+// structure.ts mutation survivors — pass1_w12 residue
+// ===========================================
+// Targets the 77 survivors reported by
+// `npx tsx src/index.ts mutation survivors --file src/commands/structure.ts`
+// at generation 1649. Four StringLiteral "" mutants sit behind a call of the
+// shape `out(true, data, "")` (or `out(opts.json, data, "")` guarded by
+// `if (opts.json) return ...`) — since `out`'s text argument is only read
+// when its json argument is falsy, and every one of these call sites passes
+// a literal `true` (or an already-true-checked opts.json), the text is
+// never evaluated: 373786bfaf027c7a (status), 2db975e6bcadb678 (accept),
+// c406789516f06984 (doctor), 17598dd0150b16b2 (blStatus) are therefore
+// suspected_equivalent, not tested here. Four more
+// (552ed0711b8c2b72/5d57b87da012d77b guarding acceptSymbols,
+// b0c969663fcb9426/b1a4a29ba645ec81 guarding acceptEnv) force a
+// length>0/>=0 guard true on an empty catalog; acceptSymbols/acceptEnv are
+// no-ops on an empty items array (the for-loop never runs, returns
+// {accepted:0,skipped:[]}, no writeJson call) so forcing the call through
+// produces byte-identical output — also suspected_equivalent. And
+// 47ffcfeb668cecb9 forces extractLocalId's `idx>=0` ternary condition true
+// unconditionally: idx is always either -1 (String.indexOf "not found") or
+// >=0, and `.slice(idx+1)` at idx=-1 is `.slice(0)`, which is the identity
+// operation on a string — so the forced-true branch is byte-identical to
+// the untouched false branch at the only input where they could diverge.
+// This is a mathematical proof over the full input domain, not a search
+// gap.
+describe("structure.ts mutation survivors — pass1_w12 (residue)", () => {
+	// --- relTo ---------------------------------------------------------
+	// test-contract: boundary — relTo must strip an exact `${cwd}/` prefix;
+	// a cwd that already ends in "/" must not be treated as matching via an
+	// accidental doubled slash in the raw template.
+	it("relTo does not treat a trailing-slash cwd as a matching prefix", async () => {
+		vi.spyOn(process, "cwd").mockReturnValue("/proj/");
+		await structureInitCommand({});
+		expect(stdout()).toBe(
+			"Structure init (dry-run)\n\n" +
+				"  Mode: standard\n" +
+				"  Categories: (none)\n\n" +
+				"Files that would be created:\n" +
+				"  create  /proj/interlinked/structure.json\n\n" +
+				"Run with --write to create files.",
+		);
+	});
+
+	// --- structureInitCommand -------------------------------------------
+	// test-contract: invariant — dry-run output is the CLI's documented
+	// preview: every joined line and the ", " category separator.
+	it("init dry-run separates categories, headings, and the trailing hint on every joined line", async () => {
+		await structureInitCommand({ with: "config, tests" });
+		expect(stdout()).toBe(
+			"Structure init (dry-run)\n\n" +
+				"  Mode: standard\n" +
+				"  Categories: config, tests\n\n" +
+				"Files that would be created:\n" +
+				"  create  interlinked/structure.json\n" +
+				"  create  interlinked/artifacts/config.json\n" +
+				"  create  interlinked/artifacts/tests.json\n\n" +
+				"Run with --write to create files.",
+		);
+	});
+
+	// test-contract: invariant — --write output is the CLI's documented
+	// confirmation: every joined line and the Artifacts separator.
+	it("init write separates artifacts, keeps the config line literal, and joins every line", async () => {
+		await structureInitCommand({ write: true, mode: "minimal", with: "config, tests" });
+		expect(stdout()).toBe(
+			"Structure initialized.\n\n" +
+				"  Mode: minimal\n" +
+				"  Config: interlinked/structure.json\n" +
+				"  Artifacts: config, tests\n\n" +
+				"Next: run `interlinked structure scan` to build the artifact catalog.",
+		);
+	});
+
+	// test-contract: invariant — an unknown category's fatal message must
+	// list every available category comma-separated, and the catch handler
+	// must not print a second "structure init failed" line once fatal()
+	// already reported the error and set exitCode.
+	it("init rejects an unknown category with the full available list and no duplicate error line", async () => {
+		await structureInitCommand({ with: "bogus" });
+		expect(stderr()).toBe(
+			'Error: Unknown category "bogus". Available: public_api, env, config, tests, docs, examples, glossary, layers, packages',
+		);
+		expect(process.exitCode).toBe(1);
+	});
+
+	// --- structureScanCommand + extractLocalId + its edges-map callback -
+	// test-contract: invariant — the artifact-nodes cache local_id strips
+	// exactly the kind-prefix before the first ":" (boundary at index 0, a
+	// long multi-segment prefix, and a globalRef with no colon at all), and
+	// the per-kind cache / git metadata / adoption fraction are the on-disk
+	// contract other commands (accept, baseline) read back.
+	it("scan strips local_id at the colon boundary and writes exact meta, exec, and adoption values", async () => {
+		runAllExtractors.mockReturnValue({
+			nodes: [
+				node({ id: ":root", kind: "public_symbol", label: "root", provenance: "declared" }),
+				node({
+					id: "public_symbol:pkg#sym",
+					kind: "public_symbol",
+					label: "sym",
+					provenance: "declared",
+				}),
+				node({ id: "nocolonhere", kind: "public_symbol", label: "x", provenance: "extracted" }),
+			],
+			edges: [],
+		});
+		readCatalogMeta.mockReturnValue(null);
+		execSyncMock.mockReturnValue("cafef00d\n");
+		await structureScanCommand({});
+
+		expect(execSyncMock).toHaveBeenCalledWith("git rev-parse HEAD", {
+			cwd: CWD,
+			encoding: "utf-8",
+		});
+		const writtenMeta = (writeCatalogMeta.mock.calls[0] as unknown[])[1] as CatalogMeta;
+		expect(writtenMeta.cli_version).toBe("0.0.0");
+		expect(writtenMeta.last_scanned_commit).toBe("cafef00d");
+
+		const expectedItems = [
+			{
+				local_id: "root",
+				global_ref: ":root",
+				file: "src/m.ts",
+				provenance: "declared",
+				determinism_ceiling: "fully_deterministic",
+			},
+			{
+				local_id: "pkg#sym",
+				global_ref: "public_symbol:pkg#sym",
+				file: "src/m.ts",
+				provenance: "declared",
+				determinism_ceiling: "fully_deterministic",
+			},
+			{
+				local_id: "nocolonhere",
+				global_ref: "nocolonhere",
+				file: "src/m.ts",
+				provenance: "extracted",
+				determinism_ceiling: "fully_deterministic",
+			},
+		];
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"artifact-nodes",
+			{ schema_version: 1, items: expectedItems },
+		]);
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"public-symbols",
+			{ schema_version: 1, items: expectedItems },
+		]);
+
+		const report = (writeAdoptionReport.mock.calls[0] as unknown[])[1] as AdoptionReport;
+		expect(report.categories.public_api).toBeCloseTo(2 / 3);
+	});
+
+	// test-contract: invariant — the artifact-edges cache item shape
+	// (local_id straight from the edge id, an always-empty file, and the
+	// fixed "fully_deterministic" ceiling) is produced by the inline map
+	// callback, not derived elsewhere.
+	it("scan writes the exact artifact-edges cache shape from the edges-map callback", async () => {
+		runAllExtractors.mockReturnValue({
+			nodes: [],
+			edges: [{ id: "edge-x", provenance: "extracted" }],
+		});
+		await structureScanCommand({});
+		expect(writeCategoryCache.mock.calls).toContainEqual([
+			CWD,
+			"artifact-edges",
+			{
+				schema_version: 1,
+				items: [
+					{
+						local_id: "edge-x",
+						global_ref: "edge-x",
+						file: "",
+						provenance: "extracted",
+						determinism_ceiling: "fully_deterministic",
+					},
+				],
+			},
+		]);
+	});
+
+	// test-contract: invariant — the "Scan complete." summary keeps its
+	// blank line before "Mode:" and every line joined by a real newline;
+	// elapsed_ms is Date.now() MINUS the start mark, not plus.
+	it("scan summary keeps the blank separator, newline joins, and a subtracted elapsed time", async () => {
+		runAllExtractors.mockReturnValue({ nodes: [], edges: [] });
+		readCatalogMeta.mockReturnValue(meta());
+		vi.spyOn(Date, "now").mockReturnValueOnce(100).mockReturnValueOnce(107);
+		await structureScanCommand({});
+		expect(stdout()).toBe(
+			"Scan complete.\n\n" +
+				"  Mode:    incremental scan\n" +
+				"  Config:  minimal\n" +
+				"  Nodes:   0\n" +
+				"  Edges:   0\n" +
+				"  Time:    7ms",
+		);
+	});
+
+	// --- structureStatusCommand -----------------------------------------
+	// test-contract: invariant — status output preserves every blank-line
+	// section separator, the newline join, and score*100 (not score/100)
+	// in the rendered percentage.
+	it("status keeps every section's blank separator and a multiplied (not divided) percentage", async () => {
+		loadStructureConfig.mockReturnValue({
+			config: fullConfig({ mode: "standard", artifacts: { public_api: "missing.json" } }),
+			errors: [],
+			implicit: false,
+		});
+		readCatalogMeta.mockReturnValue(meta({ built_at: "2026-03-03T00:00:00.000Z" }));
+		isCacheStale.mockReturnValue(false);
+		readAdoptionReport.mockReturnValue({
+			schema_version: 1,
+			categories: { public_api: 0.876 },
+		} as unknown as AdoptionReport);
+		await structureStatusCommand({});
+		expect(stdout()).toBe(
+			"Structure Status\n\n" +
+				"  Mode:     standard\n" +
+				"  Cache:    fresh\n" +
+				"  Built:    2026-03-03T00:00:00.000Z\n\n" +
+				"  Adoption:\n" +
+				"    public_api   88%\n\n" +
+				"  Invalid manifest references:\n" +
+				"    missing  public_api: interlinked/missing.json",
+		);
+	});
+
+	// --- structureAcceptCommand -------------------------------------------
+	// test-contract: invariant — a real (nonzero) accepted count is the
+	// only thing that may add an entry to the accepted-batch summary; a
+	// batch that accepted nothing for a category must not appear at all.
+	it("accept omits a zero-count push for either category when everything is already declared", async () => {
+		fsFiles[`${CWD}/interlinked/artifacts/public-api.json`] = JSON.stringify({
+			version: 1,
+			modules: [{ id: "p", file: "src/p.ts", symbols: [{ name: "q" }] }],
+		});
+		fsFiles[`${CWD}/interlinked/artifacts/env.json`] = JSON.stringify({
+			version: 1,
+			sources: { declarations: [], defaults: [] },
+			keys: [{ name: "TOKEN" }],
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog([
+						{
+							local_id: "p#q",
+							global_ref: "public_symbol:p#q",
+							file: "src/p.ts",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: name === "env-keys"
+					? catalog([
+							{
+								local_id: "TOKEN",
+								global_ref: "env_key:TOKEN",
+								file: ".env",
+								provenance: "extracted",
+								determinism_ceiling: "fully_deterministic",
+							},
+						])
+					: null,
+		);
+		await structureAcceptCommand({ json: true });
+		expect(JSON.parse(stdout())).toEqual({
+			accepted: [],
+			skipped: [
+				{ category: "public_api", item: "p#q", reason: "already declared" },
+				{ category: "env", item: "TOKEN", reason: "already declared" },
+			],
+		});
+	});
+
+	// test-contract: invariant — config.artifacts may legitimately be
+	// undefined (no structure.json artifacts map yet); reading its
+	// public_api/env keys must default safely and never throw.
+	it("accept defaults both artifact paths safely when config.artifacts is undefined", async () => {
+		loadStructureConfig.mockReturnValue({
+			config: { ...fullConfig(), artifacts: undefined },
+			errors: [],
+			implicit: false,
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog([
+						{
+							local_id: "m#s",
+							global_ref: "public_symbol:m#s",
+							file: "src/m.ts",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: name === "env-keys"
+					? catalog([
+							{
+								local_id: "NEW",
+								global_ref: "env_key:NEW",
+								file: ".env",
+								provenance: "extracted",
+								determinism_ceiling: "fully_deterministic",
+							},
+						])
+					: null,
+		);
+		await structureAcceptCommand({ json: true });
+		expect(errored).toEqual([]);
+		expect(JSON.parse(stdout())).toEqual({
+			accepted: [
+				{ category: "public_api", count: 1 },
+				{ category: "env", count: 1 },
+			],
+			skipped: [],
+		});
+	});
+
+	// test-contract: invariant — the "Skipped (already declared):" section
+	// must not render at all when nothing was skipped.
+	it("accept renders no skipped section when nothing is skipped", async () => {
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "env-keys"
+				? catalog([
+						{
+							local_id: "FRESH",
+							global_ref: "env_key:FRESH",
+							file: ".env",
+							provenance: "extracted",
+							determinism_ceiling: "fully_deterministic",
+						},
+					])
+				: null,
+		);
+		await structureAcceptCommand({});
+		expect(stdout()).toBe("Structure Accept\n  accepted  env: 1 items");
+	});
+
+	// test-contract: boundary — exactly ten skips must render all ten with
+	// NO truncation notice (the notice fires only past ten, not at ten).
+	it("accept shows all ten skips with no truncation notice at the exact boundary", async () => {
+		const mods = Array.from({ length: 10 }, (_, i) => ({
+			id: `m${i}`,
+			file: "src/x.ts",
+			symbols: [{ name: "s" }],
+		}));
+		fsFiles[`${CWD}/interlinked/artifacts/public-api.json`] = JSON.stringify({
+			version: 1,
+			modules: mods,
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog(
+						Array.from({ length: 10 }, (_, i) => ({
+							local_id: `m${i}#s`,
+							global_ref: `public_symbol:m${i}#s`,
+							file: "src/x.ts",
+							provenance: "extracted" as const,
+							determinism_ceiling: "fully_deterministic" as const,
+						})),
+					)
+				: null,
+		);
+		await structureAcceptCommand({});
+		const lines = stdout().split("\n");
+		expect(lines).toHaveLength(13);
+		expect(stdout()).toContain(
+			"Structure Accept\n\n  Skipped (already declared):\n    skip  public_api/m0#s: already declared",
+		);
+		expect(stdout()).toContain("    skip  public_api/m9#s: already declared");
+		expect(stdout()).not.toContain("more");
+	});
+
+	// test-contract: boundary — the skip list is sliced at exactly ten even
+	// when far more than eleven exist; items past the tenth are summarized,
+	// never individually rendered.
+	it("accept slices the skip list at exactly ten regardless of how many more exist", async () => {
+		const mods = Array.from({ length: 15 }, (_, i) => ({
+			id: `k${i}`,
+			file: "src/k.ts",
+			symbols: [{ name: "z" }],
+		}));
+		fsFiles[`${CWD}/interlinked/artifacts/public-api.json`] = JSON.stringify({
+			version: 1,
+			modules: mods,
+		});
+		readCategoryCache.mockImplementation((_cwd: string, name: string) =>
+			name === "public-symbols"
+				? catalog(
+						Array.from({ length: 15 }, (_, i) => ({
+							local_id: `k${i}#z`,
+							global_ref: `public_symbol:k${i}#z`,
+							file: "src/k.ts",
+							provenance: "extracted" as const,
+							determinism_ceiling: "fully_deterministic" as const,
+						})),
+					)
+				: null,
+		);
+		await structureAcceptCommand({});
+		const lines = stdout().split("\n");
+		expect(lines).toHaveLength(14);
+		expect(stdout()).toContain("    skip  public_api/k9#z: already declared");
+		expect(stdout()).not.toContain("k10#z");
+		expect(stdout()).toContain("... and 5 more");
+	});
+
+	// --- structureDoctorCommand -------------------------------------------
+	// test-contract: invariant — badge(severity) renders "WARN" only for
+	// the literal "warning" severity on the missing-cache issue, and the
+	// join separator/blank line are real newlines.
+	it("doctor renders WARN for a missing-cache issue with the blank separator and newline joins", async () => {
+		fsFiles[`${CWD}/interlinked/structure.json`] = "{}";
+		validateStructureJson.mockReturnValue({ valid: true, errors: [] });
+		loadStructureConfig.mockReturnValue({
+			config: fullConfig({ mode: "standard" }),
+			errors: [],
+			implicit: false,
+		});
+		readCatalogMeta.mockReturnValue(null);
+		await structureDoctorCommand({});
+		expect(stdout()).toBe(
+			"Structure Doctor: 1 issue(s)\n\n  WARN  No scan cache. Run `interlinked structure scan`.",
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	// test-contract: invariant — badge(severity) renders "WARN" for a
+	// stale-cache issue too, and issues.some(error) — not .every(error) —
+	// decides exitCode: a mix of one error and one warning must still
+	// exit 1.
+	it("doctor renders WARN for a stale cache and still exits 1 on a mixed error+warning batch", async () => {
+		fsFiles[`${CWD}/interlinked/structure.json`] = "{}";
+		validateStructureJson.mockReturnValue({
+			valid: false,
+			errors: [{ path: ".mode", message: "required" }],
+		});
+		loadStructureConfig.mockReturnValue({
+			config: fullConfig({ mode: "standard" }),
+			errors: [],
+			implicit: false,
+		});
+		readCatalogMeta.mockReturnValue(meta());
+		isCacheStale.mockReturnValue(true);
+		await structureDoctorCommand({});
+		expect(process.exitCode).toBe(1);
+		expect(stdout()).toBe(
+			"Structure Doctor: 2 issue(s)\n\n" +
+				"  ERROR  structure.json .mode: required\n" +
+				"  WARN  Scan cache is stale. Re-run `interlinked structure scan`.",
+		);
+	});
+
+	// --- blSave ------------------------------------------------------------
+	// test-contract: invariant — loadStructureConfig's own config, when
+	// falsy, must fall back to getImplicitConfig(); "artifact-nodes" and an
+	// empty rule-context array are the exact arguments passed downstream.
+	it("baseline save falls back to the implicit config only when the loaded config is falsy", async () => {
+		loadStructureConfig.mockReturnValue({ config: null, errors: [], implicit: true });
+		const implicit = fullConfig({ mode: "minimal" });
+		getImplicitConfig.mockReturnValue(implicit);
+		readCategoryCache.mockReturnValue(catalog([]));
+		evaluateStructureRules.mockReturnValue([]);
+		await structureBaselineCommand("save", {});
+		expect(readCategoryCache).toHaveBeenCalledWith(CWD, "artifact-nodes");
+		expect(evaluateStructureRules).toHaveBeenCalledWith(expect.any(FakeGraph), implicit, [], CWD);
+	});
+
+	// test-contract: invariant — a present loaded config must be used
+	// directly and never OR'd away by an && swap into the unrelated
+	// implicit fallback.
+	it("baseline save uses the loaded config directly when present, never the implicit fallback", async () => {
+		const loaded = fullConfig({ mode: "strict" });
+		loadStructureConfig.mockReturnValue({ config: loaded, errors: [], implicit: false });
+		getImplicitConfig.mockReturnValue(fullConfig({ mode: "minimal" }));
+		readCategoryCache.mockReturnValue(catalog([]));
+		evaluateStructureRules.mockReturnValue([]);
+		await structureBaselineCommand("save", {});
+		expect(evaluateStructureRules).toHaveBeenCalledWith(expect.any(FakeGraph), loaded, [], CWD);
+	});
+
+	// test-contract: invariant — every baselined finding carries a literal
+	// empty context_hash placeholder (hashing is a later phase, not this
+	// one).
+	it("baseline save always writes an empty context_hash placeholder per finding", async () => {
+		loadStructureConfig.mockReturnValue({ config: fullConfig(), errors: [], implicit: false });
+		readCategoryCache.mockReturnValue(catalog([]));
+		evaluateStructureRules.mockReturnValue([
+			{
+				name: "rule-x",
+				severity: "warning",
+				message: "m",
+				file: "src/f.ts",
+				determinism: "fully_deterministic",
+				provenance: "extracted",
+				artifact_kind: "module",
+				artifact_id: "module:f",
+				required_updates: [],
+				confidence: 1,
+			},
+		]);
+		await structureBaselineCommand("save", {});
+		expect(writeBaseline).toHaveBeenCalledWith(CWD, {
+			schema_version: 1,
+			entries: [
+				{
+					finding_name: "rule-x",
+					artifact_ref: "module:f",
+					source_file: "src/f.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+			],
+		});
+	});
+
+	// --- blStatus ------------------------------------------------------------
+	// test-contract: invariant — grouped baseline counts keep the blank
+	// separator and newline join between the header and the rows.
+	it("baseline status renders exact grouped counts with a blank separator and newline joins", async () => {
+		readBaseline.mockReturnValue({
+			schema_version: 1,
+			entries: [
+				{
+					finding_name: "rule-a",
+					artifact_ref: "x",
+					source_file: "src/x.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+				{
+					finding_name: "rule-a",
+					artifact_ref: "y",
+					source_file: "src/y.ts",
+					determinism: "fully_deterministic",
+					required_companion_files: [],
+					context_hash: "",
+				},
+			],
+		});
+		await structureBaselineCommand("status", {});
+		expect(stdout()).toBe("Baseline: 2 entries\n\n  rule-a                         2");
+	});
+
+	// --- structureBaselineCommand ---------------------------------------
+	// test-contract: invariant — the catch guard must swallow a fatal
+	// error (exitCode already 1) without appending a second "...failed"
+	// line.
+	it("baseline catch guard swallows a fatal error without a duplicate message", async () => {
+		await structureBaselineCommand("bogus-sub", {});
+		expect(stderr()).toBe('Error: Unknown baseline subcommand "bogus-sub". Use: save, clear, status');
 	});
 });

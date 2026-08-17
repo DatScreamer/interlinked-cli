@@ -13,6 +13,7 @@
 // the empty-command and fallback cases).
 
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import {
 	afterEach,
 	beforeEach,
@@ -265,6 +266,20 @@ describe("resolveApiKey", () => {
 		fsMock.readFileSync.mockReturnValue("{not json");
 		expect(resolveApiKey("TEST_CLASSIFIER_KEY")).toBeUndefined();
 	});
+
+	// test-contract: public-api — the fallback path is documented in the file
+	// header ("2. .interlinked/config.local.json") as part of resolveApiKey's
+	// contract; every case above mocks readFileSync's RETURN value only, so a
+	// wrong path segment or dropped encoding argument passes every one of them
+	// silently (readFileSync ignores its own arguments once mocked).
+	it("reads config.local.json from <cwd>/.interlinked with utf-8 encoding (exact call args)", () => {
+		fsMock.readFileSync.mockReturnValue(JSON.stringify({ TEST_CLASSIFIER_KEY: "file-secret" }));
+		resolveApiKey("TEST_CLASSIFIER_KEY");
+		expect(fsMock.readFileSync).toHaveBeenCalledWith(
+			join(process.cwd(), ".interlinked", "config.local.json"),
+			"utf-8",
+		);
+	});
 });
 
 // ===========================================
@@ -413,6 +428,24 @@ describe("classifyAction (via buildEvidenceEnvelope.action_class)", () => {
 		["fd pattern", "file_list"],
 		["echo hello && some_unknown_binary", "bash_other"],
 	])("classifies command %j as %s", (cmd, expected) => {
+		expect(envFor("Bash", { command: cmd }).action_class).toBe(expected);
+	});
+
+	// test-contract: boundary — the `\s+` in each of these 7 regexes only differs
+	// from a single `\s` when a command has TWO OR MORE whitespace characters
+	// between the matched words; every single-space fixture above is silently
+	// blind to that boundary. Real commands legitimately carry extra whitespace
+	// (copy-pasted, generated, or hand-aligned), so this is a real input class,
+	// not a synthetic one.
+	it.each([
+		["npm  publish", "npm_publish"],
+		["git  push origin", "git_network"],
+		["git  commit -m x", "git_local"],
+		["npm  test", "npm_test"],
+		["npx  vitest run", "npm_test"],
+		["npm  install", "npm_install"],
+		["go  build ./...", "build"],
+	])("classifies double-spaced command %j as %s (\\s+ vs \\s boundary)", (cmd, expected) => {
 		expect(envFor("Bash", { command: cmd }).action_class).toBe(expected);
 	});
 
@@ -1057,6 +1090,86 @@ describe("callViaClaudeCode", () => {
 		const opts = nonNull(spawnMock.spawn.mock.calls[0])[2] as { timeout: number };
 		expect(opts.timeout).toBe(15000);
 	});
+
+	// test-contract: public-api — the exact argv handed to the `claude` CLI
+	// subprocess IS the classifier's real wire contract (there is no other API
+	// surface to assert it through); a `toContain`-only check lets any single
+	// flag/value go blank without failing, which is exactly what the survivor
+	// mutants on this call site (every flag, the stdio array, and the whole
+	// embedded JSON-schema string) exploited.
+	it("passes the exact CLI argv, stdio, and json-schema — not just individually-contained flags", async () => {
+		await runClaudeCode({
+			config: { model: "sonnet" },
+			drive: (child) => {
+				child.stdout.emit(
+					"data",
+					Buffer.from(JSON.stringify({ structured_output: { compliant: true, confidence: 1, reasoning: "ok" } })),
+				);
+				child.emit("close", 0);
+			},
+		});
+		const expectedJsonSchema = JSON.stringify({
+			type: "object",
+			properties: {
+				compliant: { type: "boolean" },
+				confidence: { type: "number", minimum: 0, maximum: 1 },
+				reasoning: { type: "string" },
+				policy_id: { type: ["string", "null"] },
+			},
+			required: ["compliant", "confidence", "reasoning"],
+		});
+		const [cmd, args, opts] = nonNull(spawnMock.spawn.mock.calls[0]);
+		expect(cmd).toBe("claude");
+		expect(args).toEqual([
+			"-p",
+			"--model",
+			"sonnet",
+			"--no-session-persistence",
+			"--disallowed-tools",
+			"Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
+			"--effort",
+			"low",
+			"--output-format",
+			"json",
+			"--system-prompt",
+			CLASSIFIER_SYSTEM_PROMPT,
+			"--json-schema",
+			expectedJsonSchema,
+			JSON.stringify(makeEvidence()),
+		]);
+		expect(opts).toMatchObject({ stdio: ["ignore", "pipe", "pipe"] });
+	});
+
+	// test-contract: bug — without the trim, JSON.parse throws on a leading BOM,
+	// falls into parseClaudeCodeOutput's catch, and parseClassificationJson then
+	// reads compliant/reasoning off the TOP-LEVEL wrapper instead of
+	// structured_output — silently returning a fabricated "No reasoning
+	// provided" allow instead of the real verdict. A `claude -p` subprocess can
+	// legitimately emit a BOM (locale/shell dependent), so this is a real input,
+	// verified against a real Node JSON.parse (BOM is not tolerated JSON
+	// whitespace; String.prototype.trim() does strip it).
+	it("trims stdout before parsing — a BOM-prefixed payload still resolves the nested verdict", async () => {
+		const { result } = await runClaudeCode({
+			drive: (child) => {
+				child.stdout.emit(
+					"data",
+					Buffer.from(
+						"\uFEFF" +
+							JSON.stringify({
+								structured_output: {
+									compliant: false,
+									confidence: 0.9,
+									reasoning: "blocked",
+									policy_id: "p1",
+								},
+							}),
+					),
+				);
+				child.emit("close", 0);
+			},
+		});
+		expect(result).toEqual({ label: "deny", confidence: 0.9, reasoning: "blocked", policy_id: "p1" });
+	});
 });
 
 // ===========================================
@@ -1200,6 +1313,49 @@ describe("callViaHttp (OpenAI-compatible providers)", () => {
 		const scheduledDelays = setTimeoutSpy.mock.calls.map((c) => c[1]);
 		expect(scheduledDelays).toContain(3000);
 	});
+
+	// test-contract: public-api — the request wire-format for the
+	// OpenAI-compatible provider path is the classifier's actual contract with
+	// the inference endpoint; per-field toContain-style checks let any single
+	// value (Content-Type, the role strings, the message objects) go blank
+	// without failing.
+	it("posts the exact method + headers + body — not just individually-contained fields", async () => {
+		stubFetch(() =>
+			jsonResponse({ choices: [{ message: { content: '{"compliant":true,"confidence":0.5,"reasoning":"ok"}' } }] }),
+		);
+		const state = createClassifierSessionState();
+		const evidence = makeEvidence();
+		await callClassifier(evidence, makeConfig({ provider: "groq", model: "llama-3.1-8b" }), state);
+		const [, init] = nonNull(fetchSpy.mock.calls[0]) as [string, RequestInit];
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			"Content-Type": "application/json",
+			Authorization: "Bearer k-openai",
+		});
+		expect(JSON.parse(init.body as string)).toEqual({
+			model: "llama-3.1-8b",
+			messages: [
+				{ role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+				{ role: "user", content: JSON.stringify(evidence) },
+			],
+			max_tokens: 150,
+			temperature: 0,
+		});
+	});
+
+	// test-contract: invariant — every call schedules an abort timer via
+	// setTimeout; the `finally` block is the ONLY place that clears it, so a
+	// dropped clearTimeout means every classifier call leaks a timer that
+	// outlives the call by up to timeout_ms.
+	it("clears the abort timer in `finally` after a successful call", async () => {
+		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+		stubFetch(() =>
+			jsonResponse({ choices: [{ message: { content: '{"compliant":true,"confidence":0.5,"reasoning":"ok"}' } }] }),
+		);
+		const state = createClassifierSessionState();
+		await callClassifier(makeEvidence(), makeConfig({ provider: "groq" }), state);
+		expect(clearTimeoutSpy).toHaveBeenCalled();
+	});
 });
 
 describe("callViaHttp (Anthropic provider)", () => {
@@ -1268,6 +1424,32 @@ describe("callViaHttp (Anthropic provider)", () => {
 		const state = createClassifierSessionState();
 		const result = await callClassifier(makeEvidence(), makeConfig({ provider: "anthropic" }), state);
 		expect(result.reasoning).toBe("Failed to parse classifier JSON");
+	});
+
+	// test-contract: public-api — same rationale as the OpenAI-compatible
+	// sibling test above, for the Anthropic wire format (x-api-key/version
+	// headers, the single-message `messages` array, and its "user" role).
+	it("posts the exact method + headers + body — not just individually-contained fields", async () => {
+		stubFetch(() =>
+			jsonResponse({ content: [{ type: "text", text: '{"compliant":true,"confidence":0.6,"reasoning":"fine"}' }] }),
+		);
+		const state = createClassifierSessionState();
+		const evidence = makeEvidence();
+		await callClassifier(evidence, makeConfig({ provider: "anthropic", model: "vendor-model-v6" }), state);
+		const [, init] = nonNull(fetchSpy.mock.calls[0]) as [string, RequestInit];
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			"Content-Type": "application/json",
+			"x-api-key": "k-anthropic",
+			"anthropic-version": "2023-06-01",
+		});
+		expect(JSON.parse(init.body as string)).toEqual({
+			model: "vendor-model-v6",
+			system: CLASSIFIER_SYSTEM_PROMPT,
+			messages: [{ role: "user", content: JSON.stringify(evidence) }],
+			max_tokens: 150,
+			temperature: 0,
+		});
 	});
 });
 

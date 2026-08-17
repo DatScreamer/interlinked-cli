@@ -5,7 +5,11 @@ import type { SpecFacts } from "./types.js";
 
 function ctx(
 	files: Record<string, string>,
-	opts: { fileExists?: (abs: string) => boolean; skipped?: string[] } = {},
+	opts: {
+		fileExists?: (abs: string) => boolean;
+		skipped?: string[];
+		scope?: string;
+	} = {},
 ): XrefContext {
 	const map = new Map<string, SpecFacts>();
 	for (const [rel, content] of Object.entries(files)) {
@@ -16,6 +20,7 @@ function ctx(
 		skippedPaths: new Set(opts.skipped ?? []),
 		fileExists: opts.fileExists ?? ((): boolean => false),
 		repoRoot: "/repo",
+		scope: opts.scope,
 	};
 }
 
@@ -36,6 +41,16 @@ describe("resolveRelativeTarget", () => {
 		// A malformed %-escape falls back to the raw (pre-decode) target.
 		expect(resolveRelativeTarget("a.md", "bad%zz.md")).toBe("bad%zz.md");
 	});
+
+	it("only removes a leading ./ and normalizes later dot or empty segments", () => {
+		expect(resolveRelativeTarget("a.md", "guide/./")).toBe("guide");
+		expect(resolveRelativeTarget("a.md", "./guide.md")).toBe("guide.md");
+		expect(resolveRelativeTarget("a.md", "guide//chapter.md")).toBe("guide/chapter.md");
+	});
+
+	it("treats a dot segment as removable even when it is the only non-empty segment", () => {
+		expect(resolveRelativeTarget("docs/a.md", "./")).toBe("docs");
+	});
 });
 
 describe("computeXrefDrift", () => {
@@ -47,7 +62,11 @@ describe("computeXrefDrift", () => {
 			}),
 		);
 		expect(out).toEqual([
-			expect.objectContaining({ kind: "xref_missing_anchor", file: "a.md" }),
+			expect.objectContaining({
+				kind: "xref_missing_anchor",
+				file: "a.md",
+				relatedFiles: ["b.md"],
+			}),
 		]);
 	});
 
@@ -85,6 +104,49 @@ describe("computeXrefDrift", () => {
 			ctx({ "a.md": "# A\nSee [big](./big.md)." }, { skipped: ["big.md"] }),
 		);
 		expect(out).toEqual([]);
+	});
+
+	it("ignores a link whose normalized target escapes the repository root", () => {
+		const out = computeXrefDrift(
+			ctx({ "a.md": "# A\nSee [outside](../../outside.md)." }),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("does not report a missing anchor for an existing file link without an anchor", () => {
+		const out = computeXrefDrift(
+			ctx({
+				"a.md": "# A\nSee [file](./b.md).",
+				"b.md": "# B",
+			}),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("does not report repeated links when the referenced heading exists", () => {
+		const out = computeXrefDrift(
+			ctx({
+				"a.md": "# A\n[one](./b.md#target-heading) and [two](./b.md#target-heading).",
+				"b.md": "# B\n## Target Heading",
+			}),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("limits findings to links from or to the requested scope", () => {
+		const out = computeXrefDrift(
+			ctx(
+				{
+					"a.md": "# A\nSee [missing](./b.md#gone).",
+					"b.md": "# B",
+					"c.md": "# C\nSee [also missing](./d.md).",
+				},
+				{ scope: "a.md" },
+			),
+		);
+		expect(out).toEqual([
+			expect.objectContaining({ kind: "xref_missing_anchor", file: "a.md" }),
+		]);
 	});
 
 	it("ignores links with no target file (bare anchors)", () => {

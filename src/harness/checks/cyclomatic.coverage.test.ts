@@ -246,4 +246,274 @@ describe("computeCyclomaticComplexity — JS/TS regex-walker fallback", () => {
 		);
 		expect(nonNull(entries[0]).cyclomatic).toBe(1);
 	});
+
+	it("discards an entry whose brace walk exhausts the file without ever balancing (closed starts false, not true)", () => {
+		// `walkBraceBody`'s `closed` flag starts at `false` and is only flipped
+		// to `true` when depth returns to <= 0. If it started `true` instead,
+		// a function whose braces NEVER balance (walk runs to EOF without
+		// closing) would keep `closed === true` from its unset initial value
+		// and get emitted anyway, instead of being discarded.
+		const entries = computeCyclomaticComplexity(
+			`function unbalanced() {
+				if (a) doThing();
+				stillGoing();
+				neverCloses();`,
+			"src/foo.ts",
+		);
+		expect(entries).toHaveLength(0);
+	});
+
+	it("falls through to the regex walker when the AST pass returns null (does not short-circuit unconditionally)", () => {
+		// `if (ast) return ast` must stay conditioned on `ast` itself. With the
+		// AST mock returning null here, a condition hard-coded to `true` would
+		// return that null directly instead of falling through to walkJsTs —
+		// every other test in this file already depends on the fallthrough, but
+		// this pins the non-null return shape explicitly.
+		const entries = computeCyclomaticComplexity(`function foo() { return 1; }`, "src/foo.ts");
+		expect(entries).not.toBeNull();
+		expect(Array.isArray(entries)).toBe(true);
+	});
+
+	describe("JS_NAMED_FUNCTION boundary combinations", () => {
+		it("does not detect a `function` keyword appearing mid-line (requires start-of-line)", () => {
+			const entries = computeCyclomaticComplexity(
+				`function wrapper() {
+					x = function foo() { return 1; };
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["wrapper"]);
+		});
+
+		it("detects an indented `function` declaration (leading \\s* must allow real whitespace)", () => {
+			const entries = computeCyclomaticComplexity(
+				`if (true) {
+					function nested() { return 1; }
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["nested"]);
+		});
+
+		it("recognizes optional export/default/async prefixes with doubled internal whitespace", () => {
+			const entries = computeCyclomaticComplexity(
+				[
+					"export  function withExtraSpaceAfterExport() { return 1; }",
+					"export default  function withExtraSpaceAfterDefault() { return 1; }",
+					"async  function withExtraSpaceAfterAsync() { return 1; }",
+					"function  withExtraSpaceAfterKeyword() { return 1; }",
+				].join("\n"),
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual([
+				"withExtraSpaceAfterExport",
+				"withExtraSpaceAfterDefault",
+				"withExtraSpaceAfterAsync",
+				"withExtraSpaceAfterKeyword",
+			]);
+		});
+
+		it("recognizes generic type parameters with surrounding whitespace variations", () => {
+			const entries = computeCyclomaticComplexity(
+				[
+					"function spacedBeforeGeneric <T>() { return 1; }",
+					"function multiCharGeneric<TU>() { return 1; }",
+					"function spacedAfterGeneric<T> () { return 1; }",
+				].join("\n"),
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual([
+				"spacedBeforeGeneric",
+				"multiCharGeneric",
+				"spacedAfterGeneric",
+			]);
+		});
+	});
+
+	describe("JS_ARROW_ASSIGNED boundary combinations", () => {
+		it("does not detect a `const`/`let`/`var` declarator appearing mid-line (requires start-of-line)", () => {
+			const entries = computeCyclomaticComplexity(
+				`function wrapper() {
+					x; const foo = () => { return 1; };
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["wrapper"]);
+		});
+
+		it("detects an indented arrow-function declarator (leading \\s* must allow real whitespace)", () => {
+			const entries = computeCyclomaticComplexity(
+				`if (true) {
+					const nested = () => { return 1; };
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["nested"]);
+		});
+
+		it("recognizes declarator/async keywords with doubled internal whitespace", () => {
+			const entries = computeCyclomaticComplexity(
+				[
+					"export  const withExtraSpaceAfterExport = () => { return 1; };",
+					"const  withExtraSpaceAfterKeyword = () => { return 1; };",
+					"const withExtraSpaceAfterAsync = async  () => { return 1; };",
+				].join("\n"),
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual([
+				"withExtraSpaceAfterExport",
+				"withExtraSpaceAfterKeyword",
+				"withExtraSpaceAfterAsync",
+			]);
+		});
+
+		it("recognizes a parameter type annotation separated from the name by whitespace", () => {
+			const entries = computeCyclomaticComplexity(
+				`const withSpaceBeforeColon : Type = () => { return 1; };`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["withSpaceBeforeColon"]);
+		});
+
+		it("recognizes a compact type annotation with no whitespace at all", () => {
+			const entries = computeCyclomaticComplexity(
+				`const compactAnnotation:Type=() => { return 1; };`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["compactAnnotation"]);
+		});
+
+		it("recognizes a return-type annotation separated from the paren by whitespace", () => {
+			const entries = computeCyclomaticComplexity(
+				`const withSpaceBeforeReturnType = () : Type => { return 1; };`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["withSpaceBeforeReturnType"]);
+		});
+	});
+
+	describe("JS_METHOD_LINE boundary combinations", () => {
+		it("does not detect a method-shaped fragment appearing mid-line (requires start-of-line)", () => {
+			const entries = computeCyclomaticComplexity(
+				`function wrapper() {
+					y = bar() { return 1; }
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual(["wrapper"]);
+		});
+
+		it("recognizes modifier keywords with doubled internal whitespace", () => {
+			const entries = computeCyclomaticComplexity(
+				`class Widget {
+					async  withExtraSpaceAfterAsync() { return 1; }
+					static  withExtraSpaceAfterStatic() { return 1; }
+					public  withExtraSpaceAfterPublic() { return 1; }
+					private  withExtraSpaceAfterPrivate() { return 1; }
+					protected  withExtraSpaceAfterProtected() { return 1; }
+					readonly  withExtraSpaceAfterReadonly() { return 1; }
+					override  withExtraSpaceAfterOverride() { return 1; }
+					get  withExtraSpaceAfterGet() { return 1; }
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual([
+				"withExtraSpaceAfterAsync",
+				"withExtraSpaceAfterStatic",
+				"withExtraSpaceAfterPublic",
+				"withExtraSpaceAfterPrivate",
+				"withExtraSpaceAfterProtected",
+				"withExtraSpaceAfterReadonly",
+				"withExtraSpaceAfterOverride",
+				"withExtraSpaceAfterGet",
+			]);
+		});
+
+		it("recognizes generic type parameters with surrounding whitespace variations", () => {
+			const entries = computeCyclomaticComplexity(
+				`class Widget {
+					spacedBeforeGeneric <T>() { return 1; }
+					multiCharGeneric<TU>() { return 1; }
+					spacedAfterGeneric<T> () { return 1; }
+				}`,
+				"src/foo.ts",
+			);
+			expect(entries.map((e) => e.name)).toEqual([
+				"spacedBeforeGeneric",
+				"multiCharGeneric",
+				"spacedAfterGeneric",
+			]);
+		});
+	});
+
+	it("rejects EVERY reserved head word as a method name (JS_RESERVED_HEAD_WORDS must be exhaustive)", () => {
+		// One test line per member of the reserved-word set, mirroring it
+		// exactly. Each line matches JS_METHOD_LINE's shape (a bare word
+		// immediately followed by `() {`); real code must reject every single
+		// one, so a wholesale `[]` swap OR the removal of any ONE word from
+		// the set shows up as an extra spurious entry here.
+		const RESERVED_WORDS = [
+			"function", "if", "for", "while", "switch", "return", "typeof", "new",
+			"await", "throw", "yield", "case", "default", "break", "continue", "do",
+			"else", "try", "catch", "finally", "void", "delete", "const", "let",
+			"var", "class", "extends", "implements", "interface", "type", "enum",
+			"import", "export", "from", "as", "in", "of", "true", "false", "null",
+			"undefined",
+		];
+		const body = RESERVED_WORDS.map((w) => `\t${w}() { return 1; }`).join("\n");
+		const entries = computeCyclomaticComplexity(
+			`function wrapper() {\n${body}\n}`,
+			"src/foo.ts",
+		);
+		expect(entries.map((e) => e.name)).toEqual(["wrapper"]);
+	});
+
+	it("does not misfire on `iffy(x)` (JS_DECISION_KEYWORD needs whitespace-or-paren immediately after the keyword)", () => {
+		const entries = computeCyclomaticComplexity(
+			`function foo() {
+				iffy(x);
+				return 1;
+			}`,
+			"src/foo.ts",
+		);
+		expect(nonNull(entries[0]).cyclomatic).toBe(1);
+	});
+
+	it("counts `if` with doubled whitespace before the paren as a decision", () => {
+		const entries = computeCyclomaticComplexity(
+			`function foo(x) {
+				if  (x) { return 1; }
+				return 0;
+			}`,
+			"src/foo.ts",
+		);
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
+	});
+
+	it("counts `case` labels split from their colon by only a following non-whitespace token (JS_CASE_LABEL needs \\s+, not \\S+)", () => {
+		const entries = computeCyclomaticComplexity(
+			`function pick(x) {
+				switch (x) {
+					case "a": return 1;
+					case "b": return 2;
+					default: return 0;
+				}
+			}`,
+			"src/foo.ts",
+		);
+		// base 1 + 2 case labels (default excluded); a `\S+` mutant can't match
+		// "case " at all (space right after "case" isn't \S), so it would drop
+		// to 1.
+		expect(nonNull(entries[0]).cyclomatic).toBe(3);
+	});
+
+	it("counts a compact ternary with no surrounding whitespace (JS_TERNARY character-class boundaries)", () => {
+		const entries = computeCyclomaticComplexity(
+			`function foo(a) {
+				return a?b:c;
+			}`,
+			"src/foo.ts",
+		);
+		expect(nonNull(entries[0]).cyclomatic).toBe(2);
+	});
 });

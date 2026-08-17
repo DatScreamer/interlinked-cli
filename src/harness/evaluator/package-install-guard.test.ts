@@ -11,6 +11,7 @@ import {
 	saveAllowlist,
 } from "../package-allowlist.js";
 import { parseInstallCommands } from "../package-install-parser.js";
+import type { InstallCommand } from "../package-install-parser.js";
 import type { HarnessDecision } from "../types.js";
 import { evaluatePackageInstall } from "./package-install-guard.js";
 
@@ -443,6 +444,266 @@ describe("evaluatePackageInstall — compound", () => {
 		expect(
 			evalCmd("npm install lodash@4.17.21 && pip install requests==2.31.0").decision,
 		).toBe("allow");
+	});
+});
+
+describe("evaluatePackageInstall — decision metadata and branch boundaries", () => {
+	// test-contract: security — custom registries must produce the documented high-severity supply-chain decision, including its stable rule identifier
+	it("reports the complete high-severity supply-chain decision for a custom registry", () => {
+		addToAllowlist(workspace, "npm", "lodash", { approved_by: "x" });
+		const r = evalCmd("npm install lodash@4.17.21 --registry http://attacker.test");
+		expect(r).toEqual({
+			decision: "block",
+			reason:
+				'[interlinked:supply-chain] Custom registry "http://attacker.test" on npm install is never auto-allowed. Use the default ecosystem registry, or remove the override.',
+			rule_id: "supply-chain-custom-registry",
+			severity: "high",
+			category: "supply-chain",
+		});
+	});
+
+	// test-contract: security — an implicit global install must fail closed with the dedicated public rule and remediation text
+	it("blocks a bare global install with its dedicated rule and reason", () => {
+		const r = evalCmd("cargo install");
+		expect(r).toEqual({
+			decision: "block",
+			reason:
+				"[interlinked:supply-chain] cargo install_global requires explicit package arg; refusing implicit install.",
+			rule_id: "supply-chain-bare-install-global",
+			severity: "high",
+			category: "supply-chain",
+		});
+	});
+
+	// test-contract: boundary — a parsed no-op remains allowed even when otherwise-blocking registry and snapshot fields are present
+	it("allows an explicit no-op command before evaluating registry or snapshot policy", () => {
+		const noop: InstallCommand = {
+			ecosystem: "npm",
+			manager: "npm",
+			action: "noop",
+			packages: [],
+			fromLockfile: true,
+			fromManifest: true,
+			customRegistry: "http://attacker.test",
+			notes: [],
+		};
+		expect(evaluatePackageInstall([noop], workspace, loadAllowlist(workspace))).toEqual({
+			decision: "allow",
+		});
+	});
+
+	// test-contract: boundary — an ordinary package-manager command without packages or sync flags does not enter snapshot policy
+	it("does not treat an ordinary add command with no package or sync flag as a snapshot sync", () => {
+		const add: InstallCommand = {
+			ecosystem: "npm",
+			manager: "npm",
+			action: "add",
+			packages: [],
+			fromLockfile: false,
+			fromManifest: false,
+			notes: [],
+		};
+		expect(evaluatePackageInstall([add], workspace, loadAllowlist(workspace))).toEqual({
+			decision: "allow",
+		});
+	});
+});
+
+describe("evaluatePackageInstall — snapshot coverage across fixed ecosystems", () => {
+	interface SnapshotCase {
+		ecosystem: InstallCommand["ecosystem"];
+		manager: string;
+		manifest: string;
+		lockfile?: string;
+	}
+
+	const cases: SnapshotCase[] = [
+		{ ecosystem: "npm", manager: "npm", manifest: "package.json", lockfile: "package-lock.json" },
+		{ ecosystem: "npm", manager: "yarn", manifest: "package.json", lockfile: "yarn.lock" },
+		{ ecosystem: "npm", manager: "pnpm", manifest: "package.json", lockfile: "pnpm-lock.yaml" },
+		{ ecosystem: "npm", manager: "bun", manifest: "package.json", lockfile: "bun.lockb" },
+		{ ecosystem: "pypi", manager: "pip", manifest: "pyproject.toml", lockfile: "poetry.lock" },
+		{ ecosystem: "pypi", manager: "pip", manifest: "pyproject.toml", lockfile: "uv.lock" },
+		{ ecosystem: "pypi", manager: "pip", manifest: "pyproject.toml", lockfile: "pdm.lock" },
+		{ ecosystem: "pypi", manager: "pip", manifest: "requirements.txt", lockfile: "requirements.lock" },
+		{ ecosystem: "pypi", manager: "pip", manifest: "Pipfile", lockfile: "Pipfile.lock" },
+		{ ecosystem: "cargo", manager: "cargo", manifest: "Cargo.toml", lockfile: "Cargo.lock" },
+		{ ecosystem: "rubygems", manager: "bundle", manifest: "Gemfile", lockfile: "Gemfile.lock" },
+		{ ecosystem: "go", manager: "go", manifest: "go.mod", lockfile: "go.sum" },
+		{ ecosystem: "composer", manager: "composer", manifest: "composer.json", lockfile: "composer.lock" },
+		{ ecosystem: "maven", manager: "mvn", manifest: "pom.xml" },
+		{ ecosystem: "gradle", manager: "gradle", manifest: "build.gradle", lockfile: "gradle.lockfile" },
+		{ ecosystem: "gradle", manager: "gradle", manifest: "build.gradle.kts", lockfile: "gradle.lockfile" },
+		{ ecosystem: "nuget", manager: "nuget", manifest: "packages.config", lockfile: "packages.lock.json" },
+	];
+
+	function syncCommand(testCase: SnapshotCase): InstallCommand {
+		return {
+			ecosystem: testCase.ecosystem,
+			manager: testCase.manager,
+			action: "sync",
+			packages: [],
+			fromLockfile: Boolean(testCase.lockfile),
+			fromManifest: true,
+			notes: [],
+		};
+	}
+
+	// test-contract: public-api — every documented fixed manifest/lockfile pair is accepted only when its stored snapshot hash matches
+	it.each(cases)("allows a matching $ecosystem snapshot for $manifest/$lockfile", (testCase) => {
+		const snapshotFile = testCase.lockfile ?? testCase.manifest;
+		const snapshotPath = join(workspace, snapshotFile);
+		writeFileSync(join(workspace, testCase.manifest), `manifest for ${testCase.manifest}`);
+		writeFileSync(snapshotPath, `lockfile for ${snapshotFile}`);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots[snapshotFile] = {
+			sha256: hashLockfile(snapshotPath) ?? "",
+			approved_at: "2026-08-13",
+			approved_by: "test",
+		};
+		saveAllowlist(workspace, al);
+
+		expect(
+			evaluatePackageInstall([syncCommand(testCase)], workspace, loadAllowlist(workspace)),
+		).toEqual({ decision: "allow" });
+	});
+
+	// test-contract: public-api — each documented ecosystem accepts a manifest-only snapshot when no lockfile snapshot is present
+	it.each([
+		["npm", "npm", "package.json"],
+		["pypi", "pip", "pyproject.toml"],
+		["pypi", "pip", "requirements.txt"],
+		["pypi", "pip", "Pipfile"],
+		["cargo", "cargo", "Cargo.toml"],
+		["rubygems", "bundle", "Gemfile"],
+		["go", "go", "go.mod"],
+		["composer", "composer", "composer.json"],
+		["maven", "mvn", "pom.xml"],
+		["gradle", "gradle", "build.gradle"],
+		["gradle", "gradle", "build.gradle.kts"],
+		["nuget", "nuget", "packages.config"],
+	] as const)("allows a manifest-only snapshot for %s/%s/%s", (ecosystem, manager, manifest) => {
+		const manifestPath = join(workspace, manifest);
+		writeFileSync(manifestPath, `manifest only for ${manifest}`);
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots[manifest] = {
+			sha256: hashLockfile(manifestPath) ?? "",
+			approved_at: "2026-08-13",
+			approved_by: "test",
+		};
+		saveAllowlist(workspace, al);
+		const command: InstallCommand = {
+			ecosystem,
+			manager,
+			action: "sync",
+			packages: [],
+			fromLockfile: false,
+			fromManifest: true,
+			notes: [],
+		};
+		expect(evaluatePackageInstall([command], workspace, loadAllowlist(workspace))).toEqual({
+			decision: "allow",
+		});
+	});
+
+	// test-contract: public-api — mismatch reasons enumerate present snapshot candidates with stable names and truncated hashes for remediation
+	it("includes every present manifest and lockfile, with stable names and 12-char hashes, in a mismatch hint", () => {
+		const manifest = join(workspace, "package.json");
+		const lockfile = join(workspace, "package-lock.json");
+		writeFileSync(manifest, '{"name":"demo"}');
+		writeFileSync(lockfile, '{"name":"demo-lock"}');
+		const manifestHash = hashLockfile(manifest)?.slice(0, 12);
+		const lockfileHash = hashLockfile(lockfile)?.slice(0, 12);
+		const r = evaluatePackageInstall(
+			[
+				{
+					ecosystem: "npm",
+					manager: "npm",
+					action: "sync",
+					packages: [],
+					fromLockfile: true,
+					fromManifest: true,
+					notes: [],
+				},
+			],
+			workspace,
+			loadAllowlist(workspace),
+		);
+		expect(r?.rule_id).toBe("supply-chain-snapshot-mismatch");
+		expect(r?.reason).toContain("Run `interlinked allowlist snapshot` to approve the current state of: package.json, package-lock.json.");
+		expect(r?.reason).toContain(`package.json=${manifestHash}`);
+		expect(r?.reason).toContain(`package-lock.json=${lockfileHash}`);
+	});
+
+	// test-contract: security — a snapshot mismatch exposes the effective cwd, bootstrap remediation, and current hash in the exported block reason
+	it("returns the complete bootstrap mismatch decision for a shifted cwd", () => {
+		const nested = join(workspace, "nested");
+		mkdirSync(nested);
+		const manifest = join(nested, "package.json");
+		writeFileSync(manifest, '{"name":"nested-demo"}');
+		const hash = hashLockfile(manifest)?.slice(0, 12);
+		const r = evaluatePackageInstall(
+			[
+				{
+					ecosystem: "npm",
+					manager: "npm",
+					action: "sync",
+					packages: [],
+					fromLockfile: false,
+					fromManifest: true,
+					effectiveCwd: "nested",
+					notes: [],
+				},
+			],
+			workspace,
+			loadAllowlist(workspace),
+		);
+		expect(r).toEqual({
+			decision: "block",
+			reason:
+				'[interlinked:supply-chain] npm sync [in nested]: no allowlist snapshot matches the current npm manifest/lockfile state. Run `interlinked allowlist snapshot` to approve the current state of: package.json. (current hashes: package.json=' + hash + ')',
+			rule_id: "supply-chain-snapshot-mismatch",
+			severity: "high",
+			category: "supply-chain",
+		});
+	});
+
+	// test-contract: boundary — a present but non-file lockfile cannot satisfy the snapshot gate
+	it("does not treat a lockfile directory as a snapshotted lockfile", () => {
+		mkdirSync(join(workspace, "package-lock.json"));
+		const al = loadAllowlist(workspace);
+		al.lockfile_snapshots["package-lock.json"] = {
+			sha256: "not-a-real-hash",
+			approved_at: "2026-08-13",
+			approved_by: "test",
+		};
+		saveAllowlist(workspace, al);
+		const r = evalCmd("npm ci");
+		expect(r.decision).toBe("block");
+		expect(r.rule_id).toBe("supply-chain-snapshot-mismatch");
+	});
+
+	// test-contract: boundary — an unrecognized manifest emits the documented bootstrap remediation and shifted-cwd note
+	it("uses the bootstrap hint and effective-cwd note when no recognized file exists", () => {
+		const r = evaluatePackageInstall(
+			[
+				{
+					ecosystem: "go",
+					manager: "go",
+					action: "sync",
+					packages: [],
+					fromLockfile: false,
+					fromManifest: true,
+					effectiveCwd: "nested",
+					notes: [],
+				},
+			],
+			workspace,
+			loadAllowlist(workspace),
+		);
+		expect(r?.rule_id).toBe("supply-chain-snapshot-mismatch");
+		expect(r?.reason).toContain("go sync [in nested]: no allowlist snapshot matches the current go manifest/lockfile state.");
+		expect(r?.reason).toContain("Initial bootstrap: `interlinked allowlist add go <package>` per package, or `interlinked allowlist snapshot` once the manifest is in place.");
 	});
 });
 

@@ -969,11 +969,11 @@ describe("reb_blind_edit_unread_file: daemon-restart state loss (documented gap,
 // Wiring
 // ============================================================
 
-describe("lastReadStep: the || chain's clauses are each independently load-bearing", () => {
-	it("matches a MULTI-SEGMENT relative pseudo-read key via file.endsWith, independent of the k===base clause (crafted state, single key)", () => {
-		// A LogicalOperator mutant that turns the endsWith/=== pair into an
-		// AND (or drops the trailing endsWith clause) would reject this key,
-		// since k !== base here — only the first (endsWith) clause admits it.
+describe("lastReadStep: relative pseudo-read keys use suffix matching", () => {
+	it("matches a MULTI-SEGMENT relative pseudo-read key against an absolute edit path", () => {
+		// The public contract is loose path matching: a relative pseudo-read
+		// should suppress the blind-edit nudge for the corresponding absolute
+		// edit, regardless of which equivalent suffix form supplies the match.
 		const state = createState("s1");
 		state.fileReadSteps.set("src/x.ts", 1); // deliberately NOT "x.ts" alone
 		const event = edit("/repo/src/x.ts");

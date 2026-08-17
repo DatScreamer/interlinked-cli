@@ -235,6 +235,57 @@ describe("skip_paths short-circuit", () => {
 		expect(mShouldSkip).not.toHaveBeenCalled();
 		expect(mEvaluate).toHaveBeenCalledOnce();
 	});
+
+	it("short-circuits only when every observed effect matches skip_paths", async () => {
+		mShouldSkip.mockImplementation((path: string) => path.startsWith("dist/"));
+		const change_set = {
+			source: "filesystem-observation" as const,
+			complete: true,
+			before_captured_at: "before",
+			after_captured_at: "after",
+			files: [
+				{ path: "dist/a.js", kind: "modified" as const, before_sha256: "a", after_sha256: "b" },
+			],
+		};
+		const skipped = await runPostToolPipeline(makeCtx(), ev({ tool_name: "Bash", change_set }), makeSession());
+		expect(skipped.summary).toContain("all 1 observed");
+
+		change_set.files.push({
+			path: "src/a.ts",
+			kind: "modified",
+			before_sha256: "a",
+			after_sha256: "b",
+		});
+		const checked = await runPostToolPipeline(makeCtx(), ev({ tool_name: "Bash", change_set }), makeSession());
+		expect(checked.summary ?? "").not.toContain("post-event pipeline skipped");
+		expect(mEvaluate).toHaveBeenCalled();
+	});
+
+	// test-contract: boundary — observed runtime control-file effects must reach evaluation even when skip_paths claims them
+	it("does not short-circuit an observed control-file effect when shouldSkipPath matches", async () => {
+		mShouldSkip.mockReturnValue(true);
+		const change_set = {
+			source: "filesystem-observation" as const,
+			complete: true,
+			before_captured_at: "before",
+			after_captured_at: "after",
+			files: [
+				{
+					path: ".interlinked/config.local.json",
+					kind: "modified" as const,
+					before_sha256: "a",
+					after_sha256: "b",
+				},
+			],
+		};
+		const decision = await runPostToolPipeline(
+			makeCtx(),
+			ev({ tool_name: "Bash", change_set }),
+			makeSession(),
+		);
+		expect(decision.summary ?? "").not.toContain("post-event pipeline skipped");
+		expect(mEvaluate).toHaveBeenCalled();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -243,7 +294,7 @@ describe("skip_paths short-circuit", () => {
 
 describe("trigram dirty-layer update", () => {
 	function ctxWithIndex(updateFile = vi.fn()): { ctx: ServerRuntime; updateFile: Mock } {
-		const fileContentCache = { set: vi.fn() };
+		const fileContentCache = { set: vi.fn(), invalidate: vi.fn() };
 		const ctx = makeCtx({ trigramIndex: { updateFile }, fileContentCache });
 		return { ctx, updateFile: updateFile as unknown as Mock };
 	}
@@ -275,12 +326,15 @@ describe("trigram dirty-layer update", () => {
 		expect(updateFile).not.toHaveBeenCalled();
 	});
 
-	it("skips when the resolved file does not exist on disk", async () => {
+	it("removes a deleted file from the index and content cache", async () => {
 		const { ctx, updateFile } = ctxWithIndex();
 		mExistsSync.mockReturnValue(false); // affects both the dirty check and downstream marker writes
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/src/gone.ts" } });
 		await runPostToolPipeline(ctx, event, makeSession());
-		expect(updateFile).not.toHaveBeenCalled();
+		expect(updateFile).toHaveBeenCalledWith("src/gone.ts", null);
+		expect((ctx.fileContentCache as unknown as { invalidate: Mock }).invalidate).toHaveBeenCalledWith(
+			"src/gone.ts",
+		);
 	});
 
 	it("skips an out-of-tree write (relative path starts with ..)", async () => {

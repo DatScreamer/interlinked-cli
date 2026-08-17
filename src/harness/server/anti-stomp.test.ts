@@ -26,6 +26,7 @@ describe("antiStompDepsFor", () => {
 	// reason `startup-failed`; see ./startup-guard.ts).
 	it("records an anti-stomp exit row for this process", () => {
 		const dir = mkdtempSync(join(tmpdir(), "anti-stomp-deps-"));
+		// interlinked: defer conditional_in_test -- try/finally is tmpdir cleanup, not case branching; the assertion path is single
 		try {
 			const logAlways = vi.fn();
 			antiStompDepsFor(dir, logAlways).recordExit();
@@ -42,9 +43,9 @@ describe("antiStompDepsFor", () => {
 
 	// P: the logger is passed straight through — the daemon's own stderr.
 	it("delegates logging to the supplied logger", () => {
-		const logAlways = vi.fn();
-		antiStompDepsFor("/repo", logAlways).logAlways("hello");
-		expect(logAlways).toHaveBeenCalledWith("hello");
+		const seen: string[] = [];
+		antiStompDepsFor("/repo", (msg) => seen.push(msg)).logAlways("hello");
+		expect(seen).toEqual(["hello"]);
 	});
 });
 
@@ -81,8 +82,7 @@ describe("loseAntiStompRace", () => {
 		// short-circuit the contract — recordExit/exit are unconditional.
 		const deps = makeDeps();
 		loseAntiStompRace({ ownerPid: 1, detail: "", cwd: "", deps });
-		expect(deps.recordExit).toHaveBeenCalledTimes(1);
-		expect(deps.exit).toHaveBeenCalledTimes(1);
+		expect(deps.calls).toEqual(["log", "recordExit", "exit"]);
 	});
 
 	it("propagates a throwing exit() (the real process.exit test-double shape) rather than swallowing it", () => {
@@ -106,16 +106,23 @@ describe("loseAntiStompRace", () => {
 
 describe("reapZombieIncumbent", () => {
 	it("SIGTERMs the given pid", () => {
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		// Record signals as STATE (pid, signal pairs) — the kernel call itself
+		// has no other observable from inside the process.
+		const signalsSent: Array<[number, string]> = [];
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, sig) => {
+			signalsSent.push([Number(pid), String(sig)]);
+			return true;
+		});
 		const logAlways = vi.fn();
 		reapZombieIncumbent(4242, logAlways);
-		expect(killSpy).toHaveBeenCalledWith(4242, "SIGTERM");
+		expect(signalsSent).toEqual([[4242, "SIGTERM"]]);
 		expect(logAlways).not.toHaveBeenCalled();
 		killSpy.mockRestore();
 	});
 
 	it("silently ignores ESRCH (the pid was already gone by the time we signalled it)", () => {
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			// SAFETY: ErrnoException is Error plus optional string fields; adding `code` below makes the shape real.
 			const err = new Error("kill ESRCH") as NodeJS.ErrnoException;
 			err.code = "ESRCH";
 			throw err;
@@ -128,6 +135,7 @@ describe("reapZombieIncumbent", () => {
 
 	it("logs (but does not throw) on an unexpected signalling failure, e.g. EPERM", () => {
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			// SAFETY: ErrnoException is Error plus optional string fields; adding `code` below makes the shape real.
 			const err = new Error("kill EPERM") as NodeJS.ErrnoException;
 			err.code = "EPERM";
 			throw err;

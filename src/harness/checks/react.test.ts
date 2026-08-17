@@ -386,6 +386,78 @@ describe("checkDirectDomAccess", () => {
 		expect(found.length).toBeGreaterThan(0);
 		expect(found.map((m) => m.line)).toContain(5);
 	});
+
+	// test-contract: boundary — direct DOM query recognition permits documented whitespace before the call delimiter
+	test("recognizes a DOM query with whitespace before its call delimiter", () => {
+		const code = "document.querySelector \t ('.target');";
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([{ line: 1, text: code }]);
+	});
+
+	// test-contract: boundary — the public direct-DOM finding list remains capped at ten findings, including exactly ten matches
+	test("caps direct DOM findings at exactly ten matches", () => {
+		const lines = Array.from({ length: 10 }, (_, i) => `document.querySelector('.target-${i}');`);
+		const found = checkDirectDomAccess(lines.join("\n"), "src/Comp.tsx");
+		expect(found).toHaveLength(10);
+		expect(found.map((match) => match.line)).toEqual(Array.from({ length: 10 }, (_, i) => i + 1));
+	});
+
+	// test-contract: boundary — direct DOM findings stop collecting after the documented ten-result cap when an eleventh match is present
+	test("caps direct DOM findings when matches exceed ten", () => {
+		const lines = Array.from({ length: 11 }, (_, i) => `document.querySelector('.target-${i}');`);
+		const found = checkDirectDomAccess(lines.join("\n"), "src/Comp.tsx");
+		expect(found).toHaveLength(10);
+		expect(found.at(-1)?.line).toBe(10);
+	});
+
+	// test-contract: boundary — the sanctioned effect escape hatch remains active through nested callback blocks before later DOM access
+	test("keeps nested DOM access inside a multiline effect callback exempt", () => {
+		const code = [
+			"export function Comp() {",
+			"  useEffect(() => {",
+			"    if (ready) {",
+			'      const el = document.querySelector(".target");',
+			"      el?.focus();",
+			"    }",
+			"  }, []);",
+			"  return null;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	// test-contract: boundary — a multiline effect opener seeds the documented callback exemption for DOM access on its later lines
+	test("seeds effect tracking from a multiline callback opener", () => {
+		const code = [
+			"export function Comp() {",
+			"  useEffect(() => {",
+			'    const el = document.getElementById("target");',
+			"  }, []);",
+			"  return null;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	// test-contract: boundary — createPortal's documented target-node exemption accepts whitespace before the call delimiter
+	test("exempts a createPortal target with whitespace before its call delimiter", () => {
+		const code = [
+			"export function Modal({ children }) {",
+			'  return createPortal \t (children, document.getElementById("modal-root")!);',
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Modal.tsx")).toEqual([]);
+	});
+
+	// test-contract: boundary — useEffect's documented exemption accepts whitespace before the hook call delimiter
+	test("exempts DOM access when useEffect has whitespace before its call delimiter", () => {
+		const code = [
+			"export function Comp() {",
+			'  useEffect \t (() => { const el = document.querySelector(".target"); }, []);',
+			"  return null;",
+			"}",
+		].join("\n");
+		expect(checkDirectDomAccess(code, "src/Comp.tsx")).toEqual([]);
+	});
 });
 
 describe("checkInlineObjectProps", () => {
@@ -448,6 +520,19 @@ describe("checkInlineObjectProps", () => {
 		].join("\n");
 		expect(checkInlineObjectProps(code, "src/Comp.tsx")).toEqual([]);
 	});
+
+	// test-contract: public-api — inline-object diagnostics preserve the documented 150-character source-text bound for the first finding
+	test("bounds a long inline-object diagnostic to 150 source characters", () => {
+		const longProp = `    <Widget longProperty={{ value: "${"x".repeat(220)}" }} />`;
+		const code = [longProp, "<Widget second={{ value: 2 }} />", "<Widget third={{ value: 3 }} />"].join("\n");
+		const found = checkInlineObjectProps(code, "src/Comp.tsx");
+		expect(found).toEqual([
+			{
+				line: 1,
+				text: `[3 inline object props — creates new references every render, causing unnecessary re-renders. Extract to constants or useMemo] ${longProp.trim().slice(0, 150)}`,
+			},
+		]);
+	});
 });
 
 describe("checkAsyncEventHandler", () => {
@@ -484,5 +569,142 @@ describe("checkAsyncEventHandler", () => {
 		expect(found).toHaveLength(2);
 		expect(found.map((m) => m.line)).toEqual([3, 4]);
 		expect(nonNull(found[0]).text).toContain("onSubmit");
+	});
+});
+
+describe("React checks — mutation boundary cases", () => {
+	test("useState accepts whitespace before the call delimiter and reports trimmed source", () => {
+		const hooks = Array.from({ length: 8 }, (_, i) => `  const [s${i}, setS${i}] = useState \t (0);`);
+		const code = ["export function Comp() {", ...hooks, "}"].join("\n");
+		const found = checkExcessiveUseState(code, "src/Comp.tsx");
+		expect(found).toEqual([
+			{
+				line: 2,
+				text: "[8 useState hooks — consider useReducer or splitting component] const [s0, setS0] = useState \t (0);",
+			},
+		]);
+	});
+
+	test("all React detectors remain gated on extension when given real matching syntax", () => {
+		expect(checkDangerouslySetInnerHTML("<div dangerouslySetInnerHTML={{ __html: runtime }} />", NON_REACT_PATH)).toEqual([]);
+		expect(checkDirectDomAccess("document.querySelector('.target');", NON_REACT_PATH)).toEqual([]);
+		expect(checkInlineObjectProps("<Widget longProperty={{ value: 1 }} />\n<Widget anotherProperty={{ value: 2 }} />\n<Widget thirdProperty={{ value: 3 }} />", NON_REACT_PATH)).toEqual([]);
+		expect(checkAsyncEventHandler("<button onClick={async () => save()} />", NON_REACT_PATH)).toEqual([]);
+
+		const jsxPath = "src/Widget.jsx";
+		expect(checkDangerouslySetInnerHTML("<div dangerouslySetInnerHTML={{ __html: runtime }} />", jsxPath)).toHaveLength(1);
+		expect(checkDirectDomAccess("document.querySelector('.target');", jsxPath)).toHaveLength(1);
+		expect(checkInlineObjectProps("<Widget longProperty={{ value: 1 }} />\n<Widget anotherProperty={{ value: 2 }} />\n<Widget thirdProperty={{ value: 3 }} />", jsxPath)).toHaveLength(1);
+		expect(checkAsyncEventHandler("<button onClick={async () => save()} />", jsxPath)).toHaveLength(1);
+	});
+
+	test("dangerous HTML preserves the trimmed, bounded diagnostic text", () => {
+		const line = `    <div dangerouslySetInnerHTML={{ __html: external }} /> ${"x".repeat(200)}   `;
+		const found = checkDangerouslySetInnerHTML(line, "src/Comp.tsx");
+		expect(found).toEqual([{ line: 1, text: line.trim().slice(0, 150) }]);
+	});
+
+	test("dangerous HTML resolves an identifier containing a regex metacharacter", () => {
+		const code = [
+			"const $HTML = '<p>static</p>';",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: $HTML }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("dangerous HTML requires every whitespace separator in the inline shape", () => {
+		const code = [
+			"const STATIC = '<p>static</p>';",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML \t= \t{ \t{ __html \t: \tSTATIC \t} \t} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	// test-contract: boundary — dangerouslySetInnerHTML accepts the documented JSX object shape even when __html follows the inner brace without whitespace
+	test("dangerous HTML accepts an inline object with no separator after the inner brace", () => {
+		const code = [
+			"const STATIC = '<p>static</p>';",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{__html: STATIC}} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("template static-string scanning does not stop at an escaped backtick before interpolation", () => {
+		const code = [
+			"const html = `prefix \\` ${userInput}`;",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toHaveLength(1);
+	});
+
+	test("template static-string scanning handles a dollar immediately before closing", () => {
+		const code = [
+			"const html = `price $`;",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("template static-string scanning ignores interpolation-looking text outside the template", () => {
+		const code = [
+			"const html = `static`; const unrelated = '${runtime}';",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("template static-string scanning treats a plain brace as ordinary text", () => {
+		const code = [
+			"const html = `literal { text`;",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("template static-string scanning treats a plain closing brace as ordinary text", () => {
+		const code = [
+			"const html = `literal } text`;",
+			"export function Comp() {",
+			"  return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+			"}",
+		].join("\n");
+		expect(checkDangerouslySetInnerHTML(code, "src/Comp.tsx")).toEqual([]);
+	});
+
+	test("direct DOM diagnostics are trimmed and bounded", () => {
+		const line = `    document.querySelector('.target'); ${"x".repeat(200)}   `;
+		const found = checkDirectDomAccess(line, "src/Comp.tsx");
+		expect(found).toEqual([{ line: 1, text: line.trim().slice(0, 150) }]);
+	});
+
+	test("inline object diagnostics use the complete prop name and trimmed text", () => {
+		const code = [
+			"export function Comp() {",
+			"    <Widget longProperty={{ value: 1 }} />",
+			"    <Widget anotherProperty={{ value: 2 }} />",
+			"    <Widget thirdProperty={{ value: 3 }} />",
+			"}",
+		].join("\n");
+		const found = checkInlineObjectProps(code, "src/Comp.tsx");
+		expect(found).toEqual([
+			{
+				line: 2,
+				text: "[3 inline object props — creates new references every render, causing unnecessary re-renders. Extract to constants or useMemo] <Widget longProperty={{ value: 1 }} />",
+			},
+		]);
 	});
 });

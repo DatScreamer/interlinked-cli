@@ -22,6 +22,9 @@ import {
 	__resetPythonDegradeWarningForTesting,
 	checkFunctionComplexityWrite,
 	DEFAULT_MAX_CYCLOMATIC,
+	projectContent,
+	resolveFilePath,
+	selectAnalyzer,
 	SUB_CAP_RATCHET_TOLERANCE,
 } from "./complexity-write-guard.js";
 
@@ -853,5 +856,422 @@ describe("checkFunctionComplexityWrite — beforeFns null fallback (analyzer ava
 			pyTmp2,
 		);
 		expect(out).toBeNull(); // f (cyc 3) is well under cap either way
+	});
+});
+
+// ===========================================================================
+// Mutation-kill additions (pass-1, W11 fleet). projectContent/selectAnalyzer/
+// resolveFilePath are called DIRECTLY (exported) rather than through
+// checkFunctionComplexityWrite so downstream masking (empty-file-parses-to-
+// zero-functions, cappable-file exemptions) can't hide the mutated branch.
+// ===========================================================================
+
+describe("projectContent — direct exact-observable branch coverage", () => {
+	// test-contract: invariant — old_string/new_string is a matched pair; a
+	// caller supplying only one half must not fall through to Edit semantics.
+	it("returns null when only old_string is set (new_string absent) against an existing file", () => {
+		const file = join(tmp, "only-old.ts");
+		writeFileSync(file, "hello world");
+		expect(projectContent({ old_string: "hello" }, file)).toBeNull();
+	});
+
+	// test-contract: boundary — a non-string old_string must not satisfy the
+	// old_string/new_string branch.
+	it("returns null when old_string is present but not a string", () => {
+		const file = join(tmp, "old-not-string.ts");
+		writeFileSync(file, "hello world");
+		expect(projectContent({ old_string: 123, new_string: "y" }, file)).toBeNull();
+	});
+
+	// test-contract: boundary — mirror of the old_string case for new_string.
+	it("returns null when new_string is present but not a string", () => {
+		const file = join(tmp, "new-not-string.ts");
+		writeFileSync(file, "hello world");
+		expect(projectContent({ old_string: "hello", new_string: 456 }, file)).toBeNull();
+	});
+
+	// test-contract: boundary — before==="" (file does not exist) must
+	// return null exactly, for BOTH the old_string/new_string branch and the
+	// edits-array branch; going through checkFunctionComplexityWrite masks
+	// this (an empty before/after both parse to zero functions either way).
+	it("old_string/new_string branch: before==='' (missing file) returns null exactly", () => {
+		const file = join(tmp, "single-missing-direct.ts");
+		expect(projectContent({ old_string: "x", new_string: "y" }, file)).toBeNull();
+	});
+
+	it("edits-array branch: before==='' (missing file) returns null exactly", () => {
+		const file = join(tmp, "multi-missing-direct.ts");
+		expect(projectContent({ edits: [{ old_string: "x", new_string: "y" }] }, file)).toBeNull();
+	});
+
+	// test-contract: boundary — `typeof raw !== "object"` must independently
+	// gate entry even when a typeof-"function" value's OWN properties happen
+	// to look string-shaped (the sibling old_string/new_string type guard is
+	// not the only line of defense).
+	it("skips an edits entry whose typeof is not 'object' even when it carries string-shaped properties", () => {
+		const file = join(tmp, "typeof-not-object.ts");
+		const content = "untouched content";
+		writeFileSync(file, content);
+		const fakeEdit = Object.assign(() => {}, { old_string: "untouched", new_string: "CHANGED" });
+		const out = projectContent({ edits: [fakeEdit] }, file);
+		expect(out).toEqual({ before: content, after: content });
+	});
+});
+
+describe("projectContent / applyEdit — replace_all and not-found branches (old_string/new_string)", () => {
+	// test-contract: public-api — replace_all:true rewrites EVERY occurrence.
+	it("replace_all:true rewrites every occurrence", () => {
+		const file = join(tmp, "replall-true.ts");
+		writeFileSync(file, "aXbXc");
+		const out = projectContent({ old_string: "X", new_string: "Y", replace_all: true }, file);
+		expect(out).toEqual({ before: "aXbXc", after: "aYbYc" });
+	});
+
+	// test-contract: public-api — replace_all omitted rewrites ONLY the
+	// first occurrence.
+	it("replace_all omitted rewrites only the first occurrence", () => {
+		const file = join(tmp, "replall-omit.ts");
+		writeFileSync(file, "aXbXc");
+		const out = projectContent({ old_string: "X", new_string: "Y" }, file);
+		expect(out).toEqual({ before: "aXbXc", after: "aYbXc" });
+	});
+
+	// test-contract: boundary — an old_string that never occurs leaves the
+	// content byte-for-byte unchanged (no phantom edit at a -1 index).
+	it("old_string not found leaves content unchanged", () => {
+		const file = join(tmp, "notfound.ts");
+		writeFileSync(file, "hello world");
+		const out = projectContent({ old_string: "ZZZ_NOT_PRESENT", new_string: "y" }, file);
+		expect(out).toEqual({ before: "hello world", after: "hello world" });
+	});
+});
+
+describe("projectContent — edits array: per-entry type guards and replace_all", () => {
+	// test-contract: invariant — an edits[] entry missing old_string (not a
+	// string) must be skipped, never treated as a literal "undefined" search.
+	it("skips an edits entry whose old_string is missing (not a string)", () => {
+		const file = join(tmp, "edits-old-missing.ts");
+		const content = "start undefined middle";
+		writeFileSync(file, content);
+		const out = projectContent({ edits: [{ new_string: "REPLACED" }] }, file);
+		expect(out).toEqual({ before: content, after: content });
+	});
+
+	// test-contract: invariant — mirror of the above for new_string.
+	it("skips an edits entry whose new_string is missing (not a string)", () => {
+		const file = join(tmp, "edits-new-missing.ts");
+		const content = "before OLDMARK after";
+		writeFileSync(file, content);
+		const out = projectContent({ edits: [{ old_string: "OLDMARK" }] }, file);
+		expect(out).toEqual({ before: content, after: content });
+	});
+
+	// test-contract: public-api — an edits[] entry's OWN replace_all:true
+	// rewrites every occurrence within that entry's application.
+	it("an edits entry's replace_all:true rewrites every occurrence", () => {
+		const file = join(tmp, "edits-replall-true.ts");
+		writeFileSync(file, "aXbXc");
+		const out = projectContent({ edits: [{ old_string: "X", new_string: "Y", replace_all: true }] }, file);
+		expect(out).toEqual({ before: "aXbXc", after: "aYbYc" });
+	});
+
+	// test-contract: public-api — replace_all omitted on an edits[] entry
+	// rewrites only the first occurrence.
+	it("an edits entry's replace_all omitted rewrites only the first occurrence", () => {
+		const file = join(tmp, "edits-replall-omit.ts");
+		writeFileSync(file, "aXbXc");
+		const out = projectContent({ edits: [{ old_string: "X", new_string: "Y" }] }, file);
+		expect(out).toEqual({ before: "aXbXc", after: "aYbXc" });
+	});
+});
+
+describe("selectAnalyzer — direct extension-dispatch tests", () => {
+	// test-contract: boundary — PY_RE is end-anchored; an extension merely
+	// containing ".py" without ending in it must not route to Python.
+	it("does not match an extension that merely contains '.py' without ending in it", () => {
+		expect(selectAnalyzer("script.pyc")).toBeNull();
+	});
+
+	// test-contract: boundary — JS_TS_RE is end-anchored the same way.
+	it("does not match an extension that merely contains a JS/TS extension without ending in it", () => {
+		expect(selectAnalyzer("weird.tsxyz")).toBeNull();
+	});
+
+	// test-contract: public-api — the returned language tag is the exact
+	// string "js_ts" for a JS/TS path.
+	it("tags a JS/TS path with language 'js_ts' exactly", () => {
+		expect(selectAnalyzer("f.ts")?.language).toBe("js_ts");
+	});
+});
+
+describe("resolveFilePath — direct type-guard tests", () => {
+	// test-contract: boundary — a non-string file_path must not be returned
+	// verbatim; the function's return type is always `string`.
+	it("ignores a non-string file_path value and falls through to path/''", () => {
+		expect(resolveFilePath({ file_path: 123 })).toBe("");
+	});
+
+	// test-contract: boundary — mirror of the above for `path` when
+	// file_path is absent.
+	it("ignores a non-string path value when file_path is absent", () => {
+		expect(resolveFilePath({ path: 456 })).toBe("");
+	});
+});
+
+describe("checkApplyPatchComplexity — non-code sections fail safe (never crash)", () => {
+	// test-contract: invariant — a section whose extension has no registered
+	// analyzer must be skipped BEFORE any analyzer method is invoked; it must
+	// never reach `analyzer.compute` with a null analyzer.
+	it("skips a non-analyzable (.rb) Add File section instead of crashing", () => {
+		const patch =
+			"*** Begin Patch\n" + `*** Add File: ${join(tmp, "script.rb")}\n` + "+puts 'hi'\n" + "*** End Patch";
+		expect(() => checkFunctionComplexityWrite({ command: patch }, tmp)).not.toThrow();
+		expect(checkFunctionComplexityWrite({ command: patch }, tmp)).toBeNull();
+	});
+});
+
+describe("checkApplyPatchComplexity — source-content resolution reaches the reconstructed after-content", () => {
+	function blankContextAddPatch(destPath: string): string {
+		return "*** Begin Patch\n" + `*** Update File: ${destPath}\n` + "@@\n" + "\n" + "+MARKER_LINE\n" + "*** End Patch";
+	}
+
+	// test-contract: boundary — when the source path does not exist at all,
+	// `before` must resolve to the empty string (not a placeholder), so a
+	// blank-line context hunk against it still reconstructs successfully.
+	it("a missing source path resolves before to '' (blank-context hunk reconstructs)", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content.includes("MARKER_LINE") ? [pyEntry("newfn", 40)] : [],
+		);
+		const patch = blankContextAddPatch(join(tmp, "never-existed.py"));
+		const out = checkFunctionComplexityWrite({ command: patch }, tmp);
+		expect(out?.block).toContain("newfn");
+		pythonMock.mockReset();
+	});
+
+	// test-contract: boundary — when the source path EXISTS but cannot be
+	// read (a directory), `before` must also fall back to '' (not some other
+	// sentinel), so the same blank-context hunk still reconstructs.
+	it("an unreadable (directory) source path also resolves before to '' (blank-context hunk reconstructs)", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content.includes("MARKER_LINE") ? [pyEntry("newfn2", 40)] : [],
+		);
+		const dest = join(tmp, "as-a-directory.py");
+		mkdirSync(dest);
+		const patch = blankContextAddPatch(dest);
+		const out = checkFunctionComplexityWrite({ command: patch }, tmp);
+		expect(out?.block).toContain("newfn2");
+		pythonMock.mockReset();
+	});
+});
+
+describe("buildBlock — exact message contract (all template pieces present)", () => {
+	// test-contract: public-api — the block message is user-facing guidance;
+	// every documented piece (tolerance language, decompose instruction,
+	// no-suppression note, the `caps` command hints) must actually be
+	// present, not silently dropped.
+	it("produces the exact block text for one new over-cap function", () => {
+		pythonMock.mockImplementation((content: string) => (content === "AFTER" ? [pyEntry("foo", 99)] : []));
+		const file = join(tmp, "exactmsg.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		const expected =
+			"[interlinked:cyclomatic] BLOCKED: this edit pushes 1 function(s) past a " +
+			`cyclomatic limit — a function may rise by at most ${SUB_CAP_RATCHET_TOLERANCE} branch(es) ` +
+			`per edit, and no function may exceed the ${DEFAULT_MAX_CYCLOMATIC}-branch cap:\n` +
+			"  • foo (cyclomatic 99, new over-cap function)\n" +
+			"Decompose: extract cohesive branches into smaller named functions, then retry. " +
+			"Holding or reducing an existing function is always allowed; there is no suppression.\n" +
+			`This ${DEFAULT_MAX_CYCLOMATIC}-branch cap is per-repo configurable: \`interlinked caps set cyclomatic <n>\` ` +
+			"(run `interlinked caps explain cyclomatic` for what cyclomatic complexity measures).";
+		expect(out?.block).toBe(expected);
+		pythonMock.mockReset();
+	});
+});
+
+describe("warnAnalyzerUnavailable — exact degrade message text", () => {
+	// test-contract: public-api — the degrade message names `radon` and the
+	// exact remediation command; a silently-truncated piece would leave an
+	// operator without the install hint.
+	it("emits the exact degrade message (all pieces intact)", () => {
+		__resetPythonDegradeWarningForTesting();
+		pythonMock.mockReturnValue(null);
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		checkFunctionComplexityWrite({ file_path: join(tmp, "exactdegrade.py"), content: "def f():\n    ...\n" }, tmp);
+		const expected =
+			"[interlinked] WARNING: `radon` is not resolvable — the strict cyclomatic " +
+			"PreToolUse gate for Python (.py) is degraded and cannot enforce the " +
+			`${DEFAULT_MAX_CYCLOMATIC}-branch cap. Install it (e.g. \`pip install radon\`) ` +
+			"in this repo to restore enforcement. Edits are allowed meanwhile (fail-open).\n";
+		expect(stderrSpy).toHaveBeenCalledWith(expected);
+		stderrSpy.mockRestore();
+		pythonMock.mockReset();
+	});
+});
+
+describe("complexityViolations — exact cap boundary (=== cap is allowed, cap+1 blocks)", () => {
+	// test-contract: boundary — the over-cap filter is a strict `>`; a
+	// function sitting exactly at the cap must never be treated as over it.
+	it("a brand-new function at exactly the cap is allowed", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("atcap", DEFAULT_MAX_CYCLOMATIC)] : [],
+		);
+		const file = join(tmp, "atcap-exact.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).toBeNull();
+		pythonMock.mockReset();
+	});
+});
+
+describe("uniqueByName — ambiguous entries never enter the sub-cap ratchet", () => {
+	// test-contract: invariant — an anonymous callback has no reliable
+	// cross-edit identity; its rise must never be sub-cap-ratcheted even
+	// when the jump is far past the tolerance.
+	it("does not ratchet an anonymous callback's rise (no reliable identity)", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("(callback)", 20)] : [pyEntry("(callback)", 5)],
+		);
+		const file = join(tmp, "anon-ratchet.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).toBeNull();
+		pythonMock.mockReset();
+	});
+
+	// test-contract: invariant — a same-named collision pair also has no
+	// reliable cross-edit identity; the last-declared entry's rise must
+	// never be ratcheted against the pair's earlier value.
+	it("does not ratchet a collision-named pair's rise (no reliable identity)", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER"
+				? [pyEntry("dup", 5), pyEntry("dup", 20)]
+				: [pyEntry("dup", 5), pyEntry("dup", 5)],
+		);
+		const file = join(tmp, "collide-rise.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).toBeNull();
+		pythonMock.mockReset();
+	});
+});
+
+describe("pooledAmbiguousOverCapViolations — sort/filter chain integrity", () => {
+	// test-contract: invariant — the after-side ambiguous set must be
+	// compared rank-for-rank in sorted-descending order; an unsorted
+	// comparison misattributes which entry actually worsened.
+	it("compares the after-side ambiguous ranks in sorted-descending order, not source order", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("(callback)", 26), pyEntry("(callback)", 40)] : [pyEntry("(callback)", 40)],
+		);
+		const file = join(tmp, "after-unsorted.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out?.block).toContain("cyclomatic 26");
+		expect(out?.block).not.toContain("cyclomatic 40");
+		pythonMock.mockReset();
+	});
+
+	// test-contract: invariant — the before-side ambiguous baseline must
+	// also be sorted-descending; an unsorted baseline misaligns rank 0 and
+	// false-blocks an unchanged function.
+	it("compares the before-side ambiguous baseline in sorted-descending order, not source order", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("(callback)", 40)] : [pyEntry("(callback)", 26), pyEntry("(callback)", 40)],
+		);
+		const file = join(tmp, "before-unsorted.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).toBeNull();
+		pythonMock.mockReset();
+	});
+
+	// test-contract: invariant — the before-side ambiguous filter requires
+	// BOTH over-cap AND ambiguous; a uniquely-named over-cap function must
+	// never leak into the pooled baseline (it has its own identity-based
+	// comparison already).
+	it("a uniquely-named before-side over-cap function never leaks into the pooled baseline", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER"
+				? [pyEntry("(callback)", 40), pyEntry("steady", 35), pyEntry("(callback)", 30)]
+				: [pyEntry("(callback)", 40), pyEntry("steady", 35)],
+		);
+		const file = join(tmp, "spurious-unique.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out?.block).toContain("cyclomatic 30");
+		pythonMock.mockReset();
+	});
+
+	// test-contract: invariant — two ambiguous entries held at their exact
+	// prior values must never be flagged (held is `<=`, not `<`).
+	it("holding two ambiguous over-cap entries at their exact prior values is allowed", () => {
+		pythonMock.mockReturnValue([pyEntry("(callback)", 40), pyEntry("(callback)", 30)]);
+		const file = join(tmp, "held-exact.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).toBeNull();
+		pythonMock.mockReset();
+	});
+
+	// test-contract: invariant — a same-named collision pair over cap is
+	// reported with the non-anonymous wording, never the anonymous-callback
+	// wording, since `post.name` is a real name.
+	it("a collision-named (non-anonymous) pooled violation uses the non-anonymous wording", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("dup", 30), pyEntry("dup", 30)] : [],
+		);
+		const file = join(tmp, "collision-wording.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out?.block).toContain("dup (cyclomatic 30, new over-cap function)");
+		pythonMock.mockReset();
+	});
+});
+
+describe("subCapRatchetViolations — the <= cap band gate and sort order", () => {
+	// test-contract: invariant — the ratchet is scoped to the `<= cap` band
+	// ONLY (module comment: "no double-report"); a rise that lands OVER cap
+	// must be reported once, by the over-cap path, never again by the ratchet.
+	it("a rise that lands over cap is reported once (over-cap wording), not twice", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("named", 30)] : [pyEntry("named", 5)],
+		);
+		const file = join(tmp, "ratchet-overcap-once.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out?.block).toContain("named (cyclomatic 30, raised from 5)");
+		expect(out?.block).not.toContain("rose 25 in one edit");
+	});
+
+	// test-contract: boundary — a big rise that lands EXACTLY at cap is still
+	// `<= cap`, so the ratchet (not the strictly-over-cap path) must catch it.
+	it("a big rise landing exactly at cap is caught by the ratchet", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER" ? [pyEntry("named", DEFAULT_MAX_CYCLOMATIC)] : [pyEntry("named", 5)],
+		);
+		const file = join(tmp, "ratchet-at-cap.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		expect(out).not.toBeNull();
+		expect(out?.block).toContain(`rose ${DEFAULT_MAX_CYCLOMATIC - 5} in one edit`);
+	});
+
+	// test-contract: invariant — the returned violation strings are sorted
+	// alphabetically, independent of the functions' source/iteration order.
+	it("two ratchet violations are listed alphabetically, not in source order", () => {
+		pythonMock.mockImplementation((content: string) =>
+			content === "AFTER"
+				? [pyEntry("zebra", 20), pyEntry("apple", 22)] // source order: zebra first
+				: [pyEntry("zebra", 5), pyEntry("apple", 5)],
+		);
+		const file = join(tmp, "ratchet-sort-order.py");
+		writeFileSync(file, "BEFORE");
+		const out = checkFunctionComplexityWrite({ file_path: file, content: "AFTER" }, tmp);
+		const block = out?.block ?? "";
+		const appleIdx = block.indexOf("apple");
+		const zebraIdx = block.indexOf("zebra");
+		expect(appleIdx).toBeGreaterThanOrEqual(0);
+		expect(zebraIdx).toBeGreaterThanOrEqual(0);
+		expect(appleIdx).toBeLessThan(zebraIdx);
 	});
 });

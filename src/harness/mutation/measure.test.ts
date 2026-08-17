@@ -224,6 +224,33 @@ describe("buildScopedMeasureOverlays", () => {
 		expect(result.overlays.some((o) => o.path === "src/a.ts")).toBe(true);
 		expect(result.overlays.some((o) => o.path === "src/a.test.ts")).toBe(true);
 	});
+
+	it("N6: `capped.dropped` is EXACTLY the overflow tail's real paths, not the whole spillover and not placeholders", () => {
+		// test-contract: invariant — a caller trusts `capped.dropped` to name
+		// precisely the files missing from `overlays` so it can report an
+		// honestly-incomplete closure; a wrong list (too many entries, or
+		// entries that aren't real paths) breaks that trust silently.
+		const disk = new Map<string, string>();
+		const depCount = MAX_MEASURE_OVERLAYS + 5;
+		const imports = Array.from({ length: depCount }, (_, i) => `import './dep${i}.js';`).join("\n");
+		disk.set(FILE, imports);
+		for (let i = 0; i < depCount; i++) disk.set(`src/dep${i}.ts`, "export const z = 1;\n");
+		const result = buildScopedMeasureOverlays(FILE, imports, (p) => disk.get(p) ?? null, []);
+		expect(result.capped).toBeDefined();
+		// Only the target itself is "required" here (no companion, no scope) —
+		// so the budget for kept deps is MAX_MEASURE_OVERLAYS minus that one
+		// slot. `collectLocalDeps` itself is ALSO capped at MAX_MEASURE_OVERLAYS
+		// (measure.ts's own comment on that call site), so the candidate dep
+		// list tops out at MAX_MEASURE_OVERLAYS even though depCount asks for 5 more.
+		const budget = MAX_MEASURE_OVERLAYS - 1;
+		const collectedDeps = Math.min(depCount, MAX_MEASURE_OVERLAYS);
+		const expectedDropped = Array.from({ length: collectedDeps - budget }, (_, i) => `src/dep${budget + i}.ts`);
+		expect(result.capped?.dropped).toEqual(expectedDropped);
+		expect(result.overlays.length).toBe(MAX_MEASURE_OVERLAYS);
+		for (const p of expectedDropped) {
+			expect(result.overlays.some((o) => o.path === p)).toBe(false);
+		}
+	});
 });
 
 describe("requestWholeFileReport", () => {
@@ -351,6 +378,125 @@ describe("requestWholeFileReport", () => {
 			},
 		});
 		expect(Object.prototype.hasOwnProperty.call(JSON.parse(capturedBody), "testScope")).toBe(false);
+	});
+
+	it("P5: sends the JSON content type and only adds bearer auth when a token is supplied", async () => {
+		const headers: Array<Record<string, string>> = [];
+		const fetchImpl = async (_url: string, init: { headers: Record<string, string> }) => {
+			headers.push(init.headers);
+			return fakeResponse(200, { files: {} });
+		};
+		await requestWholeFileReport({ ...baseArgs, endpoints: ["http://runner/"], fetchImpl });
+		await requestWholeFileReport({ ...baseArgs, token: "secret", endpoints: ["http://runner/"], fetchImpl });
+		expect(headers[0]).toEqual({ "content-type": "application/json" });
+		expect(headers[1]).toEqual({ "content-type": "application/json", authorization: "Bearer secret" });
+	});
+
+	it("P6: sends an explicit whole-file range covering every content line", async () => {
+		let body = "";
+		await requestWholeFileReport({
+			...baseArgs,
+			content: "one\ntwo\nthree\n",
+			endpoints: ["http://runner/"],
+			fetchImpl: async (_url, init) => {
+				body = init.body;
+				return fakeResponse(200, { files: {} });
+			},
+		});
+		expect(JSON.parse(body).range).toEqual({ start: 1, end: 4 });
+	});
+
+	it("N5: gives up after exactly three unreachable rounds and names all endpoints", async () => {
+		let calls = 0;
+		const out = await requestWholeFileReport({
+			...baseArgs,
+			endpoints: ["http://dead-1", "http://dead-2"],
+			deadlineMs: 100,
+			fetchImpl: async () => {
+				calls++;
+				if (calls <= 6) throw new Error("ECONNREFUSED");
+				return fakeResponse(200, { files: {} });
+			},
+			now: () => 0,
+			sleep: async () => {},
+		});
+		if (out.ok) throw new Error("expected failure");
+		expect(calls).toBe(6);
+		expect(out.reason).toContain("http://dead-1, http://dead-2");
+	});
+
+	it("P7: uses deterministic exponential backoff and reports the deadline in seconds", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+		try {
+			let clock = 0;
+			const sleeps: number[] = [];
+			const out = await requestWholeFileReport({
+				...baseArgs,
+				endpoints: ["http://busy/"],
+				deadlineMs: 5_000,
+				fetchImpl: async () => fakeResponse(503, {}),
+				now: () => clock,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+					clock += ms;
+				},
+			});
+			if (out.ok) throw new Error("expected failure");
+			expect(sleeps.slice(0, 2)).toEqual([2_375, 4_375]);
+			expect(out.reason).toContain("after 5s");
+		} finally {
+			random.mockRestore();
+		}
+	});
+
+	it("P8: every request is a POST", async () => {
+		// test-contract: public-api — the runner's wire contract is a POST; a
+		// GET (or any other verb) would be silently rejected or misrouted by a
+		// real HTTP server, so this is load-bearing, not incidental.
+		let capturedMethod = "";
+		await requestWholeFileReport({
+			...baseArgs,
+			endpoints: ["http://runner/"],
+			fetchImpl: async (_url, init) => {
+				capturedMethod = init.method;
+				return fakeResponse(200, { files: {} });
+			},
+		});
+		expect(capturedMethod).toBe("POST");
+	});
+
+	it("N6: the DEFAULT sleep (no `sleep` override) genuinely delays the retry — it is not a no-op", async () => {
+		// test-contract: invariant — the backoff strategy depends on the retry
+		// actually waiting between rounds; a default that resolves instantly
+		// would hammer the runner in a tight loop instead of backing off.
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			let clock = 0;
+			const promise = requestWholeFileReport({
+				file: FILE,
+				content: CONTENT,
+				overlays: [{ path: FILE, content: CONTENT }],
+				jobId: "job-1",
+				deadlineMs: 60_000,
+				requestTimeoutMs: 1_000,
+				endpoints: ["http://runner/"],
+				now: () => clock,
+				fetchImpl: async () => {
+					calls++;
+					return calls === 1 ? fakeResponse(503, {}) : fakeResponse(200, { files: {} });
+				},
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls).toBe(1);
+			clock += 20_000;
+			await vi.advanceTimersByTimeAsync(20_000);
+			const outcome = await promise;
+			expect(outcome).toEqual({ ok: true, body: { files: {} } });
+			expect(calls).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -481,6 +627,27 @@ describe("measureFile", () => {
 		expect(outcome.reason).toBe("no_tests: no companion test on disk");
 	});
 
+	it("P6: forwards an explicit token and creates a stable default job id when omitted", async () => {
+		let captured: { job_id: string; authorization: string | undefined } | undefined;
+		const fetchImpl = async (_url: string, init: { body: string; headers: Record<string, string> }) => {
+			const body = JSON.parse(init.body) as { job_id: string };
+			captured = { job_id: body.job_id, authorization: init.headers.authorization };
+			return fakeResponse(200, { files: {} });
+		};
+		const clock = vi.spyOn(Date, "now").mockReturnValue(123456);
+		try {
+			await measureFile({
+				...args,
+				endpoints: ["http://runner/"],
+				token: "measure-token",
+				fetchImpl,
+			});
+			expect(captured).toEqual({ job_id: "measure-src-a-ts-2n9c", authorization: "Bearer measure-token" });
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("N4: a body with no `files` key summarizes to zero mutants rather than throwing", async () => {
 		const outcome = await measureFile({
 			...args,
@@ -523,6 +690,112 @@ describe("measureFile", () => {
 		expect(outcome.mutantCount).toBe(2);
 		expect(outcome.survivorCount).toBe(1);
 		expect(outcome.survivors).toEqual([{ line: 0, mutator: "EqualityOperator", replacement: ">=" }]);
+	});
+
+	it("N6: reports safe defaults for malformed survivor fields and preserves a valid source line", async () => {
+		const body = {
+			files: {
+				[FILE]: {
+					source: CONTENT,
+					mutants: [
+						{ mutatorName: 123, replacement: 456, status: "Survived", location: { start: { line: "2" } } },
+						{ mutatorName: "EqualityOperator", replacement: ">=", status: "Survived", location: { start: { line: 2 } } },
+					],
+				},
+			},
+		};
+		const outcome = await measureFile({
+			file: FILE,
+			content: CONTENT,
+			overlays: [{ path: FILE, content: CONTENT }],
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, body),
+		});
+		expect(outcome.survivors).toEqual([
+			{ line: 0, mutator: "?", replacement: "?" },
+			{ line: 2, mutator: "EqualityOperator", replacement: ">=" },
+		]);
+	});
+
+	it("N7: treats a malformed files value as an empty report instead of iterating it", async () => {
+		const outcome = await measureFile({
+			file: FILE,
+			content: CONTENT,
+			overlays: [{ path: FILE, content: CONTENT }],
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, { files: null }),
+		});
+		expect(outcome).toMatchObject({ status: "measured", mutantCount: 0, survivorCount: 0, survivors: [] });
+	});
+
+	it("N8: a custom `now` is genuinely forwarded and used to compute the retry deadline — not silently dropped", async () => {
+		// test-contract: invariant — `now` is how a caller substitutes a virtual
+		// clock for testability; if the value stopped propagating, every caller
+		// depending on it (including this file's own tests) would silently fall
+		// back to real wall-clock time.
+		const nowSpy = vi.fn(() => 1_000_000);
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			now: nowSpy,
+			fetchImpl: async () => fakeResponse(200, { files: {} }),
+		});
+		expect(outcome.status).toBe("measured");
+		expect(nowSpy).toHaveBeenCalled();
+	});
+
+	it("N9: `survivors` is exactly empty (never a placeholder entry) on both the not_measurable and the error/busy paths", async () => {
+		// test-contract: invariant — a caller trusts an empty `survivors` array
+		// to mean zero survivors; a stray placeholder entry would be silently
+		// counted as a real mutant by anything summing this outcome.
+		const notMeasurable = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, { not_measurable: { reason: "no_tests" } }),
+		});
+		expect(notMeasurable.survivors).toEqual([]);
+		expect(notMeasurable.mutantCount).toBe(0);
+		expect(notMeasurable.survivorCount).toBe(0);
+
+		const errored = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(500, {}),
+		});
+		expect(errored.survivors).toEqual([]);
+		expect(errored.mutantCount).toBe(0);
+		expect(errored.survivorCount).toBe(0);
+	});
+
+	it("N10: a non-array/non-object `mutants` value on an unrelated file is skipped, never iterated", async () => {
+		// test-contract: bug — `Array.isArray`/`isJsonObject` guard a for-of
+		// below; skipping the guard on a non-iterable `mutants` value (a bare
+		// number, here) would throw a TypeError instead of tolerating the
+		// malformed entry, turning one bad file in a report into a rejected
+		// promise for the whole measurement.
+		const body = {
+			files: {
+				"bad-shape.ts": { source: "x", mutants: 42 },
+				[FILE]: {
+					source: CONTENT,
+					mutants: [
+						{
+							mutatorName: "EqualityOperator",
+							replacement: ">=",
+							status: "Survived",
+							location: { start: { line: 2, column: 1 }, end: { line: 2, column: 2 } },
+						},
+					],
+				},
+			},
+		};
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, body),
+		});
+		expect(outcome.status).toBe("measured");
+		expect(outcome.mutantCount).toBe(1);
 	});
 });
 
@@ -602,6 +875,104 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		});
 		expect(result.recorded).toBe(true);
 		expect(Object.keys(must(result.manifest).files)).toEqual([FILE]);
+	});
+
+	it("counts equivalent mutants as survivors in the before summary", () => {
+		const base = emptyManifest(META);
+		base.files[FILE] = {
+			symbol: {
+				symbolId: "symbol",
+				qualifiedName: "f",
+				symbolHash: "hash",
+				mutants: {
+					mutant: {
+						mutantId: "mutant",
+						siteId: "site",
+						mutator: "EqualityOperator",
+						originalLexeme: ">",
+						replacement: ">=",
+						ordinalWithinSymbol: 0,
+						status: "equivalent",
+						firstSeen: "t0",
+					},
+				},
+				instability: { events: [], consecutiveStableRuns: 0, quarantined: false },
+			},
+		};
+		const result = recordMeasurement({ base, file: FILE, content: CONTENT, rawReport: { nonsense: true }, at: "t" });
+		expect(result.recorded).toBe(false);
+		expect(result.before).toEqual({ mutants: 1, survivors: 1 });
+	});
+
+	it("explains zero mutants for the requested file even when another report file has mutants", () => {
+		const base = emptyManifest(META);
+		const result = recordMeasurement({
+			base,
+			file: FILE,
+			content: CONTENT,
+			rawReport: {
+				files: {
+					"src/other.ts": {
+						source: CONTENT,
+						mutants: [{ mutatorName: "EqualityOperator", replacement: ">=", status: "Survived", location: { start: { line: 2, column: 10 }, end: { line: 2, column: 11 } } }],
+					},
+					[FILE]: { source: CONTENT, mutants: [] },
+				},
+			},
+			at: "t",
+		});
+		expect(result.recorded).toBe(false);
+		expect(result.reason).toContain("zero mutants");
+	});
+
+	it("refuses via the SAME zero-mutants reason as a direct match, even when the target is found behind an earlier non-empty file", () => {
+		// test-contract: invariant — the diagnostic's own `adapted.find(...) ??
+		// adapted[0]` re-derivation must find the SAME entry `seedFileBaseline`
+		// found (matching this file's key), not silently fall back to
+		// `adapted[0]` (a DIFFERENT file) and explain the wrong thing.
+		const base = emptyManifest(META);
+		const rawReport = {
+			files: {
+				"other.ts": {
+					source: "export const z = 1;\n",
+					mutants: [
+						{
+							mutatorName: "EqualityOperator",
+							replacement: ">=",
+							status: "Survived",
+							location: { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } },
+						},
+					],
+				},
+				[FILE]: { source: CONTENT, mutants: [] },
+			},
+		};
+		const result = recordMeasurement({ base, file: FILE, content: CONTENT, rawReport, at: "t" });
+		expect(result.recorded).toBe(false);
+		expect(result.reason).toBe("the runner reported zero mutants for this file — nothing to record");
+	});
+
+	it("threads BOTH `cwd` and `provenance` to the SAME normalized key the before/after summary reads back", () => {
+		// test-contract: invariant — before/after/fileProvenance are all keyed
+		// by normalizeManifestKey(file, cwd); if cwd failed to reach either the
+		// seeding call or the provenance stamp, the write would land under a
+		// different key than the one this function reads back from, making a
+		// real write look like it recorded nothing.
+		const base = emptyManifest(META);
+		const result = recordMeasurement({
+			base,
+			file: "/repo/root/src/a.ts",
+			content: CONTENT,
+			rawReport: report("Survived"),
+			at: "t1",
+			cwd: "/repo/root",
+			provenance: { scope: "unknown", testCount: 6, surface: "measure" },
+		});
+		expect(result.recorded).toBe(true);
+		expect(result.after).toEqual({ mutants: 1, survivors: 1 });
+		expect(must(result.manifest).fileProvenance).toEqual({
+			[FILE]: { scope: "unknown", testCount: 6, surface: "measure", at: "t1" },
+		});
 	});
 });
 

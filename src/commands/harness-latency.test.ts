@@ -214,12 +214,13 @@ describe("computeLatencyReport — parsing & grouping", () => {
 			sample({ hook_event: "PreToolUse" }),
 			sample({ hook_event: "PostToolUse" }),
 			sample({ hook_event: null }), // → "unknown" via ??
+			sample({ hook_event: 123 }), // wrong type is normalized to null, not "123"
 		]);
 		const report = computeLatencyReport(CWD);
 		expect(report.by_hook_event).toEqual({
 			PreToolUse: 2,
 			PostToolUse: 1,
-			unknown: 1,
+			unknown: 2,
 		});
 	});
 });
@@ -254,6 +255,30 @@ describe("computeLatencyReport — PostToolUse percentiles", () => {
 		const p = computeLatencyReport(CWD).post_tool_use;
 		expect(p.timing_count).toBe(2);
 		expect(p.max).toBe(200);
+	});
+
+	it("sorts PostToolUse timings before applying nearest-rank percentiles", () => {
+		// An already sorted fixture would let a removed/reversed sort survive.
+		writeLog(
+			[300, 100, 200].map((checks_timing_ms) => sample({ checks_timing_ms })),
+		);
+		expect(computeLatencyReport(CWD).post_tool_use).toEqual({
+			timing_count: 3,
+			p50: 200,
+			p90: 300,
+			p99: 300,
+			max: 300,
+		});
+	});
+
+	it("does not create a timed session for a non-numeric timing", () => {
+		writeLog([
+			sample({ session_id: "untimed", checks_timing_ms: null }),
+			sample({ session_id: "timed", checks_timing_ms: 10 }),
+		]);
+		expect(computeLatencyReport(CWD).slowest_sessions).toEqual([
+			{ session_id: "timed", max_timing_ms: 10, event_count: 1 },
+		]);
 	});
 
 	it("leaves percentiles null and max null when no PostToolUse timing exists", () => {
@@ -363,6 +388,33 @@ describe("computeLatencyReport — by_tool (compute_by_tool)", () => {
 		expect(tsc?.when_present.max).toBe(700);
 	});
 
+	it("uses legacy checks_ran when tool_breakdown is present but empty", () => {
+		writeLog([
+			sample({ tool_breakdown: [], checks_ran: ["legacy"], checks_timing_ms: 400 }),
+			sample({ tool_breakdown: null, checks_ran: ["legacy"], checks_timing_ms: 600 }),
+		]);
+		const report = computeLatencyReport(CWD, { compute_by_tool: true });
+		expect(report.by_tool).toEqual([
+			expect.objectContaining({
+				tool: "legacy",
+				events: 2,
+				when_present: expect.objectContaining({ max: 600 }),
+			}),
+		]);
+	});
+
+	it("orders tools by descending event count, regardless of insertion order", () => {
+		writeLog([
+			sample({ checks_ran: ["one"], checks_timing_ms: 100, tool_breakdown: null }),
+			sample({ checks_ran: ["many"], checks_timing_ms: 200, tool_breakdown: null }),
+			sample({ checks_ran: ["many"], checks_timing_ms: 300, tool_breakdown: null }),
+		]);
+		expect(computeLatencyReport(CWD, { compute_by_tool: true }).by_tool?.map((t) => t.tool)).toEqual([
+			"many",
+			"one",
+		]);
+	});
+
 	it("handles legacy records with non-array checks_ran and non-string / null timing", () => {
 		writeLog([
 			sample({ checks_ran: null, tool_breakdown: null }), // not an array → continue
@@ -377,6 +429,22 @@ describe("computeLatencyReport — by_tool (compute_by_tool)", () => {
 		expect(tsc?.when_present.max).toBeNull();
 		// The numeric 123 entry (typeof !== string) is skipped entirely.
 		expect(report.by_tool?.some((t) => t.tool === "123")).toBe(false);
+	});
+
+	// test-contract: boundary — malformed checks_ran entries never become non-string tool rows in the public report
+	it("excludes non-string checks_ran entries from the complete by-tool report shape", () => {
+		writeLog([
+			sample({ checks_ran: null, tool_breakdown: null }),
+			sample({ checks_ran: ["typescript", 123], checks_timing_ms: null, tool_breakdown: null }),
+		]);
+		const report = computeLatencyReport(CWD, { compute_by_tool: true });
+		expect(report.by_tool).toEqual([
+			{
+				tool: "typescript",
+				events: 0,
+				when_present: { timing_count: 0, p50: null, p90: null, p99: null, max: null },
+			},
+		]);
 	});
 
 	it("emits an empty by_tool array when no records carry tool info", () => {
@@ -430,6 +498,44 @@ describe("harnessLatencyCommand — JSON output", () => {
 });
 
 describe("harnessLatencyCommand — human-readable output", () => {
+	// test-contract: public-api — the empty human report preserves the documented blank separators between sections
+	it("renders the complete empty report with its section separators", async () => {
+		const out = await captureStdout(() => harnessLatencyCommand());
+		expect(out).toBe(
+			[
+				"Harness latency report",
+				"──────────────────────",
+				"  Total events:        0",
+				"",
+				"  By hook_event:",
+				"",
+				"  PostToolUse check timing:",
+				"    samples              0",
+				"    p50                  —",
+				"    p90                  —",
+				"    p99                  —",
+				"    max                  —",
+				"",
+				"  Top slowest sessions (by max event timing):",
+				"    (none)",
+			].join("\n") + "\n",
+		);
+	});
+
+	// test-contract: public-api — hook-event rows are ordered by descending event count, independent of log insertion order
+	it("sorts hook-event rows by descending count", async () => {
+		writeLog([
+			sample({ hook_event: "PreToolUse" }),
+			sample({ hook_event: "PostToolUse" }),
+			sample({ hook_event: "PostToolUse" }),
+		]);
+		const out = await captureStdout(() => harnessLatencyCommand());
+		const rows = out
+			.split("\n")
+			.filter((line) => /^    (?:PostToolUse|PreToolUse)/.test(line));
+		expect(rows).toEqual(["    PostToolUse          2", "    PreToolUse           1"]);
+	});
+
 	it("renders header, total, hook-event breakdown, and PostToolUse percentiles", async () => {
 		writeLog([
 			sample({ hook_event: "PostToolUse", session_id: "alpha", checks_timing_ms: 100 }),
@@ -461,6 +567,25 @@ describe("harnessLatencyCommand — human-readable output", () => {
 		const out = await captureStdout(() => harnessLatencyCommand());
 		expect(out).toContain("p50                  30.00 s");
 		expect(out).toContain("max                  30.00 s");
+	});
+
+	it("formats exactly 1000ms as seconds rather than milliseconds", async () => {
+		writeLog([sample({ checks_timing_ms: 1000 })]);
+		const out = await captureStdout(() => harnessLatencyCommand());
+		expect(out).toContain("p50                  1.00 s");
+		expect(out).not.toContain("p50                  1000 ms");
+	});
+
+	it("preserves the human report headings, separators, and no mutation marker", async () => {
+		writeLog([
+			sample({ hook_event: "PostToolUse", checks_timing_ms: 100 }),
+			sample({ hook_event: "PreToolUse", checks_timing_ms: 50 }),
+		]);
+		const out = await captureStdout(() => harnessLatencyCommand());
+		expect(out).toContain("\n\n  By hook_event:\n");
+		expect(out).toContain("\n\n  PostToolUse check timing:\n");
+		expect(out).toContain("\n\n  Top slowest sessions (by max event timing):\n");
+		expect(out).not.toContain("Stryker was here");
 	});
 
 	it("renders the em-dash for null percentiles when there are no timings", async () => {

@@ -5,6 +5,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync as fsWriteFileSync,
@@ -82,6 +83,35 @@ describe("buildRedactedPreview", () => {
 	it("passes short clean text through when no spans exist", () => {
 		expect(buildRedactedPreview("hello world", [])).toBe("hello world");
 	});
+
+	it("truncates long clean text from the beginning when no spans exist", () => {
+		const text = "x".repeat(201);
+		expect(buildRedactedPreview(text, [])).toBe(`${"x".repeat(200)}…`);
+	});
+
+	it("keeps a short hit near the end intact instead of centering a window", () => {
+		const text = `${"prefix ".repeat(16)}alice@example.com`;
+		const expected = `${"prefix ".repeat(16)}<PRIVATE_EMAIL>`;
+		expect(buildRedactedPreview(text, [finding({
+			label: "private_email",
+			start: text.indexOf("alice@example.com"),
+			text: "alice@example.com",
+		})])).toBe(expected);
+	});
+
+	it("centers truncation on the earliest hit when there are multiple hits", () => {
+		const firstValue = "alice@example.com";
+		const secondValue = "bob@example.com";
+		const text = `${"A".repeat(100)}${firstValue}${"B".repeat(500)}${secondValue}${"C".repeat(500)}`;
+		const spans = [
+			finding({ label: "first_hit", start: text.indexOf(firstValue), text: firstValue }),
+			finding({ label: "later_hit", start: text.indexOf(secondValue), text: secondValue }),
+		];
+		const preview = buildRedactedPreview(text, spans);
+		expect(preview.startsWith("…")).toBe(false);
+		expect(preview).toContain("<FIRST_HIT>");
+		expect(preview).not.toContain("<LATER_HIT>");
+	});
 });
 
 describe("writePendingPrompt", () => {
@@ -130,6 +160,47 @@ describe("writePendingPrompt", () => {
 		expect(files).toHaveLength(1);
 	});
 
+	it("uses an ISO-safe timestamp, a 12-character content hash, and mode 0600", () => {
+		const { request, findingsBySource } = simpleRequest();
+		const relPath = nonNull(writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" }));
+		expect(relPath).toMatch(
+			/^\.interlinked\/scanner\/pending\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{12}\.json$/,
+		);
+		expect(statSync(join(tmp, relPath)).mode & 0o777).toBe(0o600);
+	});
+
+	it("changes the filename hash when request content changes at the same timestamp", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-08-13T20:00:00.000Z"));
+		try {
+			const firstRequest: ContentScanRequest = {
+				hook: "pre_write_edit",
+				parts: [{ source: "Write.content", text: "first value" }],
+			};
+			const secondRequest: ContentScanRequest = {
+				hook: "pre_write_edit",
+				parts: [{ source: "Write.content", text: "second value" }],
+			};
+			const first = writePendingPrompt({
+				cwd: tmp,
+				request: firstRequest,
+				findingsBySource: new Map(),
+				toolName: "Write",
+			});
+			const second = writePendingPrompt({
+				cwd: tmp,
+				request: secondRequest,
+				findingsBySource: new Map(),
+				toolName: "Write",
+			});
+			expect(first).toBeDefined();
+			expect(second).toBeDefined();
+			expect(first).not.toBe(second);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("defaults a part's spans to [] when it has no entry in findingsBySource", () => {
 		const request: ContentScanRequest = {
 			hook: "pre_write_edit",
@@ -168,7 +239,12 @@ describe("writePendingPrompt", () => {
 		const parsed = JSON.parse(raw);
 		expect(parsed.tool_name).toBe("Write");
 		expect(parsed.parts[0].text).toBe("email alice@example.com");
-		expect(parsed.note).toContain("LOCAL-ONLY");
+		expect(parsed.note).toBe(
+			"LOCAL-ONLY — this file contains the unmasked content the privacy-filter " +
+			"flagged. It was NOT sent to Anthropic. Review before approving the tool " +
+			"call in Claude Code; delete when done.",
+		);
+		expect(raw.endsWith("\n")).toBe(true);
 	});
 });
 
@@ -217,6 +293,12 @@ describe("buildAskReason", () => {
 		expect(reason).toContain('"private_person": "Alice"');
 		expect(reason).toContain(
 			"Full unmasked content: .interlinked/scanner/pending/xyz.json  (local-only — not sent to Anthropic)",
+		);
+		expect(reason).toContain(
+			"privacy-filter detected sensitive content [private_email(1), private_person(1)].\n\nFlagged PII",
+		);
+		expect(reason).toContain(
+			'"private_email": "alice@example.com"\n\nFull unmasked content:',
 		);
 	});
 
@@ -288,6 +370,33 @@ describe("buildAskReason", () => {
 		expect(reason.indexOf("LATE")).toBeGreaterThan(reason.indexOf("EARLY"));
 	});
 
+	it("sorts findings from different sources lexically before comparing offsets", () => {
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [
+				{ source: "B.source", text: "B" },
+				{ source: "A.source", text: "A" },
+			],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			[
+				"B.source",
+				[finding({ label: "from_b", start: 1, text: "B", source: "B.source" })],
+			],
+			[
+				"A.source",
+				[finding({ label: "from_a", start: 50, text: "A", source: "A.source" })],
+			],
+		]);
+		const { reason } = buildAskReason({
+			policySummary: "summary",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(reason.indexOf('"from_a": "A"')).toBeLessThan(reason.indexOf('"from_b": "B"'));
+	});
+
 	it("omits the Flagged PII block entirely when there are zero findings", () => {
 		const request: ContentScanRequest = {
 			hook: "pre_write_edit",
@@ -355,6 +464,15 @@ describe("buildAskReason", () => {
 		expect(systemMessage).toContain('"private_person": "Alice"');
 	});
 
+	it("uses the user-only header and newline-separated rows exactly", () => {
+		const { systemMessage } = buildAliceFixture();
+		expect(systemMessage).toBe(
+			"🔒 Content scanner — flagged PII (user-only; NOT sent to the model):\n" +
+			'  "private_person": "Alice"\n' +
+			'  "private_email": "alice@example.com"',
+		);
+	});
+
 	it("emits one systemMessage row per finding, in scan order", () => {
 		const { systemMessage } = buildAliceFixture();
 		expect(systemMessage).toMatch(
@@ -407,6 +525,48 @@ describe("buildAskReason", () => {
 		expect(systemMessage).toContain("truncated");
 	});
 
+	it("does not truncate a systemMessage whose body is exactly at the cap", () => {
+		const header = "🔒 Content scanner — flagged PII (user-only; NOT sent to the model):";
+		const rowPrefix = '  "secret": "';
+		const rowSuffix = '"';
+		const filler = "x".repeat(10);
+		let rowCount = 1;
+		let valueLength = 0;
+		while (rowCount < 500) {
+			const fixedLength =
+				header.length +
+				(rowCount - 1) * (1 + rowPrefix.length + filler.length + rowSuffix.length) +
+				1 +
+				rowPrefix.length +
+				rowSuffix.length;
+			valueLength = 8_000 - fixedLength;
+			if (valueLength >= 0 && valueLength <= 200) break;
+			rowCount += 1;
+		}
+		expect(valueLength).toBeGreaterThanOrEqual(0);
+		expect(valueLength).toBeLessThanOrEqual(200);
+		const spans = Array.from({ length: rowCount }, (_, index) =>
+			finding({
+				label: "secret",
+				start: index,
+				text: index === rowCount - 1 ? "x".repeat(valueLength) : filler,
+				source: "Write.content",
+			}),
+		);
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: "x".repeat(10_000) }],
+		};
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: new Map([["Write.content", spans]]),
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage.length).toBe(8_000);
+		expect(systemMessage).not.toContain("(truncated; see pending file");
+	});
+
 	it("omits the file pointer when no pending-prompt path was written", () => {
 		const request: ContentScanRequest = {
 			hook: "pre_bash_command",
@@ -456,6 +616,7 @@ describe("buildAskReason", () => {
 		});
 		expect(systemMessage).toContain("(truncated)");
 		expect(systemMessage).not.toContain(longValue);
+		expect(systemMessage).toContain(`"secret": "${"Y".repeat(185)}… (truncated)"`);
 	});
 
 	it("does not truncate a row value at or under 200 chars", () => {
@@ -478,6 +639,43 @@ describe("buildAskReason", () => {
 		});
 		expect(systemMessage).toContain(`"secret": "${value}"`);
 		expect(systemMessage).not.toContain("(truncated)");
+	});
+
+	it("does not truncate a row value of exactly 200 chars", () => {
+		const value = "Q".repeat(200);
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: value }],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			["Write.content", [finding({ label: "secret", start: 0, text: value, source: "Write.content" })]],
+		]);
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage).toContain(`"secret": "${value}"`);
+		expect(systemMessage).not.toContain("(truncated)");
+	});
+
+	it("escapes backslashes, quotes, and control characters in row values", () => {
+		const value = 'a\\b"c\nd\re\tf';
+		const request: ContentScanRequest = {
+			hook: "pre_write_edit",
+			parts: [{ source: "Write.content", text: value }],
+		};
+		const findings = new Map<string, ScanFinding[]>([
+			["Write.content", [finding({ label: "secret", start: 0, text: value, source: "Write.content" })]],
+		]);
+		const { systemMessage } = buildAskReason({
+			policySummary: "...",
+			request,
+			findingsBySource: findings,
+			pendingPromptPath: undefined,
+		});
+		expect(systemMessage).toContain(`  "secret": ${JSON.stringify(value)}`);
 	});
 });
 
@@ -557,8 +755,35 @@ describe("writePendingPrompt — filesystem failure paths", () => {
 		mkdirSync(dir, { recursive: true });
 		chmodSync(dir, 0o500); // read + execute, no write
 		const { request, findingsBySource } = simpleRequest();
-		const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
-		expect(result).toBeUndefined();
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		try {
+			const result = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+			expect(result).toBeUndefined();
+			expect(stderrSpy.mock.calls.map((call) => String(call[0])).join(""))
+				.toContain("cannot write .interlinked/scanner/pending/");
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it("does not skip creation when existsSync reports a missing directory as present", async () => {
+		// Replace existsSync only for a fresh module import. The directory is
+		// absent, so an unconditional mkdir is observable as a successful write.
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return { ...actual, existsSync: () => true };
+		});
+		try {
+			const { writePendingPrompt: freshWritePendingPrompt } = await import("../redact-preview.js");
+			const { request, findingsBySource } = simpleRequest();
+			expect(
+				freshWritePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" }),
+			).toBeUndefined();
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
 	});
 
 	it("skips mkdirSync entirely (no throw) when the pending dir already exists", () => {
@@ -668,5 +893,47 @@ describe("writePendingPrompt — pruneStale GC", () => {
 		const remaining = readdirSync(dir);
 		expect(remaining).not.toContain(oldRel?.split("/").pop());
 		expect(remaining).toContain((freshRel as string).split("/").pop());
+	});
+
+	it("retains a file that is only two minutes old", () => {
+		vi.useFakeTimers();
+		const fixedNow = new Date("2026-08-13T20:00:00.000Z");
+		vi.setSystemTime(fixedNow);
+		try {
+			const { request, findingsBySource } = simpleRequest("recent@example.com");
+			const recentRel = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+			const recentAbs = join(tmp, recentRel as string);
+			const twoMinutesAgo = new Date(fixedNow.getTime() - 2 * 60 * 1000);
+			utimesSync(recentAbs, twoMinutesAgo, twoMinutesAgo);
+
+			const { request: freshRequest, findingsBySource: freshFindings } = simpleRequest("fresh@example.com");
+			writePendingPrompt({ cwd: tmp, request: freshRequest, findingsBySource: freshFindings, toolName: "Write" });
+			expect(readdirSync(join(tmp, ".interlinked", "scanner", "pending"))).toContain(
+				(recentRel as string).split("/").pop(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a file exactly at the TTL boundary because pruning is strictly older-than", () => {
+		vi.useFakeTimers();
+		const fixedNow = new Date("2026-08-13T20:00:00.000Z");
+		vi.setSystemTime(fixedNow);
+		try {
+			const { request, findingsBySource } = simpleRequest("boundary@example.com");
+			const boundaryRel = writePendingPrompt({ cwd: tmp, request, findingsBySource, toolName: "Write" });
+			const boundaryAbs = join(tmp, boundaryRel as string);
+			const exactlyAtCutoff = new Date(fixedNow.getTime() - 60 * 60 * 1000);
+			utimesSync(boundaryAbs, exactlyAtCutoff, exactlyAtCutoff);
+
+			const { request: freshRequest, findingsBySource: freshFindings } = simpleRequest("fresh@example.com");
+			writePendingPrompt({ cwd: tmp, request: freshRequest, findingsBySource: freshFindings, toolName: "Write" });
+			expect(readdirSync(join(tmp, ".interlinked", "scanner", "pending"))).toContain(
+				(boundaryRel as string).split("/").pop(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

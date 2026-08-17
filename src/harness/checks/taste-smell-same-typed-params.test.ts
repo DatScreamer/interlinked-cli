@@ -786,4 +786,144 @@ describe("checkSameTypedPrimitiveParams", () => {
 		].join("\n");
 		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
 	});
+
+	// ===== mutation-hardening: parser state and regex boundaries =====
+	it("requires the complete exported class identifier before entering class scope", () => {
+		const content = [
+			"export class Wallet {",
+			"  transfer(fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
+
+	it("handles an empty grouped type before a real pair", () => {
+		const content =
+			"export function run(callback: (), fromId: string, toId: string) {}\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
+
+	it("keeps commas inside a generic type out of the top-level parameter split", () => {
+		const content =
+			"export function run(values: Map<string, string>, fromId: string, toId: string) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("keeps commas inside an inline object type out of the top-level split", () => {
+		const content =
+			"export function run(options: { first: string; second: string }, fromId: string, toId: string) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("keeps commas inside a tuple type out of the top-level split", () => {
+		const content =
+			"export function run(values: [string, string], fromId: string, toId: string) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("accepts exactly four levels of inline-object nesting", () => {
+		const content =
+			"export function run(value: { a: { b: { c: { d: string } } } }, fromId: string, toId: string) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("accepts exactly four levels of tuple nesting", () => {
+		const content =
+			"export function run(value: T[][][][], fromId: string, toId: string) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("rejects a parameter entry with junk before the name instead of matching its suffix", () => {
+		const content = "export function run(junk fromId: string, toId: string) {}\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("rejects punctuation in a parameter name rather than accepting it as a primitive", () => {
+		const content = "export function run(fromId!: string, toId!: string) {}\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("trims surrounding annotation whitespace before recognizing a primitive", () => {
+		const content = "export function run(fromId:    string   , toId:    string   ) {}\n";
+		const matches = checkSameTypedPrimitiveParams(content, SRC_PATH);
+		expect(matches).toHaveLength(1);
+		expect(nonNull(matches[0]).text).toContain("(fromId, toId)");
+	});
+
+	it("does not treat a method literally named private as a public method", () => {
+		const content = [
+			"export class Wallet {",
+			"  private(fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("does not treat a method name with punctuation as a public method", () => {
+		const content = [
+			"export class Wallet {",
+			"  transfer! (fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("recognizes a bare get method while preserving the getter exclusion boundary", () => {
+		const content = [
+			"export class Wallet {",
+			"  get(fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
+
+	it("recognizes a bare set method while preserving the setter exclusion boundary", () => {
+		const content = [
+			"export class Wallet {",
+			"  set(fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
+
+	it("does not treat a control-flow keyword as a public method", () => {
+		const content = [
+			"export class Wallet {",
+			"  if(fromId: string, toId: string) {}",
+			"}",
+		].join("\n");
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("requires a valid exported function name boundary", () => {
+		const content = "export function transfer! (fromId: string, toId: string) {}\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("requires a valid named default-export function boundary", () => {
+		const content = "export default function transfer! (fromId: string, toId: string) {}\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toEqual([]);
+	});
+
+	it("requires whitespace after an arrow type annotation colon", () => {
+		const content =
+			"export const transfer:TransferFn = (fromId: string, toId: string) => {};\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
+
+	it("requires whitespace before an arrow assignment equals sign", () => {
+		const content =
+			"export const transfer=(fromId: string, toId: string) => {};\n";
+		expect(checkSameTypedPrimitiveParams(content, SRC_PATH)).toHaveLength(1);
+	});
 });

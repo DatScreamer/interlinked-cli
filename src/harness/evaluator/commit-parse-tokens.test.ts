@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	COMMIT_VALUE_FLAGS,
 	clusterBooleanLetters,
 	combineCwd,
 	isAllFlag,
@@ -29,6 +30,14 @@ describe("shellSplit", () => {
 
 	it("splits unescaped whitespace normally (no backslash at all)", () => {
 		expect(shellSplit("a b  c")).toEqual(["a", "b", "c"]);
+	});
+
+	it("keeps the escaped character, rather than the character before the backslash", () => {
+		expect(shellSplit("ab\\ c")).toEqual(["ab c"]);
+	});
+
+	it("keeps a trailing backslash as a literal character", () => {
+		expect(shellSplit("trailing\\")).toEqual(["trailing\\"]);
 	});
 });
 
@@ -70,6 +79,14 @@ describe("splitSegments", () => {
 			"git commit -m x",
 		]);
 	});
+
+	it("splits single ampersand and pipe separators without dropping the next token", () => {
+		expect(splitSegments("left&right|final")).toEqual(["left", "right", "final"]);
+	});
+
+	it("keeps a trailing backslash literal when scanning a segment", () => {
+		expect(splitSegments("echo trailing\\")).toEqual(["echo trailing\\"]);
+	});
 });
 
 // ===========================================
@@ -95,6 +112,26 @@ describe("stripLeadingPrefix", () => {
 
 	it("stops at the first non-prefix token", () => {
 		expect(stripLeadingPrefix(["git", "commit"])).toEqual(["git", "commit"]);
+	});
+
+	it.each(["command", "nohup", "time"])("drops a %s prefix", (prefix) => {
+		const tokens = [prefix, "git", "commit"];
+		expect(stripLeadingPrefix(tokens)).toEqual(["git", "commit"]);
+		expect(tokens).toEqual([prefix, "git", "commit"]);
+	});
+
+	it("does not consume a malformed assignment as an env prefix", () => {
+		expect(stripLeadingPrefix(["env", "GOOD=1", "1BAD=2", "git", "commit"])).toEqual([
+			"1BAD=2",
+			"git",
+			"commit",
+		]);
+	});
+
+	it("does not mutate the input token array while removing prefixes", () => {
+		const tokens = ["FOO=1", "git", "commit"];
+		expect(stripLeadingPrefix(tokens)).toEqual(["git", "commit"]);
+		expect(tokens).toEqual(["FOO=1", "git", "commit"]);
 	});
 });
 
@@ -149,6 +186,10 @@ describe("parseCdTarget", () => {
 		expect(parseCdTarget("cd ~/proj")).toBeNull();
 	});
 
+	it("returns null for a cd option followed by a non-literal home path", () => {
+		expect(parseCdTarget("cd -P ~/proj")).toBeNull();
+	});
+
 	it("returns the literal target for a plain cd", () => {
 		expect(parseCdTarget("cd sub/dir")).toBe("sub/dir");
 	});
@@ -191,6 +232,11 @@ describe("clusterBooleanLetters", () => {
 
 	it("stops scanning at a non-letter character", () => {
 		expect(clusterBooleanLetters("-a1")).toBe("a");
+	});
+
+	it("returns no boolean letters for an empty or bare-dash token", () => {
+		expect(clusterBooleanLetters("")).toBe("");
+		expect(clusterBooleanLetters("-")).toBe("");
 	});
 });
 
@@ -247,5 +293,41 @@ describe("shortClusterTakesValue", () => {
 
 	it("false when a non-letter character appears before any value-taking letter", () => {
 		expect(shortClusterTakesValue("-a1")).toBe(false);
+	});
+
+	it("returns false for an empty token and for a long option", () => {
+		expect(shortClusterTakesValue("")).toBe(false);
+		expect(shortClusterTakesValue("--m")).toBe(false);
+	});
+
+	it("recognizes a value-taking letter at the end of a one-flag cluster", () => {
+		expect(shortClusterTakesValue("-m")).toBe(true);
+	});
+
+	it("does not skip over a non-letter while scanning the cluster", () => {
+		expect(shortClusterTakesValue("-a1m")).toBe(false);
+	});
+});
+
+describe("COMMIT_VALUE_FLAGS", () => {
+	it("contains every following-token value flag", () => {
+		expect([...COMMIT_VALUE_FLAGS]).toEqual([
+			"-m",
+			"--message",
+			"-F",
+			"--file",
+			"-C",
+			"--reuse-message",
+			"-c",
+			"--reedit-message",
+			"--author",
+			"--date",
+			"-t",
+			"--template",
+			"--fixup",
+			"--squash",
+			"--cleanup",
+			"--trailer",
+		]);
 	});
 });

@@ -232,6 +232,7 @@ const EXPECTED_KEY_ORDER = [
 	"mockOnlyTest",
 	"happyPathOnlyTest",
 	"introvertedTest",
+	"testLegitimacy",
 	"procfsProbeInTest",
 	"emptyBodyHandler",
 	"listenerPairing",

@@ -24,10 +24,16 @@ vi.mock("../lib/local-activity.js", () => ({
 	mergeAndDedup: (...args: unknown[]) => mockMergeAndDedup(...args),
 }));
 
-// Keep ANSI out of the asserted strings so matchers are exact.
-process.env.NO_COLOR = "1";
+// Keep ANSI out of the asserted strings so matchers are exact. Must run via
+// vi.hoisted: ES imports hoist above module-body statements, so a bare
+// assignment here executes AFTER the formatter has already read the env and
+// the styled path leaks into assertions (3 tests failed exactly that way).
+vi.hoisted(() => {
+	process.env.NO_COLOR = "1";
+});
 
 import { nonNull } from "../lib/non-null.js";
+import { shortTimestamp } from "../lib/formatter.js";
 import { activityCommand } from "./activity.js";
 
 // ---- console / exit capture ----------------------------------------------
@@ -301,6 +307,7 @@ describe("activityCommand — agent filter wiring", () => {
 
 		await activityCommand({ json: true, limit: "7" });
 		expect(mockCallTool).toHaveBeenCalledWith("query_activity_feed", { limit: 14 });
+		expect(nonNull(mockReadLocalActivity.mock.calls[0])[0]).not.toHaveProperty("agent");
 	});
 });
 
@@ -328,6 +335,7 @@ describe("activityCommand — normal (table) rendering", () => {
 		await activityCommand({ limit: "10" });
 		const { stdout } = io.read();
 		expect(stdout).toContain("Activity Feed");
+		expect(stdout).toContain("Activity Feed\n");
 		expect(stdout).toContain("No recent activity");
 		// No "(local)" suffix when the server responded (empty) successfully.
 		expect(stdout).not.toContain("(local)");
@@ -339,6 +347,17 @@ describe("activityCommand — normal (table) rendering", () => {
 
 		await activityCommand({ limit: "10" });
 		expect(io.read().stdout).toContain("Activity Feed (local)");
+	});
+
+	it("does not label an empty local fallback as '(local)'", async () => {
+		mockReadLocalActivity.mockReturnValue([]);
+		mockCallTool.mockRejectedValue(new Error("down"));
+
+		await activityCommand({ limit: "10" });
+
+		const stdout = io.read().stdout;
+		expect(stdout).toContain("Activity Feed\n");
+		expect(stdout).not.toContain("Activity Feed (local)");
 	});
 
 	it("renders a populated table with the token totals footer", async () => {
@@ -360,7 +379,9 @@ describe("activityCommand — normal (table) rendering", () => {
 		expect(stdout).toContain("30 tok"); // input(10)+output(20) per-row token cell
 		// Totals footer: tokenEventCount === 1
 		expect(stdout).toContain("Totals");
+		expect(stdout).toContain("Totals: 10 in / 20 out / 5 cache");
 		expect(stdout).toContain("across 1 events");
+		expect(stdout).toContain("Activity Feed (local)\n");
 	});
 
 	it("omits the totals footer when no row carries token data", async () => {
@@ -372,6 +393,7 @@ describe("activityCommand — normal (table) rendering", () => {
 		expect(stdout).not.toContain("Totals");
 		// duration_ms absent → dash cell, no "ms" suffix for this row's duration.
 		expect(stdout).not.toContain("42ms");
+		expect(stdout).not.toContain("undefinedms");
 	});
 
 	it("resolves a row timestamp from ts / timestamp / created_at fallbacks", async () => {
@@ -391,6 +413,24 @@ describe("activityCommand — normal (table) rendering", () => {
 		const { stdout } = io.read();
 		// All three rows rendered (timestamps resolved, not blank-dropped).
 		for (const a of ["a1", "a2", "a3"]) expect(stdout).toContain(a);
+		for (const timestamp of [
+			"2026-06-06T11:55:00.000Z",
+			"2026-06-06T11:56:00.000Z",
+			"2026-06-06T11:57:00.000Z",
+		]) {
+			expect(stdout).toContain(shortTimestamp(timestamp));
+		}
+	});
+
+	it("includes a server event exactly on the --since cutoff", async () => {
+		mockReadLocalActivity.mockReturnValue([]);
+		mockCallTool.mockResolvedValue({
+			events: [{ agent_name: "boundary", event_type: "x", occurred_at: "2026-06-06T11:00:00.000Z" }],
+		});
+
+		await activityCommand({ json: true, since: "1h", limit: "10" });
+
+		expect(lastJson(io).events).toHaveLength(1);
 	});
 
 	it("zero-fills missing token sub-fields in both the per-row cell and the totals", async () => {
@@ -426,8 +466,10 @@ describe("activityCommand — normal (table) rendering", () => {
 		await activityCommand({ limit: "10" });
 		const { stdout } = io.read();
 		expect(stdout).toContain("Activity Feed");
-		// With NO_COLOR the dim dash is a bare "-"; at least one appears in the row.
-		expect(stdout).toContain("-");
+		// With NO_COLOR the missing display fields are five bare dash cells.
+		expect((stdout.match(/-/g) ?? []).length).toBe(5);
+		// Missing summary uses the empty fallback, not a mutation marker.
+		expect(stdout).not.toContain("Stryker was here!");
 	});
 });
 

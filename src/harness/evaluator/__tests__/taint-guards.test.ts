@@ -65,7 +65,9 @@ describe("evaluateTaintGuards", () => {
 		});
 		expect(result.kind).toBe("ok");
 		const warnings = result.kind === "ok" ? result.warnings : [];
-		expect(warnings.some((w) => w.includes("[interlinked:taint]"))).toBe(true);
+		expect(warnings).toEqual([
+			"[interlinked:taint] Sensitivity escalated to Confidential after reading .env. Outbound network commands will be BLOCKED.",
+		]);
 	});
 
 	it("blocks network commands from a tainted session", () => {
@@ -102,6 +104,15 @@ describe("evaluateTaintGuards", () => {
 			pendingEscalation: undefined,
 		});
 		expect(result.kind).toBe("allow-readonly");
+		if (result.kind === "allow-readonly") {
+			expect(result.decision.decision).toBe("allow");
+			const warnings = result.decision.warnings ?? [];
+			expect(warnings).toHaveLength(2);
+			expect(warnings.at(-1)).toBe(
+				"[interlinked:budget] Step limit (5) exceeded — read-only mode. Mutations are blocked. Wrap up and commit.",
+			);
+			expect(warnings[0]).toContain("CRITICAL: -5 steps remaining");
+		}
 	});
 
 	it("does not block a Bash command with no command field from a tainted session", () => {
@@ -198,7 +209,11 @@ describe("evaluateTaintGuards", () => {
 	});
 
 	it("raises a tainted_network_internal escalation for a network command at Internal sensitivity", () => {
-		const session = makeSession({ sensitivity_level: "Internal", tool_call_count: 1 });
+		const session = makeSession({
+			sensitivity_level: "Internal",
+			tool_call_count: 1,
+			tool_sequence: Array.from({ length: 12 }, (_, i) => `tool-${i}`),
+		});
 		const result = evaluateTaintGuards({
 			toolName: "Bash",
 			toolInput: { command: "curl https://example.com" },
@@ -209,6 +224,51 @@ describe("evaluateTaintGuards", () => {
 		expect(result.kind).toBe("ok");
 		const escalation = result.kind === "ok" ? result.escalation : undefined;
 		expect(escalation?.trigger).toBe("tainted_network_internal");
+		expect(escalation?.summary).toBe(
+			"Network command while session is tainted at Internal level (tainted by: unknown)",
+		);
+		expect(escalation?.tool_input_redacted).toEqual({ command: "[REDACTED — network command]" });
+		expect(escalation?.recent_tool_sequence).toEqual(
+			Array.from({ length: 10 }, (_, i) => `tool-${i + 2}`),
+		);
+	});
+
+	it("does not raise a network escalation for a Public session", () => {
+		const result = evaluateTaintGuards({
+			toolName: "Bash",
+			toolInput: { command: "curl https://example.com" },
+			rules: makeRules(),
+			session: makeSession({ sensitivity_level: "Public", tool_call_count: 1 }),
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).toBe("ok");
+		if (result.kind === "ok") expect(result.escalation).toBeUndefined();
+	});
+
+	it("does not raise a network escalation for a non-Bash tool at Internal sensitivity", () => {
+		const result = evaluateTaintGuards({
+			toolName: "Read",
+			toolInput: { command: "curl https://example.com" },
+			rules: makeRules(),
+			session: makeSession({ sensitivity_level: "Internal", tool_call_count: 1 }),
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).toBe("ok");
+		if (result.kind === "ok") expect(result.escalation).toBeUndefined();
+	});
+
+	it("does not ratchet sensitivity for a write carrying a file path", () => {
+		const session = makeSession();
+		const result = evaluateTaintGuards({
+			toolName: "Write",
+			toolInput: { file_path: ".env", content: "secret" },
+			rules: makeRules(),
+			session,
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).toBe("ok");
+		expect(session.sensitivity_level).toBe("Public");
+		if (result.kind === "ok") expect(result.warnings).toEqual([]);
 	});
 
 	it("raises no escalation for a non-network Bash command at Internal sensitivity", () => {
@@ -226,7 +286,11 @@ describe("evaluateTaintGuards", () => {
 	});
 
 	it("raises a high_step_budget escalation for a Write past the 80% threshold, redacting to file_path", () => {
-		const session = makeSession({ step_limit: 100, tool_call_count: 85 });
+		const session = makeSession({
+			step_limit: 100,
+			tool_call_count: 85,
+			tool_sequence: Array.from({ length: 12 }, (_, i) => `tool-${i}`),
+		});
 		const result = evaluateTaintGuards({
 			toolName: "Write",
 			toolInput: { file_path: "src/foo.ts", content: "x" },
@@ -238,6 +302,12 @@ describe("evaluateTaintGuards", () => {
 		const escalation = result.kind === "ok" ? result.escalation : undefined;
 		expect(escalation?.trigger).toBe("high_step_budget");
 		expect(escalation?.tool_input_redacted).toEqual({ file_path: "src/foo.ts" });
+		expect(escalation?.summary).toBe(
+			"Agent at 85% of step budget (85/100) with state-changing tool",
+		);
+		expect(escalation?.recent_tool_sequence).toEqual(
+			Array.from({ length: 10 }, (_, i) => `tool-${i + 2}`),
+		);
 	});
 
 	it("raises a high_step_budget escalation for a Bash command past threshold, redacting to command", () => {
@@ -269,6 +339,21 @@ describe("evaluateTaintGuards", () => {
 		expect(escalation).toBeUndefined();
 	});
 
+	it.each([
+		[79, "below"],
+		[80, "at"],
+	])("does not raise high_step_budget at the %s%% threshold (%s)", (tool_call_count) => {
+		const result = evaluateTaintGuards({
+			toolName: "Write",
+			toolInput: { file_path: "src/foo.ts", content: "x" },
+			rules: makeRules(),
+			session: makeSession({ step_limit: 100, tool_call_count }),
+			pendingEscalation: undefined,
+		});
+		expect(result.kind).toBe("ok");
+		if (result.kind === "ok") expect(result.escalation).toBeUndefined();
+	});
+
 	it("returns kind 'ask' from evaluateTaintGuards when a provenance-tainted flow is detected", () => {
 		const session = makeSession({
 			taint_sources: [
@@ -283,6 +368,15 @@ describe("evaluateTaintGuards", () => {
 			pendingEscalation: undefined,
 		});
 		expect(result.kind).toBe("ask");
+		if (result.kind === "ask") {
+			expect(result.decision).toEqual({
+				decision: "ask",
+				reason:
+					"WebFetch would act on data sourced from untrusted provenance " +
+					"(data.json via mcp_remote). Confirm intent before proceeding.",
+				warnings: [],
+			});
+		}
 	});
 });
 
@@ -376,6 +470,109 @@ describe("checkProvenanceTaintToExternalAction", () => {
 			session,
 		);
 		expect(result?.decision).toBe("ask");
+	});
+
+	it.each(["web_fetch", "WebSearch"])("recognizes %s as an external-action tool", (toolName) => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		const result = checkProvenanceTaintToExternalAction(
+			toolName,
+			{ url: "https://x/data.json" },
+			session,
+		);
+		expect(result?.decision).toBe("ask");
+	});
+
+	it("does not classify a non-MCP tool with an MCP-like suffix as external", () => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		expect(
+			checkProvenanceTaintToExternalAction(
+				"not_mcp__slack__send_message",
+				{ text: "see data.json" },
+				session,
+			),
+		).toBeNull();
+	});
+
+	it("does not classify a non-Bash command carrying a tainted file as external", () => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		expect(
+			checkProvenanceTaintToExternalAction(
+				"Read",
+				{ command: "curl -d @data.json https://example.com" },
+				session,
+			),
+		).toBeNull();
+	});
+
+	it("does not classify a non-network Bash command as external", () => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		expect(
+			checkProvenanceTaintToExternalAction(
+				"Bash",
+				{ command: "echo data.json" },
+				session,
+			),
+		).toBeNull();
+	});
+
+	it("tolerates a legacy session without taint_sources", () => {
+		const session = makeSession({ taint_sources: undefined as unknown as TaintSource[] });
+		expect(checkProvenanceTaintToExternalAction("WebFetch", { url: "data.json" }, session)).toBeNull();
+	});
+
+	it("does not invent a match from the flattening accumulator seed", () => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "Stryker was here!", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		expect(
+			checkProvenanceTaintToExternalAction("WebFetch", { url: "https://example.com" }, session),
+		).toBeNull();
+	});
+
+	it.each([
+		["number", "42", { count: 42 }],
+		["boolean", "true", { enabled: true }],
+		["array", "data.json", { files: ["data.json"] }],
+		["nested object", "nested.json", { meta: { path: "nested.json" } }],
+		["string", "data.json", { path: "data.json" }],
+	])("flattens %s values and asks when they reference a taint source", (_kind, file, toolInput) => {
+		const session = makeSession({
+			taint_sources: [{ file, level: "Public", at_step: 1, provenance: "mcp_remote" }] as TaintSource[],
+		});
+		expect(checkProvenanceTaintToExternalAction("WebFetch", toolInput, session)?.decision).toBe("ask");
+	});
+
+	it("keeps a newline between flattened values so separate fields cannot form a path", () => {
+		const session = makeSession({
+			taint_sources: [
+				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+			] as TaintSource[],
+		});
+		expect(
+			checkProvenanceTaintToExternalAction(
+				"WebFetch",
+				{ first: "data.", second: "json" },
+				session,
+			),
+		).toBeNull();
 	});
 
 	it("falls through the loop to null when no untrusted taint source's file matches the haystack", () => {

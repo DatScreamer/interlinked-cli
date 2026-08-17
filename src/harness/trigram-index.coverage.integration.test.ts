@@ -881,12 +881,24 @@ function gitCommitAll(dir: string, message: string): void {
 describe("incrementalUpdate", () => {
 	let dir: string;
 
+	// Sandbox note: every test below spawns several real `git` subprocesses
+	// (gitInit = 4 execSync calls, gitCommitAll = 2 more, some tests call
+	// gitCommitAll twice) via the helpers above. Sub-second locally, but a
+	// cold/loaded mutation-runner sandbox (fork+exec overhead, no warm page
+	// cache) can push that well past vitest's file-level 30s default — the
+	// same "Test timed out in 30000ms" → ConfigError → ENOENT dry-run failure
+	// diagnosed for commit-parse.ts/env-extractor.ts/verify-parity.ts
+	// (scratch/fleet-r3/repair-followups.txt #13), which silently drops this
+	// file's registered mutation kills. Explicit generous bounds here mirror
+	// the pre-existing 60s override on "skips a tracked path..." above: real
+	// headroom without masking a genuine hang (a truly broken test still
+	// fails, just at 60s instead of 30s).
 	beforeEach(() => {
 		dir = makeTmpDir("trigram-incremental-");
 		gitInit(dir);
-	});
+	}, 60_000);
 
-	it("returns 0 when HEAD has not moved since the index was built", () => {
+	it("returns 0 when HEAD has not moved since the index was built", { timeout: 60_000 }, () => {
 		writeFileSync(join(dir, "a.ts"), "export const a = 1;");
 		gitCommitAll(dir, "initial");
 		const index = TrigramIndex.build({ cwd: dir });
@@ -894,7 +906,7 @@ describe("incrementalUpdate", () => {
 		expect(index.incrementalUpdate()).toBe(0);
 	});
 
-	it("returns 0 when the diff cannot be computed (base commit unknown)", () => {
+	it("returns 0 when the diff cannot be computed (base commit unknown)", { timeout: 60_000 }, () => {
 		writeFileSync(join(dir, "a.ts"), "export const a = 1;");
 		gitCommitAll(dir, "initial");
 		// Build, then force a new commit so HEAD moves, but corrupt baseCommit so
@@ -906,7 +918,7 @@ describe("incrementalUpdate", () => {
 		expect(index.incrementalUpdate()).toBe(0);
 	});
 
-	it("applies adds, modifications, deletions, skips, and oversize/binary downgrades", () => {
+	it("applies adds, modifications, deletions, skips, and oversize/binary downgrades", { timeout: 60_000 }, () => {
 		// Initial commit with source files (filler keeps the stop-trigram cutoff
 		// above 1 so the precision assertions below hold).
 		writeFileSync(join(dir, "keep.ts"), "export const keepConst = 'originalKeepWord';");
@@ -951,7 +963,7 @@ describe("incrementalUpdate", () => {
 		expect(index.baseCommit).not.toBe("");
 	});
 
-	it("handles a file that disappears between diff and read (treated as delete)", () => {
+	it("handles a file that disappears between diff and read (treated as delete)", { timeout: 60_000 }, () => {
 		writeFileSync(join(dir, "a.ts"), "export const aConst = 'alphaValue';");
 		writeFileSync(join(dir, "vanish.ts"), "export const vanishConst = 'vanishUniqueWord';");
 		writeFillerFiles(dir, 6);
@@ -969,7 +981,7 @@ describe("incrementalUpdate", () => {
 		);
 	});
 
-	it("skips a changed file whose disk read throws during incremental update (EISDIR)", () => {
+	it("skips a changed file whose disk read throws during incremental update (EISDIR)", { timeout: 60_000 }, () => {
 		// Commit a real file, build (baseCommit = C1). Commit a second real file
 		// (C2) so the diff lists it, then replace it with a directory on disk so
 		// readFileSync throws → catch at line 655-657 (file simply skipped).

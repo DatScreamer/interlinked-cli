@@ -94,7 +94,13 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		const claimCallIdx = SESSION_DAEMON_TS.indexOf(
 			"claimSessionPid(paths.pid, process.pid)",
 		);
-		const listenIdx = SESSION_DAEMON_TS.indexOf(".listen(paths.socket");
+		// The bind moved into the extracted `bindSessionSocket` helper during the
+		// c0828a4 decomposition; the ordering guarantee is now claim-call before
+		// the helper's call site (the helper itself sits above both in the file,
+		// which is why the probe anchors on the CALL, not the definition).
+		const listenIdx = SESSION_DAEMON_TS.indexOf(
+			"await bindSessionSocket({ socketPath: paths.socket",
+		);
 		expect(claimCallIdx).toBeGreaterThan(0);
 		expect(listenIdx).toBeGreaterThan(claimCallIdx);
 	});

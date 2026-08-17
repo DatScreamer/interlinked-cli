@@ -42,6 +42,8 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(r?.text).toBe("This is squarely a test.");
 		expect(r?.scrubbed).toBe(true);
 		expect(r?.git_branch).toBe("main");
+		expect(r?.schema).toBe("timeline.v1");
+		expect(r?.provider).toBe("claude-code");
 	});
 
 	it("emits an agent_thinking record for a thinking block", () => {
@@ -49,6 +51,8 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs).toHaveLength(1);
 		expect(recs[0]?.category).toBe("agent_thinking");
 		expect(recs[0]?.text).toBe("let me reason");
+		expect(recs[0]?.role).toBe("assistant");
+		expect(recs[0]?.scrubbed).toBe(true);
 	});
 
 	it("emits a tool_use record carrying name, input, and id", () => {
@@ -60,6 +64,7 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs[0]?.tool_name).toBe("Bash");
 		expect(recs[0]?.tool_use_id).toBe("toolu_1");
 		expect(recs[0]?.tool_input).toEqual({ command: "ls" });
+		expect(recs[0]?.role).toBe("assistant");
 	});
 
 	it("emits a user_prompt for a bare-string user message", () => {
@@ -68,6 +73,7 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs[0]?.category).toBe("user_prompt");
 		expect(recs[0]?.role).toBe("user");
 		expect(recs[0]?.text).toBe("hello there");
+		expect(recs[0]?.scrubbed).toBe(true);
 	});
 
 	it("emits a tool_result (with is_error) from a user content array", () => {
@@ -79,6 +85,7 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs[0]?.tool_use_id).toBe("toolu_1");
 		expect(recs[0]?.is_error).toBe(true);
 		expect(recs[0]?.text).toBe("boom");
+		expect(recs[0]?.role).toBe("user");
 	});
 
 	it("emits a user_prompt for a text block inside a user content array", () => {
@@ -86,6 +93,8 @@ describe("parseTranscriptEntry — positive cases", () => {
 		expect(recs).toHaveLength(1);
 		expect(recs[0]?.category).toBe("user_prompt");
 		expect(recs[0]?.text).toBe("array-form prompt");
+		expect(recs[0]?.role).toBe("user");
+		expect(recs[0]?.scrubbed).toBe(true);
 	});
 
 	it("flattens a tool_result content array of mixed block shapes via blockText", () => {
@@ -278,5 +287,231 @@ describe("entry-level metadata capture — negative (must not invent)", () => {
 		expect(capToolUseResult(circular)).toBeNull();
 		expect(capToolUseResult(undefined)).toBeNull();
 		expect(capToolUseResult(null)).toBeNull();
+	});
+});
+
+describe("userRecords — array-form branch-guard edge cases", () => {
+	it("P1: a whitespace-only bare-string user prompt produces no record", () => {
+		expect(parseTranscriptEntry(user("   "))).toEqual([]);
+	});
+
+	it("P2: non-array non-string content (e.g. a bare number) produces no record and does not throw", () => {
+		expect(() => parseTranscriptEntry(user(42))).not.toThrow();
+		expect(parseTranscriptEntry(user(42))).toEqual([]);
+	});
+
+	it("P3: a block whose type isn't \"text\" but whose text field is a real string is not treated as a prompt", () => {
+		// Exercises the AND (not OR) between the type check and the text check.
+		expect(parseTranscriptEntry(user([{ type: "not-text", text: "hello world" }]))).toEqual([]);
+	});
+
+	it("P4: a null content element is skipped safely (b?.type never throws on null)", () => {
+		expect(() => parseTranscriptEntry(user([null]))).not.toThrow();
+		expect(parseTranscriptEntry(user([null]))).toEqual([]);
+	});
+
+	it("P5: a text block with no text field at all is skipped safely (no throw)", () => {
+		expect(() => parseTranscriptEntry(user([{ type: "text" }]))).not.toThrow();
+		expect(parseTranscriptEntry(user([{ type: "text" }]))).toEqual([]);
+	});
+
+	it("P6: a whitespace-only text block inside the array form produces no record", () => {
+		expect(parseTranscriptEntry(user([{ type: "text", text: "   " }]))).toEqual([]);
+	});
+
+	it("P7: a block whose type is neither \"text\" nor \"tool_result\" produces no record", () => {
+		expect(parseTranscriptEntry(user([{ type: "other" }]))).toEqual([]);
+	});
+
+	it("P8: a tool_result block with no is_error field defaults is_error to false", () => {
+		const recs = parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: "ok" }]));
+		expect(recs[0]?.is_error).toBe(false);
+	});
+
+	it("P9: a tool_result whose content flattens to an empty string leaves text undefined (not an empty string)", () => {
+		const recs = parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: "" }]));
+		expect(recs[0]?.text).toBeUndefined();
+	});
+
+	it("P10: a null element inside a tool_result content array is skipped, not thrown (blockText null-safety)", () => {
+		const recs = parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: ["a", null, "b"] }]));
+		expect(recs[0]?.text).toBe("a\nb");
+	});
+
+	it("P11: a non-array non-string tool_result content value flattens to no text, not a throw", () => {
+		const recs = parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: 42 }]));
+		expect(() => parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: 42 }]))).not.toThrow();
+		expect(recs[0]?.text).toBeUndefined();
+	});
+});
+
+describe("assistantRecords — array-form branch-guard edge cases", () => {
+	it("P1: non-array content (e.g. a plain object) produces no record and does not throw", () => {
+		const entry = assistant([]);
+		(entry.message as { content: unknown }).content = {};
+		expect(() => parseTranscriptEntry(entry)).not.toThrow();
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("P2: a block whose type isn't \"text\" but whose text field is a real string is not treated as a message", () => {
+		expect(parseTranscriptEntry(assistant([{ type: "not-text-at-all", text: "hello world" }]))).toEqual([]);
+	});
+
+	it("P3: a block whose type isn't \"thinking\" but whose thinking field is a real string is not treated as thinking", () => {
+		expect(parseTranscriptEntry(assistant([{ type: "not-thinking-either", thinking: "hello world" }]))).toEqual([]);
+	});
+
+	it("P4: a null content element is skipped safely across all three branch checks (no throw)", () => {
+		expect(() => parseTranscriptEntry(assistant([null]))).not.toThrow();
+		expect(parseTranscriptEntry(assistant([null]))).toEqual([]);
+	});
+
+	it("P5: a text block with no text field at all is skipped safely (no throw)", () => {
+		expect(() => parseTranscriptEntry(assistant([{ type: "text" }]))).not.toThrow();
+		expect(parseTranscriptEntry(assistant([{ type: "text" }]))).toEqual([]);
+	});
+
+	it("P6: a thinking block with no thinking field at all is skipped safely (no throw)", () => {
+		expect(() => parseTranscriptEntry(assistant([{ type: "thinking" }]))).not.toThrow();
+		expect(parseTranscriptEntry(assistant([{ type: "thinking" }]))).toEqual([]);
+	});
+
+	it("P7: a whitespace-only thinking block produces no record", () => {
+		expect(parseTranscriptEntry(assistant([{ type: "thinking", thinking: "   " }]))).toEqual([]);
+	});
+
+	it("P8: a tool_use block whose type check runs before a stray thinking field still resolves to tool_use", () => {
+		// A tool_use block that happens to also carry a `thinking` field must not
+		// be misrouted to the thinking branch — the thinking check requires
+		// type==="thinking", not merely a truthy thinking field.
+		const recs = parseTranscriptEntry(
+			assistant([{ type: "tool_use", thinking: "sneaky text", id: "toolu_5", name: "Read", input: {} }]),
+		);
+		expect(recs).toHaveLength(1);
+		expect(recs[0]?.category).toBe("tool_use");
+		expect(recs[0]?.tool_name).toBe("Read");
+	});
+});
+
+describe("parseTranscriptEntry — entry-level guards (mutation hardening)", () => {
+	it("P1: a function-shaped entry is rejected by the typeof-object guard even with matching fields attached", () => {
+		// `typeof` a function is "function", not "object" — the guard must
+		// reject it before ever reading the attached fields below.
+		// biome-ignore lint/suspicious/noExplicitAny: deliberately attaching
+		// arbitrary fields to a function value to exercise the typeof guard.
+		const fn: any = function entryFn() {};
+		fn.timestamp = "2026-01-01T00:00:00Z";
+		fn.uuid = "fn-uuid";
+		fn.sessionId = "fn-session";
+		fn.type = "user";
+		fn.message = { content: "function-shaped entry" };
+		expect(parseTranscriptEntry(fn)).toEqual([]);
+	});
+
+	it("P2: a missing uuid drops the entry even when the content is non-empty", () => {
+		const entry = assistant([{ type: "text", text: "hello" }]) as Record<string, unknown>;
+		delete entry.uuid;
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("P3: a missing timestamp drops the entry even when the content is non-empty", () => {
+		const entry = assistant([{ type: "text", text: "hello" }]) as Record<string, unknown>;
+		delete entry.timestamp;
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("P4: a missing sessionId drops the entry even when the content is non-empty", () => {
+		const entry = assistant([{ type: "text", text: "hello" }]) as Record<string, unknown>;
+		delete entry.sessionId;
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("P5: a non-boolean isSidechain leaves is_sidechain undefined rather than adopting the raw value", () => {
+		const recs = parseTranscriptEntry({ ...assistant([{ type: "text", text: "hi" }]), isSidechain: "not-a-boolean" });
+		expect(recs[0]?.is_sidechain).toBeUndefined();
+	});
+
+	it("P6: a user entry with no message field at all produces no record (no throw)", () => {
+		const entry = user("x") as Record<string, unknown>;
+		delete entry.message;
+		expect(() => parseTranscriptEntry(entry)).not.toThrow();
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("P7: an assistant entry with no message field at all produces no record (no throw)", () => {
+		const entry = assistant([]) as Record<string, unknown>;
+		delete entry.message;
+		expect(() => parseTranscriptEntry(entry)).not.toThrow();
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+
+	it("N1: an unrecognized entry type does not fall through to the assistant branch", () => {
+		const entry = { ...assistant([{ type: "text", text: "should not parse" }]), type: "other-type" };
+		expect(parseTranscriptEntry(entry)).toEqual([]);
+	});
+});
+
+describe("capToolUseResult — exact-boundary mutation hardening", () => {
+	it("P1: a stringified result exactly at MAX_TOOL_USE_RESULT_BYTES is NOT truncated", () => {
+		// JSON.stringify of a bare N-char string is N+2 bytes (the wrapping
+		// quotes), so a string of MAX-2 chars lands the encoded length exactly
+		// on the cap — the <= boundary, not the < side of it.
+		const boundary = "x".repeat(MAX_TOOL_USE_RESULT_BYTES - 2);
+		const result = capToolUseResult(boundary);
+		expect(result?.truncated).toBe(false);
+		expect(result?.value).toBe(boundary);
+	});
+});
+
+describe("readUsage / readUsage.num — guard edge cases (mutation hardening)", () => {
+	it("P1: a function-shaped usage payload is rejected by the typeof-object guard even with a numeric field attached", () => {
+		// biome-ignore lint/suspicious/noExplicitAny: see the entry-shaped-fn note above.
+		const fn: any = function usageFn() {};
+		fn.input_tokens = 42;
+		expect(readUsage({ role: "assistant", usage: fn })).toBeNull();
+	});
+
+	it("P2: an undefined message is handled by the optional chain, not a throw", () => {
+		expect(() => readUsage(undefined)).not.toThrow();
+		expect(readUsage(undefined)).toBeNull();
+	});
+
+	it("P3: a null usage value returns null rather than throwing (typeof null === \"object\" quirk)", () => {
+		expect(() => readUsage({ role: "assistant", usage: null })).not.toThrow();
+		expect(readUsage({ role: "assistant", usage: null })).toBeNull();
+	});
+
+	it("P4: a non-finite numeric field (NaN) is dropped, not passed through as-is", () => {
+		const result = readUsage({ role: "assistant", usage: { input_tokens: 5, output_tokens: Number.NaN } });
+		expect(result?.input).toBe(5);
+		expect(result?.output).toBeUndefined();
+	});
+
+	it("P5: a non-finite numeric field (Infinity) is dropped, not passed through as-is", () => {
+		const result = readUsage({ role: "assistant", usage: { input_tokens: 1, cache_read_input_tokens: Number.POSITIVE_INFINITY } });
+		expect(result?.cache_read).toBeUndefined();
+	});
+});
+
+describe("attachEntryExtras — denial-kind edge case (mutation hardening)", () => {
+	it("P1: a falsy (empty-string) toolDenialKind is left unset, exactly like an absent one", () => {
+		// The guard is `if (e.toolDenialKind)`, so an empty string — present but
+		// falsy — must NOT be recorded; only a truthy denial kind should be.
+		const withEmpty = parseTranscriptEntry({
+			...user([{ type: "tool_result", tool_use_id: "tr1", content: "x" }]),
+			toolDenialKind: "",
+		});
+		expect(withEmpty[0]?.tool_denial_kind).toBeUndefined();
+
+		const withoutField = parseTranscriptEntry(user([{ type: "tool_result", tool_use_id: "tr1", content: "x" }]));
+		expect(withoutField[0]?.tool_denial_kind).toBeUndefined();
+	});
+
+	it("N1: a truthy toolDenialKind is recorded on the tool_result row", () => {
+		const recs = parseTranscriptEntry({
+			...user([{ type: "tool_result", tool_use_id: "tr1", content: "x" }]),
+			toolDenialKind: "permission",
+		});
+		expect(recs[0]?.tool_denial_kind).toBe("permission");
 	});
 });

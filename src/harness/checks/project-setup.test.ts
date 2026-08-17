@@ -68,6 +68,19 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 		expect(checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp)).toEqual([]);
 	});
 
+	it("reads regular dependencies when satisfying an unscoped type entry", () => {
+		writePkg({ vitest: "^1.0.0" });
+		expect(checkTsConfigTypesAgainstDeps({ types: ["vitest"] }, tmp)).toEqual([]);
+	});
+
+	it("reads optional dependencies when satisfying an unscoped type entry", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ name: "x", optionalDependencies: { "@types/node": "^20.0.0" } }),
+		);
+		expect(checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp)).toEqual([]);
+	});
+
 	it("flags unscoped types[] entry when neither variant is installed", () => {
 		writePkg({}, {});
 		const issues = checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp);
@@ -75,6 +88,20 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 		expect(nonNull(issues[0]).message).toContain("node");
 		expect(nonNull(issues[0]).message).toContain("@types/node");
 		expect(nonNull(issues[0]).fix).toBe("Run `npm i --save-dev @types/node`");
+	});
+
+	it("preserves the exact scoped-package diagnostic and install fix", () => {
+		writePkg({}, {});
+		expect(checkTsConfigTypesAgainstDeps({ types: ["@scope/types"] }, tmp)).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message:
+					'tsconfig.json includes types: ["@scope/types"] but "@scope/types" is not in package.json. tsc will fail to resolve these globals.',
+				fix: "Run `npm i --save-dev @scope/types`",
+			},
+		]);
 	});
 
 	it("checks peer- and optional-dependencies too", () => {
@@ -86,6 +113,40 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 			}),
 		);
 		expect(checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp)).toEqual([]);
+	});
+
+	// test-contract: public-api — every declared package relationship can satisfy a scoped compiler type
+	it("recognizes scoped types from peer and optional dependencies", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				name: "x",
+				peerDependencies: { "@scope/peer-types": "^1.0.0" },
+				optionalDependencies: { "@scope/optional-types": "^1.0.0" },
+			}),
+		);
+
+		expect(
+			checkTsConfigTypesAgainstDeps(
+				{ types: ["@scope/peer-types", "@scope/optional-types"] },
+				tmp,
+			),
+		).toEqual([]);
+	});
+
+	// test-contract: boundary — malformed dependency metadata fails open to an actionable missing-type issue
+	it("treats malformed package.json as having no installed dependencies", () => {
+		writeFileSync(join(tmp, "package.json"), "{ not valid json");
+
+		const issues = checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp);
+		expect(issues).toHaveLength(1);
+		expect(nonNull(issues[0]).message).toContain("neither \"node\" nor \"@types/node\"");
+	});
+
+	// test-contract: boundary — a non-array compiler types value is ignored without producing a false finding
+	it("ignores a non-array types value", () => {
+		writePkg({}, {});
+		expect(checkTsConfigTypesAgainstDeps({ types: "node" }, tmp)).toEqual([]);
 	});
 
 	it("emits one finding per missing entry", () => {
@@ -106,6 +167,29 @@ describe("checkTsConfigTypesAgainstDeps", () => {
 		// no package.json written — readAllDeps() returns {} on miss.
 		expect(checkTsConfigTypesAgainstDeps({ types: ["node"] }, tmp)).toHaveLength(1);
 	});
+
+	// test-contract: public-api — malformed permission rules are reported consistently across allow, deny, and ask buckets
+	it("reports malformed rules from every permission bucket", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({
+				permissions: {
+					allow: ["not-a-rule"],
+					deny: [""],
+					ask: ["Bash(unclosed *"],
+				},
+			}),
+		);
+
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(3);
+		expect(issues.map((issue) => issue.message)).toEqual([
+			expect.stringContaining("permissions.allow[0]"),
+			expect.stringContaining("permissions.deny[0]"),
+			expect.stringContaining("permissions.ask[0]"),
+		]);
+	});
 });
 
 describe("checkProjectSetup", () => {
@@ -123,6 +207,28 @@ describe("checkProjectSetup", () => {
 		expect(checkProjectSetup(tmp)).toEqual([]);
 	});
 
+	it("does not descend into hidden or generated source directories", () => {
+		for (const dir of [
+			".hidden",
+			"dist",
+			"build",
+			"out",
+			"coverage",
+			"target",
+			"vendor",
+			"__pycache__",
+		]) {
+			mkdirSync(join(tmp, dir), { recursive: true });
+			writeFileSync(join(tmp, dir, "not-first-party.ts"), "export const x = 1;\n");
+		}
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	it("does not treat a non-TypeScript filename suffix as a project source", () => {
+		writeFileSync(join(tmp, "example.ts.bak"), "export const x = 1;\n");
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
 	it("integrates the types ↔ deps check end-to-end", () => {
 		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({
 			compilerOptions: {
@@ -136,6 +242,54 @@ describe("checkProjectSetup", () => {
 
 		const issues = checkProjectSetup(tmp);
 		expect(issues.some((i) => i.message.includes("@cloudflare/workers-types"))).toBe(true);
+	});
+
+	it("finds a tsconfig exactly five parent directories away only when the bound allows it", () => {
+		const cwd = join(tmp, "a", "b", "c", "d", "e");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(cwd, "index.ts"), "export const x = 1;\n");
+
+		expect(checkProjectSetup(cwd)).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message: "TypeScript files found but no tsconfig.json exists",
+				fix: "Run `npx tsc --init` to create a tsconfig.json",
+			},
+		]);
+	});
+
+	it("continues searching past five parents only if the loop makes progress", () => {
+		const cwd = join(tmp, "a", "b", "c", "d", "e", "f");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(cwd, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(cwd);
+		expect(issues).toEqual([
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message: "TypeScript files found but no tsconfig.json exists",
+				fix: "Run `npx tsc --init` to create a tsconfig.json",
+			},
+		]);
+	});
+
+	// test-contract: public-api — a project-local tsconfig within the documented upward search window is used
+	it("uses a tsconfig found within the upward search window", () => {
+		const cwd = join(tmp, "a", "b", "c", "d");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(cwd, "index.ts"), "export const x = 1;\n");
+
+		expect(checkProjectSetup(cwd)).toEqual([]);
 	});
 
 	it("surfaces malformed .claude/settings.json rules even in non-TS projects", () => {
@@ -192,6 +346,82 @@ describe("checkProjectSetup", () => {
 
 		const issues = checkProjectSetup(tmp);
 		expect(issues.some((i) => i.message.includes("@types/node"))).toBe(true);
+	});
+
+	it("accepts @types/node from dependencies and reports no setup issue", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ name: "x", dependencies: { "@types/node": "^20.0.0" } }),
+		);
+
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	it("accepts @types/node from devDependencies and reports no setup issue", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }),
+		);
+
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	// test-contract: public-api — node protocol imports require a directly declared runtime or development @types/node package
+	it("does not treat a peer-only @types/node declaration as a direct install", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ name: "x", peerDependencies: { "@types/node": "^20.0.0" } }),
+		);
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("@types/node is not in devDependencies"))).toBe(true);
+	});
+
+	// test-contract: public-api — node protocol imports require a directly declared runtime or development @types/node package
+	it("does not treat a peer-only @types/node declaration as a direct install", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ name: "x", peerDependencies: { "@types/node": "^20.0.0" } }),
+		);
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("@types/node is not in devDependencies"))).toBe(true);
+	});
+
+	it("recognizes node: imports with more than one separating whitespace character", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from  "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("node: protocol imports"))).toBe(true);
+	});
+
+	it("does not scan JavaScript files for node: imports", () => {
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+		writeFileSync(join(tmp, "helper.js"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	// test-contract: public-api — the node protocol probe recognizes single-quoted static imports in TypeScript
+	it("recognizes single-quoted node protocol imports", () => {
+		writeFileSync(join(tmp, "index.ts"), "import { readFileSync } from 'node:fs';\n");
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("node: protocol imports"))).toBe(true);
 	});
 
 	it("does NOT label a pure-JavaScript project as TypeScript because node_modules ships .ts files", () => {
@@ -311,6 +541,16 @@ describe("checkProjectSetup", () => {
 		expect(issues.some((i) => i.message.includes('"node" is not included'))).toBe(false);
 	});
 
+	// test-contract: boundary — an explicitly empty types list still fails to opt into node globals when node imports are used
+	it("flags an empty types list when node imports are present", () => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, types: [] } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }));
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes('"node" is not included'))).toBe(true);
+	});
+
 	it("flags an incompatible moduleResolution when node: imports are present", () => {
 		mkdirSync(join(tmp, "src"), { recursive: true });
 		writeFileSync(
@@ -347,6 +587,79 @@ describe("checkProjectSetup", () => {
 		expect(issues.some((i) => i.message.includes("may not resolve"))).toBe(false);
 	});
 
+	// test-contract: public-api — documented module resolution names remain accepted regardless of casing
+	it.each(["NODE16", "BUNDLER"])("accepts uppercase compatible moduleResolution %s", (moduleResolution) => {
+		writeFileSync(join(tmp, "src.ts"), 'import { readFileSync } from "node:fs";\n');
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, moduleResolution } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }));
+
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
+
+	it("reports every node-import setup diagnostic with stable fields", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(
+			join(tmp, "src", "app.ts"),
+			'import { readFileSync } from  "node:fs";\nexport const read = readFileSync;\n',
+		);
+		writeFileSync(
+			join(tmp, "tsconfig.json"),
+			JSON.stringify({ compilerOptions: { strict: true, moduleResolution: "classic", types: ["vitest"] } }),
+		);
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+
+		expect(checkProjectSetup(tmp)).toEqual([
+			{
+				check: "project_setup",
+				file: "package.json",
+				line: 0,
+				message:
+					"Code uses node: protocol imports (node:fs, node:path, etc.) but @types/node is not in devDependencies",
+				fix: "Run `npm i --save-dev @types/node`",
+			},
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message:
+					'tsconfig.json has a "types" field but "node" is not included — node: imports will fail',
+				fix: 'Add "node" to the "types" array in compilerOptions',
+			},
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message:
+					'tsconfig.json includes types: ["vitest"] but neither "vitest" nor "@types/vitest" is in package.json. tsc will fail to resolve these globals.',
+				fix: "Run `npm i --save-dev @types/vitest`",
+			},
+			{
+				check: "project_setup",
+				file: "tsconfig.json",
+				line: 0,
+				message: 'moduleResolution "classic" may not resolve node: protocol imports',
+				fix: 'Set "moduleResolution": "node16" or "bundler" in compilerOptions',
+			},
+		]);
+	});
+
+	it("accepts each documented node-import moduleResolution value", () => {
+		for (const moduleResolution of ["node16", "bundler"]) {
+			const caseDir = join(tmp, moduleResolution);
+			mkdirSync(caseDir, { recursive: true });
+			writeFileSync(join(caseDir, "app.ts"), 'import { readFileSync } from "node:fs";\n');
+			writeFileSync(
+				join(caseDir, "tsconfig.json"),
+				JSON.stringify({ compilerOptions: { strict: true, moduleResolution } }),
+			);
+			writeFileSync(
+				join(caseDir, "package.json"),
+				JSON.stringify({ name: "x", devDependencies: { "@types/node": "^20.0.0" } }),
+			);
+			expect(checkProjectSetup(caseDir)).toEqual([]);
+		}
+	});
+
 	it("flags strict mode disabled", () => {
 		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: false } }));
 		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
@@ -373,14 +686,31 @@ describe("checkProjectSetup", () => {
 		expect(checkProjectSetup(tmp)).toEqual([]);
 	});
 
+	// test-contract: boundary — strict mode is enabled only by the boolean true, not truthy lookalikes
+	it("requires strict to be the boolean true", () => {
+		writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: "true" } }));
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "x" }));
+		writeFileSync(join(tmp, "index.ts"), "export const x = 1;\n");
+
+		const issues = checkProjectSetup(tmp);
+		expect(issues.some((i) => i.message.includes("strict mode is not enabled"))).toBe(true);
+	});
+
 	it("aborts a directory walk that exceeds the scan entry cap without crashing", () => {
 		const huge = join(tmp, "huge");
 		mkdirSync(huge, { recursive: true });
-		for (let i = 0; i < 20_001; i++) {
+		for (let i = 0; i < 20_000; i++) {
 			closeSync(openSync(join(huge, `f${i}.txt`), "w"));
 		}
+		writeFileSync(join(huge, "late.ts"), "export const x = 1;\n");
 		expect(checkProjectSetup(tmp)).toEqual([]);
 	}, 30_000);
+
+	it("skips a hidden directory even when its name does not end in a dot", () => {
+		mkdirSync(join(tmp, ".private"), { recursive: true });
+		writeFileSync(join(tmp, ".private", "secret.ts"), "export const x = 1;\n");
+		expect(checkProjectSetup(tmp)).toEqual([]);
+	});
 
 	it("skips an unreadable directory during the project walk instead of throwing", () => {
 		const locked = join(tmp, "locked");
@@ -470,5 +800,40 @@ describe("checkClaudeSettingsPermissions", () => {
 		const issues = checkClaudeSettingsPermissions(tmp);
 		expect(issues).toHaveLength(1);
 		expect(nonNull(issues[0]).message).toMatch(/not valid JSON/);
+		expect(nonNull(issues[0]).fix).toBe("Fix the JSON syntax (or restore from version control).");
+	});
+
+	it("renders the complete malformed-rule payload and a safe correction suggestion", () => {
+		mkdirSync(join(tmp, ".claude"));
+		const rule = "Bash(echo hello *";
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({ permissions: { allow: [rule] } }),
+		);
+
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(1);
+		expect(nonNull(issues[0]).message).toBe(
+			`permissions.allow[0] = ${JSON.stringify(rule)} is malformed (mismatched parentheses). Did you mean ${JSON.stringify(`${rule})`)}? Claude Code's /doctor skips this rule at load time.`,
+		);
+		expect(nonNull(issues[0]).check).toBe("permission_rule_syntax");
+		expect(nonNull(issues[0]).line).toBe(0);
+		expect(nonNull(issues[0]).fix).toBe(
+			"Run `interlinked doctor --fix` to strip malformed permission rules.",
+		);
+	});
+
+	it("does not invent a suggestion for an empty malformed rule", () => {
+		mkdirSync(join(tmp, ".claude"));
+		writeFileSync(
+			join(tmp, ".claude", "settings.json"),
+			JSON.stringify({ permissions: { allow: [""] } }),
+		);
+
+		const issues = checkClaudeSettingsPermissions(tmp);
+		expect(issues).toHaveLength(1);
+		expect(nonNull(issues[0]).message).toBe(
+			'permissions.allow[0] = "" is malformed (empty rule). Claude Code\'s /doctor skips this rule at load time.',
+		);
 	});
 });

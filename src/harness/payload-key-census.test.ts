@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	censusPath,
+	CONSUMED_PAYLOAD_KEYS,
 	describeShape,
 	loadCensus,
 	MAX_SHAPE_MEMBERS,
@@ -37,6 +38,71 @@ describe("unconsumedKeys — positive (must report)", () => {
 
 	it("P2: sorts the reported keys for a stable census", () => {
 		expect(unconsumedKeys({ zeta: 1, alpha: 2 })).toEqual(["alpha", "zeta"]);
+	});
+});
+
+describe("payload census paths and consumed aliases", () => {
+	it("uses the repository-local .interlinked census path", () => {
+		expect(censusPath("/repo")).toBe("/repo/.interlinked/payload-keys.json");
+	});
+
+	it("recognizes every supported envelope, tool, prompt, and lifecycle alias", () => {
+		// Keep this explicit: constructing the payload from CONSUMED_PAYLOAD_KEYS
+		// would let a mutated set hide a removed member from the assertion.
+		const payload = {
+			transcriptPath: 1,
+			transcript_path: 1,
+			hook_event_name: 1,
+			sessionId: 1,
+			permission_mode: 1,
+			model: 1,
+			agent_name: 1,
+			cli_version: 1,
+			claude_code_version: 1,
+			toolName: 1,
+			name: 1,
+			toolInput: 1,
+			tool_response: 1,
+			toolResponse: 1,
+			tool_use_id: 1,
+			parent_tool_use_id: 1,
+			error: 1,
+			tool_error: 1,
+			message: 1,
+			is_interrupt: 1,
+			duration_ms: 1,
+			durationMs: 1,
+			prompt: 1,
+			user_prompt: 1,
+			userPrompt: 1,
+			stop_reason: 1,
+			stop_hook_active: 1,
+			last_assistant_message: 1,
+			usage: 1,
+			token_usage: 1,
+			reason: 1,
+			source: 1,
+			prompt_id: 1,
+			effort: 1,
+			available_tools: 1,
+			parent_agent: 1,
+			parent_agent_name: 1,
+			parent_session_id: 1,
+			subagent_id: 1,
+			subagent_type: 1,
+			task_id: 1,
+			task_subject: 1,
+			task_description: 1,
+			teammate_name: 1,
+			team_name: 1,
+			notification_type: 1,
+			title: 1,
+			trigger: 1,
+			custom_instructions: 1,
+			files_modified: 1,
+		};
+		expect(Object.keys(payload).every((key) => CONSUMED_PAYLOAD_KEYS.has(key))).toBe(true);
+		expect(unconsumedKeys(payload)).toEqual([]);
 	});
 });
 
@@ -150,6 +216,14 @@ describe("describeShape — negative (must not leak values)", () => {
 		for (let i = 0; i < MAX_SHAPE_MEMBERS + 5; i++) wide[`k${i}`] = i;
 		expect(describeShape(wide).endsWith(",…}")).toBe(true);
 	});
+
+	it("does not add an ellipsis when an object has exactly the member cap", () => {
+		const exact: Record<string, number> = {};
+		for (let i = 0; i < MAX_SHAPE_MEMBERS; i++) exact[`k${i}`] = i;
+		expect(describeShape(exact)).toBe(
+			`object{${Array.from({ length: MAX_SHAPE_MEMBERS }, (_, i) => `k${i}`).join(",")}}`,
+		);
+	});
 });
 
 describe("mergeObservation / loadCensus", () => {
@@ -158,6 +232,46 @@ describe("mergeObservation / loadCensus", () => {
 		expect(first.changed).toBe(true);
 		const second = mergeObservation(first.census, { key: "r/E", keys: ["x"], now: LATER });
 		expect(second.changed).toBe(false);
+		expect(second.census).toEqual(first.census);
+	});
+
+	it("keeps newly merged keys sorted", () => {
+		const result = mergeObservation(
+			{
+				schema: "payload-keys.v1",
+				entries: { "r/E": { unconsumed: ["zeta"], first_seen: NOW, last_seen: NOW } },
+			},
+			{ key: "r/E", keys: ["alpha", "middle"], now: NOW },
+		);
+		expect(result.census.entries["r/E"]?.unconsumed).toEqual(["alpha", "middle", "zeta"]);
+		expect(result.census.schema).toBe("payload-keys.v1");
+	});
+
+	it("preserves an existing entry that has no shapes map", () => {
+		const result = mergeObservation(
+			{
+				schema: "payload-keys.v1",
+				entries: { "r/E": { unconsumed: ["old"], first_seen: NOW, last_seen: NOW } },
+			},
+			{ key: "r/E", keys: ["old"], now: LATER },
+		);
+		expect(result.census.entries["r/E"]).toEqual({
+			unconsumed: ["old"],
+			shapes: {},
+			first_seen: NOW,
+			last_seen: LATER,
+		});
+	});
+
+	it("does not record an empty shape description", () => {
+		const result = mergeObservation(
+			{
+				schema: "payload-keys.v1",
+				entries: { "r/E": { unconsumed: ["mystery"], first_seen: NOW, last_seen: NOW } },
+			},
+			{ key: "r/E", keys: ["mystery"], shapes: { mystery: "" }, now: NOW },
+		);
+		expect(result.census.entries["r/E"]?.shapes).toEqual({});
 	});
 
 	it("P10: a since-wired key is pruned from the FILE on the next observation", () => {
@@ -212,6 +326,92 @@ describe("mergeObservation / loadCensus", () => {
 
 	it("N6: a missing census file loads as empty", () => {
 		expect(loadCensus(dir)).toEqual({ schema: "payload-keys.v1", entries: {} });
+	});
+
+	it("loads a valid census with its schema and optional shapes intact", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: {
+					"runner/Event": {
+						unconsumed: ["future"],
+						shapes: { future: "array<object{id}>" },
+						first_seen: NOW,
+						last_seen: LATER,
+					},
+				},
+			}),
+		);
+		expect(loadCensus(dir)).toEqual({
+			schema: "payload-keys.v1",
+			entries: {
+				"runner/Event": {
+					unconsumed: ["future"],
+					shapes: { future: "array<object{id}>" },
+					first_seen: NOW,
+					last_seen: LATER,
+				},
+			},
+		});
+	});
+
+	it("preserves a valid entry that omits optional shapes", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: { "runner/Event": { unconsumed: ["future"], first_seen: NOW, last_seen: LATER } },
+			}),
+		);
+		expect(loadCensus(dir).entries["runner/Event"]).toEqual({
+			unconsumed: ["future"],
+			first_seen: NOW,
+			last_seen: LATER,
+		});
+	});
+
+	it("drops a primitive root and a primitive entries field", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(censusPath(dir), JSON.stringify("not-an-object"));
+		expect(loadCensus(dir)).toEqual({ schema: "payload-keys.v1", entries: {} });
+		writeFileSync(censusPath(dir), JSON.stringify({ schema: "payload-keys.v1", entries: "not-a-record" }));
+		expect(loadCensus(dir)).toEqual({ schema: "payload-keys.v1", entries: {} });
+	});
+
+	it("rejects entries with invalid timestamps or mixed key types", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: {
+					badFirst: { unconsumed: ["x"], first_seen: 1, last_seen: NOW },
+					badLast: { unconsumed: ["x"], first_seen: NOW, last_seen: false },
+					mixedKeys: { unconsumed: ["x", 2], first_seen: NOW, last_seen: NOW },
+					good: { unconsumed: ["x"], first_seen: NOW, last_seen: NOW },
+				},
+			}),
+		);
+		expect(Object.keys(loadCensus(dir).entries)).toEqual(["good"]);
+	});
+
+	it("rejects malformed shape maps and shape values", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			censusPath(dir),
+			JSON.stringify({
+				schema: "payload-keys.v1",
+				entries: {
+					badMap: { unconsumed: ["x"], shapes: [], first_seen: NOW, last_seen: NOW },
+					badValue: { unconsumed: ["x"], shapes: { x: 1 }, first_seen: NOW, last_seen: NOW },
+					good: { unconsumed: ["x"], shapes: { x: "string" }, first_seen: NOW, last_seen: NOW },
+				},
+			}),
+		);
+		expect(Object.keys(loadCensus(dir).entries)).toEqual(["good"]);
 	});
 
 	it("N9: drops a malformed individual entry but keeps valid ones", () => {

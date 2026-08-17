@@ -63,6 +63,13 @@ describe("scanInlineSuppressions", () => {
 		expect(map.get(2)?.size).toBe(1);
 	});
 
+	it("requires whitespace on both sides of a reason separator", () => {
+		const leftCompact = scanInlineSuppressions("// interlinked-ignore: foo--reason\nbar()\n");
+		const rightCompact = scanInlineSuppressions("// interlinked-ignore: foo --reason\nbar()\n");
+		expect([...leftCompact.get(2) ?? []]).toEqual(["foo--reason"]);
+		expect([...rightCompact.get(2) ?? []]).toEqual(["foo --reason"]);
+	});
+
 	it("splits comma-separated checks into the same target line", () => {
 		const map = scanInlineSuppressions(
 			"// interlinked-ignore: sql-injection, silent-catch\nrun()\n",
@@ -76,6 +83,25 @@ describe("scanInlineSuppressions", () => {
 	it("skips intervening blank and comment lines to find the target", () => {
 		const code = ["// interlinked-ignore: foo", "", "// noise", "real()", ""].join("\n");
 		expect(scanInlineSuppressions(code).get(4)?.has("foo")).toBe(true);
+	});
+
+	it("skips whitespace-only and indented comment lines before the target", () => {
+		const code = [
+			"// interlinked-ignore: foo",
+			"   ",
+			"   // noise",
+			"  real()",
+		].join("\n");
+		expect(scanInlineSuppressions(code).get(4)?.has("foo")).toBe(true);
+	});
+
+	it("accepts compact marker spacing but only at the start of a comment line", () => {
+		expect(scanInlineSuppressions("//interlinked-ignore:foo\nrun()\n").get(2)?.has("foo")).toBe(
+			true,
+		);
+		expect(
+			scanInlineSuppressions('const text = "// interlinked-ignore: foo";\nrun()\n').size,
+		).toBe(0);
 	});
 
 	it("falls back to the default next line (i+2) when no following code line exists", () => {
@@ -147,6 +173,34 @@ describe("scanInlineDeferrals — above-line marker (// shape)", () => {
 		expect(scanInlineDeferrals(code).get(4)?.has("ubs_marshal_load")).toBe(true);
 	});
 
+	it("skips whitespace-only and indented comment lines when locating the target", () => {
+		const code = [
+			"// interlinked: defer eval_usage",
+			"   ",
+			"   // another comment",
+			"run()",
+		].join("\n");
+		expect(scanInlineDeferrals(code).get(4)?.has("eval_usage")).toBe(true);
+	});
+
+	it("recognises indented comment-only markers as above-line markers", () => {
+		const code = "  // interlinked: defer eval_usage\nrun()\n";
+		expect(scanInlineDeferrals(code).get(2)?.has("eval_usage")).toBe(true);
+		expect(scanInlineDeferrals(code).get(1)).toBeUndefined();
+	});
+
+	it("does not accept a marker embedded after another comment prefix", () => {
+		const code = "// note // interlinked: defer eval_usage\nrun()\n";
+		expect(scanInlineDeferrals(code).size).toBe(0);
+	});
+
+	it("accepts compact marker spacing but keeps defer as a separate word", () => {
+		expect(
+			scanInlineDeferrals("//interlinked:defer eval_usage\nrun()\n").get(2)?.has("eval_usage"),
+		).toBe(true);
+		expect(scanInlineDeferrals("// interlinked: deferfoo\nrun()\n").size).toBe(0);
+	});
+
 	it("supports comma-separated multiple check ids on one marker", () => {
 		const code = "// interlinked: defer eval_usage, inner_html\nrun()\n";
 		const entry = scanInlineDeferrals(code).get(2);
@@ -170,6 +224,29 @@ describe("scanInlineDeferrals — above-line marker (// shape)", () => {
 		expect(scanInlineDeferrals(code).get(3)?.get("eval_usage")).toBe("second");
 	});
 
+	it("merges different checks when duplicate markers target one line", () => {
+		const code = [
+			"// interlinked: defer eval_usage -- first",
+			"// interlinked: defer inner_html -- second",
+			"run()",
+		].join("\n");
+		const entries = scanInlineDeferrals(code).get(3);
+		expect(entries?.get("eval_usage")).toBe("first");
+		expect(entries?.get("inner_html")).toBe("second");
+	});
+
+	it("trims trailing whitespace from a deferral reason", () => {
+		const code = "// interlinked: defer eval_usage -- trusted input   \nrun()\n";
+		expect(scanInlineDeferrals(code).get(2)?.get("eval_usage")).toBe("trusted input");
+	});
+
+	it("requires whitespace on both sides of a deferral reason separator", () => {
+		const leftCompact = scanInlineDeferrals("// interlinked: defer foo--reason\nrun()\n");
+		const rightCompact = scanInlineDeferrals("// interlinked: defer foo --reason\nrun()\n");
+		expect([...leftCompact.get(2)?.keys() ?? []]).toEqual(["foo--reason"]);
+		expect([...rightCompact.get(2)?.keys() ?? []]).toEqual(["foo --reason"]);
+	});
+
 	it("ignores a marker whose check list is empty (comma-only payload)", () => {
 		// `recordDeferral` filters empty pieces; a comma-only capture → [] → return.
 		const code = "// interlinked: defer , ,\nrun()\n";
@@ -185,6 +262,11 @@ describe("scanInlineDeferrals — # shape (Python / Ruby / shell)", () => {
 			"legacy trusted",
 		);
 	});
+
+	it("does not mistake a hash comment for code when finding the next line", () => {
+		const code = "// interlinked: defer eval_usage\n# explanatory comment\nrun()\n";
+		expect(scanInlineDeferrals(code).get(3)?.has("eval_usage")).toBe(true);
+	});
 });
 
 describe("scanInlineDeferrals — trailing-comment marker", () => {
@@ -197,6 +279,13 @@ describe("scanInlineDeferrals — trailing-comment marker", () => {
 		const code =
 			"obj = pickle.load(f)  # interlinked: defer ubs_pickle_untrusted_load -- trusted\n";
 		expect(scanInlineDeferrals(code).get(1)?.get("ubs_pickle_untrusted_load")).toBe("trusted");
+	});
+
+	it("accepts compact trailing marker spacing but rejects defer prefixes", () => {
+		expect(
+			scanInlineDeferrals("eval(x); //interlinked:defer eval_usage\n").get(1)?.has("eval_usage"),
+		).toBe(true);
+		expect(scanInlineDeferrals("eval(x); // interlinked: deferfoo\n").size).toBe(0);
 	});
 
 	it("does NOT treat a pure-comment line as a trailing marker (above-form takes over)", () => {
@@ -395,6 +484,19 @@ describe("loadFileSuppressions / loadSuppressionFile / addSuppressions / glob", 
 			expect(loadFileSuppressions(dir, "a.ts").has("foo")).toBe(true);
 		});
 
+		it("normalizes Windows separators in glob patterns and paths", () => {
+			write({ "src\\*.ts": { foo: { reason: "x", by: "cli", at: "n" } } });
+			expect(loadFileSuppressions(dir, "src\\a.ts").has("foo")).toBe(true);
+			expect(loadFileSuppressions(dir, "other\\a.ts").has("foo")).toBe(false);
+		});
+
+		it("keeps glob matches anchored and escapes regex anchors", () => {
+			write({ "src/$a.ts": { foo: { reason: "x", by: "cli", at: "n" } } });
+			expect(loadFileSuppressions(dir, "src/$a.ts").has("foo")).toBe(true);
+			expect(loadFileSuppressions(dir, "prefix/src/$a.ts").has("foo")).toBe(false);
+			expect(loadFileSuppressions(dir, "src/$a.ts/extra").has("foo")).toBe(false);
+		});
+
 		it("skips a falsy entry value for a key", () => {
 			write({ "src/a.ts": null });
 			expect(loadFileSuppressions(dir, "src/a.ts").size).toBe(0);
@@ -417,6 +519,27 @@ describe("loadFileSuppressions / loadSuppressionFile / addSuppressions / glob", 
 			const checks = loadFileSuppressions(dir, "src/a.ts");
 			expect(checks.has("second")).toBe(true);
 			expect(checks.has("first")).toBe(false);
+		});
+
+		it("does not reuse cached data from a different suppression-file path", () => {
+			const otherDir = mkdtempSync(join(tmpdir(), "suppressions-other-"));
+			try {
+				write({ "src/a.ts": { first: { reason: "x", by: "cli", at: "n" } } });
+				const otherPath = join(otherDir, "verify-suppressions.json");
+				writeFileSync(
+					otherPath,
+					JSON.stringify({ "src/a.ts": { second: { reason: "x", by: "cli", at: "n" } } }),
+					"utf-8",
+				);
+				const sameTime = Date.now() / 1000 + 10;
+				utimesSync(jsonPath(), sameTime, sameTime);
+				utimesSync(otherPath, sameTime, sameTime);
+				expect(loadFileSuppressions(dir, "src/a.ts").has("first")).toBe(true);
+				expect(loadFileSuppressions(otherDir, "src/a.ts").has("second")).toBe(true);
+				expect(loadFileSuppressions(otherDir, "src/a.ts").has("first")).toBe(false);
+			} finally {
+				rmSync(otherDir, { recursive: true, force: true });
+			}
 		});
 	});
 
@@ -451,6 +574,12 @@ describe("loadFileSuppressions / loadSuppressionFile / addSuppressions / glob", 
 			addSuppressions(dir, [{ file: "src/a.ts", check: "foo", reason: "trusted" }]);
 			const written = JSON.parse(readFileSync(jsonPath(), "utf-8"));
 			expect(written["src/a.ts"].foo.reason).toBe("trusted");
+		});
+
+		it("round-trips non-ASCII suppression metadata as UTF-8", () => {
+			addSuppressions(dir, [{ file: "src/a.ts", check: "foo", reason: "confié — café" }]);
+			const written = JSON.parse(readFileSync(jsonPath(), "utf-8"));
+			expect(written["src/a.ts"].foo.reason).toBe("confié — café");
 		});
 
 		it("merges into an existing file and skips already-present checks", () => {

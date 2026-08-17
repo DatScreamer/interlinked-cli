@@ -64,6 +64,26 @@ describe("formatComplexityPulse", () => {
 		expect(line).not.toContain("beta");
 	});
 
+	it("selects the highest-complexity function even when it is not first", () => {
+		const line = formatComplexityPulse("src/foo.ts", null, [entry("low", 2), entry("high", 9), entry("tie", 9)]);
+		expect(line).toContain("max high=9");
+	});
+
+	it("keeps a zero signed delta unprefixed", () => {
+		const line = formatComplexityPulse("src/foo.ts", [entry("same", 4)], [entry("same", 4)]);
+		expect(line).toContain("ΣCC 4 (Δ0)");
+		expect(line).not.toContain("Δ+0");
+	});
+
+	it("orders named deltas by absolute change, with a comma separator", () => {
+		const line = formatComplexityPulse(
+			"src/foo.ts",
+			[entry("alpha", 10), entry("beta", 1)],
+			[entry("alpha", 12), entry("beta", 8)],
+		);
+		expect(line).toContain("Δ fns: beta 1→8, alpha 10→12");
+	});
+
 	// fnΔ — how many distinct functions ONE edit moved. Ambient measurement for
 	// the per-edit-resolution question (docs/design/per-edit-symbol-resolution.md):
 	// every per-edit ratchet is calibrated on a single edit's delta, so an edit
@@ -169,6 +189,35 @@ describe("formatComplexityPulse", () => {
 		expect(line).toContain("+2 more");
 	});
 
+	it("does not spell out a zero remainder at the named-delta limit", () => {
+		const before = [1, 2, 3].map((i) => entry(`fn${i}`, i));
+		const after = [1, 2, 3].map((i) => entry(`fn${i}`, i + 1));
+		const line = formatComplexityPulse("src/foo.ts", before, after) ?? "";
+		expect(line).toContain("fnΔ 3");
+		expect(line).not.toContain("+0 more");
+	});
+
+	it("sorts and truncates over-cap functions, with the true remainder", () => {
+		const line = formatComplexityPulse(
+			"src/foo.ts",
+			null,
+			[entry("low", 30), entry("high", 50), entry("mid", 40), entry("extra", 35)],
+			25,
+		) ?? "";
+		expect(line).toContain("over cap: high=50, mid=40, extra=35, +1 more");
+		expect(line).not.toContain("low=30");
+	});
+
+	it("does not report a function exactly at the effective cap as over-cap", () => {
+		const line = formatComplexityPulse("src/foo.ts", null, [entry("edge", 10)], 10) ?? "";
+		expect(line).toContain("max edge=10 (cap 10)");
+		expect(line).not.toContain("over cap");
+	});
+
+	it("handles omitted profiles without requiring an object", () => {
+		expect(() => formatComplexityPulse("src/foo.ts", null, [entry("a", 2)])).not.toThrow();
+	});
+
 	it("counts anonymous functions in ΣCC but never name-matches them", () => {
 		const before = [entry("(callback)", 2)];
 		const after = [entry("(callback)", 6)];
@@ -179,6 +228,15 @@ describe("formatComplexityPulse", () => {
 });
 
 describe("pulse stash", () => {
+	it("captures a before AST profile when the edited file exists", () => {
+		const abs = join(tmp, "profiled.ts");
+		writeFileSync(abs, fnWith("before", 1));
+		recordComplexityPulse("s1", abs, [entry("before", 2)], [entry("after", 3)], "projected");
+		const snap = consumeComplexityPulse("s1", abs, "projected");
+		expect(snap?.beforeProfile).toMatchObject({ cogTotal: expect.any(Number) });
+		expect(snap?.afterProfile).toMatchObject({ cogTotal: expect.any(Number) });
+	});
+
 	it("round-trips a snapshot and consumes it exactly once", () => {
 		recordComplexityPulse("s1", "/a.ts", [entry("f", 2)], [entry("f", 4)], "content");
 		const snap = consumeComplexityPulse("s1", "/a.ts", "content");
@@ -215,6 +273,22 @@ describe("pulse stash", () => {
 		recordComplexityPulse("s1", "/a.ts", [], [entry("f", 9)], "c2");
 		expect(consumeComplexityPulse("s1", "/a.ts", "c2")?.afterFns[0]?.cyclomatic).toBe(9);
 	});
+
+	it("retains exactly the capacity boundary, then evicts its oldest entry", () => {
+		for (let i = 0; i < MAX_STASH_ENTRIES; i++) {
+			recordComplexityPulse("s1", `/boundary${i}.ts`, [], [entry(`f${i}`, 1)], `c${i}`);
+		}
+		// Refreshing an existing key leaves the map exactly at capacity. A strict
+		// `>` guard keeps the oldest remaining entry; `>=` would evict it here.
+		recordComplexityPulse("s1", "/boundary0.ts", [], [entry("f0", 1)], "refreshed");
+		expect(consumeComplexityPulse("s1", "/boundary1.ts", "c1")).not.toBeNull();
+	});
+
+	it("reset clears snapshots so stale edits cannot be consumed", () => {
+		recordComplexityPulse("s1", "/reset.ts", [], [entry("f", 1)], "content");
+		__resetComplexityPulseForTesting();
+		expect(consumeComplexityPulse("s1", "/reset.ts", "content")).toBeNull();
+	});
 });
 
 describe("collectComplexityPulseWarnings", () => {
@@ -232,6 +306,7 @@ describe("collectComplexityPulseWarnings", () => {
 		expect(warnings[0]).toContain("src/thing.ts");
 		expect(warnings[0]).toContain("ΣCC 9 (Δ+4)");
 		expect(warnings[0]).toContain("widget 5→9");
+		expect(warnings[0]).toMatch(/cogΣ \d+ \(Δ0\); astΔ 0/);
 	});
 
 	it("falls back to an on-disk parse (no delta) on a stash miss", () => {
@@ -242,6 +317,7 @@ describe("collectComplexityPulseWarnings", () => {
 		);
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain("max check=4");
+		expect(warnings[0]).toMatch(/cogΣ \d+/);
 		expect(warnings[0]).not.toContain("Δ");
 	});
 
@@ -277,15 +353,51 @@ describe("collectComplexityPulseWarnings", () => {
 		).toEqual([]);
 	});
 
+	it("skips code-like files for which no complexity analyzer exists", () => {
+		const abs = join(tmp, "thing.rb");
+		writeFileSync(abs, "def check\n  1\nend\n");
+		expect(
+			collectComplexityPulseWarnings(
+				postEvent({ tool_name: "Write", tool_input: { file_path: abs }, cwd: tmp }),
+			),
+		).toEqual([]);
+	});
+
+	it("skips a supported file whose analyzer cannot parse its contents", () => {
+		const abs = join(tmp, "broken.py");
+		writeFileSync(abs, "def broken(:\n");
+		expect(
+			collectComplexityPulseWarnings(
+				postEvent({ tool_name: "Write", tool_input: { file_path: abs }, cwd: tmp }),
+			),
+		).toEqual([]);
+	});
+
+	it("uses the absolute path for a matching snapshot outside the event cwd", () => {
+		const abs = join(tmp, "..", "outside-pulse.ts");
+		const content = fnWith("outside", 2);
+		writeFileSync(abs, content);
+		recordComplexityPulse("pulse-test", abs, [entry("outside", 2)], [entry("outside", 3)], content);
+		const warnings = collectComplexityPulseWarnings(
+			postEvent({ tool_name: "Edit", tool_input: { file_path: abs }, cwd: tmp }),
+		);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain(abs);
+		expect(warnings[0]).not.toContain("../outside-pulse.ts");
+		rmSync(abs, { force: true });
+	});
+
 	it("skips unreadable / deleted files and non-write tools", () => {
 		expect(
 			collectComplexityPulseWarnings(
 				postEvent({ tool_name: "Edit", tool_input: { file_path: join(tmp, "gone.ts") }, cwd: tmp }),
 			),
 		).toEqual([]);
+		const existing = join(tmp, "read.ts");
+		writeFileSync(existing, fnWith("read", 1));
 		expect(
 			collectComplexityPulseWarnings(
-				postEvent({ tool_name: "Read", tool_input: { file_path: join(tmp, "x.ts") }, cwd: tmp }),
+				postEvent({ tool_name: "Read", tool_input: { file_path: existing }, cwd: tmp }),
 			),
 		).toEqual([]);
 	});

@@ -13,8 +13,11 @@ import { describe, expect, it } from "vitest";
 import { CohortManager } from "./cohort.js";
 import {
 	applyRewrite,
+	classifyToolConcurrency,
+	decomposeCommand,
 	evaluateCompoundCommand,
 	inferAgentRole,
+	stripEnvVarPrefix,
 } from "./command-decomposition.js";
 import type { GuardRule, HarnessEvent } from "./types.js";
 
@@ -62,6 +65,75 @@ describe("applyRewrite — replacement throws", () => {
 		});
 		expect(result).toBe("rm -rf /tmp");
 	});
+
+	it("caps patterns at 200 characters and applies global replacement", () => {
+		const exactlyAtCap = "a".repeat(200);
+		expect(
+			applyRewrite(exactlyAtCap, {
+				field: "command",
+				match: exactlyAtCap,
+				replace: "x",
+			}),
+		).toBe("x");
+		expect(
+			applyRewrite("x x", {
+				field: "command",
+				match: "x",
+				replace: "y",
+			}),
+		).toBe("y y");
+	});
+});
+
+describe("decomposeCommand — atomic spans and heredoc boundaries", () => {
+	it("splits ordinary executed text rather than treating it as atomic", () => {
+		expect(decomposeCommand("echo one && echo two")).toEqual(["echo one", "echo two"]);
+	});
+
+	it("splits around quoted spans at both span boundaries", () => {
+		expect(decomposeCommand("echo 'one && two' && echo three")).toEqual([
+			"echo 'one && two'",
+			"echo three",
+		]);
+	});
+
+	it("does not let a quoted span before a heredoc suppress an earlier split", () => {
+		expect(decomposeCommand("echo before && echo 'quoted'\ncat <<EOF\nbody\nEOF")).toEqual([
+			"echo before",
+			"echo 'quoted'",
+			"cat <<EOF\nbody\nEOF",
+		]);
+	});
+
+	it("keeps operators before a heredoc attached to its receiving command", () => {
+		expect(decomposeCommand("echo before && cat <<EOF\nbody\nEOF\necho after")).toEqual([
+			"echo before && cat <<EOF\nbody\nEOF",
+			"echo after",
+		]);
+	});
+
+	it("does not glue an operator on a prior line to a later heredoc", () => {
+		expect(decomposeCommand("echo before && echo ok\ncat <<EOF\nbody\nEOF")).toEqual([
+			"echo before",
+			"echo ok",
+			"cat <<EOF\nbody\nEOF",
+		]);
+	});
+
+	it("splits an operator after a heredoc closer", () => {
+		expect(decomposeCommand("cat <<EOF\nbody\nEOF\necho after && echo final")).toEqual([
+			"cat <<EOF\nbody\nEOF",
+			"echo after",
+			"echo final",
+		]);
+	});
+
+	it("keeps an operator at the first heredoc-body byte atomic", () => {
+		expect(decomposeCommand("cat <<EOF\n&& body\nEOF\necho after")).toEqual([
+			"cat <<EOF\n&& body\nEOF",
+			"echo after",
+		]);
+	});
 });
 
 describe("evaluateCompoundCommand — shouldEvaluateForBash gating", () => {
@@ -76,12 +148,131 @@ describe("evaluateCompoundCommand — shouldEvaluateForBash gating", () => {
 		const result = evaluateCompoundCommand("cd /tmp && rm -rf /", rules);
 		expect(result).toEqual({ decision: "allow", warnings: [] });
 	});
+
+	it("accepts both-trigger, wildcard, Bash, and Shell rules", () => {
+		for (const rule of [
+			makeRule({ trigger: "both" }),
+			makeRule({ tool_match: ["*"] }),
+			makeRule({ tool_match: ["Bash", "OtherTool"] }),
+			makeRule({ tool_match: ["shell"] }),
+		]) {
+			expect(evaluateCompoundCommand("echo safe && rm -rf /", [rule]).decision).toBe("block");
+		}
+	});
+
+	it("rejects a rule whose tool matches neither Bash nor Shell", () => {
+		const result = evaluateCompoundCommand("echo safe && rm -rf /", [
+			makeRule({ tool_match: ["OtherTool"] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
 });
 
 describe("evaluateCompoundCommand — default matcher field resolution + negation", () => {
 	it("treats an empty positive-pattern field value as non-matching", () => {
 		const rules = [makeRule({ patterns: [{ field: "nonexistent_field", regex: "x" }] })];
 		const result = evaluateCompoundCommand("cd /tmp && anything", rules);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("applies a rule containing only a non-matching negated pattern", () => {
+		const result = evaluateCompoundCommand("cd /tmp && anything", [
+			makeRule({ patterns: [{ field: "command", regex: "never", negate: true }] }),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("uses case-insensitive matching when flags are omitted", () => {
+		const result = evaluateCompoundCommand("cd /tmp && RM -RF /", [
+			makeRule({ patterns: [{ field: "command", regex: "rm\\s+-rf" }] }),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("uses case-insensitive matching for negated patterns too", () => {
+		const result = evaluateCompoundCommand("cd /tmp && rm SAFE", [
+			makeRule({
+				patterns: [
+					{ field: "command", regex: "rm" },
+					{ field: "command", regex: "safe", negate: true },
+				],
+			}),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("does not let an empty negated field exclude a matching command", () => {
+		const result = evaluateCompoundCommand("cd /tmp && rm target", [
+			makeRule({
+				patterns: [
+					{ field: "command", regex: "rm" },
+					{ field: "missing", regex: "^$", negate: true },
+				],
+			}),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("does not treat a non-matching positive regex as a match", () => {
+		const result = evaluateCompoundCommand("cd /tmp && echo safe", [
+			makeRule({ patterns: [{ field: "command", regex: "^rm$" }] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("treats an invalid configured regex as non-matching", () => {
+		const result = evaluateCompoundCommand("cd /tmp && echo safe", [
+			makeRule({ patterns: [{ field: "command", regex: "[invalid" }] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("keeps undefined tool-input fields distinct from the empty string", () => {
+		const result = evaluateCompoundCommand("cd /tmp && echo safe", [
+			makeRule({ patterns: [{ field: "missing", regex: "^undefined$" }] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("accepts a regex exactly at the trusted-config length cap", () => {
+		const pattern = "a".repeat(200);
+		const result = evaluateCompoundCommand(`cd /tmp && ${pattern}`, [
+			makeRule({ patterns: [{ field: "command", regex: pattern }] }),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("rejects an overlong regex even when its text would otherwise match", () => {
+		const pattern = "a".repeat(201);
+		const result = evaluateCompoundCommand(`cd /tmp && ${pattern}`, [
+			makeRule({ patterns: [{ field: "command", regex: pattern }] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("does not let an empty positive-pattern field satisfy an empty regex", () => {
+		const result = evaluateCompoundCommand("cd /tmp && echo safe", [
+			makeRule({ patterns: [{ field: "missing", regex: "^$" }] }),
+		]);
+		expect(result).toEqual({ decision: "allow", warnings: [] });
+	});
+
+	it("does not call test on an invalid negated regex", () => {
+		const result = evaluateCompoundCommand("cd /tmp && rm target", [
+			makeRule({
+				patterns: [
+					{ field: "command", regex: "rm" },
+					{ field: "command", regex: "[invalid", negate: true },
+				],
+			}),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("does not treat a missing tool-input field as nonempty", () => {
+		const result = evaluateCompoundCommand("cd /tmp && echo safe", [
+			makeRule({ patterns: [{ field: "missing", regex: ".+" }] }),
+		]);
 		expect(result).toEqual({ decision: "allow", warnings: [] });
 	});
 
@@ -119,6 +310,13 @@ describe("evaluateCompoundCommand — default matcher field resolution + negatio
 		const result = evaluateCompoundCommand("cd /tmp && rm -rf /", rules);
 		expect(result).toEqual({ decision: "allow", warnings: [] });
 	});
+
+	it("returns the fast-path result exactly for a single command", () => {
+		expect(evaluateCompoundCommand("rm -rf /", [makeRule()])).toEqual({
+			decision: "allow",
+			warnings: [],
+		});
+	});
 });
 
 describe("evaluateCompoundCommand — rewrite bookkeeping", () => {
@@ -147,6 +345,98 @@ describe("evaluateCompoundCommand — rewrite bookkeeping", () => {
 		expect(result.decision).toBe("allow");
 		expect(result.updated_input).toEqual({ command: "trash a.txt && trash b.txt" });
 	});
+
+	it("passes the stripped command to custom matchers and preserves rewrite diagnostics", () => {
+		const seen: Array<{ command: string; inputCommand: unknown }> = [];
+		const long = "rm " + "x".repeat(100);
+		const result = evaluateCompoundCommand(
+			`cd /tmp && ${long}`,
+			[
+				makeRule({
+					action: "rewrite",
+					patterns: [{ field: "command", regex: "^rm " }],
+					rewrite: { field: "command", match: "^rm ", replace: "trash " },
+				}),
+			],
+			undefined,
+			(command, input) => {
+				seen.push({ command, inputCommand: input.command });
+				return command.startsWith("rm ");
+			},
+		);
+		expect(seen.at(-1)).toEqual({ command: long, inputCommand: long });
+		expect(result.updated_input?.command).toBe(`cd /tmp && ${long.replace("rm ", "trash ")}`);
+		expect(result.warnings).toEqual([
+			`[interlinked:rewrite] Rewrote: ${long.slice(0, 40)} → ${long.replace("rm ", "trash ").slice(0, 40)}`,
+		]);
+	});
+
+	it("truncates block reasons to the documented subcommand preview length", () => {
+		const long = "rm " + "x".repeat(100);
+		const result = evaluateCompoundCommand(`cd /tmp && ${long}`, [
+			makeRule({ patterns: [{ field: "command", regex: "^rm " }] }),
+		]);
+		expect(result.reason).toBe(
+			`BLOCKED: Blocked destructive command (in subcommand: ${long.slice(0, 80)})`,
+		);
+	});
+
+	it("does not rewrite a warning rule even when it carries rewrite metadata", () => {
+		const result = evaluateCompoundCommand("cd /tmp && rm target", [
+			makeRule({
+				action: "warn",
+				patterns: [{ field: "command", regex: "^rm" }],
+				rewrite: { field: "command", match: "rm", replace: "trash" },
+			}),
+		]);
+		expect(result.updated_input).toBeUndefined();
+		expect(result.warnings).toEqual([
+			"[interlinked] Warning: Blocked destructive command (in subcommand: rm target)",
+		]);
+	});
+
+	it("truncates warning diagnostics to 60 characters", () => {
+		const long = "rm " + "x".repeat(100);
+		const result = evaluateCompoundCommand(`cd /tmp && ${long}`, [
+			makeRule({
+				action: "warn",
+				patterns: [{ field: "command", regex: "^rm " }],
+			}),
+		]);
+		expect(result.warnings).toEqual([
+			`[interlinked] Warning: Blocked destructive command (in subcommand: ${long.slice(0, 60)})`,
+		]);
+	});
+
+	it("reports dangerous environment variables with security metadata", () => {
+		const result = evaluateCompoundCommand("cd /tmp && LD_PRELOAD=/evil.so ls", []);
+		expect(result).toMatchObject({
+			decision: "block",
+			severity: "critical",
+			category: "Security",
+		});
+	});
+
+	it("strips unknown environment assignments before deny matching", () => {
+		const result = evaluateCompoundCommand("CUSTOM_VAR=x npm run && echo done", [
+			makeRule({ patterns: [{ field: "command", regex: "^npm run$" }] }),
+		]);
+		expect(result.decision).toBe("block");
+	});
+
+	it("passes the deny-stripped command to a custom matcher", () => {
+		const seen: string[] = [];
+		evaluateCompoundCommand(
+			"CUSTOM_VAR=x npm run && echo done",
+			[makeRule({ action: "warn", patterns: [{ field: "command", regex: "^npm run$" }] })],
+			undefined,
+			(command) => {
+				seen.push(command);
+				return false;
+			},
+		);
+		expect(seen).toContain("npm run");
+	});
 });
 
 describe("inferAgentRole — cohort lineage and agent_type lead inference", () => {
@@ -165,5 +455,78 @@ describe("inferAgentRole — cohort lineage and agent_type lead inference", () =
 
 	it("infers lead from agent_type containing 'coordinator'", () => {
 		expect(inferAgentRole(makeEvent({ agent_type: "coordinator-driver" }))).toBe("lead");
+	});
+
+	it("infers subagent from SubagentStop events", () => {
+		expect(inferAgentRole(makeEvent({ hook_event: "SubagentStop" }))).toBe("subagent");
+	});
+
+	it("returns unknown for an agent with no role signals", () => {
+		const cohort = new CohortManager();
+		expect(inferAgentRole(makeEvent({ agent_name: "unlisted-agent" }), cohort)).toBe("unknown");
+	});
+});
+
+describe("stripEnvVarPrefix — normalization boundaries", () => {
+	it("trims surrounding whitespace before stripping assignments", () => {
+		expect(stripEnvVarPrefix("  NODE_ENV=test npm test  ", "deny")).toEqual({
+			stripped: "npm test",
+		});
+	});
+
+	it("collapses repeated whitespace between assignments and the command", () => {
+		expect(stripEnvVarPrefix("NODE_ENV=test  npm test", "deny")).toEqual({
+			stripped: "npm test",
+		});
+	});
+
+	it("handles a command made only of assignments without reading past the array", () => {
+		expect(stripEnvVarPrefix("NODE_ENV=test", "deny")).toEqual({ stripped: "" });
+	});
+
+	it("requires an assignment token to begin with its variable name", () => {
+		expect(stripEnvVarPrefix("-FOO=bar npm test", "deny")).toEqual({
+			stripped: "-FOO=bar npm test",
+		});
+	});
+});
+
+describe("classifyToolConcurrency — supported aliases", () => {
+	it("classifies read-only aliases as read_only", () => {
+		for (const tool of [
+			"FileRead",
+			"ReadFile",
+			"read_file",
+			"GlobTool",
+			"GrepTool",
+			"Ls",
+			"ListFiles",
+			"web_search",
+			"ToolSearch",
+			"web_fetch",
+			"TaskGet",
+			"TaskList",
+			"AskUserQuestion",
+		]) {
+			expect(classifyToolConcurrency(tool)).toBe("read_only");
+		}
+	});
+
+	it("classifies state-changing aliases as state_changing", () => {
+		for (const tool of [
+			"WriteFile",
+			"write_file",
+			"FileWrite",
+			"EditFile",
+			"edit_file",
+			"FileEdit",
+			"Shell",
+			"shell",
+			"run_command",
+			"TaskCreate",
+			"TaskUpdate",
+		]) {
+			expect(classifyToolConcurrency(tool)).toBe("state_changing");
+		}
 	});
 });

@@ -59,7 +59,18 @@ describe("resolveTypecheckCommand", () => {
 			JSON.stringify({ scripts: { typecheck: "tsc --noEmit" } }),
 		);
 		const cmd = resolveTypecheckCommand(tmp);
-		expect(cmd?.source).toBe("typecheck");
+		expect(cmd).toEqual({
+			bin: "npm",
+			args: ["run", "--silent", "typecheck"],
+			source: "typecheck",
+		});
+	});
+
+	it("does not infer a local tsc when tsconfig.json is absent", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({}));
+		mkdirSync(join(tmp, "node_modules", ".bin"), { recursive: true });
+		writeFileSync(join(tmp, "node_modules", ".bin", "tsc"), "#!/bin/sh\nexit 0\n");
+		expect(resolveTypecheckCommand(tmp)).toBeNull();
 	});
 
 	it("falls back to local node_modules/.bin/tsc when only tsconfig.json is present", () => {
@@ -143,6 +154,57 @@ describe("parseTscDiagnostics", () => {
 		expect(nonNull(diags[0]).message).toContain("Custom check failed");
 	});
 
+	it("requires a diagnostic to occupy the complete line and preserves only a trimmed message", () => {
+		const out = [
+			"compiler noise src/noise.ts(1,1): error TS0000: should be ignored",
+			"src/spaced.ts(12,34):  error  TS1234:   message with padding   ",
+			"src/trailing.ts(1,1): error TS9999: valid diagnostic followed by noise",
+			"trailing noise",
+		].join("\n");
+		const diags = parseTscDiagnostics(out);
+		expect(diags).toEqual([
+			{
+				file: "compiler noise src/noise.ts",
+				line: 1,
+				col: 1,
+				code: "TS0000",
+				message: "should be ignored",
+			},
+			{
+				file: "src/spaced.ts",
+				line: 12,
+				col: 34,
+				code: "TS1234",
+				message: "message with padding",
+			},
+			{
+				file: "src/trailing.ts",
+				line: 1,
+				col: 1,
+				code: "TS9999",
+				message: "valid diagnostic followed by noise",
+			},
+		]);
+	});
+
+	it("accepts multi-digit columns and requires whitespace in each diagnostic separator", () => {
+		const out = [
+			"src/column.ts(1,10): error TS1000: ten-column diagnostic",
+			"src/no-space.ts(1,1):error TS1001: missing separator",
+			"src/no-code-space.ts(1,1): errorTS1002: missing separator",
+			"src/no-message-space.ts(1,1): error TS1003:no message separator",
+		].join("\n");
+		expect(parseTscDiagnostics(out)).toEqual([
+			{
+				file: "src/column.ts",
+				line: 1,
+				col: 10,
+				code: "TS1000",
+				message: "ten-column diagnostic",
+			},
+		]);
+	});
+
 	it("returns empty array on clean output", () => {
 		expect(parseTscDiagnostics("")).toEqual([]);
 		expect(parseTscDiagnostics("Found 0 errors.\n")).toEqual([]);
@@ -155,15 +217,23 @@ describe("checkProjectTypecheckClean", () => {
 		expect(checkProjectTypecheckClean(tmp)).toEqual([]);
 	});
 
+	// test-contract: public-api — an audited bypass is a warning finding with the stable structural metadata
 	it("emits a warning entry (not an error) when bypassed via env var", () => {
 		// Bypass should ALWAYS surface so an audit log can find it later.
 		// But it must not block — that's the whole point of bypass.
 		process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK = "1";
 		const results = checkProjectTypecheckClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(nonNull(results[0]).name).toBe("project_typecheck_skipped");
-		expect(nonNull(results[0]).severity).toBe("warning");
-		expect(nonNull(results[0]).message).toContain("INTERLINKED_SKIP_PROJECT_TYPECHECK");
+		expect(results).toEqual([
+			{
+				source: "structural",
+				name: "project_typecheck_skipped",
+				severity: "warning",
+				message:
+					"Project typecheck gate bypassed via INTERLINKED_SKIP_PROJECT_TYPECHECK=1. Verify CI manually before merging.",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 
 	it("returns empty when the typecheck script exits clean", () => {
@@ -194,12 +264,24 @@ describe("checkProjectTypecheckClean", () => {
 		);
 
 		const results = checkProjectTypecheckClean(tmp);
-		expect(results).toHaveLength(2);
-		expect(results.every((r) => r.severity === "error")).toBe(true);
-		expect(results.every((r) => r.name === "project_typecheck_clean")).toBe(true);
-		expect(nonNull(results[0]).file).toBe("src/foo.ts");
-		expect(nonNull(results[1]).file).toBe("src/bar.ts");
-		expect(results.every((r) => r.determinism === "fully_deterministic")).toBe(true);
+		expect(results).toEqual([
+			{
+				source: "structural",
+				name: "project_typecheck_clean",
+				severity: "error",
+				message: "src/foo.ts:10:5 — TS2322: bad type.",
+				file: "src/foo.ts",
+				determinism: "fully_deterministic",
+			},
+			{
+				source: "structural",
+				name: "project_typecheck_clean",
+				severity: "error",
+				message: "src/bar.ts:7:1 — TS2783: dup key.",
+				file: "src/bar.ts",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 
 	it("flags pre-existing errors in untouched files — the whole point of the gate", () => {
@@ -241,6 +323,69 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).message).toContain("compiler crashed");
 	});
 
+	it("reports an empty raw failure without inventing output and caps diagnostics at 50", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable":
+						'node -e "process.exit(2)"',
+				},
+			}),
+		);
+		const empty = checkProjectTypecheckClean(tmp);
+		expect(empty).toHaveLength(1);
+		expect(nonNull(empty[0])).toEqual({
+			source: "structural",
+			name: "project_typecheck_clean",
+			severity: "error",
+			message: "Project typecheck (typecheck:stable) failed (exit 2) but no TS diagnostics parsed. Raw output: ",
+			determinism: "fully_deterministic",
+		});
+
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable": "node emit-many.js",
+				},
+			}),
+		);
+		writeFileSync(
+			join(tmp, "emit-many.js"),
+			"for (let i = 1; i <= 51; i++) console.log(`src/f${i}.ts(1,1): error TS${i}: bad`); process.exit(1);",
+		);
+		const many = checkProjectTypecheckClean(tmp);
+		expect(many).toHaveLength(50);
+		expect(nonNull(many[0]).message).toContain("src/f1.ts:1:1 — TS1: bad");
+		expect(nonNull(many[49]).message).toContain("src/f50.ts:1:1 — TS50: bad");
+		expect(many.some((r) => r.message.includes("src/f51.ts"))).toBe(false);
+	});
+
+	it("trims and truncates unparseable stderr in the fallback message", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable": "node emit-raw.js",
+				},
+			}),
+		);
+		writeFileSync(
+			join(tmp, "emit-raw.js"),
+			'process.stderr.write("  boom  " + "x".repeat(600)); process.exit(2);',
+		);
+		const results = checkProjectTypecheckClean(tmp);
+		const message = nonNull(results[0]).message;
+		expect(message).toContain("Raw output: boom  ");
+		expect(message).not.toContain("  boom");
+		expect(message).not.toContain("x".repeat(501));
+		expect(message).toHaveLength(
+			"Project typecheck (typecheck:stable) failed (exit 2) but no TS diagnostics parsed. Raw output: ".length + 500,
+		);
+	});
+
+	// test-contract: boundary — an undispatchable local compiler is an audited warning, not a false clean result
 	it("reports 'could not run' when spawnSync itself fails (non-executable local-tsc binary)", () => {
 		// Drive the local-tsc discovery path with a binary file that has no
 		// execute bit — spawnSync then sets `result.error` (EACCES) rather
@@ -254,12 +399,18 @@ describe("checkProjectTypecheckClean", () => {
 		});
 		const results = checkProjectTypecheckClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(nonNull(results[0]).name).toBe("project_typecheck_failed_to_run");
-		expect(nonNull(results[0]).severity).toBe("warning");
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0])).toMatchObject({
+			source: "structural",
+			name: "project_typecheck_failed_to_run",
+			severity: "warning",
+			determinism: "fully_deterministic",
+		});
 		expect(nonNull(results[0]).message).toContain("could not run");
 		expect(nonNull(results[0]).message).toContain("Verify CI manually");
 	});
 
+	// test-contract: public-api — terminated typechecks expose the signal cause in the stable warning message
 	it("reports 'exceeded timeout' when the child process is terminated by a signal", () => {
 		// spawnSync sets `status: null` + `signal: "SIGTERM"` both on a real
 		// timeout AND whenever the child is killed by that signal for any
@@ -280,6 +431,7 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exceeded");
 		expect(nonNull(results[0]).message).toContain("timeout");
+		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
 	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
@@ -294,6 +446,45 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).name).toBe("project_typecheck_timed_out");
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exit 143");
+	});
+
+	it("classifies the signal base exit code itself as terminated", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { "typecheck:stable": 'node -e "process.exit(128)"' } }),
+		);
+		const results = checkProjectTypecheckClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0])).toEqual({
+			source: "structural",
+			name: "project_typecheck_timed_out",
+			severity: "warning",
+			message: "Project typecheck (typecheck:stable) exceeded 60s timeout or was terminated (exit 128). Verify CI manually.",
+			determinism: "fully_deterministic",
+		});
+	});
+
+	// test-contract: boundary — compiler diagnostics emitted only on stderr remain parsed as diagnostics, not downgraded to raw output
+	it("parses diagnostics emitted on stderr when stdout is empty", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable":
+						'node -e "console.error(\\"src/stderr.ts(4,2): error TS7006: implicit any.\\");process.exit(1)"',
+				},
+			}),
+		);
+		expect(checkProjectTypecheckClean(tmp)).toEqual([
+			{
+				source: "structural",
+				name: "project_typecheck_clean",
+				severity: "error",
+				message: "src/stderr.ts:4:2 — TS7006: implicit any.",
+				file: "src/stderr.ts",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 });
 
@@ -311,6 +502,12 @@ describe("resolveTestCommand", () => {
 
 	it("returns null when no test script is declared (gate stays inert)", () => {
 		writeFileSync(join(tmp, "package.json"), JSON.stringify({ name: "no-test-repo" }));
+		expect(resolveTestCommand(tmp)).toBeNull();
+	});
+
+	// test-contract: boundary — a null scripts field is treated as an absent test command without throwing
+	it("returns null when package scripts is explicitly null", () => {
+		writeFileSync(join(tmp, "package.json"), JSON.stringify({ scripts: null }));
 		expect(resolveTestCommand(tmp)).toBeNull();
 	});
 
@@ -369,6 +566,24 @@ describe("parseTestFailures", () => {
 		expect(failures).toHaveLength(1);
 		expect(failures[0]).toContain("foo > bar > baz");
 	});
+
+	it("requires the failure marker at the start of a line and trims its message", () => {
+		const out = [
+			"noise FAIL suite > embedded",
+			" FAIL suite > actual   ",
+			"status: ✗ suite > embedded too",
+		].join("\n");
+		expect(parseTestFailures(out)).toEqual(["suite > actual"]);
+	});
+
+	// test-contract: boundary — the documented failure marker requires whitespace before the test name and tolerates padding
+	it("requires marker whitespace while accepting multiple spaces", () => {
+		const out = [
+			"×  suite > padded 4ms",
+			"×suite > missing separator",
+		].join("\n");
+		expect(parseTestFailures(out)).toEqual(["suite > padded 4ms"]);
+	});
 });
 
 describe("checkProjectTestsClean", () => {
@@ -377,13 +592,21 @@ describe("checkProjectTestsClean", () => {
 		expect(checkProjectTestsClean(tmp)).toEqual([]);
 	});
 
+	// test-contract: public-api — an audited test bypass is a warning finding with stable structural metadata
 	it("emits a skipped warning (not error) when bypassed via env var", () => {
 		process.env.INTERLINKED_SKIP_PROJECT_TESTS = "1";
 		const results = checkProjectTestsClean(tmp);
 		expect(results).toHaveLength(1);
-		expect(nonNull(results[0]).name).toBe("project_tests_skipped");
-		expect(nonNull(results[0]).severity).toBe("warning");
-		expect(nonNull(results[0]).message).toContain("INTERLINKED_SKIP_PROJECT_TESTS");
+		expect(results).toEqual([
+			{
+				source: "structural",
+				name: "project_tests_skipped",
+				severity: "warning",
+				message:
+					"Project test gate bypassed via INTERLINKED_SKIP_PROJECT_TESTS=1. Verify CI manually before merging.",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 
 	it("returns empty when the test script exits 0", () => {
@@ -406,11 +629,22 @@ describe("checkProjectTestsClean", () => {
 			}),
 		);
 		const results = checkProjectTestsClean(tmp);
-		expect(results).toHaveLength(2);
-		expect(results.every((r) => r.severity === "error")).toBe(true);
-		expect(results.every((r) => r.name === "project_tests_clean")).toBe(true);
-		expect(nonNull(results[0]).message).toContain("suite > test 1");
-		expect(nonNull(results[1]).message).toContain("suite > test 2");
+		expect(results).toEqual([
+			{
+				source: "structural",
+				name: "project_tests_clean",
+				severity: "error",
+				message: "suite > test 1 4ms",
+				determinism: "fully_deterministic",
+			},
+			{
+				source: "structural",
+				name: "project_tests_clean",
+				severity: "error",
+				message: "suite > test 2 6ms",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 
 	it("surfaces unparseable failure output rather than silently allowing", () => {
@@ -430,6 +664,64 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).message).toContain("vitest crashed");
 	});
 
+	it("reports an empty raw failure without inventing output and caps failures at 10", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(2)"' } }),
+		);
+		const empty = checkProjectTestsClean(tmp);
+		expect(empty).toHaveLength(1);
+		expect(nonNull(empty[0])).toEqual({
+			source: "structural",
+			name: "project_tests_clean",
+			severity: "error",
+			message: "Project tests (npm-test) failed (exit 2) but no failure list parsed. Raw tail: ",
+			determinism: "fully_deterministic",
+		});
+
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					test: "node emit-many.js",
+				},
+			}),
+		);
+		writeFileSync(
+			join(tmp, "emit-many.js"),
+			"for (let i = 1; i <= 11; i++) console.log(` × suite > test ${i}`); process.exit(1);",
+		);
+		const many = checkProjectTestsClean(tmp);
+		expect(many).toHaveLength(10);
+		expect(nonNull(many[0]).message).toBe("suite > test 1");
+		expect(nonNull(many[9]).message).toBe("suite > test 10");
+		expect(many.some((r) => r.message === "suite > test 11")).toBe(false);
+	});
+
+	it("trims and truncates unparseable stderr in the fallback message", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					test: "node emit-raw.js",
+				},
+			}),
+		);
+		writeFileSync(
+			join(tmp, "emit-raw.js"),
+			'process.stderr.write("  boom  " + "x".repeat(600)); process.exit(2);',
+		);
+		const results = checkProjectTestsClean(tmp);
+		const message = nonNull(results[0]).message;
+		expect(message).toContain("Raw tail: boom  ");
+		expect(message).not.toContain("  boom");
+		expect(message).not.toContain("x".repeat(501));
+		expect(message).toHaveLength(
+			"Project tests (npm-test) failed (exit 2) but no failure list parsed. Raw tail: ".length + 500,
+		);
+	});
+
+	// test-contract: boundary — an undispatchable test runner is an audited warning, not a false clean result
 	it("reports 'could not run' when spawnSync itself fails to launch npm", () => {
 		// resolveTestCommand always resolves to the `npm` binary, so to force
 		// spawnSync's own `result.error` (ENOENT) rather than a script
@@ -443,8 +735,10 @@ describe("checkProjectTestsClean", () => {
 		try {
 			const results = checkProjectTestsClean(tmp);
 			expect(results).toHaveLength(1);
+			expect(nonNull(results[0]).source).toBe("structural");
 			expect(nonNull(results[0]).name).toBe("project_tests_failed_to_run");
 			expect(nonNull(results[0]).severity).toBe("warning");
+			expect(nonNull(results[0]).determinism).toBe("fully_deterministic");
 			expect(nonNull(results[0]).message).toContain("could not run");
 			expect(nonNull(results[0]).message).toContain("Verify CI manually");
 		} finally {
@@ -452,6 +746,7 @@ describe("checkProjectTestsClean", () => {
 		}
 	});
 
+	// test-contract: public-api — terminated test runs expose the signal cause in the stable warning message
 	it("reports 'exceeded timeout' when the test process is terminated by a signal", () => {
 		// Same rationale as the typecheck gate's SIGTERM test: spawnSync's
 		// timeout kill and a same-signal external kill look identical in the
@@ -469,6 +764,7 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exceeded");
 		expect(nonNull(results[0]).message).toContain("timeout");
+		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
 	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
@@ -481,5 +777,21 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).name).toBe("project_tests_timed_out");
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exit 143");
+	});
+
+	it("classifies the signal base exit code itself as terminated", () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(128)"' } }),
+		);
+		const results = checkProjectTestsClean(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0])).toEqual({
+			source: "structural",
+			name: "project_tests_timed_out",
+			severity: "warning",
+			message: "Project tests (npm-test) exceeded 300s timeout or was terminated (exit 128). Verify CI manually.",
+			determinism: "fully_deterministic",
+		});
 	});
 });

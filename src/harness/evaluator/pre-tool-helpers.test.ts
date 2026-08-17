@@ -46,6 +46,7 @@ import {
 	getProjectSetupWarnings,
 	getSupermodelCallContext,
 	getSupermodelGraphWarning,
+	isGraphPredictionEnabled,
 	readGraphPredictionMode,
 	resetProjectSetupWarningsCache,
 	runTrajectoryDetector,
@@ -95,6 +96,11 @@ describe("containsSecrets", () => {
 		expect(containsSecrets("short")).toBe(false);
 	});
 
+	// test-contract: boundary — the public boolean wrapper remains false at the ten-character floor when no secret signature exists
+	it("returns false for a benign string exactly at the minimum length", () => {
+		expect(containsSecrets("0123456789")).toBe(false);
+	});
+
 	it("returns false for long benign content with no secret signature", () => {
 		expect(containsSecrets("const greeting = 'hello world, nothing secret here';")).toBe(false);
 	});
@@ -122,6 +128,12 @@ describe("readGraphPredictionMode", () => {
 		expect(readGraphPredictionMode(cfg)).toBe("shadow");
 	});
 
+	// test-contract: boundary — an empty persisted mode is invalid and must use the documented shadow default
+	it("defaults to shadow when the persisted mode is empty", () => {
+		const cfg = { harness: { graph_prediction: { mode: "" } } } as unknown as SharedConfig;
+		expect(readGraphPredictionMode(cfg)).toBe("shadow");
+	});
+
 	it.each(["shadow", "soft_gate", "enforced"] as const)(
 		"passes through the valid mode %s",
 		(mode) => {
@@ -129,6 +141,19 @@ describe("readGraphPredictionMode", () => {
 			expect(readGraphPredictionMode(cfg)).toBe(mode);
 		},
 	);
+});
+
+describe("isGraphPredictionEnabled", () => {
+	it("requires an explicit true boolean", () => {
+		expect(isGraphPredictionEnabled(null)).toBe(false);
+		expect(isGraphPredictionEnabled({} as SharedConfig)).toBe(false);
+		expect(
+			isGraphPredictionEnabled({ harness: { graph_prediction: { enabled: false } } } as unknown as SharedConfig),
+		).toBe(false);
+		expect(
+			isGraphPredictionEnabled({ harness: { graph_prediction: { enabled: true } } } as unknown as SharedConfig),
+		).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -240,6 +265,7 @@ describe("supermodel graph shard consumers", () => {
 		expect(getSupermodelGraphWarning(src, dir)).toBeNull();
 	});
 
+	// test-contract: public-api — HIGH-risk graph warnings preserve the exact domain/affects separators and five-item truncation format
 	it("formats a HIGH-risk warning with domains + affects (capped at 5, with ellipsis)", () => {
 		const affects = ["f1", "f2", "f3", "f4", "f5", "f6"].join(" · ");
 		const src = writeShard(
@@ -248,12 +274,11 @@ describe("supermodel graph shard consumers", () => {
 			`[impact]\nrisk HIGH\ndomains api · db\ndirect 7\ntransitive 12\naffects ${affects}\n`,
 		);
 		const out = getSupermodelGraphWarning(src, dir);
-		expect(out).toContain("HIGH-risk edit");
-		expect(out).toContain("across domains api · db");
-		expect(out).toContain("7 dependent file(s)");
-		expect(out).toContain("12 transitive");
-		expect(out).toContain("Affects: f1 · f2 · f3 · f4 · f5 · …");
-		expect(out).toContain("Confirm this is intentional.");
+		expect(out).toBe(
+			"[interlinked:supermodel-graph] hi.ts: HIGH-risk edit per .graph shard: " +
+				"7 dependent file(s), 12 transitive across domains api · db. " +
+				"Affects: f1 · f2 · f3 · f4 · f5 · …. Confirm this is intentional.",
+		);
 	});
 
 	it("formats a HIGH-risk warning with a short affects list (≤5, no ellipsis)", () => {
@@ -267,13 +292,15 @@ describe("supermodel graph shard consumers", () => {
 		expect(out).not.toContain("· …");
 	});
 
+	// test-contract: public-api — the HIGH warning's stable prefix and omission of absent optional clauses are user-visible output
 	it("formats a HIGH-risk warning without domains/affects clauses when both empty", () => {
 		// direct 0 → Supermodel omits affects; domains omitted too.
 		const src = writeShard("hi2", "ts", "[impact]\nrisk HIGH\ndirect 0\ntransitive 0\n");
 		const out = getSupermodelGraphWarning(src, dir);
-		expect(out).toContain("HIGH-risk edit");
-		expect(out).not.toContain("across domains");
-		expect(out).not.toContain("Affects:");
+		expect(out).toBe(
+			"[interlinked:supermodel-graph] hi2.ts: HIGH-risk edit per .graph shard: " +
+				"0 dependent file(s), 0 transitive. Confirm this is intentional.",
+		);
 	});
 
 	it("formats a MEDIUM-risk warning with domains + affects (capped at 3, with ellipsis)", () => {
@@ -301,18 +328,48 @@ describe("supermodel graph shard consumers", () => {
 		expect(out).not.toContain("· …");
 	});
 
+	// test-contract: public-api — the MEDIUM warning's exact no-optional-fields rendering is consumed by hook output
 	it("formats a MEDIUM-risk warning without optional clauses (no domains, no affects)", () => {
 		const src = writeShard("med2", "ts", "[impact]\nrisk MEDIUM\ndirect 0\ntransitive 0\n");
 		const out = getSupermodelGraphWarning(src, dir);
-		expect(out).toContain("0 dependent file(s)");
-		expect(out).not.toContain("across ");
-		expect(out).not.toContain("Affects:");
+		expect(out).toBe("[interlinked:supermodel-graph] med2.ts: 0 dependent file(s).");
 	});
 
 	it("uses the absolute source path when cwd is omitted", () => {
 		const src = writeShard("abs", "ts", "[impact]\nrisk MEDIUM\ndirect 1\ntransitive 1\n");
 		const out = getSupermodelGraphWarning(src);
 		expect(out).toContain(src);
+	});
+
+	it("falls back to the source path when cwd equals the source path", () => {
+		const src = writeShard("same-path", "ts", "[impact]\nrisk MEDIUM\ndirect 1\ntransitive 1\n");
+		// relative(src, src) is the empty string; the warning must still name
+		// the edited source rather than rendering an empty location.
+		expect(getSupermodelGraphWarning(src, src)).toContain(src);
+	});
+
+	it("does not append an ellipsis at the exact HIGH affects cap", () => {
+		const affects = ["a", "b", "c", "d", "e"].join(" · ");
+		const src = writeShard(
+			"hi-boundary",
+			"ts",
+			`[impact]\nrisk HIGH\ndirect 1\ntransitive 1\naffects ${affects}\n`,
+		);
+		const out = getSupermodelGraphWarning(src, dir);
+		expect(out).toContain("Affects: a · b · c · d · e.");
+		expect(out).not.toContain("· …");
+	});
+
+	it("does not append an ellipsis at the exact MEDIUM affects cap", () => {
+		const affects = ["a", "b", "c"].join(" · ");
+		const src = writeShard(
+			"med-boundary",
+			"ts",
+			`[impact]\nrisk MEDIUM\ndirect 1\ntransitive 1\naffects ${affects}\n`,
+		);
+		const out = getSupermodelGraphWarning(src, dir);
+		expect(out).toContain("Affects: a · b · c.");
+		expect(out).not.toContain("· …");
 	});
 
 	// --- getSupermodelCallContext ---
@@ -344,6 +401,26 @@ describe("supermodel graph shard consumers", () => {
 		expect(out).toContain("ripples to every caller");
 	});
 
+	it("ranks a higher-count function before an earlier lower-count function", () => {
+		const src = writeShard(
+			"rank-reversed",
+			"ts",
+			"[calls]\nbaz ← c src/c.ts:3\nfoo ← a src/a.ts:1\nfoo ← b src/b.ts:2\n",
+		);
+		const out = getSupermodelCallContext(src, dir)!;
+		expect(out.indexOf("foo (2 callers)")).toBeLessThan(out.indexOf("baz (1 caller)"));
+	});
+
+	it("separates ranked caller entries with a comma and space", () => {
+		const src = writeShard(
+			"rank-separator",
+			"ts",
+			"[calls]\nfoo ← a src/a.ts:1\nbaz ← b src/b.ts:2\n",
+		);
+		const out = getSupermodelCallContext(src, dir)!;
+		expect(out).toContain("foo (1 caller), baz (1 caller)");
+	});
+
 	it("call context: caps the function list at 5 and appends a (+N more) suffix", () => {
 		// Six distinct functions, each with one caller site (6 total sites ≥ 2).
 		const lines = ["f1", "f2", "f3", "f4", "f5", "f6"]
@@ -355,6 +432,20 @@ describe("supermodel graph shard consumers", () => {
 		expect(out).not.toContain("f6 (");
 	});
 
+	// test-contract: boundary — the call-context cap emits all five entries and no synthetic suffix at the exact boundary
+	it("does not append a more suffix at exactly five functions", () => {
+		const lines = ["f1", "f2", "f3", "f4", "f5"]
+			.map((fn, i) => `${fn} ← caller src/s.ts:${i + 1}`)
+			.join("\n");
+		const src = writeShard("cap-boundary", "ts", `[calls]\n${lines}\n`);
+		const out = getSupermodelCallContext(src, dir)!;
+		expect(out).toBe(
+			"[interlinked:supermodel-graph] cap-boundary.ts: call graph per .graph shard — " +
+				"5 caller site(s) into 5 function(s): f1 (1 caller), f2 (1 caller), " +
+				"f3 (1 caller), f4 (1 caller), f5 (1 caller). Changing these signatures ripples to every caller.",
+		);
+	});
+
 	it("call context: uses absolute source path when cwd omitted", () => {
 		const src = writeShard(
 			"absc",
@@ -363,6 +454,15 @@ describe("supermodel graph shard consumers", () => {
 		);
 		const out = getSupermodelCallContext(src);
 		expect(out).toContain(src);
+	});
+
+	it("call context falls back to the source path when cwd equals the source path", () => {
+		const src = writeShard(
+			"absc-same-path",
+			"ts",
+			"[calls]\nfoo ← a src/a.ts:1\nfoo ← b src/b.ts:2\n",
+		);
+		expect(getSupermodelCallContext(src, src)).toContain(src);
 	});
 });
 
@@ -393,13 +493,30 @@ describe("getPreToolUseDiagnostics", () => {
 		expect(getPreToolUseDiagnostics(f, dir, qc)).toEqual([]);
 	});
 
+	it("accepts .js and rejects a diagnostic-looking suffix that is not terminal", () => {
+		const js = join(dir, "script.js");
+		writeFileSync(js, "const x = 1;");
+		diagnosticsToReturn = [
+			{ tool: "tsc", severity: "error", file: "script.js", line: 1, message: "problem" },
+		];
+		expect(getPreToolUseDiagnostics(js, dir, qc)).toHaveLength(3);
+
+		const backup = join(dir, "script.ts.bak");
+		writeFileSync(backup, "const x = 1;");
+		expect(getPreToolUseDiagnostics(backup, dir, qc)).toEqual([]);
+	});
+
 	it("returns [] when the file does not exist", () => {
 		expect(getPreToolUseDiagnostics(join(dir, "ghost.ts"), dir, qc)).toEqual([]);
 	});
 
+	// test-contract: boundary — diagnostics are opt-in and must stay silent when quality checks are absent, even if the engine has findings
 	it("returns [] when qualityChecks is undefined", () => {
 		const f = join(dir, "a.ts");
 		writeFileSync(f, "const x = 1;");
+		diagnosticsToReturn = [
+			{ tool: "tsc", severity: "error", file: "a.ts", line: 1, message: "must stay hidden" },
+		];
 		expect(getPreToolUseDiagnostics(f, dir, undefined)).toEqual([]);
 	});
 
@@ -410,6 +527,7 @@ describe("getPreToolUseDiagnostics", () => {
 		expect(getPreToolUseDiagnostics(f, dir, qc)).toEqual([]);
 	});
 
+	// test-contract: public-api — tsc diagnostics use the singular header, unprefixed row, and documented remediation footer
 	it("formats a single tsc diagnostic (singular noun, no biome prefix)", () => {
 		const f = join(dir, "one.ts");
 		writeFileSync(f, "const x: string = 1;");
@@ -417,10 +535,11 @@ describe("getPreToolUseDiagnostics", () => {
 			{ tool: "tsc", severity: "error", file: "one.ts", line: 1, message: "Type 'number' not assignable" },
 		];
 		const out = getPreToolUseDiagnostics(f, dir, qc);
-		expect(out[0]).toContain("has 1 existing issue:");
-		expect(out.some((l) => l.includes("one.ts(1): Type 'number' not assignable"))).toBe(true);
-		expect(out.some((l) => l.includes("biome:"))).toBe(false);
-		expect(out[out.length - 1]).toContain("Fix these while editing");
+		expect(out).toEqual([
+			"[interlinked:diagnostics] one.ts has 1 existing issue:",
+			"  one.ts(1): Type 'number' not assignable",
+			"→ Fix these while editing this file.",
+		]);
 	});
 
 	it("formats multiple diagnostics (plural) and prefixes biome rows", () => {
@@ -434,6 +553,15 @@ describe("getPreToolUseDiagnostics", () => {
 		expect(out[0]).toContain("has 2 existing issues:");
 		expect(out.some((l) => l.includes("biome: many.ts(3): biome problem"))).toBe(true);
 		expect(out.some((l) => l.includes("many.ts(2): tsc problem"))).toBe(true);
+	});
+
+	it("uses the full file path when the relative diagnostic path is empty", () => {
+		const f = join(dir, "same-path.ts");
+		writeFileSync(f, "const x = 1;");
+		diagnosticsToReturn = [
+			{ tool: "tsc", severity: "error", file: "same-path.ts", line: 1, message: "problem" },
+		];
+		expect(getPreToolUseDiagnostics(f, f, qc)[0]).toContain(`${f} has 1 existing issue:`);
 	});
 
 	it("caps the rendered diagnostics list at 10", () => {
@@ -491,6 +619,35 @@ describe("getProjectSetupWarnings", () => {
 		const second = getProjectSetupWarnings(dir);
 		expect(second).toEqual(first);
 	});
+
+	// test-contract: invariant — invalidating a stale warning cache leaves subsequent clean calls clean, not a reset sentinel
+	it("reset clears stale setup warnings for every following clean call", () => {
+		mkdirSync(join(dir, ".claude"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "settings.json"), "{ broken ");
+		expect(getProjectSetupWarnings(dir).length).toBeGreaterThan(0);
+		rmSync(join(dir, ".claude", "settings.json"), { force: true });
+
+		resetProjectSetupWarningsCache();
+		expect(getProjectSetupWarnings(dir)).toEqual([]);
+		expect(getProjectSetupWarnings(dir)).toEqual([]);
+	});
+
+	// test-contract: public-api — a fresh helper module must inspect setup state on its first public call
+	it("checks setup on the first call in a fresh module instance", async () => {
+		vi.resetModules();
+		const freshHelpers = await import("./pre-tool-helpers.js");
+		mkdirSync(join(dir, ".claude"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "settings.json"), "{ broken ");
+		expect(freshHelpers.getProjectSetupWarnings(dir)[0]).toContain("[interlinked:setup]");
+	});
+
+	// test-contract: invariant — a fresh helper module's clean setup cache remains empty across repeated public calls
+	it("keeps a clean cache empty in a fresh module instance", async () => {
+		vi.resetModules();
+		const freshHelpers = await import("./pre-tool-helpers.js");
+		expect(freshHelpers.getProjectSetupWarnings(dir)).toEqual([]);
+		expect(freshHelpers.getProjectSetupWarnings(dir)).toEqual([]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -504,8 +661,11 @@ describe("runTrajectoryDetector", () => {
 		return { harness } as unknown as SharedConfig;
 	}
 
-	it("returns [] when no trajectory feature flag is enabled (null config → defaults off)", () => {
-		expect(runTrajectoryDetector(makeEvent(), makeSession(), null)).toEqual([]);
+	// test-contract: invariant — dark-shipped trajectory flags must not even instantiate per-session detector state
+	it("returns [] without instantiating a detector when no trajectory feature flag is enabled", () => {
+		const session = makeSession();
+		expect(runTrajectoryDetector(makeEvent(), session, null)).toEqual([]);
+		expect(session.trajectoryDetector).toBeUndefined();
 	});
 
 	it("lazy-instantiates the detector and returns [] when no pattern fires on a single event", () => {
@@ -551,6 +711,116 @@ describe("runTrajectoryDetector", () => {
 		const session = makeSession();
 		const ev = makeEvent({ hook_event: "PostToolUseFailure", tool_name: "", tool_input: {} });
 		expect(() => runTrajectoryDetector(ev, session, cfgWith(["unbackedoff_retry"]))).not.toThrow();
+	});
+
+	function at(ms: number): string {
+		return new Date(Date.parse(FIXED_TS) + ms).toISOString();
+	}
+
+	function outputs(flags: string[] | null, events: HarnessEvent[]): string[] {
+		const session = makeSession();
+		const config = flags === null ? null : cfgWith(flags);
+		return events.flatMap((event) => runTrajectoryDetector(event, session, config));
+	}
+
+	function toolLoopEvents(tool_name = "Bash"): HarnessEvent[] {
+		return Array.from({ length: 6 }, (_, i) =>
+			makeEvent({ timestamp: at(i * 1_000), tool_name, tool_input: { command: "npm test" } }),
+		);
+	}
+
+	function destructiveEvents(): HarnessEvent[] {
+		return [
+			makeEvent({ timestamp: at(0), tool_input: { command: "rm -rf build" } }),
+			makeEvent({ timestamp: at(5_000), tool_input: { command: "mkdir build" } }),
+			makeEvent({ timestamp: at(10_000), tool_input: { command: "rm -rf build" } }),
+		];
+	}
+
+	function retryEvents(): HarnessEvent[] {
+		return Array.from({ length: 4 }, (_, i) =>
+			makeEvent({
+				timestamp: at(i * 1_000),
+				hook_event: "PostToolUseFailure",
+				tool_input: { command: "npm test" },
+			}),
+		);
+	}
+
+	function stallEvents(): HarnessEvent[] {
+		return [
+			makeEvent({ timestamp: at(0) }),
+			makeEvent({ timestamp: at(11 * 60_000) }),
+		];
+	}
+
+	it("keeps all dark trajectory patterns off when no flags are enabled", () => {
+		expect(outputs(null, toolLoopEvents())).toEqual([]);
+		expect(outputs(null, destructiveEvents())).toEqual([]);
+		expect(outputs(null, retryEvents())).toEqual([]);
+		expect(outputs(null, stallEvents())).toEqual([]);
+	});
+
+	it("enables and filters each trajectory pattern independently", () => {
+		expect(outputs(["tool_loop"], toolLoopEvents()).join(" ")).toContain("looping on Bash;");
+		expect(outputs(["destructive_sequence"], destructiveEvents()).join(" ")).toContain("destructive cycle");
+		expect(outputs(["unbackedoff_retry"], retryEvents()).join(" ")).toContain("retries without backoff");
+		expect(outputs(["silent_stall"], stallEvents()).join(" ")).toContain("idle for 11m");
+	});
+
+	it("preserves an empty tool name and does not coerce it to a sentinel", () => {
+		const out = outputs(["tool_loop"], toolLoopEvents(""));
+		expect(out.join(" ")).toContain("looping on ;");
+		expect(out.join(" ")).not.toContain("looping on true;");
+		expect(out.join(" ")).not.toContain("looping on false;");
+	});
+
+	it("preserves PostToolUse so a successful write breaks a read loop", () => {
+		const repeatedRead = (timestamp: string): HarnessEvent =>
+			makeEvent({ timestamp, tool_name: "Read", tool_input: { file_path: "/a.ts" } });
+		const events: HarnessEvent[] = [
+			repeatedRead(at(0)),
+			repeatedRead(at(1_000)),
+			repeatedRead(at(2_000)),
+			makeEvent({
+				timestamp: at(3_000),
+				hook_event: "PostToolUse",
+				tool_name: "Write",
+				tool_input: { file_path: "/a.ts" },
+			}),
+			repeatedRead(at(4_000)),
+			repeatedRead(at(5_000)),
+			repeatedRead(at(6_000)),
+		];
+		expect(outputs(["tool_loop"], events)).toEqual([]);
+	});
+
+	// test-contract: boundary — non-trajectory hook events normalize to PreToolUse so ordinary calls participate in loop detection
+	it("normalizes an unrelated hook event to PreToolUse", () => {
+		const events = toolLoopEvents().map((event) => ({ ...event, hook_event: "SkillEnter" as const }));
+		expect(outputs(["tool_loop"], events).join(" ")).toContain(
+			"[interlinked:trajectory] looping on Bash; consider checking state externally",
+		);
+	});
+
+	it("does not leak an unenabled finding when one event sequence triggers two patterns", () => {
+		// Six PreToolUse calls establish a loop; the trailing failures establish
+		// an unbacked retry at the same observation, so both patterns coexist.
+		const loopAndRetry = outputs(
+			["tool_loop"],
+			[
+				...toolLoopEvents(),
+				...Array.from({ length: 3 }, (_, i) =>
+					makeEvent({
+						timestamp: at((6 + i) * 1_000),
+						hook_event: "PostToolUseFailure",
+						tool_input: { command: "npm test" },
+					}),
+				),
+			],
+		);
+		expect(loopAndRetry.join(" ")).toContain("looping on Bash;");
+		expect(loopAndRetry.join(" ")).not.toContain("retries without backoff");
 	});
 });
 

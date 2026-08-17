@@ -161,7 +161,13 @@ describe("registerQualityCommands — structure", () => {
 			// single-file pipeline `measure` uses (`measureOneFile`), so the
 			// RED-suite pre-flight exists once. Sequential per box; `--shard i/n`
 			// is how a fleet splits the list with no coordinator.
-			["accept", "baseline", "check", "measure", "survivors", "sweep"].sort(),
+			// `disposition` (2026-08-15, plan 18 M0) is the WRITE verb for the durable
+			// disposition sidecar ledger (.interlinked/mutation-dispositions.json) — a
+			// sidecar, NOT the manifest, because a re-measure rebuilds every MutantRecord
+			// and drops its disposition (plan 18 §1.3). Records dead_code/unresolved
+			// without touching status; supports --list / --show; monotonic under
+			// baseline_integrity_gate so a hand-added record is blocked (§1.4).
+			["accept", "baseline", "check", "disposition", "measure", "survivors", "sweep"].sort(),
 		);
 	});
 

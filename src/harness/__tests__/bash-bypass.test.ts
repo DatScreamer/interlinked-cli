@@ -1,7 +1,7 @@
 // Tests for detectBashCodeFileWrite — the shell-redirect bypass detector.
 // Ensures agents can't route around the content-quality gate by using Bash.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { detectBashCodeFileWrite, resolveBashWriteTarget } from "../pre-checks.js";
 
 describe("detectBashCodeFileWrite", () => {
@@ -375,5 +375,333 @@ describe("root confinement — braced-variable-with-default cd targets (2026-07-
 	it("resolveBashWriteTarget expands the colon-dash default end-to-end", () => {
 		const cmd = 'cd "${ILK_UNSET_ZZZ:-/t}/a" && echo x > f.ts';
 		expect(resolveBashWriteTarget(cmd, "f.ts", ROOT)).toBe("/t/a/f.ts");
+	});
+});
+
+// ===========================================================================
+// Mutation-kill hardening (fleet-r2 wave): exact-behavior boundary cases for
+// pre-checks-bash-write-detect.ts, each proven against a shadow-mutated copy
+// of the module (scratch/probes/r2-bwd-driver.mts + r2-bwd-equivalence-fuzz.mts).
+// Grouped by which internal function's boundary they pin.
+// ===========================================================================
+
+describe("withinGuardedRoot boundary: target resolves to the root itself", () => {
+	it("P: a write target equal to the project root path IS in-root (abs === root, not just startsWith)", () => {
+		// Root's own name happens to carry a code extension so it can be a
+		// write target in its own right — pins the `abs === root` disjunct
+		// (as opposed to only `abs.startsWith(root + sep)`).
+		const hit = detectBashCodeFileWrite("echo x > /repo.ts", "/repo.ts");
+		expect(hit?.target).toBe("/repo.ts");
+		expect(hit?.mechanism).toContain("shell redirect");
+	});
+});
+
+describe("resolveTargetForRootCheck boundary: bare ~ resolves to the REAL home dir", () => {
+	const ROOT = "/Users/dev/project";
+
+	it("N: `cd ~` (bare tilde, no trailing content) escapes the root — not a literal '~' subdir", () => {
+		// A bare "~" must take the `expanded === "~"` branch (home-dir
+		// resolution), not fall through to being resolved as a literal
+		// relative path segment under the previous base.
+		expect(detectBashCodeFileWrite("cd ~ && echo x > note.ts", ROOT)).toBeNull();
+	});
+});
+
+describe("resolveVariableValue boundary: a defined-but-empty value must not win over a fallback", () => {
+	const ROOT = "/Users/dev/project";
+
+	it("P: X=\"\" with a colon-dash default uses the DEFAULT, not the empty assignment", () => {
+		const hit = detectBashCodeFileWrite('X="" && echo bad > ${X:-fallback}/f.ts', ROOT);
+		expect(hit?.target).toBe("${X:-fallback}/f.ts");
+	});
+
+	it("N: an empty colon-dash default (${VAR:-}) is unresolvable, not a usable empty value", () => {
+		expect(resolveBashWriteTarget("", "${ILK_UNSET_EMPTY:-}/f.ts", ROOT)).toBeNull();
+	});
+});
+
+describe("expandLeadingVariable boundary: both regexes require the match at the START", () => {
+	const ROOT = "/Users/dev/project";
+
+	it("a $VAR reference NOT at the start of the target is a literal, not expanded", () => {
+		// If the leading-variable regex loses its `^` anchor it would find
+		// "$SOMEVAR" mid-string and slice(m[0].length) from the WRONG offset.
+		expect(resolveBashWriteTarget("", "prefix$SOMEVAR.ts", ROOT)).toBe(
+			"/Users/dev/project/prefix$SOMEVAR.ts",
+		);
+	});
+
+	it("a literal ${...} appearing later in the target (not at the start) is not 'unresolvable'", () => {
+		// Pins the fallback regex's `^` anchor: only a target that STARTS
+		// with "${" is an unmodeled braced form; one that merely CONTAINS
+		// "${" later is just a literal path.
+		expect(resolveBashWriteTarget("", "abc${x}/f.ts", ROOT)).toBe(
+			"/Users/dev/project/abc${x}/f.ts",
+		);
+	});
+
+	it("${VAR} with NO colon-dash default still resolves via the braced alternative", () => {
+		// The (?::-...)? group is OPTIONAL — a braced ref with no default must
+		// still match, not require a default to be present.
+		expect(resolveBashWriteTarget("MYVAR=inside", "${MYVAR}/f.ts", ROOT)).toBe(
+			"/Users/dev/project/inside/f.ts",
+		);
+	});
+});
+
+describe("collectShellAssignments boundary: HOME/TMPDIR seeding + the assignment regex", () => {
+	const ROOT = "/Users/dev/project";
+	let prevHome: string | undefined;
+	let prevTmpdir: string | undefined;
+
+	beforeEach(() => {
+		prevHome = process.env.HOME;
+		prevTmpdir = process.env.TMPDIR;
+	});
+
+	afterEach(() => {
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		if (prevTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = prevTmpdir;
+	});
+
+	it("seeds $HOME from the process environment into the same-command variable map", () => {
+		process.env.HOME = "/synthetic/home/for/test";
+		expect(resolveBashWriteTarget("", "$HOME/x.ts", ROOT)).toBe(
+			"/synthetic/home/for/test/x.ts",
+		);
+	});
+
+	it("seeds $TMPDIR from the process environment into the same-command variable map", () => {
+		process.env.TMPDIR = "/synthetic/tmp/for/test";
+		expect(resolveBashWriteTarget("", "$TMPDIR/y.ts", ROOT)).toBe(
+			"/synthetic/tmp/for/test/y.ts",
+		);
+	});
+
+	it("an assignment preceded by a plain space (not at string start) is still recognized", () => {
+		expect(resolveBashWriteTarget("pre X=val", "$X/f.ts", ROOT)).toBe(
+			"/Users/dev/project/val/f.ts",
+		);
+	});
+
+	it("a multi-character double-quoted assignment value is captured in full, not truncated to 1 char", () => {
+		expect(resolveBashWriteTarget('X="hello world"', "$X.ts", ROOT)).toBe(
+			"/Users/dev/project/hello world.ts",
+		);
+	});
+
+	it("a multi-character single-quoted assignment value is captured in full, not truncated to 1 char", () => {
+		expect(resolveBashWriteTarget("X='hello world'", "$X.ts", ROOT)).toBe(
+			"/Users/dev/project/hello world.ts",
+		);
+	});
+});
+
+describe("resolveCdBase boundary: spacing and quoting around cd / --", () => {
+	const ROOT = "/Users/dev/project";
+	const SCRATCHPAD = "/private/tmp/claude-501/-Users-dev-project/sess-1/scratchpad";
+
+	it("N: extra spaces between `cd` and its target don't break recognition", () => {
+		const cmd = `cd  ${SCRATCHPAD} && echo x > probe.ts`;
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("N: extra spaces after a `--` separator don't break recognition", () => {
+		const cmd = `cd --  ${SCRATCHPAD} && echo x > probe.ts`;
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("N: a single space after `--` (the standard form) is recognized", () => {
+		const cmd = `cd -- ${SCRATCHPAD} && echo x > probe.ts`;
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("N: a single-quoted multi-character cd target resolves fully, not just its first char", () => {
+		const cmd = `cd '${SCRATCHPAD}' && echo x > probe.ts`;
+		expect(detectBashCodeFileWrite(cmd, ROOT)).toBeNull();
+	});
+
+	it("an unresolvable cd target poisons the base (relative writes after it are NOT in-root)", () => {
+		expect(detectBashCodeFileWrite("cd $UNKNOWN_CD_VAR && echo x > p.ts", ROOT)).toBeNull();
+	});
+
+	it("a later resolvable cd re-establishes the base after an unresolvable one", () => {
+		const hit = detectBashCodeFileWrite(
+			`cd $UNKNOWN_CD_VAR && cd ${ROOT}/src && echo x > p.ts`,
+			ROOT,
+		);
+		expect(hit?.target).toBe("p.ts");
+	});
+});
+
+describe("stripQuotedStrings boundary: the whole quoted span must be blanked, not one char", () => {
+	it("N: a `>` inside a real multi-character double-quoted string is still hidden from redirect scanning", () => {
+		// If the quote-blanking regex only matched a single interior char, a
+		// multi-char quoted string with a trailing space before the closing
+		// quote would leave a bogus inner '>' visible, producing a phantom hit.
+		expect(detectBashCodeFileWrite('echo "note > x.ts " > log.txt')).toBeNull();
+	});
+
+	it("N: same, for a single-quoted string", () => {
+		expect(detectBashCodeFileWrite("echo 'note > x.ts ' > log.txt")).toBeNull();
+	});
+});
+
+describe("tee / inline-interpreter boundary: \\s+ must absorb MULTIPLE spaces, not just one", () => {
+	it("tee with two spaces before the target is still recognized", () => {
+		expect(detectBashCodeFileWrite("echo x | tee  src/t.ts")?.mechanism).toBe("tee");
+	});
+
+	it("tee -a with two spaces before the target is still recognized", () => {
+		expect(detectBashCodeFileWrite("echo x | tee -a  src/t.ts")?.mechanism).toBe("tee");
+	});
+
+	it("tee --append with two spaces before the target is still recognized", () => {
+		expect(detectBashCodeFileWrite("echo x | tee --append  src/t.ts")?.mechanism).toBe("tee");
+	});
+
+	it("tee -- with two spaces before the target is still recognized", () => {
+		expect(detectBashCodeFileWrite("echo x | tee --  src/t.ts")?.mechanism).toBe("tee");
+	});
+
+	it("tee -- with a single space (the standard form) is recognized", () => {
+		expect(detectBashCodeFileWrite("echo x | tee -- src/t.ts")?.mechanism).toBe("tee");
+	});
+
+	it("inline interpreter: two spaces after the interpreter name is still recognized", () => {
+		const hit = detectBashCodeFileWrite(
+			`node  -e "require('fs').writeFileSync('dbl92.ts', 'x')"`,
+		);
+		expect(hit?.target).toBe("dbl92.ts");
+	});
+
+	it("inline interpreter: two spaces after a leading flag is still recognized", () => {
+		const hit = detectBashCodeFileWrite(
+			`node --experimental-vm-modules  -e "require('fs').writeFileSync('flag97.ts','x')"`,
+		);
+		expect(hit?.target).toBe("flag97.ts");
+	});
+
+	it("inline interpreter: two spaces after -e (before the quote) is still recognized", () => {
+		const hit = detectBashCodeFileWrite(`node -e  "require('fs').writeFileSync('flag100.ts','x')"`);
+		expect(hit?.target).toBe("flag100.ts");
+	});
+
+	it("a bare `python` (no trailing 3) is recognized, not just `python3`", () => {
+		const hit = detectBashCodeFileWrite(`python -c "open('gen2.py','w').write('x')"`);
+		expect(hit?.target).toBe("gen2.py");
+	});
+
+	it("N: a flag other than -e/-c does not trigger inline-interpreter detection", () => {
+		expect(
+			detectBashCodeFileWrite(`node -x "require('fs').writeFileSync('out.ts', 'x')"`),
+		).toBeNull();
+	});
+
+	it("a leading flag before -e is skipped correctly (repeated-flag group matches)", () => {
+		const hit = detectBashCodeFileWrite(
+			`node --experimental-vm-modules -e "require('fs').writeFileSync('flagged.ts', 'x')"`,
+		);
+		expect(hit?.target).toBe("flagged.ts");
+	});
+});
+
+describe("detectBashCodeFileWrite boundary: nullish input + content-gate must not leak", () => {
+	it("N: a nullish command does not throw and returns null (defensive `!cmd` guard)", () => {
+		const detect = detectBashCodeFileWrite as unknown as (c: unknown) => unknown;
+		expect(() => detect(null)).not.toThrow();
+		expect(detect(null)).toBeNull();
+		expect(() => detect(undefined)).not.toThrow();
+		expect(detect(undefined)).toBeNull();
+	});
+
+	it("N: once CONTENT_GATE_ROUTED_RE matches, the WHOLE command is allowed — even with a real redirect tacked on", () => {
+		// `interlinked write` self-gates the ENTIRE command line; a later
+		// `&& echo bad > src/other.ts` on the same line must NOT be scanned.
+		expect(
+			detectBashCodeFileWrite(
+				"interlinked write src/foo.ts --from-file /tmp/new.ts && echo bad > src/other.ts",
+			),
+		).toBeNull();
+	});
+
+	it("N: two spaces between 'interlinked' and 'write' still satisfies the \\s+ gate", () => {
+		expect(
+			detectBashCodeFileWrite(
+				"interlinked  write src/foo.ts --from-file /tmp/new.ts && echo bad > src/other2.ts",
+			),
+		).toBeNull();
+	});
+
+	it("a redirect target with NO space after `>` is still parsed as a bare target", () => {
+		const hit = detectBashCodeFileWrite("echo x >a.ts");
+		expect(hit?.target).toBe("a.ts");
+	});
+});
+
+describe("detectFileMoveToProtected boundary: path-prefixed verb + bare .graph shard", () => {
+	it("a verb invoked via an absolute path (/bin/cp) still resolves to its basename", () => {
+		// Pins the `.split(\"/\").pop() ?? args[0]` fallback direction: pop()
+		// on a non-empty split never returns null/undefined, so the ENTIRE
+		// path must never leak through as the "verb".
+		const hit = detectBashCodeFileWrite("/bin/cp /tmp/a.txt src/dst2.ts");
+		expect(hit?.target).toBe("src/dst2.ts");
+		expect(hit?.mechanism).toContain("cp");
+	});
+
+	it("N: a bare `.graph` with no extra extension segment does NOT match SHARD_FILE_RE's optional group turned mandatory", () => {
+		// If `(\\.[a-zA-Z0-9]+)?` lost its `?`, a bare ".graph" (no further
+		// ".ext") would stop matching entirely.
+		const hit = detectBashCodeFileWrite("cp /tmp/x src/bare.graph");
+		expect(hit?.target).toBe("src/bare.graph");
+	});
+
+	it("N: a lookalike extension (.graphite) is NOT a Supermodel shard", () => {
+		expect(detectBashCodeFileWrite("cp /tmp/x src/foo.graphite")).toBeNull();
+	});
+
+	it("N: a `dd`-lookalike word (ddx) does not trigger dd detection", () => {
+		expect(detectBashCodeFileWrite("ddx if=/tmp/src of=out.ts")).toBeNull();
+	});
+
+	it("N: a `sed`-lookalike word (sedX) does not trigger sed -i detection", () => {
+		expect(detectBashCodeFileWrite("sedX -i 's/a/b/' src/edit.ts")).toBeNull();
+	});
+
+	it("a sed invoked via an absolute path is still recognized ($ anchor on the name check)", () => {
+		const hit = detectBashCodeFileWrite("/usr/bin/sed -i 's/a/b/' src/edit.ts");
+		expect(hit?.target).toBe("src/edit.ts");
+	});
+
+	it("N: `tee` with no target at all resolves to no hit", () => {
+		expect(detectBashCodeFileWrite("echo x | tee")).toBeNull();
+	});
+});
+
+describe("splitShellWordsLoose boundary: an escaped char inside quotes must not fragment the word at a space", () => {
+	it("a double-quoted word with an escaped quote, followed by a real space, parses as ONE token", () => {
+		// If the double-quote escape-alternative (\\[\\s\\S]) can't match the
+		// escaped char, the parser falls back to a bare \\S+ token that stops
+		// at the first internal space — fragmenting one destination into two
+		// tokens and losing the trailing ".ts" from the reported target.
+		const hit = detectBashCodeFileWrite('cp /tmp/src.txt "a\\"b c.ts"');
+		expect(hit?.target).toBe('a\\"b c.ts');
+	});
+
+	it("a double-quoted word with an escaped SPACE, followed by a real space, parses as ONE token", () => {
+		const hit = detectBashCodeFileWrite('cp /tmp/src.txt "a\\ b.ts"');
+		expect(hit?.target).toBe("a\\ b.ts");
+	});
+
+	it("a single-quoted word with an escaped SPACE, followed by a real space, parses as ONE token", () => {
+		const hit = detectBashCodeFileWrite("cp /tmp/src.txt 'a\\ b.ts'");
+		expect(hit?.target).toBe("a\\ b.ts");
+	});
+
+	it("a single-quoted word with an escaped LETTER, followed by a real space, parses as ONE token", () => {
+		const hit = detectBashCodeFileWrite("cp /tmp/src.txt 'a\\xb c.ts'");
+		expect(hit?.target).toBe("a\\xb c.ts");
 	});
 });

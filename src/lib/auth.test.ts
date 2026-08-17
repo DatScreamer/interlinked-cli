@@ -64,6 +64,7 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 // ---- imports (after mocks) ------------------------------------------------
 
 import { existsSync, readFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	performLogin,
 	resolveAuthToken,
@@ -215,6 +216,17 @@ describe("resolveAuthToken", () => {
 		expect(resolveAuthToken()).toBeNull();
 	});
 
+	it("treats a CLI token expiring at this instant as expired", () => {
+		vi.useFakeTimers();
+		const now = new Date("2026-08-13T12:00:00.000Z");
+		vi.setSystemTime(now);
+		resolveConfigMock.mockReturnValue(
+			cfg({ access_token: "at-the-boundary", token_expires_at: now.toISOString() }),
+		);
+
+		expect(resolveAuthToken()).toBeNull();
+	});
+
 	it("returns null when there is no CLI token and no credentials file", () => {
 		resolveConfigMock.mockReturnValue(cfg());
 		expect(resolveAuthToken()).toBeNull();
@@ -317,6 +329,7 @@ describe("Claude Code credential fallback (readClaudeCodeToken)", () => {
 		readFileSyncMock.mockReturnValue(
 			JSON.stringify({
 				mcpOAuth: {
+					il_number: 42,
 					il_bad1: null,
 					il_bad2: { serverName: "interlinked" }, // no accessToken
 					il_bad3: { accessToken: 123 }, // wrong type
@@ -325,6 +338,20 @@ describe("Claude Code credential fallback (readClaudeCodeToken)", () => {
 			}),
 		);
 		expect(resolveAuthToken()).toBe("good");
+	});
+
+	it("does not let a missing prefix select an unrelated entry before a named match", () => {
+		resolveConfigMock.mockReturnValue(cfg());
+		readFileSyncMock.mockReturnValue(
+			JSON.stringify({
+				mcpOAuth: {
+					unrelated: { accessToken: "wrong", serverName: "GitHub" },
+					linked: { accessToken: "right", serverName: "Interlinked Cloud" },
+				},
+			}),
+		);
+
+		expect(resolveAuthToken()).toBe("right");
 	});
 });
 
@@ -364,13 +391,26 @@ describe("credential expiry parsing", () => {
 		expect(tokenFromEntry({ expiry: Date.now() + 600_000 })).toBe("tok");
 	});
 
+	it("expires an epoch-milliseconds value from the recent past", () => {
+		expect(tokenFromEntry({ expiry: Date.now() - 600_000 })).toBeNull();
+	});
+
 	it("parses a numeric string as epoch seconds", () => {
 		const secs = String(Math.floor(Date.now() / 1000) + 600);
 		expect(tokenFromEntry({ tokenExpiresAt: secs })).toBe("tok");
 	});
 
+	it("expires a numeric string containing a past epoch", () => {
+		const secs = String(Math.floor(Date.now() / 1000) - 600);
+		expect(tokenFromEntry({ tokenExpiresAt: secs })).toBeNull();
+	});
+
 	it("parses an ISO date string — future = valid", () => {
 		expect(tokenFromEntry({ expires_at: futureIso() })).toBe("tok");
+	});
+
+	it("expires an ISO date string from the past", () => {
+		expect(tokenFromEntry({ expires_at: pastIso() })).toBeNull();
 	});
 
 	it("ignores an empty / whitespace string expiry (treats as no expiry)", () => {
@@ -403,6 +443,22 @@ describe("credential expiry parsing", () => {
 		// 1e300 is finite, so it passes the guard, but new Date(1e300) is an
 		// Invalid Date → the NaN side of the ternary returns null → not expired.
 		expect(tokenFromEntry({ expiry: 1e300 })).toBe("tok");
+	});
+
+	it("treats credential expiry exactly at now as expired", () => {
+		vi.useFakeTimers();
+		const now = new Date("2026-08-13T12:00:00.000Z");
+		vi.setSystemTime(now);
+		expect(tokenFromEntry({ exp: now.toISOString() })).toBeNull();
+	});
+
+	it("distinguishes the epoch-seconds/milliseconds cutoff at exactly 1e12", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(1_000_000_000_000));
+		// Exactly 1e12 is interpreted as epoch seconds by the strict `>` check,
+		// producing an invalid date and therefore no expiry. A `>=` mutant
+		// interprets it as milliseconds and expires it at the current instant.
+		expect(tokenFromEntry({ exp: 1_000_000_000_000 })).toBe("tok");
 	});
 });
 
@@ -444,6 +500,25 @@ describe("credential path home-dir resolution", () => {
 		});
 		expect(resolveAuthToken()).toBeNull();
 	});
+
+	it("reads the expected Claude credentials path and UTF-8 encoding", () => {
+		resolveConfigMock.mockReturnValue(cfg());
+		process.env.HOME = "/home/tester";
+		process.env.USERPROFILE = "/ignored-profile";
+		existsSyncMock.mockReturnValue(true);
+		readFileSyncMock.mockReturnValue(
+			JSON.stringify({ mcpOAuth: { e: { accessToken: "tok", serverName: "interlinked" } } }),
+		);
+
+		expect(resolveAuthToken()).toBe("tok");
+		expect(existsSyncMock).toHaveBeenCalledWith(
+			"/home/tester/.claude/.credentials.json",
+		);
+		expect(readFileSyncMock).toHaveBeenCalledWith(
+			"/home/tester/.claude/.credentials.json",
+			"utf-8",
+		);
+	});
 });
 
 // ===========================================================================
@@ -468,6 +543,20 @@ describe("resolveAuthTokenWithRefresh", () => {
 			cfg({ access_token: "weird", token_expires_at: "garbage" }),
 		);
 		await expect(resolveAuthTokenWithRefresh()).resolves.toBe("weird");
+	});
+
+	it("treats a token exactly five seconds from now as expired for skew safety", async () => {
+		vi.useFakeTimers();
+		const now = new Date("2026-08-13T12:00:00.000Z");
+		vi.setSystemTime(now);
+		resolveConfigMock.mockReturnValue(
+			cfg({
+				access_token: "near-expiry",
+				token_expires_at: new Date(now.getTime() + 5_000).toISOString(),
+			}),
+		);
+
+		await expect(resolveAuthTokenWithRefresh()).resolves.toBeNull();
 	});
 
 	it("refreshes an expired token, persists it, and returns the new token", async () => {
@@ -496,6 +585,10 @@ describe("resolveAuthTokenWithRefresh", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
 		expect(url).toBe("https://override/token");
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			"Content-Type": "application/x-www-form-urlencoded",
+		});
 		const body = (init.body as URLSearchParams).toString();
 		expect(body).toContain("grant_type=refresh_token");
 		expect(body).toContain("refresh_token=rt");
@@ -627,7 +720,7 @@ describe("saveLoginTokens", () => {
 		saveLoginTokens({ access_token: "only" });
 		const updates = nonNull(updateLocalConfigMock.mock.calls[0])[0] as Record<string, unknown>;
 		expect(updates).toHaveProperty("access_token", "only");
-		expect(updates.token_expires_at).toBeUndefined();
+		expect(updates).toHaveProperty("token_expires_at", undefined);
 		expect(updates).not.toHaveProperty("oauth_client_id");
 		expect(updates).not.toHaveProperty("refresh_token");
 	});
@@ -698,11 +791,42 @@ describe("performLogin", () => {
 
 		// success page rendered + server closed.
 		expect(res.statusCode).toBe(200);
+		expect(res.headers).toEqual({ "Content-Type": "text/html" });
 		expect(res.body).toContain("Authentication successful");
 		expect(httpState.server?.closed).toBe(true);
 
 		// Browser launched via spawn (darwin/win32/linux all route to spawn).
 		expect(spawnMock).toHaveBeenCalledTimes(1);
+		expect(createHash).toHaveBeenCalledWith("sha256");
+		expect(randomBytes).toHaveBeenNthCalledWith(1, 32);
+		expect(randomBytes).toHaveBeenNthCalledWith(2, 16);
+		const browserCall = nonNull(spawnMock.mock.calls[0]) as unknown as [string, string[], unknown];
+		const browserUrl = String(nonNull(browserCall[1])[0]);
+		const authorize = new URL(browserUrl);
+		expect(authorize.searchParams.get("response_type")).toBe("code");
+		expect(authorize.searchParams.get("client_id")).toBe("dyn-client");
+		expect(authorize.searchParams.get("redirect_uri")).toMatch(
+			/^http:\/\/localhost:\d+\/callback$/,
+		);
+		expect(authorize.searchParams.get("code_challenge")).toBe("STUBCHALLENGE");
+		expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+		expect(authorize.searchParams.get("state")).toBe(expectedState);
+		expect(authorize.searchParams.get("resource")).toBe("https://oauth.example");
+		expect(logSpy).toHaveBeenCalledWith("\nOpening browser for authentication...");
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("If the browser doesn't open, visit:\n  "),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Waiting for callback on http://localhost:54321...",
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"This localhost port is temporary and expected for OAuth redirect handling.",
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Keep this terminal open while you finish login in the browser (timeout: 5 minutes).",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Press Ctrl+C to cancel.\n");
+		expect(httpState.server?.listenArgs?.slice(0, 2)).toEqual([0, "127.0.0.1"]);
 
 		// register POST shape.
 		const registerCall = fetchMock.mock.calls.find((c) =>
@@ -713,6 +837,12 @@ describe("performLogin", () => {
 		expect(regBody).toMatchObject({
 			client_name: "Interlinked CLI",
 			token_endpoint_auth_method: "none",
+			grant_types: ["authorization_code"],
+			response_types: ["code"],
+		});
+		expect(registerCall![1]).toMatchObject({
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
 		});
 		expect(regBody.redirect_uris[0]).toMatch(/^http:\/\/localhost:\d+\/callback$/);
 
@@ -724,7 +854,13 @@ describe("performLogin", () => {
 		expect(tokBody).toContain("grant_type=authorization_code");
 		expect(tokBody).toContain("code=THECODE");
 		expect(tokBody).toContain("client_id=dyn-client");
-		expect(tokBody).toContain("code_verifier=");
+		expect(tokBody).toContain(
+			`code_verifier=${encodeURIComponent(Buffer.alloc(32, 7).toString("base64url"))}`,
+		);
+		expect(tokenCall![1]).toMatchObject({
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		});
 
 		logSpy.mockRestore();
 	});
@@ -776,6 +912,7 @@ describe("performLogin", () => {
 		);
 		await expect(promise).rejects.toThrow(/OAuth error: access_denied — nope/);
 		expect(res.statusCode).toBe(200);
+		expect(res.headers).toEqual({ "Content-Type": "text/html" });
 		expect(res.body).toContain("Authentication failed");
 	});
 
@@ -815,6 +952,7 @@ describe("performLogin", () => {
 		const res = await hitCallback("/callback?state=anything");
 		await expect(promise).rejects.toThrow("No authorization code received");
 		expect(res.statusCode).toBe(400);
+		expect(res.headers).toEqual({ "Content-Type": "text/html" });
 		expect(res.body).toContain("Missing authorization code");
 	});
 
@@ -825,6 +963,7 @@ describe("performLogin", () => {
 		// Hit an unrelated path → 404, flow still pending.
 		const res404 = await hitCallback("/favicon.ico");
 		expect(res404.statusCode).toBe(404);
+		expect(res404.headers).toBeUndefined();
 		expect(res404.body).toBe("Not found");
 		// Now complete normally so the promise settles (no dangling handle).
 		const expectedState = Buffer.alloc(16, 7).toString("hex");
@@ -883,13 +1022,19 @@ describe("startCallbackServer edges (via performLogin)", () => {
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ client_id: "c" })));
 		const login = performLogin("https://oauth.example");
+		let settled = false;
+		void login.catch(() => {
+			settled = true;
+		});
 		// Attach the rejection handler up front so the 5-minute timer's reject is
 		// never momentarily unhandled (it fires inside advanceTimersByTimeAsync).
 		const assertion = expect(login).rejects.toThrow("Login timed out after 5 minutes");
 		// Let the register fetch + wiring settle under fake timers.
 		await vi.advanceTimersByTimeAsync(1);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(settled).toBe(false);
 		// Trip the 5-minute timer.
-		await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+		await vi.advanceTimersByTimeAsync(4 * 60 * 1000 + 1);
 		await assertion;
 		expect(httpState.server?.closed).toBe(true);
 	});

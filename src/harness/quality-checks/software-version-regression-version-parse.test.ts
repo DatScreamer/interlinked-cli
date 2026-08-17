@@ -25,6 +25,22 @@ describe("looksLikeModelIdentifier", () => {
 	it("returns false when the matched model token itself ends in a non-model extension", () => {
 		expect(looksLikeModelIdentifier("see claude-3.5.json for details")).toBe(false);
 	});
+
+	it("recognizes a model token after ordinary prose whitespace", () => {
+		expect(looksLikeModelIdentifier("the configured model is claude-opus-4")).toBe(true); // REAL_WORLD_VERSION_FIXTURE_OK — exact Anthropic family token tests whitespace-delimited model recognition.
+	});
+
+	it("does not treat a model-looking token after an unsupported delimiter as an identifier", () => {
+		expect(looksLikeModelIdentifier("[claude-opus-4]")).toBe(false); // REAL_WORLD_VERSION_FIXTURE_OK — exact Anthropic family token tests rejection after an unsupported delimiter.
+	});
+
+	it("rejects every supported source-file extension, including yml", () => {
+		expect(looksLikeModelIdentifier("claude-3.5.yml")).toBe(false);
+	});
+
+	it("rejects punctuation in the model family before its required version digit", () => {
+		expect(looksLikeModelIdentifier("claude-!4")).toBe(false);
+	});
 });
 
 describe("classifyGenericKind", () => {
@@ -46,6 +62,10 @@ describe("classifyGenericKind", () => {
 
 	it("classifies as generic when neither key nor value match anything", () => {
 		expect(classifyGenericKind("field", "hello world")).toBe("generic");
+	});
+
+	it("does not classify a key with an unsupported separator as an API version", () => {
+		expect(classifyGenericKind("apiXversion", "1.2.3")).toBe("generic");
 	});
 });
 
@@ -171,6 +191,86 @@ describe("isVersionRegression", () => {
 			),
 		).toBe(false);
 	});
+
+	it("compares date versions by year, month, and day", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "2024-06-15", kind: "api_version", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "2024-06-14", kind: "api_version", line: 1, text: "a" },
+			),
+		).toBe(true);
+	});
+
+	it("accepts an underscore or hyphen as either date separator", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "2024_06-15", kind: "api_version", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "2024_06-14", kind: "api_version", line: 1, text: "a" },
+			),
+		).toBe(true);
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "2024-06_15", kind: "api_version", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "2024-06_14", kind: "api_version", line: 1, text: "a" },
+			),
+		).toBe(true);
+	});
+
+	it("handles the end-of-month day branch and two-digit month branch", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "2024-12-31", kind: "api_version", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "2024-12-30", kind: "api_version", line: 1, text: "a" },
+			),
+		).toBe(true);
+	});
+
+	it("does not let digits before a provider alter the provider-tail ordering", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "1234567claude-2", kind: "model", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "claude-2", kind: "model", line: 1, text: "a" },
+			),
+		).toBe(false);
+	});
+
+	it("treats a two-digit model major as a single numeric part", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "claude-9", kind: "model", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "claude-10", kind: "model", line: 1, text: "a" },
+			),
+		).toBe(false);
+	});
+
+	it("ignores model parts after the four supported comparison components", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "claude-1-2-3-4-5", kind: "model", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "claude-1-2-3-4-4", kind: "model", line: 1, text: "a" },
+			),
+		).toBe(false);
+	});
+
+	it("does not treat a generic named version as a model without a provider", () => {
+		expect(looksComparable("widget-9", "generic")).toBe(false);
+	});
+
+	it("keeps multi-digit named-model components intact", () => {
+		expect(looksComparable("2-widget", "model")).toBe(true);
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "1-12-widget", kind: "model", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "1-11-widget", kind: "model", line: 1, text: "a" },
+			),
+		).toBe(true);
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "1-2-12-widget", kind: "model", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "1-2-11-widget", kind: "model", line: 1, text: "a" },
+			),
+		).toBe(true);
+	});
 });
 
 describe("looksComparable", () => {
@@ -205,6 +305,33 @@ describe("looksComparable", () => {
 		// parser itself still yields nothing).
 		expect(looksComparable("claude", "model")).toBe(false);
 	});
+
+	it("accepts compact calendar dates", () => {
+		expect(looksComparable("20240615")).toBe(true);
+	});
+
+	it("requires a complete numeric version rather than a numeric prefix", () => {
+		expect(looksComparable("1.2.3!")).toBe(false);
+	});
+
+	it("accepts whitespace and stacked range operators around numeric versions", () => {
+		expect(looksComparable("  >=1.2.3 ")).toBe(true);
+	});
+
+	it("preserves multi-digit minor and patch components", () => {
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "1.2.34", kind: "generic", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "1.2.33", kind: "generic", line: 1, text: "a" },
+			),
+		).toBe(true);
+		expect(
+			isVersionRegression(
+				{ anchor: "a", label: "a", version: "1.12.3", kind: "generic", line: 1, text: "a" },
+				{ anchor: "a", label: "a", version: "1.11.3", kind: "generic", line: 1, text: "a" },
+			),
+		).toBe(true);
+	});
 });
 
 describe("modelProviderOf / modelFamilyOf", () => {
@@ -226,6 +353,24 @@ describe("modelProviderOf / modelFamilyOf", () => {
 
 	it("returns undefined when stripping leaves nothing", () => {
 		expect(modelFamilyOf("4-7")).toBeUndefined();
+	});
+
+	it("strips a multi-digit version as a whole", () => {
+		expect(modelFamilyOf("widget-12")).toBe("widget");
+		expect(modelFamilyOf("widget-1-12")).toBe("widget");
+	});
+
+	it("does not strip a version-like sequence in the middle of a name", () => {
+		expect(modelFamilyOf("widget-9-1-suffix-extra")).toBe("widget-9-1-suffix-extra");
+	});
+
+	it("strips all trailing separators after removing a version", () => {
+		expect(modelFamilyOf("widget-9---")).toBe("widget-9");
+	});
+
+	it("allows a letter suffix without requiring an extra separator", () => {
+		expect(modelFamilyOf("widget-9x")).toBe("widget");
+		expect(modelFamilyOf("widget-9-x")).toBe("widget");
 	});
 });
 

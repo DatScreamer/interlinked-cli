@@ -27,13 +27,26 @@ describe("parseGrepCommand — flag classification", () => {
 		expect(result?.caseInsensitive).toBe(true);
 	});
 
+	it("P3a: --ignore-case is the long form of -i (must fire)", () => {
+		expect(parseGrepCommand("rg --ignore-case foo")?.caseInsensitive).toBe(true);
+	});
+
 	it("P4: -F / --fixed-strings sets isRegex false (must fire)", () => {
 		expect(parseGrepCommand("rg -F foo")?.isRegex).toBe(false);
 		expect(parseGrepCommand("rg --fixed-strings foo")?.isRegex).toBe(false);
 	});
 
+	it("P4a: -e / --regexp both select the following pattern (must fire)", () => {
+		expect(parseGrepCommand("rg --regexp foo")?.pattern).toBe("foo");
+	});
+
 	it("N1: an unmodeled flag declines to null (must not fire / correctly declines)", () => {
 		expect(parseGrepCommand("rg -v foo")).toBeNull();
+		// The unsafe token must decline even when positionals were collected
+		// before it; otherwise a mutated decline branch can return a partial
+		// parse instead of falling through to native grep.
+		expect(parseGrepCommand("rg foo -v")).toBeNull();
+		expect(parseGrepCommand("rg foo -e")).toBeNull();
 	});
 });
 
@@ -69,6 +82,7 @@ describe("parseGrepCommand — -e / --regexp pattern-from-flag", () => {
 describe("parseGrepCommand — positional resolution (non-flag pattern)", () => {
 	it("N4: zero positionals declines (must not fire)", () => {
 		expect(parseGrepCommand("rg")).toBeNull();
+		expect(parseGrepCommand('rg ""')).toBeNull();
 	});
 
 	it("N5: more than two positionals declines (must not fire)", () => {
@@ -109,6 +123,11 @@ describe("parseGrepCommand — `--` end-of-flags marker", () => {
 describe("parseGrepCommand — shell operator detection (quoting-aware)", () => {
 	it("N6: an unquoted pipe declines (compound command) (must not fire)", () => {
 		expect(parseGrepCommand("rg foo | wc -l")).toBeNull();
+		expect(parseGrepCommand("rg 'foo' | wc -l")).toBeNull();
+		expect(parseGrepCommand('rg "foo" | wc -l')).toBeNull();
+		for (const operator of [";", "&", ">", "<", "$", "`", "(", ")", "{", "}", "\n"]) {
+			expect(parseGrepCommand(`rg foo ${operator} echo`)).toBeNull();
+		}
 	});
 
 	it("P10: a backslash-escaped pipe outside quotes is literal, not an operator (must fire)", () => {
@@ -129,6 +148,15 @@ describe("parseGrepCommand — shell operator detection (quoting-aware)", () => 
 		});
 	});
 
+	it("P11a: a closed single quote separates the next positional (must fire)", () => {
+		expect(parseGrepCommand("rg 'foo' bar")).toEqual({
+			pattern: "foo",
+			isRegex: true,
+			caseInsensitive: false,
+			path: "bar",
+		});
+	});
+
 	it("P12: plain double-quoted content with no escapes parses normally (must fire)", () => {
 		const result = parseGrepCommand('rg "foobar" file.ts');
 		expect(result).toEqual({
@@ -137,6 +165,10 @@ describe("parseGrepCommand — shell operator detection (quoting-aware)", () => 
 			caseInsensitive: false,
 			path: "file.ts",
 		});
+	});
+
+	it("P12a: shell operators inside double quotes remain pattern text (must fire)", () => {
+		expect(parseGrepCommand('rg "foo|bar"')?.pattern).toBe("foo|bar");
 	});
 
 	it("P13: a backslash-escaped quote inside double quotes stays literal (must fire)", () => {
@@ -177,11 +209,46 @@ describe("parseGrepCommand — tokenizer backslash handling", () => {
 			path: "file.ts",
 		});
 	});
+
+	it("P16a: a tab separates pattern and path like a space (must fire)", () => {
+		expect(parseGrepCommand("rg foo\tfile.ts")).toEqual({
+			pattern: "foo",
+			isRegex: true,
+			caseInsensitive: false,
+			path: "file.ts",
+		});
+	});
+
+	it("P16b: an unterminated double-quoted trailing backslash stays literal (must fire)", () => {
+		expect(parseGrepCommand('rg "foo\\')).toEqual({
+			pattern: "foo\\",
+			isRegex: true,
+			caseInsensitive: false,
+		});
+	});
 });
 
 describe("parseGrepCommand — command recognition", () => {
 	it("N7: a non-grep command declines (must not fire)", () => {
 		expect(parseGrepCommand("ls -la")).toBeNull();
+		expect(parseGrepCommand("echo rg foo")).toBeNull();
+	});
+
+	it("P17a: surrounding command whitespace is trimmed before parsing (must fire)", () => {
+		expect(parseGrepCommand("  rg foo file.ts  ")).toEqual({
+			pattern: "foo",
+			isRegex: true,
+			caseInsensitive: false,
+			path: "file.ts",
+		});
+	});
+
+	it("P17b: a lone hyphen is a positional pattern, not a flag (must fire)", () => {
+		expect(parseGrepCommand("rg -")).toEqual({
+			pattern: "-",
+			isRegex: true,
+			caseInsensitive: false,
+		});
 	});
 
 	it("P17: an absolute-path-invoked ugrep binary is recognized (must fire)", () => {

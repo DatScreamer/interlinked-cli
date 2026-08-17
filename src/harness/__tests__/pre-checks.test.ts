@@ -515,6 +515,10 @@ describe("checkSelfKill + getProtectedPids", () => {
 		expect(result?.block).toContain("terminate this session");
 		// The ps ancestor-walk ran during cache build.
 		expect(execSyncMock).toHaveBeenCalled();
+		expect(execSyncMock).toHaveBeenCalledWith("ps -o pid=,ppid= -ax 2>/dev/null", {
+			encoding: "utf-8",
+			timeout: 2000,
+		});
 	});
 
 	it("blocks killing a planted ancestor PID (ancestor-walk populated the set)", () => {
@@ -569,6 +573,37 @@ describe("checkSelfKill + getProtectedPids", () => {
 			return "";
 		});
 		expect(checkSelfKill("kill 560")?.warning).toBeDefined();
+	});
+
+	it.each([
+		["bun", 565],
+		["deno", 566],
+	])("recognizes a live %s interpreter as a session process", (runtime, pid) => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes(`-p ${pid}`)) return `999 ${runtime} ${runtime} /x/interlinked/harness/server.js`;
+			return "";
+		});
+		expect(checkSelfKill(`kill ${pid}`)?.warning).toContain("another session");
+	});
+
+	it("does not classify a command mentioning Claude without a supported interpreter as live", () => {
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 567")) return "999 bash /tmp/claude-not-a-runtime-wrapper";
+			return "";
+		});
+		expect(checkSelfKill("kill 567")).toBeNull();
+	});
+
+	it("trims and limits the live-process preview before placing it in the warning", () => {
+		const raw = `999 node /x/interlinked ${" ".repeat(70)}TAIL`;
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("-p 568")) return raw;
+			return "";
+		});
+		const preview = raw.slice(0, 80).trim();
+		expect(checkSelfKill("kill 568")?.warning).toBe(
+			`PID 568 appears to be a live Claude Code or Interlinked process in another session (${preview}). Killing it will terminate that session — proceed only if intended.`,
+		);
 	});
 
 	it("returns null when an interpreter runs but the command is unrelated (no claude/interlinked)", () => {
@@ -831,6 +866,45 @@ describe("getProtectedPids ancestor-listing regex precision (cold module)", () =
 		expect(mod.checkSelfKill("kill 333333")?.block).toBeDefined();
 	});
 
+	it("does not protect PID 1 when the ancestor walk correctly stops at init", async () => {
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return [`${ppid} ${PLANTED}`, `${PLANTED} 1`, "1 0"].join("\n");
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill("kill 1")).toBeNull();
+	});
+
+	it("stops the ancestor walk at ten links rather than including an eleventh", async () => {
+		const chain = Array.from({ length: 11 }, (_, i) => `${i === 0 ? ppid : 700000 + i - 1} ${700000 + i}`);
+		chain.push("700010 1");
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) return chain.join("\n");
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill("kill 700010")).toBeNull();
+	});
+
+	it("parses leading whitespace in every ancestor-listing line", async () => {
+		vi.doMock("node:child_process", () => ({
+			execSync: vi.fn((cmd: string) => {
+				if (typeof cmd === "string" && cmd.includes("ps -o pid=,ppid= -ax")) {
+					return [`  ${ppid} ${PLANTED}`, `  ${PLANTED} 1`].join("\n");
+				}
+				return "";
+			}),
+		}));
+		const mod = await import("../pre-checks.js");
+		expect(mod.checkSelfKill(`kill ${PLANTED}`)?.block).toBeDefined();
+	});
+
 	afterAll(() => {
 		vi.resetModules();
 		vi.doUnmock("node:child_process");
@@ -875,6 +949,17 @@ describe("checkEnvLeakToGit", () => {
 		// execSync returning normally == exit 0 == file is ignored == safe.
 		execSyncMock.mockReturnValue("");
 		expect(checkEnvLeakToGit(".env", "API_KEY=supersecret", envDir)).toBeNull();
+	});
+
+	it("passes the absolute path and safety options to git check-ignore", () => {
+		execSyncMock.mockReturnValue("");
+		const abs = join(envDir, ".env");
+		expect(checkEnvLeakToGit(abs, "API_KEY=supersecret", envDir)).toBeNull();
+		expect(execSyncMock).toHaveBeenCalledWith(`git check-ignore --quiet "${abs}"`, {
+			cwd: envDir,
+			timeout: 2000,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
 	});
 
 	it("blocks when not gitignored and content has secret-like patterns", () => {
@@ -970,6 +1055,24 @@ describe("checkStaleBranch", () => {
 		});
 		const result = checkStaleBranch(staleDir, "sess-behind");
 		expect(result?.warning).toContain("120 commits behind main");
+		expect(execSyncMock).toHaveBeenCalledWith(
+			"git rev-parse --verify main 2>/dev/null && echo main || echo master",
+			{
+				cwd: staleDir,
+				timeout: 2000,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
+		expect(execSyncMock).toHaveBeenCalledWith(
+			"git rev-list --count HEAD..main 2>/dev/null",
+			{
+				cwd: staleDir,
+				timeout: 2000,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
 	});
 
 	it("returns null when behind count is within the threshold", () => {
@@ -1006,6 +1109,37 @@ describe("checkStaleBranch", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("refreshes exactly at the five-minute cache boundary", () => {
+		vi.useFakeTimers();
+		try {
+			mkdirSync(join(staleDir, ".git"), { recursive: true });
+			const fixedNow = new Date("2026-01-01T00:00:00.000Z").getTime();
+			vi.setSystemTime(fixedNow);
+			execSyncMock.mockImplementation((cmd: string) => {
+				if (cmd.includes("rev-parse")) return "main";
+				if (cmd.includes("rev-list")) return "120";
+				return "";
+			});
+			checkStaleBranch(staleDir, "sess-cache-boundary");
+			const callsAfterFirst = execSyncMock.mock.calls.length;
+			vi.advanceTimersByTime(5 * 60 * 1000);
+			checkStaleBranch(staleDir, "sess-cache-boundary");
+			expect(execSyncMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not warn at exactly the stale-branch threshold", () => {
+		mkdirSync(join(staleDir, ".git"), { recursive: true });
+		execSyncMock.mockImplementation((cmd: string) => {
+			if (cmd.includes("rev-parse")) return "main";
+			if (cmd.includes("rev-list")) return "50";
+			return "";
+		});
+		expect(checkStaleBranch(staleDir, "sess-threshold")).toBeNull();
 	});
 
 	it("returns null (catch path) when git rev-parse throws", () => {
@@ -1063,6 +1197,22 @@ describe("checkDirtyWorkingTree", () => {
 		expect(checkDirtyWorkingTree("git checkout main", dirtyCwd)).toBeNull();
 	});
 
+	it("trims whitespace-only git status output before deciding the tree is clean", () => {
+		execSyncMock.mockReturnValue(" \n\t");
+		expect(checkDirtyWorkingTree("git checkout main", dirtyCwd)).toBeNull();
+	});
+
+	it("passes the intended stdio and encoding options to git status", () => {
+		execSyncMock.mockReturnValue(" M one.ts");
+		checkDirtyWorkingTree("git checkout main", dirtyCwd);
+		expect(execSyncMock).toHaveBeenCalledWith("git status --porcelain 2>/dev/null", {
+			cwd: dirtyCwd,
+			timeout: 3000,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+	});
+
 	it("returns null (catch path) when git status throws", () => {
 		execSyncMock.mockImplementation(() => {
 			throw new Error("not a git repo");
@@ -1097,7 +1247,11 @@ describe("checkLargeFileWrite", () => {
 	it("warns for content over the 50KB threshold", () => {
 		const result = checkLargeFileWrite("x".repeat(51 * 1024));
 		expect(result?.warning).toContain("large-file");
-		expect(result?.warning).toContain("KB");
+		expect(result?.warning).toContain("51KB");
+	});
+
+	it("allows content exactly at the 50KB threshold", () => {
+		expect(checkLargeFileWrite("x".repeat(50 * 1024))).toBeNull();
 	});
 });
 
@@ -1185,6 +1339,26 @@ describe("checkConcurrentEdit", () => {
 		const result = checkConcurrentEdit(target, "me", sessions);
 		expect(result?.warning).toContain('"Reviewer"');
 		expect(result?.warning).toContain("concurrent-edit");
+	});
+
+	it("reports recent age in seconds, not milliseconds", () => {
+		vi.useFakeTimers();
+		try {
+			const fixedNow = new Date("2026-01-01T00:00:00.000Z").getTime();
+			vi.setSystemTime(fixedNow);
+			const exactRecent = new Date(fixedNow - 5_000).toISOString();
+			const sessions = [
+				makeSession({
+					id: "exact-age-session",
+					agentName: "Reviewer",
+					written: [target],
+					writeTimes: [[target, exactRecent]],
+				}),
+			];
+			expect(checkConcurrentEdit(target, "me", sessions)?.warning).toContain("5s ago");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("still warns when a write is EXACTLY at the 10-minute window boundary — ageMs > WINDOW excludes only STRICTLY older writes (L19/L328-329)", () => {

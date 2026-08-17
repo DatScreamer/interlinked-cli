@@ -86,6 +86,16 @@ describe("checkUnreachableCode", () => {
 		]);
 	});
 
+	it("does not treat an earlier ternary as an incomplete return", () => {
+		const content = [
+			"function f() {",
+			"  return condition ? left : right;",
+			"  doStuff();",
+			"}",
+		].join("\n");
+		expect(checkUnreachableCode(content, "f.ts")).toEqual([{ line: 3, text: "doStuff();" }]);
+	});
+
 	it("does not flag when the next non-empty line closes the block", () => {
 		const content = ["function f() {", "  if (x) {", "    return 1;", "  }", "}"].join("\n");
 		expect(checkUnreachableCode(content, "f.ts")).toEqual([]);
@@ -243,6 +253,27 @@ describe("checkUnreachableCode", () => {
 		const content = ["function f() {", "  return 1", "  after();", "}"].join("\n");
 		expect(checkUnreachableCode(content, "f.ts")).toEqual([]);
 	});
+
+	// test-contract: boundary — a multiline throw expression remains a continuation and must not report its following expression as unreachable
+	it("skips a throw statement continued via an open paren", () => {
+		const content = [
+			"function f() {",
+			"  throw (",
+			"    new Error('failure')",
+			"  );",
+			"  recover();",
+			"}",
+		].join("\n");
+		expect(checkUnreachableCode(content, "f.ts")).toEqual([]);
+	});
+
+	// test-contract: public-api — a completed throw statement reports the next same-indent statement as unreachable
+	it("flags a complete throw statement followed by same-indent code", () => {
+		const content = ["function f() {", "  throw error;", "  recover();", "}"].join("\n");
+		expect(checkUnreachableCode(content, "f.ts")).toEqual([
+			{ line: 3, text: "recover();" },
+		]);
+	});
 });
 
 // ===========================================================================
@@ -350,6 +381,13 @@ describe("checkSilentCatch", () => {
 			"}",
 		].join("\n");
 		expect(checkSilentCatch(content, "f.ts")).toEqual([]);
+	});
+
+	it("trims and truncates the reported empty-catch line", () => {
+		const content = `    } catch (e) {${" ".repeat(180)}}`;
+		expect(checkSilentCatch(content, "f.ts")).toEqual([
+			{ line: 1, text: content.trim().slice(0, 150) },
+		]);
 	});
 
 	it("recognizes the multi-line comment guard with no whitespace after `catch`", () => {
@@ -465,6 +503,25 @@ describe("checkAssertionFreeTests", () => {
 		expect(checkAssertionFreeTests(content, "thing.test.ts")).toEqual([]);
 	});
 
+	it("recognizes `.throws` with several spaces before the opening paren", () => {
+		const content = [
+			"it('does something', () => {",
+			"  expect(() => risky()).throws    ();",
+			"});",
+		].join("\n");
+		expect(checkAssertionFreeTests(content, "thing.test.ts")).toEqual([]);
+	});
+
+	// test-contract: public-api — the documented assert-style assertion keeps an otherwise assertion-free test from being reported
+	it("recognizes an assert call as a test assertion", () => {
+		const content = [
+			"it('checks the result', () => {",
+			"  assert(result);",
+			"});",
+		].join("\n");
+		expect(checkAssertionFreeTests(content, "thing.test.ts")).toEqual([]);
+	});
+
 	it("caps at 10 matches even when more than 10 assertion-free test blocks exist", () => {
 		const lines: string[] = [];
 		for (let i = 0; i < 15; i++) {
@@ -547,6 +604,16 @@ describe("checkTrivialAssertions", () => {
 		]);
 	});
 
+	// test-contract: boundary — indentation in a test source does not hide a tautological literal assertion from the public diagnostic
+	it("flags an indented tautological literal assertion", () => {
+		expect(checkTrivialAssertions("  expect(false).toBeFalsy();", "thing.test.ts")).toEqual([
+			{
+				line: 1,
+				text: "Tautological assertion: expect(false).toBeFalsy() always passes.",
+			},
+		]);
+	});
+
 	it("flags expect(x).toEqual(x) (not just .toBe) as tautological", () => {
 		const content = "expect(5).toEqual(5);";
 		expect(checkTrivialAssertions(content, "thing.test.ts")).toEqual([
@@ -598,6 +665,22 @@ describe("checkTrivialAssertions", () => {
 	it("returns [] for a plain assert(x) call on a non-literal", () => {
 		expect(checkTrivialAssertions("assert(x);", "thing.test.ts")).toEqual([]);
 	});
+
+	it.each([
+		"expect(true).toBe(true);",
+		"expect( true ).toBe( true );",
+		"expect(true) .toBe(true);",
+		"expect(true).toBe(true );",
+	])("flags literal equality despite matcher whitespace: %s", (content) => {
+		expect(checkTrivialAssertions(content, "thing.test.ts")).toHaveLength(1);
+	});
+
+	it.each(["assert (true);", "assert(true);", "assert(true );", "assert.ok (true);", "assert.ok(true);", "assert.ok(true );"])(
+		"flags tautological assert syntax: %s",
+		(content) => {
+			expect(checkTrivialAssertions(content, "thing.test.ts")).toHaveLength(1);
+		},
+	);
 });
 
 // ===========================================================================
@@ -830,6 +913,26 @@ describe("checkHardcodedCredentials", () => {
 		expect(checkHardcodedCredentials(content, "config.ts")).toEqual([]);
 	});
 
+	it.each(["password", "secret"])("skips the safe exact credential value %s", (value) => {
+		const content = `const apiKey = "${value}";`;
+		expect(checkHardcodedCredentials(content, "config.ts")).toEqual([]);
+	});
+
+	it("does not skip a descriptive-looking suffix unless it is at the end", () => {
+		const content = 'const passwordPatternValue = "realSecretValue";';
+		expect(checkHardcodedCredentials(content, "config.ts")).toEqual([{ line: 1, text: content }]);
+	});
+
+	it("does not skip a type-looking substring inside a real credential", () => {
+		const content = 'const apiKey = "realstringValue";';
+		expect(checkHardcodedCredentials(content, "config.ts")).toEqual([{ line: 1, text: content }]);
+	});
+
+	it("accepts an assignment with no whitespace after the equals sign", () => {
+		const content = 'const apiKey ="realSecretValue";';
+		expect(checkHardcodedCredentials(content, "config.ts")).toEqual([{ line: 1, text: content }]);
+	});
+
 	it("skips a vendored/fixture path even without a test-file name", () => {
 		const content = 'const apiKey = "realSecretValue123";';
 		expect(checkHardcodedCredentials(content, "vendor/config.ts")).toEqual([]);
@@ -908,6 +1011,50 @@ describe("checkInfiniteRecursion", () => {
 		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([
 			{ line: 3, text: "loop(n);" },
 		]);
+	});
+
+	// test-contract: boundary — a non-equality guard using != is still a visible base case and suppresses the recursion warning
+	it("recognizes a not-equal comparison as a recursion guard", () => {
+		const content = ["function loop(n) {", "  if (n != 0) return;", "  loop(n);", "}"].join(
+			"\n",
+		);
+		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([]);
+	});
+
+	it("does not treat a mid-line control word as a recursion guard", () => {
+		const content = [
+			"function loop(n) {",
+			"  doWork(); if (n) {}",
+			"  loop(n);",
+			"}",
+		].join("\n");
+		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([{ line: 3, text: "loop(n);" }]);
+	});
+
+	it("requires the ternary guard to have a following expression", () => {
+		const content = ["function loop(n) {", "  value ?n : fallback;", "  loop(n);", "}"].join("\n");
+		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([]);
+	});
+
+	it("does not flag recursion in a non-JS/TS file", () => {
+		const content = ["function loop() {", "  loop();", "}"].join("\n");
+		expect(checkInfiniteRecursion(content, "f.txt")).toEqual([]);
+	});
+
+	it("recognizes function declarations with multiple spaces", () => {
+		const content = ["function   loop() {", "  loop();", "}"].join("\n");
+		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([{ line: 2, text: "loop();" }]);
+	});
+
+	it.each([
+		["const with spaced declaration", "const   loop = (n) => {"],
+		["const without spaces around equals", "const loop= (n) => {"],
+		["const without spaces after equals", "const loop =(n) => {"],
+		["async arrow with multiple spaces", "const loop = async   (n) => {"],
+		["arrow with multiple parameters", "const loop = (n, m) => {"],
+	])("recognizes edge-case %s arrow recursion", (_label, defLine) => {
+		const content = [defLine, "  loop(n);", "}"].join("\n");
+		expect(checkInfiniteRecursion(content, "f.ts")).toEqual([{ line: 2, text: "loop(n);" }]);
 	});
 
 	it("recognizes the space-before-paren self-call form", () => {
@@ -990,6 +1137,33 @@ describe("checkSyncIoInAsync", () => {
 	it("does not flag a sync fs call outside any async function", () => {
 		const content = "function f() {\n  const x = readFileSync('a.txt');\n  return x;\n}";
 		expect(checkSyncIoInAsync(content, "f.ts")).toEqual([]);
+	});
+
+	it("does not flag sync I/O in a non-JS/TS file", () => {
+		const content = ["async function f() {", "  readFileSync('a.txt');", "}"].join("\n");
+		expect(checkSyncIoInAsync(content, "f.txt")).toEqual([]);
+	});
+
+	it("recognizes an async function with multiple spaces after async", () => {
+		const content = ["async   function f() {", "  readFileSync('a.txt');", "}"].join("\n");
+		expect(checkSyncIoInAsync(content, "f.ts")).toEqual([{ line: 2, text: "readFileSync('a.txt');" }]);
+	});
+
+	it("recognizes arrow async syntax without spaces around equals or after async", () => {
+		const noBeforeSpace = ["const f=async () => {", "  readFileSync('a.txt');", "}"].join("\n");
+		const noAfterAsyncSpace = ["const f = async() => {", "  readFileSync('a.txt');", "}"].join("\n");
+		expect(checkSyncIoInAsync(noBeforeSpace, "f.ts")).toEqual([{ line: 2, text: "readFileSync('a.txt');" }]);
+		expect(checkSyncIoInAsync(noAfterAsyncSpace, "f.ts")).toEqual([{ line: 2, text: "readFileSync('a.txt');" }]);
+	});
+
+	it("recognizes sync calls with whitespace before their argument list", () => {
+		const content = ["async function f() {", "  readFileSync   ('a.txt');", "}"].join("\n");
+		expect(checkSyncIoInAsync(content, "f.ts")).toEqual([{ line: 2, text: "readFileSync   ('a.txt');" }]);
+	});
+
+	it("keeps a same-line closed async function in scope for the following call", () => {
+		const content = "async function f() {} readFileSync('a.txt');";
+		expect(checkSyncIoInAsync(content, "f.ts")).toEqual([{ line: 1, text: content }]);
 	});
 
 	it("caps at 10 matches even when more than 10 sync calls exist in one async fn", () => {

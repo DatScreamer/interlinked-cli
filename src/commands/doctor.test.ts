@@ -21,6 +21,7 @@ const {
 	mockStatSync,
 	mockRunSystemChecks,
 	mockIsHarnessRunning,
+	mockQueryHarness,
 	mockResolveConfig,
 	mockGetConfigDir,
 	mockGetSharedConfigPath,
@@ -114,6 +115,10 @@ const {
 		mockFetchWorkspaces: vi.fn(async () => [{ workspace_key: "main" }] as unknown[]),
 		mockCallTool: vi.fn(async () => ({ workspaces: [{ name: "cb-1" }] }) as unknown),
 		mockGetClient: vi.fn(),
+		// The harness liveness ROUND-TRIP (`probeHarnessSocket` → queryHarness).
+		// Default null = nothing answered, which is what an unseeded fixture
+		// should mean: no daemon.
+		mockQueryHarness: vi.fn(async () => null as unknown),
 	};
 });
 
@@ -140,6 +145,10 @@ vi.mock("../lib/formatter.js", () => ({
 
 vi.mock("./doctor-system.js", () => ({ runSystemChecks: mockRunSystemChecks }));
 vi.mock("./harness.js", () => ({ isHarnessRunning: mockIsHarnessRunning }));
+// Only `queryHarness` is reached from doctor's graph (through
+// harness-liveness); the real `probeHarnessSocket` runs on top of it, so the
+// existsSync-then-round-trip logic under test stays real.
+vi.mock("./harness-status-helpers.js", () => ({ queryHarness: mockQueryHarness }));
 // Adoption-artifact rows are covered by adopt.test.ts; stubbed empty here so
 // these fixtures keep their pre-adopt output shape (no warn row from the
 // host repo's missing baselines leaking into unrelated expectations).
@@ -846,14 +855,43 @@ describe("doctorCommand", () => {
 	});
 
 	// -------------------------------------------------------------------------
-	// Harness server (10)
+	// Harness server (10). A pid is not evidence: the row is decided by a real
+	// socket round-trip, so the three states below are distinguishable (audit
+	// F1 — doctor used to print `[pass]` for the middle one).
 	// -------------------------------------------------------------------------
 
-	it("reports a running harness with its PID", async () => {
+	// P: pid alive AND the socket answered → the only state that passes.
+	it("reports a running harness with its PID when the socket answers", async () => {
+		seedHealthyFs();
+		mockIsHarnessRunning.mockReturnValue({ running: true, pid: 4242 });
+		fsState.exists.add(`${CWD}/.interlinked/harness.sock`);
+		mockQueryHarness.mockResolvedValue({ ok: true });
+		await run();
+		expect(captured()).toContain("[pass] Harness server -- Running (PID 4242) -- socket answering");
+	});
+
+	// P: pid alive, socket silent → the ZOMBIE. Must FAIL loudly, and must say
+	// what it costs the user, not just that a socket is missing.
+	it("FAILS with a ZOMBIE row when the pid is alive but nothing answers", async () => {
+		seedHealthyFs();
+		mockIsHarnessRunning.mockReturnValue({ running: true, pid: 4242 });
+		fsState.exists.add(`${CWD}/.interlinked/harness.sock`);
+		mockQueryHarness.mockResolvedValue(null); // connected to nothing
+		await run();
+		const out = captured();
+		expect(out).toContain("[FAIL] Harness server -- ZOMBIE DAEMON: Harness PID 4242 is alive");
+		expect(out).toContain("interlinked harness restart");
+		expect(out).not.toContain("[pass] Harness server");
+	});
+
+	// P: a socket file that does not exist is never dialed — the probe must
+	// short-circuit rather than open a connection that can only fail.
+	it("does not attempt a round-trip when the socket file is absent", async () => {
 		seedHealthyFs();
 		mockIsHarnessRunning.mockReturnValue({ running: true, pid: 4242 });
 		await run();
-		expect(captured()).toContain("[pass] Harness server -- Running (PID 4242)");
+		expect(mockQueryHarness).not.toHaveBeenCalled();
+		expect(captured()).toContain("[FAIL] Harness server -- ZOMBIE DAEMON");
 	});
 
 	it("warns about a stale socket when the harness isn't running", async () => {

@@ -171,8 +171,9 @@ const RULE_CONTRACTS: RuleContract[] = [
 		rule_id: "builtin-pgrep-xargs-kill",
 		severity: "high",
 		category: "process-killing",
-		reason: "Pattern kills processes system-wide",
-		suggestion: "Use specific PID or port-based killing",
+		reason: "Pattern kills processes system-wide (same blast radius whether piped, substituted, or looped)",
+		suggestion:
+			"Enumerate, confirm, then kill: run `pgrep -fl '<pattern>'` first to SEE the matches are yours, then kill those exact PIDs — `kill <pid> <pid> …` (or `pgrep -f '<pattern>' | xargs -n1 kill` once you have verified the list). Listing first is the safe step the raw pipe skips.",
 		command: "pgrep node | xargs kill",
 	},
 	{
@@ -358,6 +359,11 @@ const PATTERN_TRIGGERS: PatternCase[] = [
 	{
 		label: "pgrep-xargs: ps pipeline ending in xargs kill",
 		command: "ps aux | grep node | awk '{print $2}' | xargs kill",
+		rule_id: "builtin-pgrep-xargs-kill",
+	},
+	{
+		label: "pgrep-xargs: loop over pgrep results",
+		command: 'for p in $(pgrep -f "node worker"); do kill "$p"; done',
 		rule_id: "builtin-pgrep-xargs-kill",
 	},
 	{ label: "rm-rf-root: absolute path", command: "rm -rf /etc", rule_id: "builtin-rm-rf-root" },

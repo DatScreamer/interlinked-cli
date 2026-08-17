@@ -732,6 +732,17 @@ describe("hot-region detector — check-name join separator", () => {
 describe("edit-pair detector — filter precision (findEditPairs)", () => {
 	const old = minutesAgoISO(5000);
 
+	it("returns no warning when no paired file reaches the recurrence threshold", () => {
+		// The target file has two qualifying records, but each candidate appears
+		// only once. findEditPairs therefore returns [], and the public detector
+		// must not manufacture an edit-pair warning from an empty result.
+		const records = [
+			rec({ co_edited_files: ["src/one.ts"], timestamp: old }),
+			rec({ co_edited_files: ["src/two.ts"], timestamp: old }),
+		];
+		expect(getPatternWarnings(records, "src/foo.ts", EMPTY_SESSION)).toEqual([]);
+	});
+
 	it("filters strictly by file — decoys from OTHER files must not inflate the denominator", () => {
 		const records = [
 			rec({ file: "src/foo.ts", co_edited_files: ["src/bar.ts"], timestamp: old }),
@@ -991,6 +1002,18 @@ describe("sequence detector — filter precision (findSequencePatterns)", () => 
 
 describe("extractSequenceFeatures — fallback and gate precision", () => {
 	const old = minutesAgoISO(5000);
+
+	it("treats one read as a read, so three edits are not blind editing", () => {
+		// A single read is enough to suppress the blind-editing feature for a
+		// three-edit sequence. This is observable through the public warning
+		// entry point because the same history makes that feature recurring.
+		const seq = ["Read:r", "Edit:a", "Edit:b", "Edit:c"];
+		const records = [
+			rec({ pre_error_sequence: seq, timestamp: old }),
+			rec({ pre_error_sequence: seq, timestamp: old }),
+		];
+		expect(getPatternWarnings(records, "src/foo.ts", session([], seq))).toEqual([]);
+	});
 
 	it("re-derives lastEditFile from an empty target after a mismatch (the `target || \"\"` fallback)", () => {
 		// After the first edit (a real target "foo") every subsequent edit

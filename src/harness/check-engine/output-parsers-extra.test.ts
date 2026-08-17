@@ -5,6 +5,11 @@ import {
 	parseGolangciLintJson,
 	parseOsvScannerJson,
 	parseRuffJson,
+	parseClangTidyOutput,
+	parseGccOutput,
+	parseGoBuildOutput,
+	parseMypyOutput,
+	parseRuffFormatOutput,
 } from "./output-parsers-extra.js";
 
 describe("parseOsvScannerJson", () => {
@@ -113,6 +118,108 @@ describe("parseOsvScannerJson", () => {
 		const r = parseOsvScannerJson(payload);
 		expect(r).toMatchObject({ critical: 1, total: 1 });
 	});
+
+	it("preserves the tool name and renders every nonzero bucket in order", () => {
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					groups: [
+						{ ids: ["C"], max_severity: "9.0" },
+						{ ids: ["H"], max_severity: "7.0" },
+						{ ids: ["M"], max_severity: "4.0" },
+						{ ids: ["L"], max_severity: "3.9" },
+					],
+				}],
+			}],
+		});
+		expect(parseOsvScannerJson(payload)).toEqual({
+			tool: "osv-scanner",
+			total: 4,
+			critical: 1,
+			high: 1,
+			moderate: 1,
+			low: 1,
+			detail: "1 critical, 1 high, 1 moderate, 1 low — C, H, M, L",
+		});
+	});
+
+	it("does not render zero-valued buckets or an empty id suffix", () => {
+		const highOnly = JSON.stringify({
+			results: [{ packages: [{ groups: [{ ids: ["H"], max_severity: "7.0" }] }] }],
+		});
+		const noIds = JSON.stringify({
+			results: [{ packages: [{ groups: [{ max_severity: "2.0" }] }] }],
+		});
+		expect(parseOsvScannerJson(highOnly)?.detail).toBe("1 high — H");
+		expect(parseOsvScannerJson(noIds)?.detail).toBe("1 low");
+	});
+
+	it("uses vulnerability scores only when max_severity is absent, and keeps the first five ids", () => {
+		const groups = Array.from({ length: 6 }, (_, i) => ({ ids: [`V${i}`] }));
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					vulnerabilities: [{ id: "V0", severity: [{ score: "9.0" }] }],
+					groups,
+				}],
+			}],
+		});
+		const result = parseOsvScannerJson(payload);
+		expect(result).toMatchObject({ critical: 1, low: 5, total: 6 });
+		expect(result?.detail).toBe("1 critical, 5 low — V0, V1, V2, V3, V4");
+	});
+
+	it("prefers an explicit max_severity over a higher member vulnerability score", () => {
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					vulnerabilities: [{ id: "V", severity: [{ score: "9.9" }] }],
+					groups: [{ ids: ["V"], max_severity: "4.0" }],
+				}],
+			}],
+		});
+		expect(parseOsvScannerJson(payload)).toMatchObject({ moderate: 1, critical: 0 });
+	});
+
+	it("does not treat CVSS-prefixed strings as numeric scores, but accepts a parseable bare score", () => {
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					vulnerabilities: [
+						{ id: "vector", severity: [{ score: "CVSS:3.1/AV:N" }] },
+						{ id: "bare", severity: [{ score: "7.2CVSS" }] },
+					],
+				groups: [{ ids: ["vector"] }, { ids: ["bare"] }],
+				}],
+			}],
+		});
+		expect(parseOsvScannerJson(payload)).toMatchObject({ high: 1, low: 1, total: 2 });
+	});
+
+	it("does not index a vulnerability whose id is empty", () => {
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					vulnerabilities: [{ id: "", severity: [{ score: "9.9" }] }],
+					groups: [{ ids: [""] }],
+				}],
+			}],
+		});
+		expect(parseOsvScannerJson(payload)).toMatchObject({ low: 1, critical: 0, total: 1 });
+	});
+
+	// test-contract: boundary — an OSV group without ids has no member vulnerability to score
+	it("does not use a vulnerability id as an implicit group member", () => {
+		const payload = JSON.stringify({
+			results: [{
+				packages: [{
+					vulnerabilities: [{ id: "Stryker was here", severity: [{ score: "9.9" }] }],
+					groups: [{}],
+				}],
+			}],
+		});
+		expect(parseOsvScannerJson(payload)).toMatchObject({ low: 1, critical: 0, total: 1 });
+	});
 });
 
 describe("parseRuffJson", () => {
@@ -144,6 +251,57 @@ describe("parseRuffJson", () => {
 		const payload = JSON.stringify([{ row: 1, code: "E4", message: "m4" }]);
 		const results = parseRuffJson(payload);
 		expect(nonNull(results[0]).file).toBe("");
+	});
+
+	it("returns no findings for valid JSON that is not an array", () => {
+		expect(parseRuffJson("{}")).toEqual([]);
+		expect(parseRuffJson("null")).toEqual([]);
+	});
+
+	it("includes the autofix hint only when applicability is a string", () => {
+		const payload = JSON.stringify([
+			{ filename: "a.py", code: "E1", message: "m1", fix: { applicability: "safe" } },
+			{ filename: "b.py", code: "E2", message: "m2", fix: { applicability: 42 } },
+		]);
+		expect(parseRuffJson(payload)).toEqual([
+			{
+				tool: "ruff",
+				severity: "warning",
+				file: "a.py",
+				line: 0,
+				column: undefined,
+				message: "E1: m1 [safe autofix: `ruff check --fix`]",
+				ruleId: "E1",
+			},
+			{
+				tool: "ruff",
+				severity: "warning",
+				file: "b.py",
+				line: 0,
+				column: undefined,
+				message: "E2: m2",
+				ruleId: "E2",
+			},
+		]);
+	});
+
+	it("keeps the parser's exact finding identity and defaults", () => {
+		expect(parseRuffJson(JSON.stringify([{ code: "E4", message: "m4" }]))).toEqual([
+			{
+				tool: "ruff",
+				severity: "warning",
+				file: "",
+				line: 0,
+				column: undefined,
+				message: "E4: m4",
+				ruleId: "E4",
+			},
+		]);
+	});
+
+	// test-contract: boundary — Ruff JSON findings are defined as an array, not any iterable JSON value
+	it("returns no findings for a valid JSON string", () => {
+		expect(parseRuffJson(JSON.stringify("diagnostic text"))).toEqual([]);
 	});
 });
 
@@ -229,6 +387,50 @@ describe("parseCargoJson", () => {
 		expect(results).toHaveLength(1);
 		expect(nonNull(results[0]).ruleId).toBeUndefined();
 	});
+
+	it("skips malformed messages, empty spans, and non-compiler cargo events", () => {
+		const lines = [
+			JSON.stringify({ reason: "compiler-message", message: null }),
+			JSON.stringify({ reason: "compiler-message", message: { level: "error", spans: [] } }),
+			JSON.stringify({
+				reason: "build-finished",
+				message: { level: "error", spans: [{ file_name: "not-a-finding.rs", line_start: 1 }] },
+			}),
+			"null",
+			"   ",
+		];
+		expect(parseCargoJson(lines.join("\n"), "cargo-check")).toEqual([]);
+	});
+
+	it("accepts a null span as a compiler message with safe span defaults", () => {
+		const line = JSON.stringify({
+			reason: "compiler-message",
+			message: { level: "warning", spans: [null], message: "missing location" },
+		});
+		expect(parseCargoJson(line, "cargo-check")).toEqual([
+			{
+				tool: "cargo-check",
+				severity: "warning",
+				file: "",
+				line: 0,
+				column: undefined,
+				message: "missing location",
+				ruleId: undefined,
+			},
+		]);
+	});
+
+	it("does not accept a nonnumeric span column", () => {
+		const line = JSON.stringify({
+			reason: "compiler-message",
+			message: {
+				level: "error",
+				spans: [{ file_name: "a.rs", line_start: 3, column_start: "4" }],
+				message: "bad column",
+			},
+		});
+		expect(parseCargoJson(line, "cargo-check")).toMatchObject([{ line: 3, column: undefined }]);
+	});
 });
 
 describe("parseGolangciLintJson", () => {
@@ -267,5 +469,74 @@ describe("parseGolangciLintJson", () => {
 		const results = parseGolangciLintJson(payload);
 		expect(results).toHaveLength(1);
 		expect(nonNull(results[0]).ruleId).toBeUndefined();
+	});
+
+	it("validates issue text and preserves the complete finding shape", () => {
+		const payload = JSON.stringify({
+			Issues: [
+				{ FromLinter: "govet", Text: "bad", Pos: { Filename: "a.go", Line: 10, Column: 2 } },
+				{ FromLinter: "govet", Text: 42, Pos: { Filename: "b.go", Line: 11, Column: "3" } },
+			],
+		});
+		expect(parseGolangciLintJson(payload)).toEqual([
+			{
+				tool: "golangci-lint",
+				severity: "warning",
+				file: "a.go",
+				line: 10,
+				column: 2,
+				message: "govet: bad",
+				ruleId: "govet",
+			},
+			{
+				tool: "golangci-lint",
+				severity: "warning",
+				file: "b.go",
+				line: 11,
+				column: undefined,
+				message: "govet: undefined",
+				ruleId: "govet",
+			},
+		]);
+	});
+
+	it("skips null and malformed top-level issue containers", () => {
+		expect(parseGolangciLintJson("null")).toEqual([]);
+		expect(parseGolangciLintJson(JSON.stringify({ Issues: {} }))).toEqual([]);
+		expect(parseGolangciLintJson(JSON.stringify({ Issues: [null] }))).toEqual([]);
+	});
+
+	it("does not let one malformed issue discard neighboring valid findings", () => {
+		const payload = JSON.stringify({
+			Issues: [
+				{ FromLinter: "govet", Text: "first", Pos: { Filename: "a.go", Line: 1 } },
+				null,
+				{ FromLinter: "staticcheck", Text: "last", Pos: { Filename: "b.go", Line: 2 } },
+			],
+		});
+		expect(parseGolangciLintJson(payload).map((result) => result.message)).toEqual([
+			"govet: first",
+			"staticcheck: last",
+		]);
+	});
+
+	// test-contract: boundary — golangci-lint location fields must retain CheckResult's typed shape
+	it("defaults non-string filenames and nonnumeric lines", () => {
+		const payload = JSON.stringify({
+			Issues: [{
+				FromLinter: "govet",
+				Text: "bad location types",
+				Pos: { Filename: 42, Line: "10", Column: 3 },
+			}],
+		});
+		expect(parseGolangciLintJson(payload)).toEqual([{
+			tool: "golangci-lint",
+			severity: "warning",
+			file: "",
+			line: 0,
+			column: 3,
+			message: "govet: bad location types",
+			ruleId: "govet",
+		}]);
 	});
 });

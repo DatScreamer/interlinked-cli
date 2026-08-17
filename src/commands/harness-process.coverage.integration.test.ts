@@ -245,6 +245,40 @@ describe("reapOrphanHarnesses — ps failure + dry-run", () => {
 	});
 });
 
+// A reaper that kills a working daemon opens the guard gap that makes the next
+// blocked caller start another one — the 2026-08-15 restart storm. `protectPids`
+// carries the socket-verified serving set into the sweep.
+describe("reapOrphanHarnesses — protectPids (liveness-verified reaping)", () => {
+	beforeEach(() => {
+		mocks.existsSync.mockReturnValue(false);
+		mocks.readdirSync.mockReturnValue([]);
+	});
+
+	it("N: a protected (serving) pid is neither a candidate nor signalled", () => {
+		mocks.execSync
+			.mockReturnValueOnce(`${psLine(5100, 1, `${HARNESS} --cwd /repo`)}\n`)
+			.mockReturnValue("");
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		const r = reapOrphanHarnesses("/repo", { protectPids: new Set([5100]) });
+		expect(r.candidates).toEqual([]);
+		expect(r.killed).toEqual([]);
+		expect(killSpy).not.toHaveBeenCalledWith(5100, "SIGTERM");
+		killSpy.mockRestore();
+	});
+
+	it("P: an unprotected orphan is still reaped alongside a protected one", () => {
+		mocks.execSync
+			.mockReturnValueOnce(
+				`${psLine(5100, 1, `${HARNESS} --cwd /repo`)}\n${psLine(5200, 1, `${HARNESS} --cwd /repo`)}\n`,
+			)
+			.mockReturnValue("");
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		const r = reapOrphanHarnesses("/repo", { protectPids: new Set([5100]) });
+		expect(r.candidates.map((c) => c.pid)).toEqual([5200]);
+		killSpy.mockRestore();
+	});
+});
+
 describe("reapOrphanHarnesses — candidate filtering", () => {
 	beforeEach(() => {
 		mocks.existsSync.mockReturnValue(false); // no active-pid file by default

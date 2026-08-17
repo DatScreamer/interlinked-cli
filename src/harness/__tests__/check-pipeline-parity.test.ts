@@ -124,6 +124,11 @@ function readRegistrySources(): string {
 		// the file's older checks are PostToolUse-only (deferred verify batch,
 		// documented in POSTTOOLUSE_ONLY_CHECKS below).
 		"entries-warnings/quality-frontier.ts",
+		// Type-discipline wave (2026-08-14): ported from dmmulroy/anti-slop,
+		// detection algorithm only. Shipped PostToolUse-enforced only (see
+		// POSTTOOLUSE_ONLY_CHECKS below) — same "deferred verify-surface
+		// wiring" precedent as the quality-frontier wave above.
+		"entries-warnings/type-discipline.ts",
 		"entries-taste.ts",
 		"entries-c-cpp.ts",
 		"builders.ts",
@@ -370,6 +375,15 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"jsdoc_param_drift",
 	"detectTimeoutUnitMismatch",
 	"timeout_unit_mismatch",
+	// Type-discipline wave (2026-08-14): ported from dmmulroy/anti-slop,
+	// detection algorithm only (docs/external-pulse/anti-slop.md). Shipped
+	// PostToolUse-enforced now; their verify-surface wiring (interface +
+	// init + push + streamCqSection) is a deferred batch, matching the
+	// quality-frontier precedent above.
+	"detectConditionalEmptyObjectSpread",
+	"conditional_empty_object_spread",
+	"detectUnknownTypeAlias",
+	"unknown_type_alias",
 	// Package publish invariants — needs pre-edit disk content to diff against
 	// post-edit proposed content, so the check only makes sense at PreToolUse
 	// where those two states differ. Running it during `interlinked verify`

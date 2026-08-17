@@ -508,3 +508,480 @@ describe("checkFunctionComplexity — result cap", () => {
 		expect(out).toHaveLength(15);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Mutation-hardening: precise, mutant-killing assertions targeting specific
+// regex/arithmetic/boolean sites in complexity.ts's private helpers, driven
+// entirely through the public checkFunctionComplexity API.
+// ---------------------------------------------------------------------------
+
+describe("checkFunctionComplexity — module-level function-pattern regex edge cases", () => {
+	// test-contract: invariant — BRACE_FUNC_PATTERNS' quantifiers must tolerate
+	// realistic spacing variants (double spaces, space-before-generic,
+	// space-before-paren) without silently failing to recognize the function
+	// head, which would drop an otherwise-real complexity finding.
+	it.each([
+		"function  paramFn(a, b, c, d, e, f) {",
+		"export function foo <T>(a, b, c, d, e, f) {",
+		"export function foo<T, U>(a, b, c, d, e, f) {",
+		"export function foo<T> (a, b, c, d, e, f) {",
+		"const  foo = (a, b, c, d, e, f) => {",
+		"export const foo: Handler = (a, b, c, d, e, f) => {",
+		"export const foo : Handler = (a, b, c, d, e, f) => {",
+		"export const foo:Handler = (a, b, c, d, e, f) => {",
+		"export const foo=(a, b, c, d, e, f) => {",
+		"export const foo = async  (a, b, c, d, e, f) => {",
+		"func  paramFn(a, b, c, d, e, f) int {",
+		"func paramFn (a, b, c, d, e, f) int {",
+		"fn  paramFn(a, b, c, d, e, f) {",
+		"pub fn foo <T>(a, b, c, d, e, f) {",
+		"pub fn foo<TU>(a, b, c, d, e, f) {",
+		"pub fn foo<T> (a, b, c, d, e, f) {",
+	])("still recognizes the function head: %s", (declLine) => {
+		const src = `${declLine}\n\treturn a;\n}\n`;
+		const out = checkFunctionComplexity(src, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+
+	// test-contract: invariant — a Go receiver's closing paren may be followed
+	// by 2+ spaces before the method name. Unlike the param-overflow cases
+	// above, the naive `\(([^)]*)\)` param extraction latches onto the
+	// RECEIVER's own parens here, so the observable signal must come from the
+	// body (nesting), not the parameter count.
+	it("recognizes a Go method receiver even with extra space before the method name", () => {
+		let body = "";
+		for (let d = 0; d < 5; d++) body += `${"\t".repeat(d + 1)}if x > ${d} {\n`;
+		body += `${"\t".repeat(6)}return x\n`;
+		for (let d = 4; d >= 0; d--) body += `${"\t".repeat(d + 1)}}\n`;
+		const src = `func (r *Recv)  doWork(x int) int {\n${body}}\n`;
+		const out = checkFunctionComplexity(src, "src/main.go");
+		expect(out).toEqual([
+			{ line: 1, text: "[nesting depth 5] func (r *Recv)  doWork(x int) int {" },
+		]);
+	});
+});
+
+describe("checkFunctionComplexity — analyzeBraceBody nesting/branch tracking internals", () => {
+	// test-contract: invariant — nesting depth must track the TRUE brace depth
+	// (increment on "{", decrement on "}"), not just a running count of "{"
+	// seen. Five sibling if-blocks (each opening and closing its own brace)
+	// never nest past depth 2, so this must stay clean.
+	it("tracks true nesting across sibling if-blocks that each open and close their own brace", () => {
+		const src =
+			"function foo(x) {\n" +
+			"\tif (x === 0) { return 0; }\n" +
+			"\tif (x === 1) { return 1; }\n" +
+			"\tif (x === 2) { return 2; }\n" +
+			"\tif (x === 3) { return 3; }\n" +
+			"\tif (x === 4) { return 4; }\n" +
+			"\treturn -1;\n" +
+			"}\n";
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([]);
+	});
+
+	// test-contract: invariant — maxDepth must track the TRUE maximum depth
+	// ever reached, not just the depth of the most-recently-opened brace. A
+	// 5-deep nest followed by a later shallow sibling if must still report 5.
+	it("tracks the true MAX nesting depth, not the depth of the last-opened brace", () => {
+		const src =
+			"function foo(x) {\n" +
+			"\tif (x > 0) {\n" +
+			"\t\tif (x > 1) {\n" +
+			"\t\t\tif (x > 2) {\n" +
+			"\t\t\t\tif (x > 3) {\n" +
+			"\t\t\t\t\tif (x > 4) {\n" +
+			"\t\t\t\t\t\treturn 1;\n" +
+			"\t\t\t\t\t}\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t}\n" +
+			"\t\t}\n" +
+			"\t}\n" +
+			"\tif (x > 5) {\n" +
+			"\t\treturn 2;\n" +
+			"\t}\n" +
+			"}\n";
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([
+			{ line: 1, text: "[nesting depth 5] function foo(x) {" },
+		]);
+	});
+
+	// test-contract: bug — a function whose braces never close before EOF must
+	// degrade to no finding, not throw (the body walk is bounded by the array,
+	// not by an assumption that a closing brace exists).
+	it("does not crash and returns no finding when a function's braces never close", () => {
+		const src = "function unclosed(x) {\n\treturn x;\n";
+		expect(() => checkFunctionComplexity(src, "src/a.ts")).not.toThrow();
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([]);
+	});
+
+	// test-contract: bug — the body walk must stop at ITS OWN closing brace.
+	// `first` closes cleanly (shallow); `second`, right after, has a genuine
+	// 5-deep nest. A walk that never breaks would bleed second's nesting into
+	// a finding wrongly attributed to first.
+	it("stops walking a function's body at its own closing brace (no bleed into later code)", () => {
+		const src =
+			"function first(x) {\n" +
+			"\tif (x) { return 1; }\n" +
+			"\treturn 0;\n" +
+			"}\n" +
+			"function second(x) {\n" +
+			"\tif (x > 0) {\n" +
+			"\t\tif (x > 1) {\n" +
+			"\t\t\tif (x > 2) {\n" +
+			"\t\t\t\tif (x > 3) {\n" +
+			"\t\t\t\t\tif (x > 4) {\n" +
+			"\t\t\t\t\t\treturn 1;\n" +
+			"\t\t\t\t\t}\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t}\n" +
+			"\t\t}\n" +
+			"\t}\n" +
+			"\treturn 0;\n" +
+			"}\n";
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([
+			{ line: 5, text: "[nesting depth 5] function second(x) {" },
+		]);
+	});
+
+	// test-contract: invariant — an if with NO space before its paren (if(x))
+	// is still a branch statement; the char right after the keyword may be
+	// whitespace OR the opening paren itself.
+	it("recognizes an if with no space before its paren as a branch", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `\tif(x === ${k}) return ${k};\n`;
+		const src = `function foo(x) {\n${body}\treturn -1;\n}\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([
+			{ line: 1, text: "[15 branches — high complexity] function foo(x) {" },
+		]);
+	});
+
+	// test-contract: invariant — the branch regex must anchor to the start of
+	// the line; a call like `motif (k)` contains the substring "if (" but is
+	// not an if-statement.
+	it("does not count a call whose name merely contains the substring \"if (\" as a branch", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `\tmotif (${k});\n`;
+		const src = `function foo(x) {\n${body}\treturn -1;\n}\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([]);
+	});
+
+	// test-contract: invariant — "else" and "if" may be separated by more
+	// than one space in an else-if chain.
+	it("tolerates a double space between else and if in an else-if chain", () => {
+		let body = "\tif (x === 0) return 0;\n";
+		for (let k = 1; k < 15; k++) body += `\telse  if (x === ${k}) return ${k};\n`;
+		body += "\treturn -1;\n";
+		const src = `function foo(x) {\n${body}}\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([
+			{ line: 1, text: "[15 branches — high complexity] function foo(x) {" },
+		]);
+	});
+
+	// test-contract: invariant — an identifier that merely STARTS with "if"
+	// (ifPresent0(x)) is not a branch; the char after "if" must be whitespace
+	// or "(", not another identifier letter.
+	it("does not count an identifier that merely starts with \"if\" as a branch", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `\tifPresent${k}(x);\n`;
+		const src = `function foo(x) {\n${body}\treturn -1;\n}\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([]);
+	});
+
+	// test-contract: invariant — if-statements indented with 2+ leading
+	// whitespace characters must still be counted (indentation amount is
+	// arbitrary, not exactly one character).
+	it("counts if-statements indented with 2+ tabs", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `\t\tif (x === ${k}) return ${k};\n`;
+		const src = `function foo(x) {\n${body}\treturn -1;\n}\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([
+			{ line: 1, text: "[15 branches — high complexity] function foo(x) {" },
+		]);
+	});
+});
+
+describe("checkFunctionComplexity — analyzePythonBody nesting/branch tracking internals", () => {
+	// test-contract: bug — a whitespace-only line (spaces but no newline-only
+	// blank) must be treated as blank, not as a dedent that ends the body scan
+	// early and hides the real nesting below it.
+	it("treats a whitespace-only line as blank, not as a dedent", () => {
+		const src =
+			"def foo(x):\n" +
+			"    if x > 0:\n" +
+			"        if x > 1:\n" +
+			"    \n" +
+			"            if x > 2:\n" +
+			"                if x > 3:\n" +
+			"                    if x > 4:\n" +
+			"                        return x\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([
+			{ line: 1, text: "[nesting depth 6] def foo(x):" },
+		]);
+	});
+
+	// test-contract: invariant — nesting must be computed relative to the
+	// def's OWN indent (headIndent), not the raw file column. A class method
+	// (headIndent 4) with 2 levels of nesting stays well under the threshold
+	// once its own indent is correctly subtracted rather than added.
+	it("computes nesting relative to the def's own indent, not the raw column", () => {
+		const src =
+			"class C:\n" +
+			"    def method(self, x):\n" +
+			"        if x > 0:\n" +
+			"            if x > 1:\n" +
+			"                return x\n" +
+			"        return 0\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+
+	// test-contract: invariant — maxNesting must track the TRUE maximum
+	// nesting level ever reached, not just the level of the last statement
+	// scanned (a shallow `return 0` sibling after a 5-deep nest must not
+	// erase the recorded max).
+	it("tracks the true MAX nesting level, not the level of the last statement", () => {
+		const src =
+			"def foo(x):\n" +
+			"    if x > 0:\n" +
+			"        if x > 1:\n" +
+			"            if x > 2:\n" +
+			"                if x > 3:\n" +
+			"                    if x > 4:\n" +
+			"                        return 1\n" +
+			"    return 0\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([
+			{ line: 1, text: "[nesting depth 6] def foo(x):" },
+		]);
+	});
+
+	// test-contract: invariant — plain assignment/return lines are never
+	// if/elif/case branches, no matter how many of them a function body has.
+	it("does not count plain body lines as if/elif/case branches", () => {
+		let body = "";
+		for (let k = 0; k < 16; k++) body += `    x = x + ${k}\n`;
+		const src = `def foo(x):\n${body}    return x\n`;
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+
+	// test-contract: invariant — the if/elif regex must anchor to the line
+	// start; a call like `motif (k)` contains the substring "if " but is not
+	// an if-statement.
+	it("does not count a call whose name merely contains the substring \"if \" as a branch", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `    result = motif (${k})\n`;
+		const src = `def foo(x):\n${body}    return result\n`;
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+
+	// test-contract: invariant — the case regex must anchor to the line
+	// start; a call like `staircase (k)` contains the substring "case " but
+	// is not a match statement's case label.
+	it("does not count a call whose name merely contains the substring \"case \" as a branch", () => {
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `    result = staircase (${k})\n`;
+		const src = `def foo(x):\n${body}    return result\n`;
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+});
+
+describe("checkFunctionComplexity — finding line numbers and message truncation", () => {
+	// test-contract: invariant — a finding's `line` is the function's OWN
+	// 1-indexed declaration line, not an off-by-one in either direction.
+	it("reports the nesting finding at the function's own declaration line", () => {
+		const out = checkFunctionComplexity(tsFnNested(5), "src/a.ts");
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).line).toBe(1);
+	});
+
+	// test-contract: invariant — the nesting message truncates the trimmed
+	// signature to 120 chars; a longer signature must not appear in full.
+	it("truncates the nesting finding's message to 120 chars of the trimmed line", () => {
+		const longName = "veryLongFunctionName".repeat(10); // 200 chars
+		let body = "";
+		for (let d = 0; d < 5; d++) body += `${"\t".repeat(d + 1)}if (x > ${d}) {\n`;
+		body += `${"\t".repeat(6)}return x;\n`;
+		for (let d = 4; d >= 0; d--) body += `${"\t".repeat(d + 1)}}\n`;
+		const src = `function ${longName}(x) {\n${body}}\n`;
+		const trimmed = `function ${longName}(x) {`;
+		const out = checkFunctionComplexity(src, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[nesting depth 5] ${trimmed.slice(0, 120)}` }]);
+	});
+
+	// test-contract: invariant — the branch finding's `line` is likewise the
+	// function's own declaration line, not an off-by-one in either direction.
+	it("reports the branch finding at the function's own declaration line", () => {
+		const out = checkFunctionComplexity(tsFnBranches(15), "src/a.ts");
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).line).toBe(1);
+	});
+
+	// test-contract: invariant — the branch message truncates the trimmed
+	// signature to 100 chars (a DIFFERENT limit than the nesting message's
+	// 120), so a signature between 100 and 120 chars must still be cut.
+	it("truncates the branch finding's message to 100 chars of the trimmed line", () => {
+		const longName = "veryLongFunctionName".repeat(6); // 120 chars
+		let body = "";
+		for (let k = 0; k < 15; k++) body += `\tif (x === ${k}) return ${k};\n`;
+		const src = `function ${longName}(x) {\n${body}}\n`;
+		const trimmed = `function ${longName}(x) {`;
+		const out = checkFunctionComplexity(src, "src/a.ts");
+		expect(out).toEqual([
+			{ line: 1, text: `[15 branches — high complexity] ${trimmed.slice(0, 100)}` },
+		]);
+	});
+
+	// test-contract: invariant — the parameter-overflow message also
+	// truncates to 120 chars of the trimmed signature.
+	it("truncates the parameter-overflow message to 120 chars of the trimmed line", () => {
+		const longName = "veryLongParamFunctionNameForTesting".repeat(4); // 140 chars
+		const src = `function ${longName}(a, b, c, d, e, f) {\n\treturn a;\n}\n`;
+		const trimmed = `function ${longName}(a, b, c, d, e, f) {`;
+		const out = checkFunctionComplexity(src, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${trimmed.slice(0, 120)}` }]);
+	});
+
+	// test-contract: invariant — the finding text uses the TRIMMED line (no
+	// leading indentation), even for a function declared inside an indented
+	// block (namespace/module).
+	it("uses the trimmed line (no leading indentation) in the finding text", () => {
+		const src =
+			"namespace X {\n\texport function helper(a, b, c, d, e, f) {\n\t\treturn a;\n\t}\n}\n";
+		const out = checkFunctionComplexity(src, "src/a.ts");
+		expect(out).toEqual([
+			{ line: 2, text: "[6 parameters] export function helper(a, b, c, d, e, f) {" },
+		]);
+	});
+});
+
+describe("checkFunctionComplexity — Python def-regex edge cases", () => {
+	// test-contract: invariant — the def regex must anchor to the line start;
+	// "typedef" contains "def" as a substring but is not a def statement.
+	it("does not recognize \"def\" as a substring of a longer identifier (typedef)", () => {
+		const src = "    typedef helper(a, b, c, d, e, f):\n        return a\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+
+	// test-contract: invariant — "async" and "def" may be separated by more
+	// than one space.
+	it("tolerates a double space between async and def", () => {
+		const src = "async  def foo(a, b, c, d, e, f):\n    return a\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([
+			{ line: 1, text: "[6 parameters] async  def foo(a, b, c, d, e, f):" },
+		]);
+	});
+
+	// test-contract: invariant — "def" and the function name may likewise be
+	// separated by more than one space.
+	it("tolerates a double space between def and the function name", () => {
+		const src = "def  foo(a, b, c, d, e, f):\n    return a\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([
+			{ line: 1, text: "[6 parameters] def  foo(a, b, c, d, e, f):" },
+		]);
+	});
+
+	// test-contract: invariant — a space between the def name and its opening
+	// paren (def foo (...)) must not stop the head from being recognized.
+	it("tolerates a space between the def name and its opening paren", () => {
+		const src = "def foo (a, b, c, d, e, f):\n    return a\n";
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([
+			{ line: 1, text: "[6 parameters] def foo (a, b, c, d, e, f):" },
+		]);
+	});
+});
+
+describe("checkFunctionComplexity — recognizes every configured brace-language extension", () => {
+	// test-contract: invariant — every extension listed in checkFunctionComplexity's
+	// dispatch condition must route to the brace analyzer, not just ".ts".
+	it.each([".tsx", ".js", ".jsx", ".mjs", ".cjs", ".cts", ".mts"])(
+		"analyzes %s files for parameter overflow",
+		(ext) => {
+			const src = tsFnWithParams(6);
+			const declLine = nonNull(src.split("\n")[0]);
+			const out = checkFunctionComplexity(src, `src/a${ext}`);
+			expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+		},
+	);
+});
+
+describe("checkFunctionComplexity — countTopLevelCommas bracket-balance edge cases", () => {
+	// test-contract: invariant — a comma nested inside {...} must not count as
+	// a top-level parameter separator.
+	it("does not count a comma nested inside {...} as a top-level separator", () => {
+		const declLine = "function foo(a: { x, y }, b: number, c: number, d: number, e: number, f: number) {";
+		const out = checkFunctionComplexity(`${declLine}\n\treturn a;\n}\n`, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+
+	// test-contract: invariant — after a {...} block closes, top-level comma
+	// counting must resume (depth returns to 0, not stuck open).
+	it("resumes counting top-level commas after a {...} block closes", () => {
+		const declLine = "function foo(a: { x: number }, b: number, c: number, d: number, e: number, f: number) {";
+		const out = checkFunctionComplexity(`${declLine}\n\treturn a;\n}\n`, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+
+	// test-contract: invariant — a comma nested inside [...] must not count as
+	// a top-level parameter separator (the "[" depth-tracking branch).
+	it("does not count a comma nested inside [...] as a top-level separator", () => {
+		const declLine = "function foo(a: [x, y], b: number, c: number, d: number, e: number, f: number) {";
+		const out = checkFunctionComplexity(`${declLine}\n\treturn a;\n}\n`, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+
+	// test-contract: invariant — after a [...] block closes, top-level comma
+	// counting must resume (the "]" depth-tracking branch).
+	it("resumes counting top-level commas after a [...] block closes", () => {
+		const declLine = "function foo(a: [number], b: number, c: number, d: number, e: number, f: number) {";
+		const out = checkFunctionComplexity(`${declLine}\n\treturn a;\n}\n`, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+
+	// test-contract: invariant — a comma nested inside (...) must not count
+	// as a top-level separator either (the "(" depth-tracking branch).
+	it("does not count a comma nested inside (...) as a top-level separator", () => {
+		const declLine =
+			"function foo(a: number, b: number, c: number, d: number, e: number, f: (x, y)) {";
+		const out = checkFunctionComplexity(`${declLine}\n\treturn a;\n}\n`, "src/a.ts");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${declLine}` }]);
+	});
+});
+
+describe("checkFunctionComplexity — findBraceLine search-window edge cases", () => {
+	// test-contract: bug — a declaration whose opening brace is never found
+	// (no body at all) must not be analyzed at all; 15 bare if-statements
+	// that follow it must not be wrongly attributed to it as branches.
+	it("does not analyze a function whose opening brace is never found", () => {
+		let src = "const handler = (a, b)\n";
+		for (let k = 0; k < 15; k++) src += `if (x === ${k}) return ${k};\n`;
+		expect(checkFunctionComplexity(src, "src/a.ts")).toEqual([]);
+	});
+});
+
+describe("checkFunctionComplexity — pythonParamOverflow signature-join bounds", () => {
+	// test-contract: bug — a short file that ends mid-signature (no closing
+	// paren, fewer lines than the +10 search window) must degrade to no
+	// finding, not throw from an out-of-bounds array read.
+	it("does not crash and returns no finding when a short file ends mid-signature", () => {
+		const src = "def broken(\n    a,\n    b,\n";
+		expect(() => checkFunctionComplexity(src, "src/m.py")).not.toThrow();
+		expect(checkFunctionComplexity(src, "src/m.py")).toEqual([]);
+	});
+
+	// test-contract: invariant — the Python parameter-overflow finding's
+	// `line` is the def's own declaration line, not an off-by-one.
+	it("reports the parameter-overflow finding at the def's own line", () => {
+		const src = "def foo(a, b, c, d, e, f):\n    return a\n";
+		const out = checkFunctionComplexity(src, "src/m.py");
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).line).toBe(1);
+	});
+
+	// test-contract: invariant — the Python parameter-overflow message also
+	// truncates to 120 chars of the trimmed line.
+	it("truncates the Python parameter-overflow message to 120 chars of the trimmed line", () => {
+		const longName = "veryLongPyParamFunctionNameForTesting".repeat(4); // 148 chars
+		const src = `def ${longName}(a, b, c, d, e, f):\n    return a\n`;
+		const trimmed = `def ${longName}(a, b, c, d, e, f):`;
+		const out = checkFunctionComplexity(src, "src/m.py");
+		expect(out).toEqual([{ line: 1, text: `[6 parameters] ${trimmed.slice(0, 120)}` }]);
+	});
+});

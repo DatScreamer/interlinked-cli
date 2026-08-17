@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -60,33 +61,76 @@ describe("buildHookScript", () => {
 		expect(out).toContain("// --- Client Normalizers ---");
 	});
 
-	it("embeds skip-paths chunk markers (Phase B.3 hook-side early skip)", () => {
+	it("defers skip_paths resolution to the daemon", () => {
 		const out = buildHookScript("v");
-		// Public surface from the chunk.
-		expect(out).toContain("function loadSkipPaths(");
-		expect(out).toContain("function globToRegex(");
-		expect(out).toContain("function matchesSkipPath(");
-		expect(out).toContain("SKIP_PATHS_CACHE");
-		expect(out).toContain("if (skipPath && matchesSkipPath(skipPath))");
-		expect(out).toContain("[interlinked:skip] path matched skip_paths");
+		// skip_paths is decided after the daemon observes the filesystem
+		// ChangeSet; the generated hook must not carry a declared-path bypass.
+		expect(out).not.toContain("function matchesSkipPath(");
+		expect(out).not.toContain("SKIP_PATHS_CACHE");
+		expect(out).not.toContain("[interlinked:skip] path matched skip_paths");
 	});
 
-	it("PreToolUse is NOT short-circuited by skip_paths — guard rules must still run", () => {
-		// Regression: an earlier wiring used `if (isPreTool || isPostTool)`
-		// here, which let any path matching skip_paths bypass repo-confinement,
-		// protected-file checks, lockfile-tamper, and other pre_block guards.
-		// The hook-side early skip is meant to mute the noisy quality
-		// pipeline, NOT to disable safety enforcement on those same paths.
-		// Pin the gate so PostToolUse-only is never silently widened back.
-		const out = buildHookScript("v");
-		// The gate must be PostToolUse-only.
-		expect(out).toContain("if (isPostTool) {");
-		// And must NOT include PreToolUse in that gate.
-		expect(out).not.toMatch(/if \(isPreTool\s*\|\|\s*isPostTool\)\s*\{[\s\S]{0,400}matchesSkipPath/);
-		// The PreToolUse "decision:allow" stdout shortcut from the old
-		// wiring must be gone (PostToolUse uses formatProviderResponse, so
-		// the raw allow shape inside the skip block is unique to the bug).
-		expect(out).not.toMatch(/if \(isPreTool\)[\s\S]{0,200}JSON\.stringify\(\{\s*decision:\s*"allow"\s*\}\)/);
+	// test-contract: boundary — a declared path matching skip_paths must still reach daemon evaluation, while successful read-only events retain their documented fast path.
+	it("sends skipped writer events to the daemon but fast-paths successful reads", async () => {
+		// Keep the Unix socket path below macOS's sockaddr_un limit.
+		const tempDir = mkdtempSync(join(tmpdir(), "il-"));
+		const interlinkedDir = join(tempDir, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+		writeFileSync(join(interlinkedDir, "config.json"), JSON.stringify({ skip_paths: ["dist/**"] }));
+		writeFileSync(join(interlinkedDir, "config.local.json"), JSON.stringify({ sync_mode: "local" }));
+		const socketPath = join(interlinkedDir, "harness.sock");
+		const requests: Array<Record<string, unknown>> = [];
+		const server = createServer((socket) => {
+			let received = "";
+			socket.setEncoding("utf8");
+			socket.on("data", (chunk) => {
+				received += chunk;
+				const newline = received.indexOf("\n");
+				if (newline < 0) return;
+				requests.push(JSON.parse(received.slice(0, newline)) as Record<string, unknown>);
+				socket.end(JSON.stringify({ summary: "daemon observed", warnings: [] }) + "\n");
+			});
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(socketPath, resolve);
+		});
+		expect(existsSync(socketPath)).toBe(true);
+
+		const scriptPath = join(tempDir, "hook.mjs");
+		writeFileSync(scriptPath, buildHookScript("skip-paths-test"));
+		const runHook = (toolName: string, toolInput: Record<string, unknown>) =>
+			new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+				const child = spawn(process.execPath, [scriptPath], {
+					cwd: tempDir,
+					env: { ...process.env, INTERLINKED_HOME: interlinkedDir, INTERLINKED_DATA_DIR: interlinkedDir },
+				});
+				let stderr = "";
+				child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+				child.on("error", reject);
+				child.on("close", (status) => resolve({ status, stderr }));
+				child.stdin.end(JSON.stringify({
+					hook_event_name: "PostToolUse",
+					session_id: `${toolName.toLowerCase()}-skip-path-test`,
+					cwd: tempDir,
+					tool_name: toolName,
+					tool_input: toolInput,
+					tool_response: {},
+				}));
+			});
+
+		try {
+			const writer = await runHook("Write", { file_path: join(tempDir, "dist/generated.ts"), content: "export const generated = true;" });
+			expect(writer.status, writer.stderr).toBe(0);
+			expect(requests, writer.stderr).toHaveLength(1);
+			expect(requests[0]?.tool_name).toBe("Write");
+
+			const read = await runHook("Read", { file_path: join(tempDir, "dist/generated.ts") });
+			expect(read.status, read.stderr).toBe(0);
+			expect(requests).toHaveLength(1);
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
 	});
 
 	it("extracts file paths from apply_patch payloads for Codex/Copilot edits", () => {
@@ -372,14 +416,14 @@ describe("buildHookScript", () => {
 			.map((l) => JSON.parse(l));
 
 		const withPrompt = records.find((r) => typeof r.prompt === "string");
-		expect(withPrompt, `no prompt record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
+		expect(withPrompt, `no prompt record; stderr=${res.stderr}; n=${records.length}`).toBeDefined();
 		// Local is 100% faithful: the prompt's PII is stored RAW, not redacted.
 		expect(withPrompt.prompt).toContain("521-44-8190");
 		expect(withPrompt.prompt).toContain("jane.real@acme.com");
 		expect(withPrompt.prompt).not.toContain("[REDACTED");
 
 		const withThinking = records.find((r) => typeof r.thinking === "string");
-		expect(withThinking, `no thinking record; stderr=${res.stderr}; n=${records.length}`).toBeTruthy();
+		expect(withThinking, `no thinking record; stderr=${res.stderr}; n=${records.length}`).toBeDefined();
 		// Full-fidelity: longer than the retired 4000-char cap, no truncation marker.
 		expect(withThinking.thinking.length).toBeGreaterThan(4000);
 		expect(withThinking.thinking).not.toContain("... [truncated]");

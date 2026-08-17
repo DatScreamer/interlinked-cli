@@ -28,10 +28,20 @@ function setMtime(path: string, mtimeIsoOrEpochMs: string | number): void {
 	utimesSync(path, seconds, seconds);
 }
 
+// Every hook and describe block below carries an explicit 60s timeout,
+// double vitest.stryker.config.ts's 30s default. Locally each case finishes
+// in low single-digit ms (all work is synchronous real-fs I/O via mkdtempSync/
+// mkdirSync/writeFileSync/rmSync against the OS tmpdir), but under the
+// mutation runner's sandbox cold-cache/load conditions that same I/O can run
+// far slower than on a warm dev box — the exact "Test timed out in 30000ms ->
+// ConfigError -> no report -> ENOENT" failure mode diagnosed for
+// commit-parse.ts / env-extractor.ts / verify-parity.ts
+// (scratch/fleet-r3/repair-followups.txt bug #13). This is headroom only:
+// no assertion changes.
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "graph-pred-classifier-"));
 	resetWorkspaceActiveCache();
-});
+}, 60_000);
 
 afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
@@ -39,9 +49,9 @@ afterEach(() => {
 		rmSync(extra, { recursive: true, force: true });
 	}
 	resetWorkspaceActiveCache();
-});
+}, 60_000);
 
-describe("workspaceSupermodelActive", () => {
+describe("workspaceSupermodelActive", { timeout: 60_000 }, () => {
 	it("returns false in an empty repo (no shards anywhere)", () => {
 		expect(workspaceSupermodelActive(dir)).toBe(false);
 	});
@@ -99,13 +109,13 @@ describe("workspaceSupermodelActive", () => {
 	});
 });
 
-describe("classifyCase", () => {
+describe("classifyCase", { timeout: 60_000 }, () => {
 	beforeEach(() => {
 		// Make the workspace look active for these tests
 		mkdirSync(join(dir, "src"), { recursive: true });
 		writeFileSync(join(dir, "src", "anchor.ts"), "export {}");
 		writeFileSync(join(dir, "src", "anchor.graph.ts"), "// @generated");
-	});
+	}, 60_000);
 
 	it("returns A when workspace is not active (overrides per-target classification)", () => {
 		const inactiveDir = mkdtempSync(join(tmpdir(), "graph-pred-inactive-"));
@@ -175,7 +185,7 @@ describe("classifyCase", () => {
 	});
 });
 
-describe("classifyCase result shape", () => {
+describe("classifyCase result shape", { timeout: 60_000 }, () => {
 	it("returns sourcePath as the canonical absolute target path", () => {
 		mkdirSync(join(dir, "src"), { recursive: true });
 		writeFileSync(join(dir, "src", "anchor.ts"), "export {}");

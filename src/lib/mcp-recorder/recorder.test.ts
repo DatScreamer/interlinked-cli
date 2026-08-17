@@ -911,6 +911,33 @@ describe("McpProtocolRecorder", () => {
             expect(records[0]).toMatchObject({ jsonrpc_id: 55 });
         });
 
+        it("correlates an unsupported request id after normalizing it to null", () => {
+            const records: McpEventRecord[] = [];
+            const clock = { ms: 100 };
+            const recorder = makeRecorder(records, clock);
+
+            recorder.recordJsonLine(
+                "client_to_server",
+                '{"jsonrpc":"2.0","id":true,"method":"tools/list","params":{}}',
+            );
+            clock.ms = 125;
+            recorder.recordJsonLine(
+                "server_to_client",
+                '{"jsonrpc":"2.0","id":null,"result":{"tools":[]}}',
+            );
+
+            expect(records[0]).toMatchObject({
+                message_type: "request",
+                jsonrpc_id: null,
+            });
+            expect(records[1]).toMatchObject({
+                message_type: "response",
+                jsonrpc_id: null,
+                request_method: "tools/list",
+                latency_ms: 25,
+            });
+        });
+
         it("does not register a pending tool call for a server-initiated tools/call-shaped request", () => {
             const records: McpEventRecord[] = [];
             const collection: CollectionRecord[] = [];
