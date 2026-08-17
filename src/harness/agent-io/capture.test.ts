@@ -64,7 +64,7 @@ describe("captureAgentIoSpawn — positive (must fire)", () => {
 				tool_use_id: "call_9",
 				tool_input: {
 					task_name: "kill_auth_mutants",
-					model: "gpt-5.6-luna",
+					model: "vendor-llm-5.6-luna",
 					reasoning_effort: "high",
 					message: "gAAAAABo1234encryptedpayload",
 				},
@@ -76,7 +76,7 @@ describe("captureAgentIoSpawn — positive (must fire)", () => {
 		const label = rows.find((r) => r.kind === "task_label");
 		expect(label?.runner).toBe("codex");
 		expect(label?.content).toContain("kill_auth_mutants");
-		expect(label?.content).toContain("gpt-5.6-luna");
+		expect(label?.content).toContain("vendor-llm-5.6-luna");
 		expect(label?.agent_label).toBe("kill_auth_mutants");
 
 		const prompt = rows.find((r) => r.kind === "spawn_prompt");
@@ -184,7 +184,7 @@ describe("captureAgentIoLifecycle — positive (must fire)", () => {
 					tools: { Read: 1 },
 					tool_use_ids: ["toolu_a"],
 					tool_use_ids_truncated: false,
-					models: ["claude-sonnet-5"],
+					models: ["claude-test-5"],
 					tokens: { input: 10, output: 20, cache_read: 30, cache_creation: 40 },
 					thinking_blocks: 0,
 					thinking_blocks_with_text: 0,

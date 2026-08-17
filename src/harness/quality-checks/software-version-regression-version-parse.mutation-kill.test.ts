@@ -45,6 +45,7 @@ describe("looksLikeModelIdentifier — MODEL_IDENTIFIER_RE boundary shape", () =
 
 	// test-contract: boundary — o-series capture must extend far enough to see .yml
 	it("rejects an o-series token whose captured span includes a .yml extension", () => {
+		// REAL_WORLD_VERSION_FIXTURE_OK — the SUT's o-series provider regex is the behavior under test
 		expect(looksLikeModelIdentifier("o3.yml")).toBe(false);
 	});
 });
@@ -97,16 +98,19 @@ describe("isVersionRegression — parseDateVersion separator and digit-range bou
 describe("isVersionRegression — parseModelVersion provider-tail extraction", () => {
 	// test-contract: boundary — provider lookup must use the same casing as the index
 	it("ignores a leading unrelated digit that sits before the o-series provider", () => {
+		// REAL_WORLD_VERSION_FIXTURE_OK — the SUT's o-series provider lookup is the behavior under test
 		expect(isVersionRegression(ref("9-o3"), ref("2-o5"))).toBe(false);
 	});
 
 	// test-contract: boundary — the version tail is sliced from just after the provider
 	it("slices the version tail from immediately after the provider token", () => {
+		// REAL_WORLD_VERSION_FIXTURE_OK — the SUT's gpt provider-prefix slicing is the behavior under test
 		expect(isVersionRegression(ref("gpt-4-turbo-2024"), ref("gpt-1-turbo-2024"))).toBe(true);
 	});
 
 	// test-contract: boundary — a multi-digit tail run is one component, not split apart
 	it("keeps a multi-digit tail component (2024) intact as one part", () => {
+		// REAL_WORLD_VERSION_FIXTURE_OK — the SUT's gpt provider-tail parsing is the behavior under test
 		expect(isVersionRegression(ref("gpt-4-turbo-2024"), ref("gpt-4-turbo-2023"))).toBe(true);
 	});
 
