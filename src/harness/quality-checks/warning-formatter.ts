@@ -7,7 +7,8 @@
 // instruction so the agent knows both how authoritative the finding is and
 // how to fix it properly (no suppressions, no shortcuts).
 
-import { buildCheckInstructions, buildGenericCheckMeta } from "../check-registry/index.js";
+import { GENERIC_CHECK_META } from "../check-metadata/generic.js";
+import { buildCheckInstructions } from "../check-registry/index.js";
 import { getAllFootguns } from "../library-footguns/registry.js";
 import { PROVEN_TOOL_CHECKS, TOOL_CHECK_INSTRUCTIONS } from "./instructions.js";
 import type { QualityCheckResult } from "./result-types.js";
@@ -19,14 +20,17 @@ const CHECK_INSTRUCTIONS: Record<string, string> = {
 	...buildCheckInstructions(),
 };
 
-// Registry checks self-classify via their own `determinism` field. Cache the
-// id→determinism map at module init so the formatter can look up without
-// rebuilding on every warning.
+// Registry checks self-classify via their own `determinism` field.
+// GENERIC_CHECK_META is DERIVED from CHECK_REGISTRY (plus a small overlay of
+// documented-but-unregistered ids), and the PostToolUse quality phase reads
+// the SAME table — before the derivation these two surfaces read two hand-kept
+// copies and could disagree about a check determinism, hence about the
+// [proven] / [heuristic] tag. Cached at module init: never rebuilt per warning.
 const REGISTRY_DETERMINISM: Record<
 	string,
 	"fully_deterministic" | "partially_deterministic" | "heuristic"
 > = Object.fromEntries(
-	Object.entries(buildGenericCheckMeta()).map(([id, meta]) => [id, meta.determinism]),
+	Object.entries(GENERIC_CHECK_META).map(([id, meta]) => [id, meta.determinism]),
 );
 
 // Library-footgun checks (node_fetch_no_timeout, redis_*, d1_*, …) are
