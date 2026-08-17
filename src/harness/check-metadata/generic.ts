@@ -20,6 +20,7 @@ import { GENERIC_ITERATION_SAFETY_META } from "./generic-iteration-safety.js";
 import { GENERIC_REACT_WARNINGS_META } from "./generic-react-warnings.js";
 import { GENERIC_SWIFT_META } from "./generic-swift.js";
 import { GENERIC_TEST_HYGIENE_META } from "./generic-test-hygiene.js";
+import { GENERIC_TYPE_DISCIPLINE_META } from "./generic-type-discipline.js";
 import { GENERIC_UBS_META } from "./generic-ubs.js";
 import type { CheckMeta } from "./types.js";
 
@@ -37,4 +38,5 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 	...GENERIC_DEMO_DATA_META,
 	...GENERIC_ENDPOINT_META,
 	...GENERIC_SWIFT_META,
+	...GENERIC_TYPE_DISCIPLINE_META,
 };

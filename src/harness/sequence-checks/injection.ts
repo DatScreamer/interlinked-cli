@@ -12,6 +12,7 @@
 // consume trajectory state directly, so they remain effective against
 // rephrased / paraphrased injection attempts.
 
+import { hasPublicHttpUrl } from "../evaluator/network-hosts.js";
 import type { TaintProvenance } from "../types.js";
 import type { SequenceDetector, SequenceMatch } from "./types.js";
 
@@ -24,10 +25,12 @@ const UNTRUSTED_PROVENANCE: ReadonlySet<TaintProvenance> = new Set<TaintProvenan
 	"user_provided",
 ]);
 
-/** Test for non-localhost http(s) URL. Localhost / loopback is dev-server
- *  traffic and not exfiltration-capable. */
-const NON_LOCALHOST_HTTP_URL =
-	/https?:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0|::1|\[::1\])[^\s'"]+/i;
+// External-URL classification is delegated to `hasPublicHttpUrl`
+// (evaluator/network-hosts.ts): loopback, RFC-1918, link-local, AND
+// CGNAT/tailnet 100.64.0.0/10 are all non-routable — a LAN mutation runner
+// or tailnet peer is not an exfiltration edge. The old inline regex here
+// excluded only loopback, which false-blocked every tailnet runner call
+// once the session carried taint (repair-followups #trifecta-tailnet-FP).
 
 /** Network-capable Bash verbs that talk to the outside world. */
 const NETWORK_VERB = /\b(?:curl|wget|nc|ncat|netcat|socat|http|https|ssh|scp|sftp|rsync)\b/i;
@@ -59,7 +62,7 @@ function isReadCandidate(toolName: string | undefined): boolean {
 
 function isExternalNetworkCommand(cmd: string): boolean {
 	if (!NETWORK_VERB.test(cmd)) return false;
-	if (!NON_LOCALHOST_HTTP_URL.test(cmd) && !/\b(?:ssh|scp|sftp)\b/.test(cmd)) return false;
+	if (!hasPublicHttpUrl(cmd) && !/\b(?:ssh|scp|sftp)\b/.test(cmd)) return false;
 	return true;
 }
 

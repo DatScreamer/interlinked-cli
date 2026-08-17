@@ -111,7 +111,7 @@ export function registerQualityCommands(program: Command): void {
 	program
 		.command("write [path]")
 		.description(
-			"Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.",
+			"Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> with rollback protection.",
 		)
 		.option("--stdin", "Read content from stdin (single-file mode)")
 		.option("--from-file <src>", "Read content from a source file (single-file mode)")
@@ -382,11 +382,19 @@ export function registerQualityCommands(program: Command): void {
 	mutationCmd
 		.command("sweep")
 		.description(
-			"Re-measure a ranked slice of the survivor work-list, recording each clean result into the manifest. Sequential per box (a runner holds one worktree and answers 503 while busy); use --shard i/n to split the list across machines without a coordinator.",
+			"Re-measure mutation targets and record each clean result into the manifest. Defaults to the ranked survivor work-list; --all-eligible performs a full source census. Repeat --runner-url to fan out across runner boxes.",
 		)
 		.option("--file <substr>", "Only files whose path contains this (case-insensitive)")
 		.option("--limit <n>", "Measure at most n files (applied AFTER --shard)")
 		.option("--shard <i/n>", "Sweep only the i-th of n slices of the ranked list")
+		.option(
+			"--all-eligible",
+			"Census every mutation-eligible JS/TS source file under src/, including files absent from the manifest and measured-clean files",
+		)
+		.option(
+			"--measured-before <iso>",
+			"Only measure files with absent/legacy provenance or a measurement older than this ISO timestamp. Reuse one fixed cutoff to resume a census",
+		)
 		.option(
 			"--unqualified-only",
 			"Skip files whose records already carry measurement provenance. This is what makes a long sweep restartable: a finished file still has survivors, so without this a restart redoes the work",
@@ -422,6 +430,29 @@ export function registerQualityCommands(program: Command): void {
 		.action(async (opts: OptionValues) => {
 			const { mutationAcceptCommand } = await import("../commands/mutation.js");
 			await mutationAcceptCommand(opts);
+		});
+
+	mutationCmd
+		.command("disposition")
+		.description(
+			"Record a NON-accepting judgment on a surviving mutant into the durable disposition ledger (.interlinked/mutation-dispositions.json), or --list / --show existing records. Kinds: dead_code (delete|implement) or unresolved (+ counterexample-search evidence). Never touches status, never grants equivalence, never suppresses the per-edit gate — an equivalence claim goes through `mutation accept`, which needs a verifier-issued certificate. Prose is refused by design.",
+		)
+		.option("--file <path>", "Repo-relative path holding the mutant (record / show)")
+		.option("--id <mutantId>", "Mutant id from `mutation survivors` (record / show)")
+		.option("--kind <kind>", "dead_code | unresolved")
+		.option("--resolution <resolution>", "dead_code only: delete | implement")
+		.option("--issue <ref>", "dead_code only: an issue/ticket reference")
+		.option("--strategy <strategy>", "unresolved only: property | fuzz | differential | bounded_exhaustive | test_suite")
+		.option("--runs <n>", "unresolved only: cases the search ran (required with --strategy)")
+		.option("--seed <seed>", "unresolved only: the search seed")
+		.option("--budget-ms <ms>", "unresolved only: the search time budget")
+		.option("--list", "List every recorded disposition instead of recording")
+		.option("--show", "Show the record for --file/--id instead of recording")
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output")
+		.action(async (opts: OptionValues) => {
+			const { mutationDispositionCommand } = await import("../commands/mutation-disposition.js");
+			await mutationDispositionCommand(opts);
 		});
 
 	// ===========================================

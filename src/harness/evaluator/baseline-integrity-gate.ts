@@ -23,6 +23,7 @@ import {
 	reconstructEditContent,
 	safeJsonParse,
 } from "./config-loosening-gate.js";
+import { detectDispositionLedger, isDispositionLedgerPath } from "./disposition-ledger-gate.js";
 
 export interface BaselineGamingFinding {
 	file: string;
@@ -406,7 +407,8 @@ export function detectBaselineGaming(
 	sourceExists?: (rel: string) => boolean,
 ): BaselineGamingFinding[] {
 	const kind = baselineKind(filePath);
-	if (!kind) return [];
+	// The disposition ledger rides its own sibling detector (monotonic in fewer/weaker records).
+	if (!kind) return detectDispositionLedger(filePath, beforeText, afterText);
 	if (!beforeText) return [];
 	const before = safeJsonParse(beforeText);
 	const after = safeJsonParse(afterText);
@@ -453,7 +455,7 @@ export function evaluateBaselineIntegrityForEvent(
 	if (process.env.INTERLINKED_DISABLE_BASELINE_GUARD === "1") return null;
 	const toolInput = event.tool_input || {};
 	const filePath = (toolInput.file_path as string) || (toolInput.path as string) || "";
-	if (!filePath || !baselineKind(filePath)) return null;
+	if (!filePath || (!baselineKind(filePath) && !isDispositionLedgerPath(filePath))) return null;
 
 	const getDisk = deps.getDisk ?? readDiskContent;
 	const before = getDisk(filePath, event.cwd);

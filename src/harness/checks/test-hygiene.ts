@@ -28,3 +28,4 @@ export {
 	checkTestMissingSutImport,
 	hasAnyProjectSourceImport,
 } from "./test-hygiene-quality.js";
+export { checkTestLegitimacy } from "./test-legitimacy.js";

@@ -95,6 +95,7 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"mock_only_test",
 	"happy_path_only_test",
 	"introverted_test",
+	"test_legitimacy",
 	"procfs_probe_in_test",
 	"error_dispatch_by_instanceof",
 	"crap",
@@ -155,6 +156,9 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	"unjustified_cast",
 	"process_env_outside_config",
 	"top_level_side_effect",
+	// Type-discipline wave (2026-08-14) — see advisory.ts for rationale.
+	"conditional_empty_object_spread",
+	"unknown_type_alias",
 ]);
 
 /** True when `checkId` is advisory-tier (deep-audit only, not default-gate). */

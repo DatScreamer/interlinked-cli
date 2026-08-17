@@ -77,6 +77,12 @@ defeat the pattern.
      **ratcheted/audited** (visible exceptions, not silent bypasses).
    - Distinct: `// interlinked: defer <check> -- reason` *acknowledges* a finding without
      suppressing it (still logged) — for pre-existing findings you're choosing not to fix now.
+   - A **`[interlinked:sequence]` pre_block** (trajectory detectors such as
+     `secret_read_then_network_call`) is deferred the same way, but the marker must sit in the
+     call itself — the Bash command text, or the content you are writing — and must name the
+     detector id **exactly**. The call then runs and the harness logs
+     `[interlinked:sequence-deferred]` with your reason. These detectors latch on session
+     state, so without the marker one confidential read can block every later network call.
 5. **When NOT to suppress:** `[proven]` findings (tsc/biome/gitleaks/semgrep actually ran) and
    any destructive/security **guard-rule** block. Suppression directives affect **checks**, not
    **rules** — you cannot `// interlinked-ignore` a `git push --force` block. If a *rule* is
@@ -91,6 +97,37 @@ false positive — evaluate it. No tag = unknown check id (never guessed).
 **Visibility (Claude Code):** a **block reason is always surfaced.** PreToolUse allow-warnings
 are routed through `additionalContext` (you see them next turn); PostToolUse warnings go to
 stderr. Allow-warnings are easy to overlook — read them.
+
+**Test edits use the same hook loop.** Deterministic introduced test theatre (assertion-free or
+tautological cases, SUT self-mocking, focus markers, unconditional skips) blocks before the write.
+Lower-confidence but low-noise test-quality findings are PreToolUse warnings so even a small writer
+can correct them immediately; context-heavier suite review stays in PostToolUse. Do not silence a
+warning merely to land the edit—assert a precise observable behavior, or justify the actual public
+compatibility contract.
+
+## Bash effects and sandbox evidence
+
+Do not trust a tool name as proof that no file changed. For Bash and other potentially mutating
+tools, the daemon snapshots Git-visible files plus standalone ignored local files (for example
+`.env`, while collapsing bulk ignored directory trees) before the call and attaches the observed
+created/modified/deleted ChangeSet after it. PostToolUse file checks prefer those observed paths over
+command text or runner-declared paths. A Stop-time `[interlinked:effect-residue]` warning means a
+PostToolUse was missing/unreconciled; the observed files were added to the touched-file rescan.
+The noisy `.interlinked/` runtime tree stays collapsed, but its exact local policy/control files are
+observed and cannot be silenced by `skip_paths`.
+
+Interpret `[interlinked:sandbox]` as evidence visible to the hook:
+
+- `attested` — the runner marked this call sandboxed;
+- `configured` — restrictive client config was found, but a CLI/profile override may differ;
+- `disabled` — the call/config explicitly selected unsandboxed/escalated execution; or
+- `unknown` — no trustworthy evidence reached the hook.
+
+A workspace-write sandbox limits blast radius but still writes the real project, so it is
+defense-in-depth, not rollback. Do not rerun or rewrite a command to evade this warning. For changes
+that require rejection before disk, use Edit/Write or gated `interlinked write`/`multi-edit`.
+The observer is bounded ordinary-process evidence: concurrent writers can cause conservative extra
+attribution, and an incomplete snapshot is never proof of absence.
 
 ## Grep acceleration
 The guard intercepts `Grep` tool calls and Bash `rg`/`grep`, queries a trigram index for
@@ -111,11 +148,16 @@ Config lives in `.interlinked/guard-rules.json` (team) + `.interlinked/guard-rul
   forces a full reload.
 
 ## The cold fallback (dead daemon fails closed)
-If a daemon **was** started for this project but the socket is now unreachable (crashed/hung),
-the hook **BLOCKS** tool calls rather than run unguarded, and tries to self-heal. A subset of
-checks still runs inline even when the daemon is down: merge-conflict markers, **destructive
-commands**, **package installs**, and the **per-file line cap**. Fix: `interlinked harness
-start` / `restart`, then retry. (If no daemon ever ran here, calls are allowed instead.)
+If a daemon **was** started for this project but the socket is now unreachable (crashed, hung,
+or a **zombie** — process alive, listener dead), the hook **BLOCKS** tool calls rather than run
+unguarded, and tries to self-heal. A subset of checks still runs inline even when the daemon is
+down: merge-conflict markers, **destructive commands**, **package installs**, and the **per-file
+line cap**. Fix: `interlinked harness start` / `restart`, then retry. (If no daemon ever ran
+here, calls are allowed instead.)
+
+The block reason names which case it is. `interlinked harness status` confirms it — a red
+`ZOMBIE` line means a live PID is answering nothing, so trust the hook over the PID. See
+**interlinked-setup** for the three liveness states and the startup-failure ledger.
 
 ## Gotchas
 - **The "`sleep` is blocked" claim in old docs is stale** — there is no standalone `sleep`
@@ -137,7 +179,7 @@ start` / `restart`, then retry. (If no daemon ever ran here, calls are allowed i
 ```bash
 interlinked harness test "git push --force"   # would this block? (safe to run)
 interlinked harness checks                     # authoritative check inventory
-interlinked harness status --json              # is the daemon up?
+interlinked harness status --json              # liveness + socket_answered
 interlinked index query "<pattern>"            # what the grep accelerator would match
 interlinked harness restart                    # reload everything (clears trajectory)
 ```

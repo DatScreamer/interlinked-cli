@@ -18,6 +18,7 @@ import { ENDPOINT_SECURITY_ENTRIES } from "./entries-warnings/endpoint-security.
 import { QUALITY_FRONTIER_ENTRIES } from "./entries-warnings/quality-frontier.js";
 import { SPEC_STRUCTURE_ENTRIES } from "./entries-warnings/spec-structure.js";
 import { TEST_AND_DEMO_ENTRIES } from "./entries-warnings/test-and-demo.js";
+import { TYPE_DISCIPLINE_ENTRIES } from "./entries-warnings/type-discipline.js";
 import { UBS_ENTRIES } from "./entries-warnings/ubs-checks.js";
 import type { CheckRegistration } from "./types.js";
 
@@ -29,6 +30,7 @@ export {
 	QUALITY_FRONTIER_ENTRIES,
 	SPEC_STRUCTURE_ENTRIES,
 	TEST_AND_DEMO_ENTRIES,
+	TYPE_DISCIPLINE_ENTRIES,
 	UBS_ENTRIES,
 };
 
@@ -41,4 +43,5 @@ export const WARNING_ENTRIES: CheckRegistration[] = [
 	...ENDPOINT_SECURITY_ENTRIES,
 	...QUALITY_FRONTIER_ENTRIES,
 	...SPEC_STRUCTURE_ENTRIES,
+	...TYPE_DISCIPLINE_ENTRIES,
 ];

@@ -37,6 +37,10 @@ import {
 } from "../policy-classifier.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import {
+	rememberWorkspaceSnapshot,
+	shouldObserveWorkspaceEffects,
+} from "../workspace-effects.js";
+import {
 	runCommitGate,
 	runCoverageWriteGate as runCoverageWriteGateExtracted,
 	runMutationWriteGate,
@@ -63,6 +67,7 @@ import {
 	type ServerRuntime,
 	summarizeToolInput,
 } from "./runtime-context.js";
+import { appendShellSandboxAdvisory } from "./shell-sandbox-policy.js";
 
 // ---------------------------------------------------------------------------
 // Phase helpers (internal — not exported)
@@ -340,6 +345,13 @@ export async function runPreToolPipeline(
 			}),
 			CWD,
 		);
+		if (shouldObserveWorkspaceEffects(event.tool_name)) {
+			rememberWorkspaceSnapshot({
+				toolUseId: event.tool_use_id,
+				sessionId: event.session_id,
+				root: CWD,
+			});
+		}
 	}
 	// Resolve graph for the file being edited (supports cross-repo edits)
 	const filePath = resolveEventFilePath(event);
@@ -364,6 +376,7 @@ export async function runPreToolPipeline(
 		ctx.errorHistory,
 		readSharedConfig(CWD),
 	);
+	appendShellSandboxAdvisory(event, session, preDecision, CWD);
 
 	// Async-deferred findings — deliver anything an off-critical-path
 	// check enqueued for this session as PreToolUse context.

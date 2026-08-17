@@ -71,6 +71,13 @@ export const GENERIC_TEST_HYGIENE_META: Record<string, CheckMeta> = {
 		tier: 2,
 		determinism: "heuristic",
 	},
+	test_legitimacy: {
+		name: "Test Legitimacy",
+		description:
+			"Requires per-case behavioral grounding for mutation-directed tests and flags broad truthiness, incidental call-order assertions, and explicitly private/internal imports.",
+		tier: 2,
+		determinism: "heuristic",
+	},
 	test_platform_conditional: {
 		name: "Platform-Conditional Test Assertion",
 		description:

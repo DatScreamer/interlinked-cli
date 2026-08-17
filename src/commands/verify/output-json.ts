@@ -309,6 +309,7 @@ export function outputJson(args: OutputJsonArgs): void {
 		mock_only_test: summarizeWithDetails(cq.mockOnlyTest),
 		happy_path_only_test: summarizeWithDetails(cq.happyPathOnlyTest),
 		introverted_test: summarizeWithDetails(cq.introvertedTest),
+		test_legitimacy: summarizeWithDetails(cq.testLegitimacy),
 		procfs_probe_in_test: summarizeWithDetails(cq.procfsProbeInTest),
 		// === Batch 5: cross-file (4 entries) ===
 		empty_body_handler: summarizeWithDetails(cq.emptyBodyHandler),

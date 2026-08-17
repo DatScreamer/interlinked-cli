@@ -19,6 +19,10 @@ function nonEmptyString(value: unknown): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function observedEffectPaths(event: HarnessEvent): string[] {
+	return event.change_set?.files.map((effect) => effect.path) ?? [];
+}
+
 /** Pick the raw `apply_patch` payload text from a tool_input. The hook-side
  *  normalizer accepts the patch under any of `command`, `patch`, `content`,
  *  or `_raw_patch` (see `lib/hooks-template.ts` — `command || patch ||
@@ -96,6 +100,8 @@ export function extractEditedFilePath(event: HarnessEvent): string | null {
  *  `apply_patch` payloads and from `files_modified` arrays the runner
  *  itself supplies. */
 export function extractAllEditedFilePaths(event: HarnessEvent): string[] {
+	const observedPaths = observedEffectPaths(event);
+	if (observedPaths.length > 0) return [...new Set(observedPaths)];
 	const explicitPath =
 		nonEmptyString(event.tool_input?.file_path) ??
 		nonEmptyString(event.tool_input?.filePath) ??

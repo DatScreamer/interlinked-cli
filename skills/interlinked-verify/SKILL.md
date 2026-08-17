@@ -13,7 +13,8 @@ Interlinked gates edits at **three moments**, and they run different check sets:
 - **Other PreToolUse guards** (real Edit/Write only): coverage, cyclomatic, CRAP, baseline —
   see **interlinked-quality-gates**; package/allowlist — see **interlinked-supply-chain**.
 - **PostToolUse** (after the write lands): external tools (tsc/biome/eslint/semgrep/gitleaks/…)
-  plus the inline check registry. **Warn only** — surfaced to you next turn.
+  plus the inline check registry. **Warn only** — surfaced to you next turn. Bash and unknown
+  writer tools are routed by their observed filesystem ChangeSet, not merely command parsing.
 
 `interlinked verify` is the **on-demand, whole-project** run of that same check catalog.
 
@@ -74,17 +75,55 @@ correctness/bug-class, agent-clarity, complexity, test-quality, comment/spec dri
   `write_without_mkdir`, `unvalidated_json_boundary`, `magic_literal_in_conditional`,
   `non_null_assertion` ratchet, `introverted_test`, …).
 
+**Test-file ladder.** A test edit is checked before it lands as well as after it lands. `pre_block`
+rejects only introduced deterministic theatre/sabotage: assertion-free cases, tautologies
+(including identical literals/constant truthiness), SUT self-mocking, focused cases, and
+unconditional skips. PreToolUse warnings immediately coach low-noise shapes such as removed test
+signals, duplicate names, real I/O, nondeterministic clocks/RNG, fixed waits, missing SUT imports,
+mock-only assertions, private-member access, silent dependency skips, and `test_legitimacy`.
+PostToolUse retains context-heavier review such as happy-path-only and introverted tests. A warning
+is not a pass; rewrite toward a precise observable behavior or document the real compatibility
+contract.
+
 **Default vs advisory.** Default-gate checks fire on every edit + default verify. Advisory
 checks (the `DEFAULT_ADVISORY_SKIPS` list — complexity, CRAP, DRY clones, `boolean_trap`,
-`write_without_mkdir`, `homedir_write_escape`, most `ubs_*`, Swift/test heuristics…) fire
+`write_without_mkdir`, `homedir_write_escape`, most `ubs_*`, Swift/test heuristics,
+`conditional_empty_object_spread`, `unknown_type_alias`…) fire
 **only** under `verify --all-checks`. `unvalidated_json_boundary` was PROMOTED to the
 default gate 2026-08-10 after the boundary-parser sweep took the repo to 0 fires — expect
 it on ordinary edits: route parsed JSON through a local `parseX(v: unknown): X | null`
 (or an `isX` guard / `Array.isArray` gate) before field access. **"Advisory" ≠ silent** — an advisory check that fires at PostToolUse
 still warns; demoting a check doesn't stop it warning on edits. Fix the detector, not the list.
 
-Every finding is tagged `[proven]` (a real tool ran it — fix it) or `[heuristic]` (regex/AST
-shape — evaluate it). See **interlinked-harness** for the suppression grammar
+`test_legitimacy` is one of those advisory test heuristics. It runs as immediate PreToolUse
+coaching and under `verify --all-checks`. For each case in a
+`*.mutation-kill.*`, `*.mutation-hardening.*`, or `*.survivor(s).*` JS/TS test, put an adjacent
+contract receipt immediately before the case:
+
+```ts
+// test-contract: boundary — parseWindow rejects the documented zero-width interval
+it("rejects a zero-width interval", () => { /* precise public-behavior assertion */ });
+```
+
+Kinds are `public-api`, `invariant`, `bug`, `security`, or `boundary`; the rationale must be
+specific, not “kills the mutant.” The check also reviews broad `toBeTruthy`/`toBeFalsy`,
+incidental call-order assertions, and explicitly private/internal imports, including multiline
+named imports such as `__test_only__`. Cast-based private-member access is a companion warning. These shapes are not
+automatically wrong, so this check stays heuristic: exact CLI/help/policy strings are legitimate
+compatibility assertions, while unpromised internal formatting usually is not.
+
+Two newer TS type-discipline advisories, both AST-parsed and both `[heuristic]`:
+
+- **`unknown_type_alias`** — a named alias resolving to exactly `unknown`, chased through
+  same-file non-generic aliases (`type Foo = unknown; type Bar = Foo;` flags both). Name the
+  real shape, or keep `unknown` at the boundary and narrow with a parser/guard.
+- **`conditional_empty_object_spread`** — `{ ...(cond ? {} : { field: v }) }`, the spread-a-
+  ternary trick for omitting a field. The idiomatic guarded passthrough
+  `guard ? { key: guard } : {}` is exempt.
+
+Both degrade to silence when `typescript` is absent. Every finding is tagged `[proven]` (a real
+tool ran it — fix it) or `[heuristic]` (regex/AST shape — evaluate it). See
+**interlinked-harness** for the suppression grammar
 (`// interlinked-ignore: <check> — reason` / `verify-suppressions.json`).
 
 ## Landing multi-file edits (the ordering rule)
@@ -94,14 +133,16 @@ multi-edit` runs **biome + tsc only** (no `pre_block` — it does *not* screen f
 
 ```bash
 interlinked write <path> --stdin                 # single gated write, content on stdin
-interlinked write --batch <manifest.json>        # atomic multi-file write
+interlinked write --batch <manifest.json>        # gated batch with rollback protection
 interlinked multi-edit <path> --stdin            # single-file old→new edits
 interlinked multi-edit --manifest <file>         # single- or multi-file edits
 interlinked verify-changeset --file <cs.json>    # preview the gate, write nothing
 ```
 - **`write --batch` manifest:** `{ "version": 1, "writes": [ { "path", "content" }, … ] }`.
-  Transactional — the gate sees all files before any write; any blocking failure ⇒ nothing
-  written.
+  The gate sees all final contents before any write, so a blocking finding writes nothing. Commit
+  uses per-file atomic renames, preserves existing target modes, and performs best-effort rollback
+  if a later rename fails; POSIX provides no literal multi-file atomic rename, and an incomplete
+  rollback is reported explicitly.
 - **`multi-edit` manifest:** `{ "version": 1, "edits": [ { "old_string", "new_string" }, … ] }`
   (path = positional arg), or `{ "version": 1, "batches": [ { "path", "edits": […] } ] }`.
   Edits apply in order to an in-memory buffer; the gate runs once on the final content.
@@ -139,6 +180,10 @@ Convention: one date-prefixed subdir per effort (`scratch/2026-07-19-<slug>/`). 
 - **Cross-file rename:** author all files → one `write --batch` with `{writes:[exporter,
   …importers]}` → single gate pass, no transient tsc error.
 - **One-off script:** `interlinked scratch init` (once) → write under `scratch/<date>-<slug>/`.
+- **Mutation-directed test review:** add a per-case `test-contract` receipt → run
+  `interlinked verify --all-checks --details` → resolve `test_legitimacy` together with the
+  existing assertion/mock/hermeticity findings → formally remeasure the source file. A killed
+  mutant is necessary evidence for that campaign, not proof that the test protects a real contract.
 
 ## Gotchas
 - Batch gate ≠ full edit gate — `write`/`multi-edit`/`verify-changeset` skip coverage,

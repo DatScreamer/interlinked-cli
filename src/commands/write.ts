@@ -12,14 +12,23 @@
 // Modes:
 //   - `interlinked write <path> --stdin`                   — single file, content via stdin
 //   - `interlinked write <path> --from-file <src>`          — single file, content from another file
-//   - `interlinked write --batch <manifest.json>`          — multi-file atomic batch
+//   - `interlinked write --batch <manifest.json>`          — gated batch with rollback protection
 //
 // Transactional semantics: the gate sees ALL files before any are written.
-// If any file fails, NO file is written. Successful batches commit via
-// temp-file + rename so partial-write states are never observable.
+// If a commit rename fails, already-renamed targets are restored on a
+// best-effort basis and any rollback failure is reported explicitly. Per-file
+// rename is atomic; POSIX does not provide a multi-file atomic commit.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import {
 	formatGateResult,
@@ -169,33 +178,109 @@ function validateTargetPath(targetPath: string, unsafeOutsideRepo: boolean): voi
 	}
 }
 
+function rejectDuplicateTargets(entries: readonly GateInputEntry[]): void {
+	const seen = new Set<string>();
+	for (const entry of entries) {
+		const absolute = resolve(entry.path);
+		if (seen.has(absolute)) {
+			throw new Error(`Batch contains the same target more than once: ${absolute}.`);
+		}
+		seen.add(absolute);
+	}
+}
+
 /**
  * Atomically write each entry: write to a sibling temp file, then rename into
- * place. Renames on the same filesystem are POSIX-atomic. If a write or
- * rename fails partway through, we attempt to remove any temp files we
- * created so the disk state stays clean.
+ * place. Renames on the same filesystem are POSIX-atomic. A multi-file batch
+ * is rollback-protected rather than literally atomic.
  */
+interface OriginalTarget {
+	path: string;
+	existed: boolean;
+	content: Buffer | null;
+	mode: number | null;
+}
+
+function captureOriginalTargets(entries: GateInputEntry[]): OriginalTarget[] {
+	return entries.map(({ path }) => {
+		const existed = existsSync(path);
+		return {
+			path,
+			existed,
+			content: existed ? readFileSync(path) : null,
+			mode: existed ? statSync(path).mode & 0o7777 : null,
+		};
+	});
+}
+
+function cleanupTempFiles(paths: string[]): void {
+	for (const path of paths) {
+		try {
+			if (existsSync(path)) unlinkSync(path);
+		} catch {
+			// Best-effort cleanup; the originating/rollback error is more useful.
+		}
+	}
+}
+
+function restoreTarget(original: OriginalTarget): void {
+	if (!original.existed || original.content === null) {
+		if (existsSync(original.path)) unlinkSync(original.path);
+		return;
+	}
+	const tmp = `${original.path}.interlinked-rollback-${randomUUID().slice(0, 8)}.tmp`;
+	try {
+		writeFileSync(tmp, original.content);
+		if (original.mode !== null) chmodSync(tmp, original.mode);
+		renameSync(tmp, original.path);
+	} catch (err) {
+		cleanupTempFiles([tmp]);
+		throw err;
+	}
+}
+
+function rollbackCommitted(originals: OriginalTarget[], committed: number): string[] {
+	const failures: string[] = [];
+	for (let i = committed - 1; i >= 0; i--) {
+		const original = nonNull(originals[i]);
+		try {
+			restoreTarget(original);
+		} catch (err) {
+			failures.push(
+				`${original.path}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	return failures;
+}
+
 function atomicWriteAll(entries: GateInputEntry[]): void {
 	const tmpPaths: string[] = [];
+	const originals = captureOriginalTargets(entries);
+	let committed = 0;
 	try {
 		// Phase 1: write all temps.
-		for (const { path, content } of entries) {
+		for (let i = 0; i < entries.length; i++) {
+			const { path, content } = nonNull(entries[i]);
 			const tmp = `${path}.interlinked-write-${randomUUID().slice(0, 8)}.tmp`;
-			writeFileSync(tmp, content, { encoding: "utf-8" });
 			tmpPaths.push(tmp);
+			writeFileSync(tmp, content, { encoding: "utf-8" });
+			const originalMode = nonNull(originals[i]).mode;
+			if (originalMode !== null) chmodSync(tmp, originalMode);
 		}
 		// Phase 2: rename all temps into place.
 		for (let i = 0; i < entries.length; i++) {
 			renameSync(nonNull(tmpPaths[i]), nonNull(entries[i]).path);
+			committed++;
 		}
 	} catch (err) {
-		// Best-effort cleanup of any temps left behind.
-		for (const tmp of tmpPaths) {
-			try {
-				if (existsSync(tmp)) unlinkSync(tmp);
-			} catch {
-				/* intentional: cleanup is best-effort */
-			}
+		const rollbackFailures = rollbackCommitted(originals, committed);
+		cleanupTempFiles(tmpPaths);
+		if (rollbackFailures.length > 0) {
+			const message = err instanceof Error ? err.message : String(err);
+			throw new Error(`${message}; rollback incomplete (${rollbackFailures.join("; ")})`, {
+				cause: err,
+			});
 		}
 		throw err;
 	}
@@ -284,6 +369,7 @@ export async function writeCommand(
 	// Validate each target path before the gate runs — paths outside the
 	// project root or system directories get rejected early, no gate work.
 	try {
+		rejectDuplicateTargets(entries);
 		for (const { path } of entries) {
 			validateTargetPath(path, opts.unsafeOutsideRepo === true);
 		}

@@ -72,7 +72,7 @@ function inlineGraphShardCheck(hookEvent, toolName, toolInput) {
                 reason:
                     "[interlinked:graph-pred][harness-offline] Cannot evaluate the graph-prediction protocol because the harness daemon is unreachable, but " +
                     abs + " has a fresh Supermodel shard colocated. Edits to E-fresh files MUST go through the predict/reveal/reconcile loop. " +
-                    "Start the harness with: interlinked harness start  (or restart it). Once it's up, retry your edit. " +
+                    "The daemon supervisor is recovering it — retry your edit in a few seconds. Do NOT start one by hand (concurrent starts race). " +
                     "Override (advanced, defeats the protocol): set INTERLINKED_DISABLE_GRAPH_SHARD_INLINE=1.",
                 rule_id: "graph-prediction-inline-fail-closed",
                 severity: "high",
@@ -441,7 +441,7 @@ function inlinePackageInstallCheck(hookEvent, toolName, toolInput) {
         decision: "block",
         reason:
             "[interlinked:supply-chain][harness-offline] Package install commands are blocked when the harness daemon is unreachable, because the allowlist gate can't run. " +
-            "Restart the harness with: interlinked harness start. Once it's up, retry — approved packages in .interlinked/package-allowlist.json will be allowed. " +
+            "The daemon supervisor is recovering it — retry in a few seconds (do NOT start one by hand; concurrent starts race). Approved packages in .interlinked/package-allowlist.json will be allowed. " +
             "Override for one command (advanced, bypasses the gate): set INTERLINKED_DISABLE_PACKAGE_GUARD=1.",
         rule_id: "supply-chain-inline-fail-closed",
         severity: "high",

@@ -337,6 +337,7 @@ export {
 	checkMockOnlyTest,
 	checkRealIoInTests,
 	checkTestMissingSutImport,
+	checkTestLegitimacy,
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 } from "./checks/test-hygiene.js";

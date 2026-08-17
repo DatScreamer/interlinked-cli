@@ -1,15 +1,14 @@
 // Test-file hygiene checks — test-quality family (Batch 2).
 //
-// The "the test is weak" group: detectors that fire on test files where a
-// case is a duplicate of another, the file never imports its own SUT, the test
-// mocks the very thing it claims to verify, every assertion checks only mock
-// interactions, or the whole file only ever asserts a success path. All are
-// <1ms regex-based.
+// The "the test is weak" group: detectors that fire on test files where a case
+// duplicates another, the file never imports its own SUT, the test mocks the
+// thing it claims to verify, every assertion checks only mock interactions, or
+// the whole file only ever asserts a success path. All are <1ms regex-based.
 //
-// Public symbols are re-exported from `test-hygiene.ts` (the barrel) so the
-// check registry and every importer stay unchanged.
+// Public symbols are re-exported from the `test-hygiene.ts` barrel, so the check registry and every importer stay unchanged.
 
 import { nonNull } from "../../lib/non-null.js";
+import { MUTATION_DIRECTED_SUFFIX } from "./test-legitimacy.js";
 import {
 	getExtension,
 	type InlineMatch,
@@ -230,11 +229,12 @@ export function checkDuplicateTestNames(content: string, filePath: string): Inli
 // ==========================================================================
 // 5. Test file missing SUT import
 // ==========================================================================
-// `foo.test.ts` should import something resembling `./foo`. Without that,
-// the test almost certainly isn't testing what its name claims.
-// Conservative: only fires if NO relative import in the file matches the
-// SUT basename — type-only imports / namespace imports / re-exports all
-// count.
+// `foo.test.ts` should import something resembling `./foo`. Without that, the test
+// almost certainly isn't testing what its name claims. Conservative: only fires if NO
+// relative import matches the SUT basename (type-only / namespace / re-export all count).
+// The basename also drops the mutation-directed suffix chain, one grammar shared with
+// MUTATION_DIRECTED_PATH: `foo.mutation-kill.test.ts` names SUT `foo`, and looking for the
+// phantom `./foo.mutation-kill` false-fired on every such suite in the tree (followup #24).
 
 /** Public API — flags test files that don't import their SUT. */
 export function checkTestMissingSutImport(content: string, filePath: string): InlineMatch[] {
@@ -244,9 +244,9 @@ export function checkTestMissingSutImport(content: string, filePath: string): In
 
 	const norm = filePath.replace(/\\/g, "/");
 	const fileName = norm.split("/").pop() || "";
-	const sutBase = fileName.replace(/\.(test|spec)\.(tsx?|jsx?|mjs|cjs)$/, "");
-	if (!sutBase || sutBase === fileName) return [];
-	if (sutBase === "index") return [];
+	const stripped = fileName.replace(/\.(test|spec)\.(tsx?|jsx?|mjs|cjs)$/, "");
+	const sutBase = stripped.replace(MUTATION_DIRECTED_SUFFIX, "");
+	if (!sutBase || stripped === fileName || sutBase === "index") return [];
 	if (norm.includes("__fixtures__/") || norm.includes("/__mocks__/")) return [];
 
 	// Build a pattern that looks for the SUT in any relative import — quote

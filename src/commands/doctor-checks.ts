@@ -25,6 +25,7 @@ import {
 } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
 import { readGuardDisable } from "../lib/guard-state.js";
+import { isInterlinkedHookCommand } from "../lib/hook-ownership.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { isJsonObject } from "../lib/json-types.js";
 import {
@@ -33,6 +34,7 @@ import {
 	validateSettingsFile,
 } from "../lib/settings-validator.js";
 import { runSystemChecks } from "./doctor-system.js";
+import { harnessServerRow } from "./harness-liveness.js";
 import { isHarnessRunning } from "./harness.js";
 
 /**
@@ -254,9 +256,15 @@ export function hookVersionChecks(cwd: string, fix: boolean): CheckResult[] {
 	}
 }
 
-/** Build the per-client hooks CheckResult from a settings file's content. */
+/** Build the per-client hooks CheckResult from a settings file's content.
+ *  Asks the SAME predicate every installer and cleanup path uses
+ *  (`hook-ownership.ts::HOOK_COMMAND_MARKERS`) instead of re-stating a marker
+ *  here. The hardcoded `"interlinked-activity"` it replaces was a confirmed
+ *  false-negative (audit F3): `enable` writes `hook-entry.js` commands that
+ *  never contain that substring, so doctor told users with a correct install
+ *  to re-run a command that could not change the outcome. */
 function clientHookResult(clientName: string, content: string): CheckResult {
-	if (content.includes("interlinked-activity")) {
+	if (isInterlinkedHookCommand(content)) {
 		return { name: `${clientName} hooks`, status: "pass", message: "Hooks installed" };
 	}
 	return {
@@ -439,7 +447,14 @@ function guardStandDownChecks(configDir: string): CheckResult[] {
 	];
 }
 
-export function harnessChecks(cwd: string, configDir: string): CheckResult[] {
+/** `socketAnswered` is the caller's ROUND-TRIP result (`probeHarnessSocket`).
+ *  Omitting it keeps the pre-probe wording — a caller that cannot await must
+ *  not have a verdict invented for it. */
+export function harnessChecks(
+	cwd: string,
+	configDir: string,
+	socketAnswered?: boolean,
+): CheckResult[] {
 	const out: CheckResult[] = [];
 	out.push(...guardStandDownChecks(configDir));
 
@@ -450,29 +465,18 @@ export function harnessChecks(cwd: string, configDir: string): CheckResult[] {
 		message: `${process.version} (${process.execPath})`,
 	});
 
-	// 10. Harness server
+	// 10. Harness server — a live pid is not evidence that anything is
+	// listening; `socketAnswered` is what separates running from ZOMBIE.
 	const harnessStatus = isHarnessRunning(cwd);
-	const socketExists = existsSync(join(configDir, "harness.sock"));
-	if (harnessStatus.running) {
-		out.push({
-			name: "Harness server",
-			status: "pass",
-			message: `Running (PID ${harnessStatus.pid})`,
-		});
-	} else if (socketExists) {
-		out.push({
-			name: "Harness server",
-			status: "warn",
-			message: "Stale socket found but process not running -- run 'interlinked harness start'",
-		});
-	} else {
-		out.push({
-			name: "Harness server",
-			status: "warn",
-			message:
-				"Not running -- guard evaluation uses inline fallback (5 checks vs 20+). Start: 'interlinked harness start'",
-		});
-	}
+	out.push({
+		name: "Harness server",
+		...harnessServerRow({
+			processRunning: harnessStatus.running,
+			pid: harnessStatus.pid,
+			socketExists: existsSync(join(configDir, "harness.sock")),
+			socketAnswered,
+		}),
+	});
 
 	// 11. Guard rules
 	if (existsSync(join(configDir, "guard-rules.json"))) {

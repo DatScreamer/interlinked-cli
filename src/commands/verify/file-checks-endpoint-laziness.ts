@@ -39,6 +39,7 @@ import {
 	checkStubNotImplementedThrow,
 	checkSyncIoOnHotPath,
 	checkTestMissingSutImport,
+	checkTestLegitimacy,
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 	checkTypeSmuggling,
@@ -178,6 +179,9 @@ export function runEndpointAndLazinessChecks(ctx: FileCheckContext): void {
 	);
 	r.introvertedTest.push(
 		...toIssues("introverted_test", relPath, checkIntrovertedTest(content, file)),
+	);
+	r.testLegitimacy.push(
+		...toIssues("test_legitimacy", relPath, checkTestLegitimacy(content, file)),
 	);
 	r.procfsProbeInTest.push(
 		...toIssues("procfs_probe_in_test", relPath, detectProcfsProbeInTest(content, file)),

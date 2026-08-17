@@ -29,6 +29,9 @@ const TRACKED_BASELINES = [
 	".interlinked/untested-files-baseline.json",
 	".interlinked/metric-caps.json",
 	".interlinked/skipped-tests-baseline.json",
+	// Mutation adjudication ledger (plan 18 M0) — committed sidecar; its monotonic
+	// detector lives in disposition-ledger-gate.ts and reaches here via detectBaselineGaming.
+	".interlinked/mutation-dispositions.json",
 ] as const;
 
 const GIT_TIMEOUT_MS = 1_500;

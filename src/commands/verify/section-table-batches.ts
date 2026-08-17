@@ -171,6 +171,14 @@ export const batchSections: readonly SectionSpec[] = [
 		color: "33",
 	},
 	{
+		label: "test legitimacy",
+		key: "testLegitimacy",
+		skipId: "test_legitimacy",
+		noun: "mutation-directed cases without a behavioral contract, or tests coupled to broad/private/incidental surfaces",
+		passLabel: "all mutation-directed cases are contract-grounded with precise public behavior assertions",
+		color: "33",
+	},
+	{
 		label: "procfs probes in tests",
 		key: "procfsProbeInTest",
 		skipId: "procfs_probe_in_test",

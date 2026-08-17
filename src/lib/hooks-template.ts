@@ -23,7 +23,6 @@ import { GUARDS_INLINE_CHUNK } from "./hook-template-chunks/guards-inline.js";
 import { PROVIDER_RESPONSES_CHUNK } from "./hook-template-chunks/provider-responses.js";
 import { REDACTION_CHUNK } from "./hook-template-chunks/redaction.js";
 import { SESSION_STATE_CHUNK } from "./hook-template-chunks/session-state.js";
-import { SKIP_PATHS_CHUNK } from "./hook-template-chunks/skip-paths.js";
 
 /**
  * Build the Interlinked activity hook script (`.mjs`) for the given version.
@@ -104,7 +103,6 @@ const SYNC_ERRORS_PATH = join(DATA_DIR, "sync-errors.jsonl");
 // Track active subagent for attribution
 let activeSubagent = null;
 
-${SKIP_PATHS_CHUNK}
 
 ${REDACTION_CHUNK}
 
@@ -682,42 +680,11 @@ ${PROVIDER_RESPONSES_CHUNK}
     const isUserPrompt = hookEvent === "UserPromptSubmit" || hookEvent === "BeforeAgent";
     let guardDecision = null;
 
-    // ===========================================
-    // Phase B.3 — Hook-side skip for excluded paths
-    // ===========================================
-    // For PostToolUse on file-edit tools: if the touched path matches the
-    // user's \`skip_paths\` config (e.g. dist/**, node_modules/**),
-    // short-circuit with the success shape BEFORE opening the daemon
-    // socket — saves ~5 ms per excluded edit and eliminates daemon CPU
-    // work entirely on the post-pipeline.
-    //
-    // PreToolUse is NOT skipped here, even if the path matches. The
-    // PreToolUse path runs deterministic guards (repo confinement,
-    // protected files, lockfile-tamper, destructive-pattern rules) that
-    // MUST fire regardless of skip_paths — \`skip_paths\` is meant to
-    // mute the noisy quality pipeline on generated/build output, not
-    // to disable safety enforcement on those same paths. Earlier
-    // versions short-circuited PreToolUse here, which let an Edit
-    // targeted at \`dist/foo.js\` (or any other matched path) bypass
-    // every pre_block rule unguarded.
-    //
-    // Lifecycle events (SessionStart, etc.) are NEVER skipped — the daemon
-    // needs them for state tracking.
-    if (isPostTool) {
-        const skipToolName = event.tool_name || rawInput.tool_name || null;
-        const skipToolInput = rawInput.tool_input || event.tool_input || null;
-        const skipPath = extractFilePath(skipToolName, skipToolInput);
-        if (skipPath && matchesSkipPath(skipPath)) {
-            emitSkipDebug(skipPath, hookEvent);
-            // For PostToolUse, route through formatProviderResponse so
-            // Claude / Copilot / Codex / Cursor each see their expected
-            // shape. The summary documents that the path was skipped.
-            console.log(JSON.stringify(formatProviderResponse("post_success", {
-                summary: "[interlinked:skip] path matched skip_paths",
-            })));
-            process.exit(0);
-        }
-    }
+    // PostToolUse skip_paths is intentionally resolved by the daemon after it
+    // observes the filesystem ChangeSet. A hook-side shortcut based on the
+    // tool-declared path can miss additional effects from Bash, apply_patch,
+    // formatters, or unfamiliar writer tools. PreToolUse likewise always runs
+    // deterministic safety guards regardless of skip_paths.
 
     // ===========================================
     // UserPromptSubmit: forward to harness for PII scan
@@ -887,32 +854,31 @@ ${PROVIDER_RESPONSES_CHUNK}
     // Phase 1 failure-recovery: every PostToolUse / PostToolUseFailure with
     // tool_outcome === "error" must reach the harness, regardless of tool
     // class — Channels 1/2/3/6 (recurrence, triage, recovery, explanation)
-    // are tool-agnostic and need to see Bash/Read/Grep failures too. The
-    // mutationTools gate below now only short-circuits *successful*
-    // non-mutation Post events (where the harness has nothing to check).
-    const mutationTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "WriteFile", "EditFile", "write_file", "edit_file", "apply_patch", "create_file", "str_replace"]);
+    // are tool-agnostic and need to see Bash/Read/Grep failures too. Only
+    // known read-only tools may fast-path. Unknown tools reach the daemon
+    // by default: a new writer must not reopen the bypass merely by using an
+    // unfamiliar name. Shell effects are likewise judged from the observed
+    // ChangeSet, not the command parser.
+    const knownReadOnlyPostTools = new Set(["Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoRead", "NotebookRead", "ListFiles"]);
     // skipPostCheck: legacy gate kept disarmed so Phase 1 channels see every
     // failure. Any future "skip on this combo" logic threads through here.
     const skipPostCheck = false;
 
-    // Fast-path: a SUCCESSFUL PostToolUse on a non-mutation tool (Bash that
-    // exited 0, Read that returned content, Grep with results) — capture
-    // locally, skip the harness round-trip. The pipeline only does
-    // tsc/lint/structural on file edits, so for successful Bash/Read/Grep
-    // the round-trip is pure latency. Critically, the gate now also checks
-    // event.tool_outcome — failed Bash (tool_outcome === "error") must
-    // reach the harness for Channels 1/2/3/6 to surface triage + recurrence.
+    // Fast-path: a successful PostToolUse on a known non-writing tool (for
+    // example Read or Grep) is captured locally and skips the daemon. Bash is
+    // deliberately excluded from this fast path even when it exits 0 because
+    // only a post-call filesystem comparison can establish its actual effects.
     const postToolName = event.tool_name || rawInput.tool_name || "";
-    const isMutationPost = mutationTools.has(postToolName);
+    const isKnownReadOnlyPost = knownReadOnlyPostTools.has(postToolName);
     const postOutcomeIsError = event.tool_outcome === "error";
-    if (isPostTool && !isMutationPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure") {
+    if (isPostTool && isKnownReadOnlyPost && !postOutcomeIsError && hookEvent !== "PostToolUseFailure") {
         appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, projectKey);
         appendCollectionRecord(event, DATA_DIR);
         updateSessionState(sessionId, agentName, event);
         // Provide the empty success response so the agent's UI doesn't
         // think the hook failed. Format-aware so Cursor/Codex/Copilot
         // each see their expected envelope. No summary: a content-free
-        // "observed" line on every Bash/Read/Grep/WebFetch is pure
+        // "observed" line on every Read/Grep/WebFetch is pure
         // context noise — the harness ran nothing, so there's nothing
         // to tell the model. The empty envelope keeps the validator
         // (Claude Code's hookEventName check) happy.

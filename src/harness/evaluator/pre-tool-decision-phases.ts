@@ -54,6 +54,7 @@ import {
 	evaluateErrorMemory,
 	evaluatePermissionPatternDetection,
 } from "./pre-tool-phases.js";
+import { dropAcknowledgedFindings } from "./sequence-deferral.js";
 import { evaluateTaintGuards } from "./taint-guards.js";
 import {
 	isBash,
@@ -121,11 +122,15 @@ export function evaluateSequenceAndLockdown(
 	// upgraded — avoid double-rendering the same detector at both tiers.
 	const upgradedIds = new Set(lockdownResult.upgradedFindings.map((f) => f.detector_id));
 	const remainingPreWarn = preWarnFindings.filter((f) => !upgradedIds.has(f.detector_id));
-	const finalPreBlock = [
-		...preBlockFindings,
-		...lockdownResult.upgradedFindings,
-		...lockdownResult.emittedFindings,
-	];
+	// A pre_block message that documents `// interlinked: defer <id>` must honor
+	// it, or the hatch is decoration: a latched detector then blocks every
+	// remaining call of the session (lived 2026-08-16, secret_read_then_network_call).
+	// The marker must name the exact detector id, and every drop is logged.
+	const finalPreBlock = dropAcknowledgedFindings(
+		[...preBlockFindings, ...lockdownResult.upgradedFindings, ...lockdownResult.emittedFindings],
+		event,
+		warnings,
+	);
 	const blockFinding = finalPreBlock[0];
 	if (blockFinding) {
 		return {

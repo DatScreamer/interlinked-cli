@@ -28,6 +28,7 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { detectDropperStaging } from "./dropper-staging.js";
+import { hasPublicHttpUrl } from "./network-hosts.js";
 
 const ESCALATION_TAIL_LENGTH = 10;
 const LARGE_READ_SIZE_MB = 10;
@@ -415,7 +416,9 @@ export function evaluateMarkdownFirstCurlGuard(cmd: string): string[] {
 	const warnings: string[] = [];
 	if (
 		/\b(curl|wget)\b/.test(cmd) &&
-		/https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(cmd) &&
+		// Public egress only — the Markdown-for-Agents edge is a public feature,
+		// so loopback/tailnet/LAN health polls must not be nudged (2026-08-11).
+		hasPublicHttpUrl(cmd) &&
 		!/Accept:\s*text\/markdown/i.test(cmd) &&
 		!/-H\s+["']Content-Type:\s*application\/json/i.test(cmd) &&
 		!/-X\s+(POST|PUT|PATCH|DELETE)\b/i.test(cmd) &&

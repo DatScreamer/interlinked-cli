@@ -72,7 +72,7 @@ export const TASTE_ENTRIES: CheckRegistration[] = [
 	},
 	{
 		id: "private_member_test_access",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Private Member Test Access",
 		description: "Tests reaching past the public API via `as any` or `__private`",
 		tier: 2,

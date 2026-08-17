@@ -25,6 +25,8 @@ import {
 	systemChecks,
 } from "./doctor-checks.js";
 import { skillInstallationChecks } from "./doctor-skills.js";
+import { probeHarnessLive } from "./harness-liveness.js";
+import { isHarnessRunning } from "./harness.js";
 
 /** Minimal structural view of the health-check result fields doctor reads. */
 interface ServerHealth {
@@ -206,7 +208,11 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// ===========================================
 	// Harness Checks (9–11): Node runtime + harness server + guard rules
 	// ===========================================
-	results.push(...harnessChecks(cwd, configDir));
+	// Probe the socket for real before judging the daemon: a live pid proves
+	// only that a process exists, and the process that answers nothing is the
+	// one users most need to be told about (audit F1).
+	const harnessAnswered = await probeHarnessLive(cwd, isHarnessRunning(cwd).running);
+	results.push(...harnessChecks(cwd, configDir, harnessAnswered));
 
 	// 12. Adoption artifacts — are the ratchet baselines + trigram index
 	// present (and the coverage baseline non-empty)? Missing artifacts mean

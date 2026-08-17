@@ -6,6 +6,7 @@
 // Hook events from coding agents, agent classification, and the wire event.
 
 import type { JsonObject } from "../../lib/json-types.js";
+import type { WorkspaceChangeSet } from "../workspace-effects.js";
 
 // ===========================================
 // Determinism Classification
@@ -98,6 +99,13 @@ export interface HarnessEvent {
 	 *  orders, `event_id` identifies a delivery. */
 	event_id?: string;
 	files_modified?: string[];
+	/** Canonical observed filesystem effects for this completed tool call.
+	 * Populated by the daemon from before/after repository snapshots; unlike
+	 * `files_modified`, it is evidence rather than a runner declaration. */
+	change_set?: WorkspaceChangeSet;
+	/** Sandbox evidence visible to the hook. Configured is intentionally weaker
+	 * than per-call attestation. */
+	sandbox_evidence?: "attested" | "configured" | "disabled" | "unknown";
 
 	// Canonical post-event outcome fields — populated by `deriveToolOutcome`
 	// in `src/lib/hook-template-chunks/event-normalizers.ts` and forwarded

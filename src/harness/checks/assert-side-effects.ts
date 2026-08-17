@@ -344,7 +344,13 @@ export function checkCAssertSideEffects(content: string, filePath: string): Inli
 
 // ─── Python — `ubs_python_assert_side_effect` ─────────────────────────────────
 
-const PY_ASSERT_LINE_RE = /^\s*assert\s+(.+)$/;
+// `\r?` before the anchor tolerates a CRLF-terminated line: `content.split("\n")`
+// leaves a trailing "\r" on every non-final line of a CRLF file, and `.`
+// never matches a line terminator (which includes "\r"), so a bare `(.+)$`
+// could never match such a line at all — a real bug that silently made this
+// detector blind to CRLF-encoded Python files (found via mutation testing,
+// 2026-08-12).
+const PY_ASSERT_LINE_RE = /^\s*assert\s+(.+)\r?$/;
 
 const PY_MESSAGE =
 	"ubs_python_assert_side_effect: side effect inside an assert statement — `python -O` strips asserts, so the call never runs in optimized deployments; hoist it out of the assert";

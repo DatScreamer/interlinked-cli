@@ -36,6 +36,7 @@ import type {
 	SessionTrajectory,
 } from "../types.js";
 import { evaluateEditContractPhase } from "./edit-contract-phase.js";
+import { evaluateMutationDirectedProfile } from "./mutation-directed-guard.js";
 import {
 	drainPendingSessionWarnings,
 	evaluateCurlMcpPhase,
@@ -58,6 +59,7 @@ import {
 	evaluateWriteContent,
 	type PreToolCtx,
 } from "./pre-tool-decision-phases.js";
+import { evaluateInterpreterWriteGuard } from "./interpreter-write-guard.js";
 import {
 	evaluateBaselineIntegrityGate,
 	evaluateConfigLooseningGate,
@@ -174,6 +176,11 @@ export function evaluatePreToolUse(
 		() => evaluateGitScopeGate(event, rules, session, toolName, toolInput, warnings),
 		// Destructive patterns — Bash/Write/Edit + Bash-routed write bypass.
 		() => evaluateDestructiveRules(event, rules, session, warnings),
+		// Inline-interpreter writes into repo source (`python3 - <<EOF … open(…,"w")`).
+		// MUST follow evaluateDestructiveRules: its Bash-routed write detector owns
+		// shell REDIRECTS (`> file`, `tee`, `sed -i`), so running second is what keeps
+		// the two gates from double-firing on one command.
+		() => evaluateInterpreterWriteGuard(event, toolName, toolInput, warnings),
 		// Protected files.
 		() => evaluateProtectedFilesGuard(toolName, toolInput, rules, warnings),
 		// Scratchpad/temp write policy — tmp-secrets block + authored-code
@@ -206,6 +213,11 @@ export function evaluatePreToolUse(
 		() => evaluateEditContractPhase(event, session, rules, toolName, toolInput, warnings),
 		// Write/Edit content validation.
 		() => evaluateWriteContent(event, session, rules, toolName, toolInput, warnings, ctx),
+		// Mutation-directed file-class severity profile (GATE 1 escalation +
+		// GATE 2 assertion-removal delta). No-op unless the write touches a
+		// MUTATION_DIRECTED_PATH file; block behavior is additionally gated
+		// behind mutation_directed_strict_profile (default off).
+		() => evaluateMutationDirectedProfile(event, rules, toolName, toolInput, warnings),
 		// WebFetch — exfiltration and safety.
 		() => evaluateWebFetchGuard(toolName, toolInput, warnings),
 		// Markdown-first web-fetching nudges (warning-only).

@@ -103,9 +103,22 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 				flags: "i",
 				executed_only: true,
 			},
+			{
+				// `for p in $(pgrep -f X); do kill "$p"; done` has the SAME blast
+				// radius as `pgrep -f X | xargs kill` — blocking one and not the
+				// other only pushed the agent into a one-PID-at-a-time loop with
+				// identical effect (measured 2026-08-11, 12 calls where 1 would
+				// do). Block the loop form too; the suggestion names the safe
+				// enumerate-confirm-kill path so the legitimate intent has a route.
+				field: "command",
+				regex: "\\bfor\\s+\\w+\\s+in\\s+\\$\\(\\s*pgrep\\b[^)]*\\)\\s*;?\\s*do\\b[^;]*\\bkill\\b",
+				flags: "i",
+				executed_only: true,
+			},
 		],
-		reason: "Pattern kills processes system-wide",
-		suggestion: "Use specific PID or port-based killing",
+		reason: "Pattern kills processes system-wide (same blast radius whether piped, substituted, or looped)",
+		suggestion:
+			"Enumerate, confirm, then kill: run `pgrep -fl '<pattern>'` first to SEE the matches are yours, then kill those exact PIDs — `kill <pid> <pid> …` (or `pgrep -f '<pattern>' | xargs -n1 kill` once you have verified the list). Listing first is the safe step the raw pipe skips.",
 		severity: "high",
 		category: "process-killing",
 	},

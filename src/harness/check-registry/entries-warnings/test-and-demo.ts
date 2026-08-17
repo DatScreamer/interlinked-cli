@@ -22,6 +22,7 @@ import {
 	checkSchemaTypeDrift,
 	checkSilentDemoFallback,
 	checkTestMissingSutImport,
+	checkTestLegitimacy,
 	checkTestNondeterminism,
 	checkTestSubprocessDefaultTimeout,
 } from "../../generic-checks.js";
@@ -34,7 +35,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 	// ========================================================================
 	{
 		id: "duplicate_test_names",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Duplicate Test Names",
 		description:
 			"Detects two `it()` / `test()` / `specify()` blocks with identical name strings within the same file — copy-paste-then-edit-half-of-it bug class.",
@@ -49,7 +50,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 	},
 	{
 		id: "real_io_in_tests",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Real Network / Filesystem in Tests",
 		description:
 			"Detects fetch / axios / http.request to a non-loopback URL or *Sync writes to non-tmp paths inside test files.",
@@ -58,13 +59,13 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 		severity: "warning",
 		pipeline: "agent_safety",
 		fix_instruction:
-			"Tests that hit the real network or real filesystem are flaky and slow. Mock the network with msw / nock / fetch-mock, and write only to os.tmpdir() / __fixtures__ / a memfs mock. Loopback (localhost / 127.0.0.1) is allowlisted for in-process test servers.",
+			"Tests that hit the real network or real filesystem are flaky and slow — and a real subprocess/fs/network call in a test can push it past a mutation runner's per-test dry-run cap (30s under Stryker here), which makes the whole file unmeasurable, not just slow. Mock the network with msw / nock / fetch-mock, and write only to os.tmpdir() / __fixtures__ / a memfs mock. Loopback (localhost / 127.0.0.1) is allowlisted for in-process test servers.",
 		fn: checkRealIoInTests,
 		resultsPropName: "realIoInTests",
 	},
 	{
 		id: "test_nondeterminism",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Test Nondeterminism",
 		description:
 			"Detects Date.now / new Date() / Math.random / crypto.randomUUID / performance.now in test bodies without vi.useFakeTimers / equivalent mocking.",
@@ -73,13 +74,13 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 		severity: "warning",
 		pipeline: "agent_safety",
 		fix_instruction:
-			"Tests that read the real clock / RNG flake under any timing or seed change. Replace Date.now / new Date() with vi.setSystemTime / a stubbed clock, and Math.random / crypto.randomUUID with a seeded RNG. If the file uses vi.useFakeTimers() at the top level, the check is suppressed for the whole file.",
+			"Tests that read the real clock / RNG flake under any timing or seed change. Replace Date.now / new Date() with vi.setSystemTime / a stubbed clock, and Math.random / crypto.randomUUID with a seeded RNG. If the file uses vi.useFakeTimers() at the top level, the check is suppressed for the whole file. Real-clock waits also slow the test under load — enough to breach a mutation runner's per-test dry-run cap (30s under Stryker here), which makes the whole file unmeasurable.",
 		fn: checkTestNondeterminism,
 		resultsPropName: "testNondeterminism",
 	},
 	{
 		id: "hardcoded_timeout_in_tests",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Hardcoded Timeout in Tests",
 		description:
 			"Detects `setTimeout(_, NNNN)` / `setImmediate(_, NNNN)` waits with non-zero literal millisecond delays inside test bodies — \"I gave up debugging the timing condition\" tell.",
@@ -94,7 +95,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 	},
 	{
 		id: "test_missing_sut_import",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Test Missing SUT Import",
 		description:
 			"Detects test files (`foo.test.ts`) that don't import their SUT (`./foo` / `../foo`). Strong signal the test is performative — not actually exercising what its name claims.",
@@ -109,7 +110,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 	},
 	{
 		id: "mocking_the_sut_self",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Mocking the SUT in Its Own Test",
 		description:
 			"Detects `vi.mock(\"./foo\")` / `jest.mock(\"./foo\")` inside `foo.test.ts` where the relative path resolves to the SUT itself.",
@@ -133,7 +134,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 		severity: "warning",
 		pipeline: "agent_safety",
 		fix_instruction:
-			"A test that shells out to tsc / biome / npx / tsx / eslint / vitest / the CLI but relies on the default `testTimeout` flakes under CI's worker cap — a cold tsc start alone can exceed the 10s default. Pass an explicit timeout via the vitest options object: `it(name, { timeout: 60_000, retry: 2 }, fn)`. The trailing-numeric form `it(name, fn, 60_000)` also works. Match the established pattern in write.test.ts / verify.test.ts.",
+			"A test that shells out to tsc / biome / npx / tsx / eslint / vitest / the CLI but relies on the default `testTimeout` flakes under CI's worker cap — a cold tsc start alone can exceed the 10s default. Pass an explicit timeout via the vitest options object: `it(name, { timeout: 60_000, retry: 2 }, fn)`. The trailing-numeric form `it(name, fn, 60_000)` also works. Match the established pattern in write.test.ts / verify.test.ts. Real subprocess spawns also breach a mutation runner's per-test dry-run cap under load (30s under Stryker here) — that times out the dry run and makes the whole file unmeasurable, so prefer mocking the spawn where the subprocess is not the thing under test.",
 		fn: checkTestSubprocessDefaultTimeout,
 		resultsPropName: "testSubprocessDefaultTimeout",
 	},
@@ -142,7 +143,7 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 	// ========================================================================
 	{
 		id: "mock_only_test",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Mock-Only Test",
 		description:
 			"Detects it() / test() blocks whose every assertion is a call-interaction matcher (toHaveBeenCalled* / toHaveReturned*) with no assertion on a return value, output, or state — a change-detector that verifies the call was made, not the behavior. Blocks whose call assertions are all negated (only `not.toHaveBeenCalled()`) are exempt.",
@@ -185,6 +186,22 @@ export const TEST_AND_DEMO_ENTRIES: CheckRegistration[] = [
 		fn: checkIntrovertedTest,
 		resultsPropName: "introvertedTest",
 		content_keywords: ["expect", "assert"],
+	},
+	{
+		id: "test_legitimacy",
+		phase: "pre_warn",
+		name: "Test Legitimacy",
+		description:
+			"Requires each mutation-directed test case to cite a public API, invariant, bug, security property, or boundary contract, and flags broad truthiness, incidental call-order assertions, and explicitly private/internal imports in JS/TS tests.",
+		tier: 2,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Ground each mutation-directed case with `// test-contract: <public-api|invariant|bug|security|boundary> — <specific reference or rationale>` immediately before the case. Prefer an exported/public surface and observable value or state. Replace broad truthiness and incidental call-order checks with precise behavioral assertions unless that exact shape is itself a documented contract.",
+		fn: checkTestLegitimacy,
+		resultsPropName: "testLegitimacy",
+		content_keywords: ["test", "it", "specify", "expect", "import", "require"],
 	},
 	{
 		id: "procfs_probe_in_test",

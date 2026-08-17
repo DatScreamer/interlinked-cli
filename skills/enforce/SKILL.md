@@ -556,7 +556,7 @@ Write `.interlinked/distilled-rules.json`:
 }
 ```
 
-The harness's `rules-loader.ts` reads this file alongside `guard-rules.json` and `guard-rules.local.json` and applies the overrides file (next section). The harness's `watchRulesFiles()` polls both distilled paths every ~2s, so changes are picked up automatically — no manual reload command exists. If the daemon appears stuck (e.g., crash log in `.interlinked/logs/daemon.log`), use `interlinked harness restart`.
+The harness's `rules-loader.ts` reads this file alongside `guard-rules.json` and `guard-rules.local.json` and applies the overrides file (next section). The harness's `watchRulesFiles()` polls both distilled paths every ~2s, so changes are picked up automatically — no manual reload command exists. If the daemon appears stuck, confirm with `interlinked harness status` before guessing: it round-trips the socket and reports `ZOMBIE` when a live PID is answering nothing (the state that looks exactly like "rules stopped reloading"). `.interlinked/daemon-events.jsonl` records why the last daemon left — a pre-listen startup failure exits 78 with `reason: "startup-failed"` — and `.interlinked/logs/daemon.log` holds any crash output. Either way the fix is `interlinked harness restart`.
 
 For `--review` mode: write to `.interlinked/distilled-rules.review.json` instead. The harness does not load `.review.json`; the user must run `/enforce --accept` to promote it.
 

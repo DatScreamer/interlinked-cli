@@ -94,6 +94,31 @@ const TAUTOLOGY_EXPECT =
 	/expect\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*\)\s*\.\s*(?:toBe|toEqual|toStrictEqual)\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*\)/g;
 const TAUTOLOGY_ASSERT =
 	/\bassert\s*\.\s*(?:equal|strictEqual|deepEqual|deepStrictEqual)\s*\(\s*([A-Za-z_$][\w$.[\]]*)\s*,\s*([A-Za-z_$][\w$.[\]]*)\s*\)/g;
+const SIMPLE_LITERAL = String.raw`(?:true|false|null|undefined|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`;
+const TAUTOLOGY_LITERAL_EXPECT = new RegExp(
+	String.raw`expect\s*\(\s*(${SIMPLE_LITERAL})\s*\)\s*\.\s*(?:toBe|toEqual|toStrictEqual)\s*\(\s*(${SIMPLE_LITERAL})\s*\)`,
+	"g",
+);
+const TRIVIAL_TRUTHINESS =
+	/expect\s*\(\s*true\s*\)\s*\.\s*toBeTruthy\s*\(\s*\)|expect\s*\(\s*false\s*\)\s*\.\s*toBeFalsy\s*\(\s*\)|\bassert(?:\.ok)?\s*\(\s*true\s*\)/g;
+
+function startsInCode(codeMask: string, index: number | undefined): boolean {
+	return (codeMask[index ?? 0] ?? " ").trim() !== "";
+}
+
+function hasEqualLiteralTautology(line: string, codeMask: string): boolean {
+	for (const match of line.matchAll(TAUTOLOGY_LITERAL_EXPECT)) {
+		if (match[1] === match[2] && startsInCode(codeMask, match.index)) return true;
+	}
+	return false;
+}
+
+function hasConstantTruthiness(line: string, codeMask: string): boolean {
+	for (const match of line.matchAll(TRIVIAL_TRUTHINESS)) {
+		if (startsInCode(codeMask, match.index)) return true;
+	}
+	return false;
+}
 
 function hasTautology(line: string): boolean {
 	for (const m of line.matchAll(TAUTOLOGY_EXPECT)) {
@@ -108,11 +133,19 @@ function hasTautology(line: string): boolean {
 export function checkTautologicalAssertion(content: string, filePath: string): InlineMatch[] {
 	if (!isTestFile(filePath)) return [];
 	const stripped = stripCommentsAndStrings(content);
+	const commentFree = stripComments(content);
 	const lines = content.split("\n");
 	const sLines = stripped.split("\n");
+	const cLines = commentFree.split("\n");
 	const matches: InlineMatch[] = [];
 	for (let i = 0; i < sLines.length && matches.length < 10; i++) {
-		if (hasTautology(nonNull(sLines[i]))) push(matches, i, lines, 10);
+		if (
+			hasTautology(nonNull(sLines[i])) ||
+			hasEqualLiteralTautology(nonNull(cLines[i]), nonNull(sLines[i])) ||
+			hasConstantTruthiness(nonNull(cLines[i]), nonNull(sLines[i]))
+		) {
+			push(matches, i, lines, 10);
+		}
 	}
 	return matches;
 }

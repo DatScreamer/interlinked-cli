@@ -221,6 +221,11 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// warn_review_findings: ingested review findings (interlinked
 		// findings ingest) with neither a touching edit nor an ack.
 		warn_review_findings: true,
+		// warn_slow_tests: a test observed running slower than expected this
+		// session (measurement integrity, slow-test-stop-check.ts) — a slow
+		// test can time out Stryker's mutation dry run and poison
+		// kill-measurement for its whole file.
+		warn_slow_tests: true,
 	},
 	// Cross-file spec fact ledger (docs/design/spec-audit-runtime-checks.md
 	// §3.2): markdown edits get drift warnings vs the repo-wide fact ledger.

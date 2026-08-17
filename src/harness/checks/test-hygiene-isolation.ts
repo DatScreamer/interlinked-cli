@@ -23,6 +23,19 @@ import {
 	stripPreservingOffsets,
 } from "./test-hygiene-shared.js";
 
+// Sandbox-fragility framing (measurement integrity — bug #13,
+// scratch/fleet-r3/repair-followups.txt): a real fs write, a real timer, or
+// a real subprocess spawn inside a test is not just flaky under CI — it can
+// also time out Stryker's mutation dry run (30s per-test cap,
+// vitest.stryker.config.ts) and poison kill-measurement for the whole file
+// the test lives in. Appended to the relevant messages below so the fault
+// surfaces on the EDIT path, before any measurement ever runs. Defined once
+// so the detectors stay word-for-word identical rather than four
+// independently-drifting copies (see slow-test-stop-check.ts for the
+// Stop-time counterpart that catches this from measured durations).
+const SANDBOX_FRAGILITY_NOTE =
+	"Also risks timing out Stryker's mutation dry run (30s/test cap) and poisoning kill-measurement for the whole file.";
+
 // ==========================================================================
 // 2. Real network / filesystem in tests
 // ==========================================================================
@@ -99,7 +112,7 @@ export function checkRealIoInTests(content: string, filePath: string): InlineMat
 				if (!isLocalHelper && !TMP_PATH_RE.test(target) && !target.startsWith("/tmp")) {
 					matches.push({
 						line: i + 1,
-						text: `test writes to real filesystem path "${target.slice(0, 80)}". Use os.tmpdir() / a __fixtures__ dir / a memfs mock.`,
+						text: `test writes to real filesystem path "${target.slice(0, 80)}". Use os.tmpdir() / a __fixtures__ dir / a memfs mock. ${SANDBOX_FRAGILITY_NOTE}`,
 					});
 				}
 			}
@@ -221,7 +234,7 @@ export function checkTestNondeterminism(content: string, filePath: string): Inli
 		if (isUniqueNameBuilderLine(nonNull(original[i]), assertLines)) continue;
 		matches.push({
 			line: i + 1,
-			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${nonNull(original[i]).trim().slice(0, 80)}`,
+			text: `test uses ${m[0].replace(/\s+/g, "")} without mocking — use vi.setSystemTime / vi.useFakeTimers / a stubbed clock. ${nonNull(original[i]).trim().slice(0, 80)} ${SANDBOX_FRAGILITY_NOTE}`,
 		});
 	}
 	return matches;
@@ -258,7 +271,7 @@ export function checkHardcodedTimeoutInTests(
 		const ms = nonNull(m[1]);
 		matches.push({
 			line: i + 1,
-			text: `hardcoded ${ms}ms wait in test — fix the timing condition (vi.waitFor / poll a deterministic predicate) instead of adding sleep. ${nonNull(original[i]).trim().slice(0, 80)}`,
+			text: `hardcoded ${ms}ms wait in test — fix the timing condition (vi.waitFor / poll a deterministic predicate) instead of adding sleep. ${nonNull(original[i]).trim().slice(0, 80)} ${SANDBOX_FRAGILITY_NOTE}`,
 		});
 	}
 	return matches;
@@ -337,7 +350,7 @@ export function checkTestSubprocessDefaultTimeout(
 			const lineIdx = (stripped.slice(0, m.index).match(/\n/g) || []).length;
 			matches.push({
 				line: lineIdx + 1,
-				text: `\`${callName}(...)\` spawns a known-slow subprocess (tsc / biome / npx / tsx / eslint / vitest / the CLI) but has no explicit timeout — under CI's worker cap a cold start can exceed the default testTimeout and flake. Pass an options object: \`${callName}(name, { timeout: 60_000 }, fn)\`.`,
+				text: `\`${callName}(...)\` spawns a known-slow subprocess (tsc / biome / npx / tsx / eslint / vitest / the CLI) but has no explicit timeout — under CI's worker cap a cold start can exceed the default testTimeout and flake. Pass an options object: \`${callName}(name, { timeout: 60_000 }, fn)\`. ${SANDBOX_FRAGILITY_NOTE}`,
 			});
 		}
 		m = IT_TEST_OPEN_RE.exec(stripped);

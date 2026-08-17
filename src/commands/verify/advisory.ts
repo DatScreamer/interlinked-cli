@@ -248,6 +248,10 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// v0-limited, so it stays silent on uncertainty but can still miss/over-fire
 	// on unusual SUT-reach patterns. PostToolUse-warn while the FP rate is watched.
 	"introverted_test",
+	// Mutation score cannot prove that a call-order or internal-surface
+	// assertion represents a supported behavior. Keep the review heuristic
+	// visible under --all-checks until cross-repo FP data supports promotion.
+	"test_legitimacy",
 	// procfs_probe_in_test: a /proc path literal in a test hangs Linux CI, but the
 	// literal alone cannot prove intent — an assertion string or a fixture list
 	// that happens to BE a procfs path reads the same as a probe. Advisory (the
@@ -474,6 +478,16 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// top_level_side_effect: column-0 proxy for top-level + name regex; FPs on
 	// single-line function definitions whose body names a side-effect call.
 	"top_level_side_effect",
+	// === Type-discipline wave (2026-08-14) — ported from dmmulroy/anti-slop,
+	// detection algorithm only (docs/external-pulse/anti-slop.md) ===
+	// conditional_empty_object_spread: exact ternary-with-empty-object-branch
+	// match, but "is this bad" is a taste call — some ternary spreads read
+	// fine at the call site. Advisory pending dogfood FP calibration.
+	"conditional_empty_object_spread",
+	// unknown_type_alias: exact same-file alias-chain resolution to `unknown`,
+	// but a named alias for `unknown` is occasionally deliberate (documented
+	// boundary type). Advisory pending dogfood FP calibration.
+	"unknown_type_alias",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */

@@ -50,6 +50,35 @@ export function pushWarnings(decision: HarnessDecision, ...msgs: string[]): void
 	decision.warnings.push(...msgs);
 }
 
+function pathsForDirtyUpdate(event: HarnessEvent): string[] {
+	const observed = event.change_set?.files.map((effect) => effect.path) ?? [];
+	if (observed.length > 0) return observed;
+	const editedPath = typeof event.tool_input?.file_path === "string"
+		? event.tool_input.file_path
+		: "";
+	return FILE_WRITE_TOOLS.includes(event.tool_name || "") && editedPath ? [editedPath] : [];
+}
+
+function updateIndexedPath(ctx: ServerRuntime, editedPath: string): void {
+	try {
+		const absPath = editedPath.startsWith("/") ? editedPath : join(ctx.cwd, editedPath);
+		const relPath = relative(ctx.cwd, absPath);
+		if (relPath.startsWith("..")) return;
+		if (!existsSync(absPath)) {
+			ctx.trigramIndex?.updateFile(relPath, null);
+			ctx.fileContentCache.invalidate(relPath);
+			ctx.log(`Trigram index dirty delete: ${relPath}`);
+			return;
+		}
+		const content = readFileSync(absPath, "utf-8");
+		ctx.trigramIndex?.updateFile(relPath, content);
+		ctx.fileContentCache.set(relPath, content);
+		ctx.log(`Trigram index dirty update: ${relPath}`);
+	} catch (e) {
+		void e;
+	}
+}
+
 /**
  * Dirty layer: keep the trigram index + content cache fresh for a file the
  * agent just wrote, so its own edits are immediately searchable. No-op when
@@ -57,21 +86,7 @@ export function pushWarnings(decision: HarnessDecision, ...msgs: string[]): void
  */
 export function updateTrigramDirtyLayer(ctx: ServerRuntime, event: HarnessEvent): void {
 	if (!ctx.trigramIndex) return;
-	const editedPath = (event.tool_input?.file_path as string) || "";
-	const toolName = event.tool_name || "";
-	if (!FILE_WRITE_TOOLS.includes(toolName) || !editedPath) return;
-	try {
-		const absPath = editedPath.startsWith("/") ? editedPath : join(ctx.cwd, editedPath);
-		const relPath = relative(ctx.cwd, absPath);
-		if (existsSync(absPath) && !relPath.startsWith("..")) {
-			const content = readFileSync(absPath, "utf-8");
-			ctx.trigramIndex.updateFile(relPath, content);
-			ctx.fileContentCache.set(relPath, content);
-			ctx.log(`Trigram index dirty update: ${relPath}`);
-		}
-	} catch (e) {
-		void e;
-	}
+	for (const editedPath of pathsForDirtyUpdate(event)) updateIndexedPath(ctx, editedPath);
 }
 
 /**

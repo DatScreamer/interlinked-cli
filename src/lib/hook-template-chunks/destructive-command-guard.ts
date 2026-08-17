@@ -112,7 +112,8 @@ function dcgCheckSleep(cmd: string): DestructiveCommandVerdict | null {
 	if (/^\s*(sleep|bash\s+-c\s+.*sleep)\s+/i.test(cmd) || /;\s*sleep\s+/i.test(cmd)) {
 		return {
 			decision: "block",
-			reason: "Do not use bash sleep. Use the wait_for_work MCP tool instead.",
+			reason:
+			"Avoid foreground sleep to wait on a condition. To wait for a command, run it with run_in_background. To wait for a condition, use the Monitor tool with an until-loop (until <check>; do sleep 2; done).",
 		};
 	}
 	return null;
@@ -386,7 +387,11 @@ function dcgCheckSystemLevel(cmd: string): DestructiveCommandVerdict | null {
  *  template (see DESTRUCTIVE_COMMAND_GUARD_SOURCE). */
 function dcgCheckRemoteExecution(cmd: string): DestructiveCommandVerdict | null {
 	const fetchVerb = "(?:curl|wget|fetch)";
-	const sink = "(?:sudo\\s+)?(?:(?:ba|z|k|da)?sh|python3?|perl|ruby|node|php)";
+	// Interpreter + an inline-code flag cluster (-c, -e, -r, -ne, -pe) means the
+	// pipe is DATA and the program is the argv literal; exempt it (2026-08-11).
+	// Shells have no exemption (they always execute stdin).
+	const sink =
+		"(?:sudo\\s+)?(?:(?:ba|z|k|da)?sh|(?:python3?|perl|ruby|node|php)(?!\\s+-[a-zA-Z]*[cerm]\\b))";
 	const piped = new RegExp("\\b" + fetchVerb + "\\b[^|]*\\|\\s*" + sink + "\\b", "i");
 	const subst = new RegExp("\\b" + sink + "\\b\\s*<\\(\\s*[^)]*\\b" + fetchVerb + "\\b", "i");
 	if (!piped.test(cmd) && !subst.test(cmd)) return null;

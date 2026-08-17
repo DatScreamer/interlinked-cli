@@ -37,6 +37,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
+import { consumeWorkspaceSnapshot, isWorkspaceControlPath } from "../workspace-effects.js";
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
 import { appendFlakeCheckWarning } from "./post-tool-flake-phase.js";
 import { appendMutationHarvestWarning } from "./post-tool-mutation-harvest.js";
@@ -51,6 +52,22 @@ import {
 import type { ServerRuntime } from "./runtime-context.js";
 import { prerefreshSpecLedger } from "./spec-ledger-phase.js";
 
+function observedSkipDecision(
+	event: HarnessEvent,
+	rules: ServerRuntime["rules"],
+): HarnessDecision | null {
+	const paths = event.change_set?.files.map((effect) => effect.path) ?? [];
+	if (
+		paths.length === 0 ||
+		paths.some(isWorkspaceControlPath) ||
+		!paths.every((path) => shouldSkipPath(path, rules))
+	) return null;
+	return {
+		decision: "allow",
+		summary: `skip_paths matched all ${paths.length} observed filesystem effect(s) — post-event pipeline skipped`,
+	};
+}
+
 /**
  * Daemon-side mirror of the hook's `skip-paths` chunk: when the edited path
  * matches a configured `skip_paths` glob, short-circuit the whole post-event
@@ -60,6 +77,7 @@ function skipPathsShortCircuit(
 	event: HarnessEvent,
 	rules: ServerRuntime["rules"],
 ): HarnessDecision | null {
+	if (event.change_set?.files.length) return observedSkipDecision(event, rules);
 	// tool_input crosses a process boundary, so its field types are a claim rather
 	// than a guarantee; `as string` would pass a non-string on to path handling
 	// that assumes otherwise.
@@ -327,6 +345,19 @@ function appendBaselineEffect(event: HarnessEvent, decision: HarnessDecision, cw
 	decision.warnings = [...(decision.warnings ?? []), warning];
 }
 
+/** Attach actual repository effects before any tool-name/path-based routing. */
+function attachObservedChangeSet(event: HarnessEvent, cwd: string): void {
+	if (event.dry_run) return;
+	const observed = consumeWorkspaceSnapshot({
+		toolUseId: event.tool_use_id,
+		sessionId: event.session_id,
+		root: cwd,
+	});
+	if (!observed) return;
+	event.change_set = observed;
+	event.files_modified = observed.files.map((effect) => effect.path);
+}
+
 export async function runPostToolPipeline(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -334,6 +365,7 @@ export async function runPostToolPipeline(
 ): Promise<HarnessDecision> {
 	const { rules } = ctx;
 	const CWD = ctx.cwd;
+	attachObservedChangeSet(event, CWD);
 	// --- Phase B.2: skip_paths short-circuit ---
 	// The hook reads `.interlinked/config.json#skip_paths` and exits early on
 	// excluded paths, but on installs that rely on DEFAULT_CONFIG (no shared

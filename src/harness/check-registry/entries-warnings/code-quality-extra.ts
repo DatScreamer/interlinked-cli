@@ -145,7 +145,7 @@ export const CODE_QUALITY_ENTRIES_EXTRA: CheckRegistration[] = [
 	},
 	{
 		id: "test_silent_dependency_skip",
-		phase: "post",
+		phase: "pre_warn",
 		name: "Silent Dependency Skip",
 		description:
 			"`if (!X_AVAILABLE) return;` inside a test callback — bare, braced (`{ return; }`), or multi-line — records a PASS wherever the external dependency is missing; CI reports green while running nothing, hiding the gap until an unguarded sibling fails. Consequents that skip/throw/assert are recognized as handled; guards in module-level helpers and lifecycle hooks are exempt (not test skips)",

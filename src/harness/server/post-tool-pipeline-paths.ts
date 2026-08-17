@@ -96,6 +96,26 @@ export interface EditedPathResolution {
 	readonly shouldRunChecks: boolean;
 }
 
+function resolveDeclaredPaths(event: HarnessEvent, isDirectFileEdit: boolean): string[] {
+	if (isDirectFileEdit) {
+		return extractAllEditedFilePaths(event).filter((path) => !isGeneratedArtifactPath(path));
+	}
+	if (!event.tool_name || !SHELL_TOOLS.includes(event.tool_name)) return [];
+	const cmd = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
+	BASH_EDITED_FILE_RE.lastIndex = 0;
+	for (const match of cmd.matchAll(BASH_EDITED_FILE_RE)) {
+		const candidate = nonNull(match[1]);
+		if (!isGeneratedArtifactPath(candidate)) return [candidate];
+	}
+	return [];
+}
+
+function observedPaths(event: HarnessEvent): string[] {
+	return (event.change_set?.files ?? [])
+		.map((effect) => effect.path)
+		.filter((path) => !isGeneratedArtifactPath(path));
+}
+
 /**
  * Resolve which file(s) this PostToolUse edited. Direct edits use the tool's
  * declared paths (Codex `apply_patch` may carry several); Bash/shell commands
@@ -105,30 +125,11 @@ export function resolveEditedPaths(event: HarnessEvent): EditedPathResolution {
 	const isDirectFileEdit = Boolean(
 		event.tool_name && DIRECT_FILE_EDIT_TOOLS.includes(event.tool_name),
 	);
-
-	let editedFilePath = "";
-	let editedFilePaths: string[] = [];
-	if (!isDirectFileEdit && event.tool_name && SHELL_TOOLS.includes(event.tool_name)) {
-		// SAFETY: a non-string command yields "" and simply matches nothing.
-		const cmd = (event.tool_input?.command as string) || "";
-		BASH_EDITED_FILE_RE.lastIndex = 0;
-		for (const m of cmd.matchAll(BASH_EDITED_FILE_RE)) {
-			const candidate = nonNull(m[1]);
-			// Skip PAST generated artifacts to a real source path, rather than
-			// abandoning the scan at the first bundle a command happens to mention.
-			if (isGeneratedArtifactPath(candidate)) continue;
-			editedFilePath = candidate;
-			editedFilePaths = [candidate];
-			break;
-		}
-	} else if (isDirectFileEdit) {
-		// Same exemption for direct edits: a Write into dist/ (rare, but agents
-		// do it) must not fan the pipeline across a generated bundle either.
-		editedFilePaths = extractAllEditedFilePaths(event).filter((p) => !isGeneratedArtifactPath(p));
-		editedFilePath = editedFilePaths[0] || "";
-	}
-
-	const shouldRunChecks =
-		isDirectFileEdit || editedFilePath.length > 0 || editedFilePaths.length > 0;
+	const effects = observedPaths(event);
+	const editedFilePaths = effects.length > 0
+		? effects
+		: resolveDeclaredPaths(event, isDirectFileEdit);
+	const editedFilePath = editedFilePaths[0] || "";
+	const shouldRunChecks = isDirectFileEdit || editedFilePaths.length > 0;
 	return { editedFilePath, editedFilePaths, isDirectFileEdit, shouldRunChecks };
 }

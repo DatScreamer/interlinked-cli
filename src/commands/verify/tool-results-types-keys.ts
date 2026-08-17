@@ -214,6 +214,7 @@ export const CQ_RESULT_KEYS: ReadonlyArray<keyof CodeQualityResults> = [
 	"mockOnlyTest",
 	"happyPathOnlyTest",
 	"introvertedTest",
+	"testLegitimacy",
 	"procfsProbeInTest",
 	// Batch 5: cross-file
 	"emptyBodyHandler",

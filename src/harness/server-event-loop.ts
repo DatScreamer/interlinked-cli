@@ -41,6 +41,15 @@ import { captureTimeline } from "./timeline-capture.js";
 import { observeBlockWorkaround } from "./trajectory/block-fingerprint-session.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
+import { discardWorkspaceSnapshot } from "./workspace-effects.js";
+
+function reconcileBlockedPreTool(event: HarnessEvent, decision: HarnessDecision): void {
+	if (decision.decision !== "block") return;
+	discardWorkspaceSnapshot({
+		toolUseId: event.tool_use_id,
+		sessionId: event.session_id,
+	});
+}
 
 /** Dependencies the event loop closes over. The `ServerRuntime` carries the
  *  bulk of daemon state; the rest are module-scoped callbacks / objects that
@@ -185,7 +194,9 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 				observeBlockWorkaround(session, event, local, event.cwd ?? CWD, Date.now());
 				mergeTrajectoryShadow(event, local, ctx.rules, [...(session.files_read ?? [])]);
 				writeCollectionRecord(event, local);
-				return forwardCloudPreToolUse(event, local);
+				const finalDecision = await forwardCloudPreToolUse(event, local);
+				reconcileBlockedPreTool(event, finalDecision);
+				return finalDecision;
 			}
 
 			if (isPostToolUse(event)) {

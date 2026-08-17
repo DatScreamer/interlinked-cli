@@ -38,12 +38,13 @@ import type { ClientName } from "./settings.js";
 //       per-tool latency cost is ~0.1 ms.
 // `apply_patch` is Codex CLI's primary file-edit tool; with matcher="" it
 // matches naturally alongside Edit/Write/MultiEdit. The hook script's
-// internal `mutationTools` set decides which events run the full quality
+// internal known-read-only set decides which successful events may skip quality
 // pipeline.
 const POST_TOOL_USE_MATCHER = "";
 
-// Event names that require scoped matching (only mutating tools). Extracted
-// as a named set so conditionals don't use bare string literals.
+// Event names that carry a tool matcher. The matcher is intentionally empty,
+// so all completed tools are observable; the generated hook fast-paths only
+// its explicit read-only allowlist.
 const SCOPED_MATCHER_EVENTS = new Set(["PostToolUse", "AfterTool"]);
 
 // Per-event hook timeouts live in ./hook-timeouts.ts — the single source both
@@ -100,7 +101,7 @@ function reconcileExistingEntry(
 	if (hook && timeout !== undefined && hook.timeout !== timeout) {
 		hook.timeout = timeout;
 	}
-	// Update matcher for mutation-only post-tool hooks when the install rules change.
+	// Update the tool-event matcher when the install rules change.
 	const expectedMatcher = getHookMatcher(eventName);
 	if (existing.matcher !== expectedMatcher) {
 		existing.matcher = expectedMatcher;
