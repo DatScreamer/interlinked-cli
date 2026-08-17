@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import { isInterlinkedHookCommand, isInterlinkedHookEntry } from "./hook-ownership.js";
+import { readJsonObject } from "./json-file.js";
 import { hookTimeoutSecondsFor } from "./hook-timeouts.js";
 import {
 	CLIENT_CLAUDE,
@@ -116,16 +117,12 @@ function getHookMatcher(eventName: string): string {
 // JSON File Helpers
 // ===========================================
 
-export function readJsonFile(path: string): JsonObject | null {
-	if (!existsSync(path)) return null;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-		return isPlainObject(parsed) ? parsed : null;
-	} catch (_err) {
-		/* intentional: malformed JSON — caller treats null as "no config" */
-		return null;
-	}
-}
+/**
+ * Read a settings file as a JSON object, or null when it is missing,
+ * malformed, or not an object. Alias of the shared `readJsonObject` — the
+ * name stays because the four installer modules and their tests import it.
+ */
+export const readJsonFile = readJsonObject;
 
 function serializeJsonFile(data: JsonObject): string {
 	return `${JSON.stringify(data, null, 2)}\n`;

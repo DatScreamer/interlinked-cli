@@ -5,7 +5,7 @@
 // config.local.json — gitignored, personal (tokens, agent handles)
 // Legacy migration from .claude/interlinked-session.json
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HarnessMode } from "../harness/rules/modes.js";
 import {
@@ -16,6 +16,7 @@ import {
 	getLocalConfigPath,
 	getSharedConfigPath,
 } from "./config-paths.js";
+import { readJsonFile } from "./json-file.js";
 
 // Path helpers live in ./config-paths.ts (line-cap split). Re-exported here
 // so existing `from "./config.js"` imports across the codebase keep working.
@@ -174,16 +175,6 @@ const DEFAULT_SERVER = "http://localhost:8787";
 // Read/Write Helpers
 // ===========================================
 
-function readJson<T>(path: string): T | null {
-	if (!existsSync(path)) return null;
-	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as T;
-	} catch (_err) {
-		/* intentional: malformed JSON config — treat as "no config" so callers can fall back */
-		return null;
-	}
-}
-
 function writeJson(path: string, data: unknown): void {
 	const dir = dirname(path);
 	if (!existsSync(dir)) {
@@ -197,11 +188,11 @@ function writeJson(path: string, data: unknown): void {
 // ===========================================
 
 export function readSharedConfig(cwd?: string): SharedConfig | null {
-	return readJson<SharedConfig>(getSharedConfigPath(cwd));
+	return readJsonFile<SharedConfig>(getSharedConfigPath(cwd));
 }
 
 export function readLocalConfig(cwd?: string): LocalConfig | null {
-	return readJson<LocalConfig>(getLocalConfigPath(cwd));
+	return readJsonFile<LocalConfig>(getLocalConfigPath(cwd));
 }
 
 export function writeSharedConfig(config: SharedConfig, cwd?: string): void {
@@ -292,7 +283,7 @@ function writeLocalConfig(config: LocalConfig, cwd?: string): void {
 }
 
 function readLegacyConfig(cwd?: string): LegacySession | null {
-	return readJson<LegacySession>(getLegacyConfigPath(cwd));
+	return readJsonFile<LegacySession>(getLegacyConfigPath(cwd));
 }
 
 /**

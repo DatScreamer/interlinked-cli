@@ -32,12 +32,12 @@
 // bookkeeping must never crash the harness).
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { interlinkedPath } from "../lib/interlinked-path.js";
+import { readJsonFile } from "../lib/json-file.js";
 import { isJsonObject } from "../lib/json-types.js";
 import { harnessNow } from "./replay/harness-clock.js";
 
-/** Directory under the project root where all persisted state lives. */
-const INTERLINKED_DIR = ".interlinked";
 const ESTIMATE_FILE = "coverage-runtime-estimate.json";
 const BASELINE_FILE = "coverage-edit-baseline.json";
 const OBLIGATIONS_FILE = "coverage-obligations.jsonl";
@@ -70,19 +70,6 @@ export interface CoverageObligation {
 	budget_ms: number;
 	session_id: string;
 	timestamp: string;
-}
-
-function interlinkedPath(projectRoot: string, file: string): string {
-	return join(projectRoot, INTERLINKED_DIR, file);
-}
-
-function readJsonFile<T>(path: string): T | null {
-	if (!existsSync(path)) return null;
-	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as T;
-	} catch {
-		return null; // malformed → treat as no data (fail-open)
-	}
 }
 
 function writeJsonFile(path: string, value: unknown): void {

@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readJsonObject } from "../../lib/json-file.js";
 import { isJsonObject } from "../../lib/json-types.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import { isBash } from "../evaluator/tool-classifiers.js";
@@ -17,15 +18,6 @@ const NOTICE_KEY = "shell-sandbox-evidence";
 interface SandboxAssessment {
 	evidence: NonNullable<HarnessEvent["sandbox_evidence"]>;
 	detail: string;
-}
-
-function readJson(path: string): Record<string, unknown> | null {
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		return isJsonObject(parsed) ? parsed : null;
-	} catch {
-		return null;
-	}
 }
 
 function nestedObject(value: unknown): Record<string, unknown> | null {
@@ -61,7 +53,7 @@ function claudeAssessment(root: string): SandboxAssessment {
 		join(homedir(), ".claude", "settings.json"),
 	];
 	for (const path of candidates) {
-		const sandbox = nestedObject(readJson(path)?.sandbox);
+		const sandbox = nestedObject(readJsonObject(path)?.sandbox);
 		if (!sandbox || typeof sandbox.enabled !== "boolean") continue;
 		if (sandbox.enabled !== true) {
 			return { evidence: "disabled", detail: `${path} sets sandbox.enabled=false` };
@@ -117,7 +109,7 @@ function geminiAssessment(root: string): SandboxAssessment {
 		join(homedir(), ".gemini", "settings.json"),
 	];
 	for (const path of candidates) {
-		const settings = readJson(path);
+		const settings = readJsonObject(path);
 		const tools = nestedObject(settings?.tools);
 		if (tools?.sandbox === undefined) continue;
 		const security = nestedObject(settings?.security);

@@ -17,9 +17,8 @@
 // loadFindingRules returns only the ACTIVE set (drops disabled rules), so the
 // rules-loader can spread it directly without re-filtering.
 
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
+import { readJsonObject } from "../../lib/json-file.js";
 import { looksLikeReDoS } from "../redos-validation.js";
 import type { GuardRule } from "../types.js";
 
@@ -67,19 +66,6 @@ export function findingRulesPath(cwd: string): string {
 
 function findingRulesOverridesPath(cwd: string): string {
 	return join(cwd, ".interlinked", "findings-rules.overrides.json");
-}
-
-function readJsonObject(path: string): JsonObject | null {
-	if (!existsSync(path)) return null;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-		// isJsonObject rejects arrays (and null) as well as primitives — a JSON
-		// array is `typeof "object"` but is not a keyed record, so a bare
-		// `typeof === "object"` check used to admit it here.
-		return isJsonObject(parsed) ? parsed : null;
-	} catch {
-		return null; // malformed — treat as absent (fail-open)
-	}
 }
 
 function normalizeFindingRuleSource(source: FindingRuleSource | undefined): FindingRuleSource | undefined {

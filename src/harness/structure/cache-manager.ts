@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { interlinkedPath } from "../../lib/interlinked-path.js";
+import { readJsonFile } from "../../lib/json-file.js";
 import { isJsonObject } from "../../lib/json-types.js";
 import type {
 	AdoptionReport,
@@ -23,7 +25,6 @@ import type {
 
 const CURRENT_SCHEMA_VERSION = 1;
 const CACHE_DIR_NAME = "structure-cache";
-const INTERLINKED_DIR = ".interlinked";
 const MANIFEST_DIR = "interlinked";
 
 // -------------------------------------------
@@ -31,7 +32,7 @@ const MANIFEST_DIR = "interlinked";
 // -------------------------------------------
 
 export function getCacheDir(cwd: string): string {
-	return join(cwd, INTERLINKED_DIR, CACHE_DIR_NAME);
+	return interlinkedPath(cwd, CACHE_DIR_NAME);
 }
 
 export function ensureCacheDir(cwd: string): void {
@@ -39,24 +40,11 @@ export function ensureCacheDir(cwd: string): void {
 }
 
 // -------------------------------------------
-// Safe JSON read
-// -------------------------------------------
-
-function readJsonSafe(filePath: string): unknown {
-	try {
-		const raw = readFileSync(filePath, "utf-8");
-		return JSON.parse(raw);
-	} catch {
-		return null;
-	}
-}
-
-// -------------------------------------------
 // Per-artifact validators
 // -------------------------------------------
 // Every cache file here is self-written by this module, but a stale schema
 // version or a hand-edited file can still parse as syntactically valid JSON
-// that is the wrong shape. `readJsonSafe` returns `unknown`; these parsers
+// that is the wrong shape. `readJsonFile<unknown>` returns `unknown`; these parsers
 // are the one place that narrows it into a domain type via a CONSTRUCTED
 // literal, so a required field added to a type in ./types.js fails this
 // file to compile instead of silently reading `undefined` downstream.
@@ -182,7 +170,7 @@ function parseAdoptionReport(value: unknown): AdoptionReport | null {
 
 export function readCatalogMeta(cwd: string): CatalogMeta | null {
 	const filePath = join(getCacheDir(cwd), "catalog-meta.json");
-	return parseCatalogMeta(readJsonSafe(filePath));
+	return parseCatalogMeta(readJsonFile<unknown>(filePath));
 }
 
 export function writeCatalogMeta(cwd: string, meta: CatalogMeta): void {
@@ -197,7 +185,7 @@ export function writeCatalogMeta(cwd: string, meta: CatalogMeta): void {
 
 export function readCategoryCache(cwd: string, name: string): CategoryCatalog | null {
 	const filePath = join(getCacheDir(cwd), `${name}.json`);
-	return parseCategoryCatalog(readJsonSafe(filePath));
+	return parseCategoryCatalog(readJsonFile<unknown>(filePath));
 }
 
 export function writeCategoryCache(cwd: string, name: string, catalog: CategoryCatalog): void {
@@ -212,7 +200,7 @@ export function writeCategoryCache(cwd: string, name: string, catalog: CategoryC
 
 export function readBaseline(cwd: string): BaselineFile {
 	const filePath = join(getCacheDir(cwd), "baseline.json");
-	return parseBaselineFile(readJsonSafe(filePath)) ?? { schema_version: 1, entries: [] };
+	return parseBaselineFile(readJsonFile<unknown>(filePath)) ?? { schema_version: 1, entries: [] };
 }
 
 export function writeBaseline(cwd: string, baseline: BaselineFile): void {
@@ -227,7 +215,7 @@ export function writeBaseline(cwd: string, baseline: BaselineFile): void {
 
 export function readAdoptionReport(cwd: string): AdoptionReport | null {
 	const filePath = join(getCacheDir(cwd), "adoption-report.json");
-	return parseAdoptionReport(readJsonSafe(filePath));
+	return parseAdoptionReport(readJsonFile<unknown>(filePath));
 }
 
 export function writeAdoptionReport(cwd: string, report: AdoptionReport): void {

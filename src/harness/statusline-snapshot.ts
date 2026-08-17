@@ -3,14 +3,13 @@
 // ===========================================
 // Writes pre-computed state for the bash status-line script to read on
 // each render. Two outputs:
-//
 //   .interlinked/statusline.snapshot   — key=value pairs (one per line)
 //   .interlinked/loaded-rules.md       — effective merged ruleset, sorted
-//
 // The bash script (see writeStatuslineScript in src/lib/hook-installers.ts)
 // does pure formatting; all the math lives here.
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
+import { readJsonFile } from "../lib/json-file.js";
 import { join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
@@ -250,9 +249,9 @@ interface ResolvedModes {
 }
 
 function readModes(interlinkedDir: string): ResolvedModes {
-	const shared = readJsonSafely<PersistedConfigShape>(join(interlinkedDir, "config.json"));
-	const local = readJsonSafely<PersistedConfigShape>(join(interlinkedDir, "config.local.json"));
-	const policy = readJsonSafely<CheckPolicyShape>(join(interlinkedDir, "check-policy.json"));
+	const shared = readJsonFile<PersistedConfigShape>(join(interlinkedDir, "config.json"));
+	const local = readJsonFile<PersistedConfigShape>(join(interlinkedDir, "config.local.json"));
+	const policy = readJsonFile<CheckPolicyShape>(join(interlinkedDir, "check-policy.json"));
 
 	const activeServer = nonEmptyString(local?.active_server) ?? "";
 	const serverEntry = activeServer ? local?.servers?.[activeServer] : undefined;
@@ -504,9 +503,8 @@ function byCategoryThenId(a: GuardRule, b: GuardRule): number {
 }
 
 function byId(a: { id: string }, b: { id: string }): number {
-	if (a.id < b.id) return -1;
-	if (a.id > b.id) return 1;
-	return 0;
+	if (a.id === b.id) return 0;
+	return a.id < b.id ? -1 : 1;
 }
 
 function humanizeCategory(cat: string): string {
@@ -516,19 +514,8 @@ function humanizeCategory(cat: string): string {
 		.join(" ");
 }
 
-function readJsonSafely<T>(path: string): T | null {
-	if (!existsSync(path)) return null;
-	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as T;
-	} catch {
-		return null;
-	}
-}
-
 function nonEmptyString(v: unknown): string | undefined {
-	if (typeof v !== "string") return undefined;
-	if (v === "") return undefined;
-	return v;
+	return typeof v === "string" && v !== "" ? v : undefined;
 }
 
 function atomicWrite(path: string, content: string): void {

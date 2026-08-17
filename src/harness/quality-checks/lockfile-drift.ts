@@ -5,8 +5,9 @@
 // is stale (older mtime) or missing. Stale lockfiles mean `npm install`
 // will silently resolve to different versions than the manifest declares.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { readJsonFile } from "../../lib/json-file.js";
 import { isJsonObject } from "../../lib/json-types.js";
 import type { JsonObject } from "../../lib/json-types.js";
 
@@ -166,15 +167,6 @@ export type DependencySections = Partial<Record<DepSection, JsonObject>>;
 
 /** True when `value` is a non-null, non-array JSON object. */
 
-/** Parse a JSON file to an unnarrowed value, or null on any read / parse error (best-effort). */
-function readJsonValue(path: string): unknown | null {
-	try {
-		return JSON.parse(readFileSync(path, "utf-8"));
-	} catch {
-		return null;
-	}
-}
-
 /** Pull the three known dependency sections out of an object, skipping any that aren't objects. */
 function sectionsFrom(obj: JsonObject): DependencySections {
 	const result: DependencySections = {};
@@ -245,8 +237,8 @@ export function checkLockfileClassificationDrift(manifestPath: string): Lockfile
 	const lockPath = resolve(dirname(manifestPath), "package-lock.json");
 	if (!existsSync(lockPath)) return clean;
 
-	const manifestValue = readJsonValue(manifestPath);
-	const lockValue = readJsonValue(lockPath);
+	const manifestValue = readJsonFile<unknown>(manifestPath);
+	const lockValue = readJsonFile<unknown>(lockPath);
 	const manifestSections = parseManifestSections(manifestValue);
 	const lockSections = parseLockRootSections(lockValue);
 	if (!manifestSections || !lockSections) return clean; // malformed manifest, or v1 lock (no root entry)
