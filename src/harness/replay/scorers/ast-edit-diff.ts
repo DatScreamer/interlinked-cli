@@ -14,6 +14,7 @@
 
 import { createRequire } from "node:module";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "../../checks/cyclomatic-ast.js";
 import type { JsonObject } from "../../../lib/json-types.js";
 
 let tsCache: typeof TS | null | undefined;
@@ -45,7 +46,7 @@ export interface StructuralDistance {
 }
 
 function multisetFromSource(ts: typeof TS, source: string): Map<string, number> {
-	const file = ts.createSourceFile("scored.ts", source, ts.ScriptTarget.Latest, true);
+	const file = parseTsSourceWith(ts, source, "scored.ts");
 	const buckets = new Map<string, number>();
 	const visit = (node: TS.Node): void => {
 		let key = ts.SyntaxKind[node.kind];

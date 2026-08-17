@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { astComplexityAvailable, computeCyclomaticAst } from "./cyclomatic-ast.js";
+import {
+	__resetTsCacheForTesting,
+	astComplexityAvailable,
+	computeCyclomaticAst,
+	parseTsSource,
+} from "./cyclomatic-ast.js";
 
 const run = (src: string) => computeCyclomaticAst(src, "src/x.ts") ?? [];
 const byName = (src: string, name: string) => run(src).find((e) => e.name === name);
@@ -83,5 +88,50 @@ describe("cyclomatic-ast — implementation functions only", () => {
 		const src = "\n\nfunction first() { return 1; }\nfunction second() { return 2; }\n";
 		expect(byName(src, "first")?.line).toBe(3);
 		expect(byName(src, "second")?.line).toBe(4);
+	});
+});
+
+describe("cyclomatic-ast — parse memo", () => {
+	it("returns the SAME SourceFile for identical content + path", () => {
+		const src = "export function memoA(): number { return 1; }";
+		const first = parseTsSource(src, "src/memo.ts");
+		const second = parseTsSource(src, "src/memo.ts");
+		expect(first).not.toBeNull();
+		expect(second?.sf).toBe(first?.sf);
+	});
+
+	it("re-parses when the content changes under the SAME path (the per-edit case)", () => {
+		const before = parseTsSource("export const v = 1;", "src/same-path.ts");
+		const after = parseTsSource("export const v = 2;", "src/same-path.ts");
+		expect(after?.sf).not.toBe(before?.sf);
+		expect(after?.sf.text).toBe("export const v = 2;");
+	});
+
+	it("re-parses identical content under a DIFFERENT path", () => {
+		const src = "export const shared = 1;";
+		const a = parseTsSource(src, "src/path-a.ts");
+		const b = parseTsSource(src, "src/path-b.ts");
+		expect(b?.sf).not.toBe(a?.sf);
+		expect(a?.sf.fileName).toBe("src/path-a.ts");
+	});
+
+	it("keeps the ScriptKind the path implies — .tsx parses JSX cleanly", () => {
+		const tsx = parseTsSource("export const el = <div className='x' />;", "src/el.tsx");
+		expect(tsx?.sf.languageVariant).toBe(tsx?.ts.LanguageVariant.JSX);
+	});
+
+	it("is bounded — the oldest entry is evicted once the cap is passed", () => {
+		const src = "export const bounded = 1;";
+		const oldest = parseTsSource(src, "src/evict-0.ts");
+		// 8 further distinct keys push the first one out of an 8-slot LRU.
+		for (let i = 1; i <= 8; i++) parseTsSource(src, `src/evict-${i}.ts`);
+		expect(parseTsSource(src, "src/evict-0.ts")?.sf).not.toBe(oldest?.sf);
+	});
+
+	it("__resetTsCacheForTesting clears the memo", () => {
+		const src = "export const cleared = 1;";
+		const before = parseTsSource(src, "src/cleared.ts");
+		__resetTsCacheForTesting();
+		expect(parseTsSource(src, "src/cleared.ts")?.sf).not.toBe(before?.sf);
 	});
 });

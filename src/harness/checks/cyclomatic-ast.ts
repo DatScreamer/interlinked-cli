@@ -21,6 +21,7 @@
 // `computeCyclomaticComplexity` stays sync). The self-contained hook script never
 // imports this; the type-only `import type` is erased at build.
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { extname } from "node:path";
 import type * as TS from "typescript";
@@ -52,8 +53,15 @@ export function astComplexityAvailable(): boolean {
 /** Test-only cache reset so a suite can exercise both the present/absent paths. */
 export function __resetTsCacheForTesting(): void {
 	tsCache = undefined;
+	parseMemo.clear();
 }
 
+/**
+ * Map a file extension onto the ScriptKind the parser needs. Deliberately the
+ * ONLY copy of this table: a `.tsx` file parsed as plain TS mis-reads JSX as
+ * type assertions, so a per-check reimplementation is a divergence waiting to
+ * happen. Reach it through `parseTsSource` / `parseTsSourceWith`.
+ */
 function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
 	switch (extname(filePath).toLowerCase()) {
 		case ".tsx":
@@ -69,25 +77,79 @@ function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
 	}
 }
 
+export interface ParsedTsSource {
+	ts: TsModule;
+	sf: TS.SourceFile;
+}
+
 /**
- * Parse once, sharing the cached optional-`typescript` load. Sibling AST
- * metrics (cognitive complexity) build on this so the degrade-to-null
- * behavior stays defined in exactly one place.
+ * How many parsed SourceFiles the memo keeps. A SourceFile with parent pointers
+ * costs roughly an order of magnitude more memory than its text, and the daemon
+ * is long-lived, so this stays deliberately tiny: one tool call touches one or
+ * two files but runs a dozen-plus AST checks over them, which is exactly the
+ * locality a small LRU serves.
  */
-export function parseTsSource(
-	content: string,
-	filePath: string,
-): { ts: TsModule; sf: TS.SourceFile } | null {
-	const ts = loadTs();
-	if (!ts) return null;
+const PARSE_MEMO_MAX = 8;
+
+interface MemoEntry extends ParsedTsSource {
+	scriptKind: TS.ScriptKind;
+}
+
+/** Insertion-ordered = LRU: a hit re-inserts, an overflow evicts the oldest key. */
+const parseMemo = new Map<string, MemoEntry>();
+
+/**
+ * Content hash + path + ScriptKind. Never the path alone: the whole point of
+ * the per-edit gates is that the SAME path holds different content before and
+ * after a write, so a path-keyed cache would hand back the pre-edit AST.
+ */
+function memoKey(content: string, filePath: string, scriptKind: TS.ScriptKind): string {
+	const digest = createHash("sha256").update(content).digest("hex");
+	return [digest, filePath, String(scriptKind)].join("|");
+}
+
+/**
+ * Parse with an already-resolved `typescript` module. Use this from call sites
+ * that hold their own `ts` (an injected one in tests, or one loaded before a
+ * cheap pre-filter); everything else should call `parseTsSource`.
+ *
+ * The returned SourceFile is SHARED with other callers, so treat it as
+ * read-only: never bind it into a `ts.Program` / `TypeChecker`, which mutates
+ * the node graph.
+ */
+export function parseTsSourceWith(ts: TsModule, content: string, filePath: string): TS.SourceFile {
+	const scriptKind = scriptKindFor(ts, filePath);
+	const key = memoKey(content, filePath, scriptKind);
+	const hit = parseMemo.get(key);
+	if (hit && hit.ts === ts) {
+		parseMemo.delete(key);
+		parseMemo.set(key, hit);
+		return hit.sf;
+	}
 	const sf = ts.createSourceFile(
 		filePath,
 		content,
 		ts.ScriptTarget.Latest,
 		/* setParentNodes */ true,
-		scriptKindFor(ts, filePath),
+		scriptKind,
 	);
-	return { ts, sf };
+	parseMemo.set(key, { ts, sf, scriptKind });
+	if (parseMemo.size > PARSE_MEMO_MAX) {
+		const oldest = parseMemo.keys().next();
+		if (!oldest.done) parseMemo.delete(oldest.value);
+	}
+	return sf;
+}
+
+/**
+ * Parse once, sharing the cached optional-`typescript` load. Sibling AST
+ * metrics (cognitive complexity) build on this so the degrade-to-null
+ * behavior stays defined in exactly one place.
+ */
+export function parseTsSource(content: string, filePath: string): ParsedTsSource | null {
+	const ts = loadTs();
+	if (!ts) return null;
+	return { ts, sf: parseTsSourceWith(ts, content, filePath) };
 }
 
 export function isFunctionLike(ts: TsModule, node: TS.Node): boolean {

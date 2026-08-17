@@ -17,7 +17,7 @@
 // switches.
 
 import { createRequire } from "node:module";
-
+import { parseTsSourceWith } from "./cyclomatic-ast.js";
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 // `typescript` is a devDep; load lazily so the check is a no-op in
@@ -82,8 +82,7 @@ export function checkDiscriminatedUnionExhaustiveness(
 	content: string,
 	filePath: string,
 ): InlineMatch[] {
-	const ext = getExtension(filePath);
-	if (!SUPPORTED_EXTS.has(ext)) return [];
+	if (!SUPPORTED_EXTS.has(getExtension(filePath))) return [];
 	if (isTestFile(filePath)) return [];
 	if (!/\bswitch\s*\(/.test(content)) return [];
 
@@ -91,13 +90,7 @@ export function checkDiscriminatedUnionExhaustiveness(
 	if (!maybeTs) return [];
 	const ts: TsModule = maybeTs;
 
-	const sourceFile = ts.createSourceFile(
-		filePath,
-		content,
-		ts.ScriptTarget.Latest,
-		/* setParentNodes */ true,
-		ext === ".tsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-	);
+	const sourceFile = parseTsSourceWith(ts, content, filePath);
 
 	const lines = sourceLineTexts(sourceFile, content);
 	const matches: InlineMatch[] = [];

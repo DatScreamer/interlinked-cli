@@ -30,6 +30,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { extname, relative } from "node:path";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "./checks/cyclomatic-ast.js";
 
 type TsModule = typeof TS;
 type TsRequirer = () => TsModule;
@@ -155,21 +156,6 @@ export function classifyStyle(name: string): CaseStyle {
 	return "flatcase";
 }
 
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	switch (extname(filePath).toLowerCase()) {
-		case ".tsx":
-			return ts.ScriptKind.TSX;
-		case ".jsx":
-			return ts.ScriptKind.JSX;
-		case ".js":
-		case ".mjs":
-		case ".cjs":
-			return ts.ScriptKind.JS;
-		default:
-			return ts.ScriptKind.TS;
-	}
-}
-
 function variableKind(ts: TsModule, flags: TS.NodeFlags): SymbolKind {
 	if ((flags & ts.NodeFlags.Const) !== 0) return "const";
 	if ((flags & ts.NodeFlags.Let) !== 0) return "let";
@@ -183,13 +169,7 @@ export function extractTopLevelSymbols(
 	content: string,
 	file: string,
 ): SymbolLoc[] {
-	const sf = ts.createSourceFile(
-		file,
-		content,
-		ts.ScriptTarget.Latest,
-		true,
-		scriptKindFor(ts, file),
-	);
+	const sf = parseTsSourceWith(ts, content, file);
 	const out: SymbolLoc[] = [];
 	const lineOf = (node: TS.Node): number =>
 		sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;

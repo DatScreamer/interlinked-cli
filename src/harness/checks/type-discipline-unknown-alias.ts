@@ -29,6 +29,7 @@
 
 import { createRequire } from "node:module";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "./cyclomatic-ast.js";
 import { getExtension, type InlineMatch, isTestFile } from "./shared.js";
 
 type TsModule = typeof TS;
@@ -65,13 +66,7 @@ function loadTs(): TsModule | null {
 
 function parseSourceFile(ts: TsModule, content: string, filePath: string): TS.SourceFile | null {
 	try {
-		return ts.createSourceFile(
-			filePath,
-			content,
-			ts.ScriptTarget.ES2022,
-			/* setParentNodes */ true,
-			filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-		);
+		return parseTsSourceWith(ts, content, filePath);
 	} catch {
 		return null;
 	}

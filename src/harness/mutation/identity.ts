@@ -15,8 +15,8 @@
 // across reorderings, and across unrelated edits made elsewhere in that file.
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { extname } from "node:path";
 import type * as TS from "typescript";
+import { isFunctionLike, parseTsSourceWith } from "../checks/cyclomatic-ast.js";
 import type { MutantIdentity, RawMutant, StableId } from "./types.js";
 
 type TsModule = typeof TS;
@@ -46,35 +46,8 @@ function sha16(parts: string[]): StableId {
 	return createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
 }
 
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	switch (extname(filePath).toLowerCase()) {
-		case ".tsx":
-			return ts.ScriptKind.TSX;
-		case ".jsx":
-			return ts.ScriptKind.JSX;
-		case ".js":
-		case ".mjs":
-		case ".cjs":
-			return ts.ScriptKind.JS;
-		default:
-			return ts.ScriptKind.TS;
-	}
-}
-
 function parseFile(ts: TsModule, file: string, content: string): TS.SourceFile {
-	return ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, scriptKindFor(ts, file));
-}
-
-function isFunctionLike(ts: TsModule, node: TS.Node): boolean {
-	return (
-		ts.isFunctionDeclaration(node) ||
-		ts.isFunctionExpression(node) ||
-		ts.isArrowFunction(node) ||
-		ts.isMethodDeclaration(node) ||
-		ts.isConstructorDeclaration(node) ||
-		ts.isGetAccessorDeclaration(node) ||
-		ts.isSetAccessorDeclaration(node)
-	);
+	return parseTsSourceWith(ts, content, file);
 }
 
 /** Token-stream canonicalisation: spacing- and comment-insensitive (spec §2). */

@@ -20,15 +20,18 @@
 //    value cannot be absent while the `?.` claims it may be — a churn
 //    artifact from appeasing tsc, and a cold-reader confusion signal.
 
-import { createRequire } from "node:module";
-import { extname } from "node:path";
 import type * as TS from "typescript";
+import { type ParsedTsSource, parseTsSource } from "./cyclomatic-ast.js";
 import {
 	getExtension,
 	type InlineMatch,
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+// Shared offset→line helper (1-based; the comment/string stripper preserves
+// line count, so it is valid over stripped text). Direct in-package import —
+// shared.ts sits at its line cap and cannot carry another re-export line.
+import { offsetToLine } from "./shared-text-utils.js";
 
 type TsModule = typeof TS;
 
@@ -41,11 +44,6 @@ const REPORT_LINE_TRUNC = 120;
 const TS_EXTS = [".ts", ".tsx", ".mts", ".cts"];
 
 // ─── Shared line helpers ──────────────────────────────────────────────────────
-
-/** Convert a char offset in the stripped source to a 1-based line number. */
-function offsetToLine(stripped: string, offset: number): number {
-	return stripped.slice(0, offset).split("\n").length;
-}
 
 /** Trimmed, truncated raw-line excerpt for the finding text. */
 function rawExcerpt(rawLines: string[], lineNo: number): string {
@@ -165,38 +163,6 @@ export function detectNumericSortWithoutComparator(
 }
 
 // ═══ 2. implicit_switch_fallthrough ═══════════════════════════════════════════
-
-let tsCache: TsModule | null | undefined;
-
-/**
- * Resolve the optional `typescript` dep once, synchronously; absence is a
- * non-error (the check silently skips — that IS the degrade path). Same
- * contract as `cyclomatic-ast.ts::loadTs`.
- */
-function loadTs(): TsModule | null {
-	if (tsCache !== undefined) return tsCache;
-	try {
-		tsCache = createRequire(import.meta.url)("typescript") as TsModule;
-	} catch {
-		tsCache = null;
-	}
-	return tsCache;
-}
-
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	switch (extname(filePath).toLowerCase()) {
-		case ".tsx":
-			return ts.ScriptKind.TSX;
-		case ".jsx":
-			return ts.ScriptKind.JSX;
-		case ".js":
-		case ".mjs":
-		case ".cjs":
-			return ts.ScriptKind.JS;
-		default:
-			return ts.ScriptKind.TS;
-	}
-}
 
 /** The eslint `no-fallthrough` comment convention (fallthrough / falls through / fall-through). */
 const FALLTHROUGH_COMMENT_RE = /falls?[-\s]?through/i;
@@ -334,21 +300,14 @@ export function detectImplicitSwitchFallthrough(
 	if (!JS_TS_ALL_EXTS.includes(ext)) return [];
 	if (!content.includes("switch")) return [];
 
-	const ts = loadTs();
-	if (ts === null) return [];
-
-	let sf: TS.SourceFile;
+	let parsed: ParsedTsSource | null;
 	try {
-		sf = ts.createSourceFile(
-			filePath,
-			content,
-			ts.ScriptTarget.Latest,
-			true,
-			scriptKindFor(ts, filePath),
-		);
+		parsed = parseTsSource(content, filePath);
 	} catch {
 		return [];
 	}
+	if (parsed === null) return [];
+	const { ts, sf } = parsed;
 
 	const matches: InlineMatch[] = [];
 	const visit = (node: TS.Node): void => {

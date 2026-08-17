@@ -44,6 +44,7 @@
 
 import { createRequire } from "node:module";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "./cyclomatic-ast.js";
 import { getExtension, type InlineMatch, isTestFile, JS_TS_ALL_EXTS } from "./shared.js";
 
 type TsModule = typeof TS;
@@ -71,23 +72,9 @@ function loadTs(): TsModule | null {
 	return _ts;
 }
 
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	const ext = getExtension(filePath);
-	if (ext === ".tsx") return ts.ScriptKind.TSX;
-	if (ext === ".jsx") return ts.ScriptKind.JSX;
-	if (ext === ".ts" || ext === ".mts" || ext === ".cts") return ts.ScriptKind.TS;
-	return ts.ScriptKind.JS;
-}
-
 function parseSourceFile(ts: TsModule, content: string, filePath: string): TS.SourceFile | null {
 	try {
-		return ts.createSourceFile(
-			filePath,
-			content,
-			ts.ScriptTarget.ES2022,
-			/* setParentNodes */ true,
-			scriptKindFor(ts, filePath),
-		);
+		return parseTsSourceWith(ts, content, filePath);
 	} catch {
 		return null;
 	}

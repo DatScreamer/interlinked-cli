@@ -25,8 +25,8 @@
 // Check id: jsdoc_param_drift
 
 import { createRequire } from "node:module";
-import { extname } from "node:path";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "./cyclomatic-ast.js";
 import { getExtension, type InlineMatch, JS_TS_ALL_EXTS } from "./shared.js";
 
 type TsModule = typeof TS;
@@ -57,21 +57,6 @@ const REPORT_LINE_TRUNC = 150;
 const MAX_MATCHES_PER_FILE = 10;
 
 // ─── AST helpers ─────────────────────────────────────────────────────────────
-
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	switch (extname(filePath).toLowerCase()) {
-		case ".tsx":
-			return ts.ScriptKind.TSX;
-		case ".jsx":
-			return ts.ScriptKind.JSX;
-		case ".js":
-		case ".mjs":
-		case ".cjs":
-			return ts.ScriptKind.JS;
-		default:
-			return ts.ScriptKind.TS;
-	}
-}
 
 /** The function-like kinds we inspect (accessors excluded — set-param docs are rare). */
 function isCheckableFunction(ts: TsModule, node: TS.Node): node is TS.FunctionLikeDeclaration {
@@ -232,13 +217,7 @@ export function detectJsdocParamDrift(content: string, filePath: string): Inline
 	const ts = loadTs();
 	if (ts === null) return []; // optional dep absent → degrade silently
 
-	const sf = ts.createSourceFile(
-		filePath,
-		content,
-		ts.ScriptTarget.Latest,
-		/* setParentNodes */ true,
-		scriptKindFor(ts, filePath),
-	);
+	const sf = parseTsSourceWith(ts, content, filePath);
 	const overloadKeys = collectOverloadKeys(ts, sf);
 	const rawLines = content.split("\n");
 	const matches: InlineMatch[] = [];

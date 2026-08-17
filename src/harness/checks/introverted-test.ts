@@ -19,8 +19,8 @@
 // untraceable is UNCERTAIN → silent. Recall is traded for precision.
 
 import { createRequire } from "node:module";
-import { extname } from "node:path";
 import type * as TS from "typescript";
+import { parseTsSourceWith } from "./cyclomatic-ast.js";
 import { getExtension, type InlineMatch, isStrictTestFile, JS_TS_EXTS } from "./shared.js";
 
 type TsModule = typeof TS;
@@ -39,21 +39,6 @@ function loadTs(): TsModule | null {
 		tsCache = null;
 	}
 	return tsCache;
-}
-
-function scriptKindFor(ts: TsModule, filePath: string): TS.ScriptKind {
-	switch (extname(filePath).toLowerCase()) {
-		case ".tsx":
-			return ts.ScriptKind.TSX;
-		case ".jsx":
-			return ts.ScriptKind.JSX;
-		case ".js":
-		case ".mjs":
-		case ".cjs":
-			return ts.ScriptKind.JS;
-		default:
-			return ts.ScriptKind.TS;
-	}
 }
 
 // Reach lattice: REACHED > UNCERTAIN > NONE. REACHED short-circuits.
@@ -454,13 +439,7 @@ export function checkIntrovertedTest(content: string, filePath: string): InlineM
 	const ts = loadTs();
 	if (!ts) return [];
 
-	const sf = ts.createSourceFile(
-		filePath,
-		content,
-		ts.ScriptTarget.Latest,
-		/* setParentNodes */ true,
-		scriptKindFor(ts, filePath),
-	);
+	const sf = parseTsSourceWith(ts, content, filePath);
 
 	const sut = collectSutSymbols(ts, sf, sutBaseFromPath(filePath));
 	// No non-mocked companion SUT symbol → no companion import (meta-test /
