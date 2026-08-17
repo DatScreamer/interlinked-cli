@@ -263,3 +263,19 @@ feed.signed.json
 # Nested per-directory hook state must never be committed (a stray cwd mints one);
 # scoped to docs/ so the root .interlinked/* carve-outs keep their semantics.
 docs/**/.interlinked/
+
+# Operator docs (design/plans/intake/reviews) live in the private sibling repo
+# (interlinked-cloud/docs-cli), symlinked back locally so in-source spec
+# citations keep resolving on operator machines. Public clones get docs/README.md.
+docs/design
+docs/plans
+docs/external-pulse
+docs/codex-reviews
+docs/marketing
+docs/upstream-bugs
+docs/integrations
+docs/architecture-rationale.md
+docs/hooks-ecosystem-comparison.md
+docs/investigation-posttooluse-hook-count.md
+docs/structure-validation-prompt.md
+docs/test-quality-harness-plan.md
