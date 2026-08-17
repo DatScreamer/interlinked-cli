@@ -404,9 +404,11 @@ public `interlinked mutation adopt` command.
   **Consequence to know before promising anyone a number:** a survivor's only recordable
   end-states are *killed* or *unjustified*, so an "unjustified survivors" count can never fall
   below the survivor count. Kill the mutant with a test, or delete the code if the mutant is
-  unkillable because the code should not exist. (`src/commands/mutation-disposition.ts` exists
-  to expose the certificate-free judgments — `dead_code`, `unresolved` — but is not yet wired
-  into the CLI registrar.) Hand-editing the manifest remains blocked by the integrity gate.
+  unkillable because the code should not exist. (`interlinked mutation disposition --list
+  dead_code` lists the certificate-free judgments — `dead_code`, `unresolved`; for the
+  reachability layers of dead code — unreachable files, unused imports/exports — the
+  whole-repo sweep is `interlinked deadcode`, 2026-08-17.) Hand-editing the manifest
+  remains blocked by the integrity gate.
   Use it only for mutants with no observable behavior change; agent-facing message prose is
   behavior in this repo, so assert it instead of accepting. Campaign guidance:
   `docs/plans/15-survivor-elimination-campaign.md`.
