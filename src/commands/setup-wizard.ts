@@ -23,12 +23,22 @@
 // adopter should never be asked to think about it — `interlinked login` /
 // `enable --server` remain for the users who want it.
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { METRIC_DEFS } from "../harness/metric-caps.js";
 import { getPreset } from "../harness/modes.js";
+import { DEFAULT_STRUCTURAL_CHECKS } from "../harness/rules/default-structural.js";
 import { mergeIntoGuardRules } from "../harness/rules/guard-rules-write.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
 /** The review-scope decision: judge only the edited region, or whole files. */
 export type WizardScope = "diff" | "whole-file";
+
+/** The dead-code decision (operator directive 2026-08-17): "flag" reports
+ *  unused imports/exports on every edit (default), "delete" additionally
+ *  instructs the agent to remove them, "off" disables the per-edit checks.
+ *  The whole-repo sweep is always available as `interlinked deadcode`. */
+export type WizardDeadCode = "flag" | "delete" | "off";
 
 /** Enforcement-mode names accepted by the wizard (mirrors harness/modes.ts). */
 const WIZARD_MODES = ["strict", "lenient", "balanced"] as const;
@@ -43,6 +53,8 @@ export interface WizardChoices {
 	caps: Record<string, number>;
 	/** Seed tighten-only baselines from the repo's current state (brownfield). */
 	adopt: boolean;
+	/** Per-edit dead-code posture; the repo sweep stays a separate verb. */
+	deadCode: WizardDeadCode;
 	/** Sync mode passed to enable; local-first by design (server is dormant). */
 	syncMode: "local" | "realtime" | "manual";
 }
@@ -53,6 +65,7 @@ export const DEFAULT_WIZARD_CHOICES: WizardChoices = {
 	scope: "diff",
 	caps: {},
 	adopt: true,
+	deadCode: "flag",
 	syncMode: "local",
 };
 
@@ -64,6 +77,7 @@ export interface WizardDeps {
 	setCap: (metric: string, value: number) => Promise<void>;
 	adopt: () => Promise<void>;
 	writeScope: (cwd: string, scope: WizardScope) => void;
+	writeDeadCode: (cwd: string, action: WizardDeadCode) => void;
 }
 
 export interface WizardApplyResult {
@@ -104,6 +118,7 @@ export async function applyWizardChoices(
 	);
 	await step("mode", () => deps.applyMode(choices.mode));
 	await step("scope", () => deps.writeScope(cwd, choices.scope));
+	await step("dead code", () => deps.writeDeadCode(cwd, choices.deadCode));
 	for (const [metric, value] of Object.entries(choices.caps)) {
 		await step(`cap ${metric}`, () => deps.setCap(metric, value));
 	}
@@ -128,6 +143,51 @@ export function writeScopeConfig(cwd: string, scope: WizardScope): void {
 	// surfaces the thrown message and every step stays re-runnable.
 	const r = mergeIntoGuardRules(cwd, { diff_aware: { enabled: scope === "diff" } });
 	if (!r.ok) throw new Error(`scope not written: ${r.error}`);
+}
+
+/** True when the shared guard-rules.json already runs the FULL structural
+ *  family — then the dead-code write must not scope its siblings off. */
+function sharedStructuralFamilyOn(cwd: string): boolean {
+	const path = join(cwd, ".interlinked", "guard-rules.json");
+	if (!existsSync(path)) return false;
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		if (!isJsonObject(parsed) || !isJsonObject(parsed.structural_checks)) return false;
+		return parsed.structural_checks.enabled === true;
+	} catch (err) {
+		void err; // malformed file → treat as family-off; the merge writer reports it
+		return false;
+	}
+}
+
+/** The structural_checks patch for one dead-code posture. Enabling dead-code
+ *  detection must NOT drag in the other ~25 structural checks (their latency
+ *  and volume are a separate decision), so when the family is currently off,
+ *  every other boolean sub-check is pinned false — derived from
+ *  DEFAULT_CONFIG live, so a future check is covered automatically. */
+function deadCodePatch(cwd: string, action: WizardDeadCode): JsonObject {
+	if (action === "off") {
+		return { structural_checks: { dead_imports: false, dead_exports: false } };
+	}
+	const structural: JsonObject = {};
+	if (!sharedStructuralFamilyOn(cwd)) {
+		const keep = new Set(["enabled", "dead_imports", "dead_exports"]);
+		for (const [key, value] of Object.entries(DEFAULT_STRUCTURAL_CHECKS)) {
+			if (typeof value === "boolean" && !keep.has(key)) structural[key] = false;
+		}
+	}
+	structural.enabled = true;
+	structural.dead_imports = true;
+	structural.dead_exports = true;
+	structural.dead_code_action = action;
+	return { structural_checks: structural };
+}
+
+/** Write the dead-code posture into the shared guard-rules.json (the per-edit
+ *  half; the whole-repo sweep stays the separate `interlinked deadcode`). */
+export function writeDeadCodeConfig(cwd: string, action: WizardDeadCode): void {
+	const r = mergeIntoGuardRules(cwd, deadCodePatch(cwd, action));
+	if (!r.ok) throw new Error(`dead-code posture not written: ${r.error}`);
 }
 
 /**
@@ -166,7 +226,7 @@ export function parseWizardCapOverrides(raw: string): Record<string, number> {
 /** Non-interactive mapping (flags/env → choices). Unknown values degrade to
  *  the recommended defaults — a non-TTY bootstrap must never fail on input. */
 export function choicesFromNonInteractive(
-	raw: Partial<Record<"mode" | "scope" | "adopt" | "runners" | "syncMode", string>>,
+	raw: Partial<Record<"mode" | "scope" | "adopt" | "runners" | "syncMode" | "deadCode", string>>,
 ): WizardChoices {
 	// SAFETY: the cast is guarded by the includes() membership test on the same
 	// value — outside the union it falls to the default branch.
@@ -187,7 +247,11 @@ export function choicesFromNonInteractive(
 		raw.syncMode === "realtime" || raw.syncMode === "manual"
 			? raw.syncMode
 			: DEFAULT_WIZARD_CHOICES.syncMode;
-	return { runners, mode, scope, caps: {}, adopt, syncMode };
+	const deadCode: WizardDeadCode =
+		raw.deadCode === "delete" || raw.deadCode === "off"
+			? raw.deadCode
+			: DEFAULT_WIZARD_CHOICES.deadCode;
+	return { runners, mode, scope, caps: {}, adopt, deadCode, syncMode };
 }
 
 /**
@@ -199,7 +263,7 @@ export function choicesFromNonInteractive(
  * one of them failing its tests. Add or change wizard text HERE only.
  */
 export const WIZARD_COPY = {
-	banner: "Interlinked setup — 5 quick decisions",
+	banner: "Interlinked setup — 6 quick decisions",
 	bannerHint: "Enter accepts the recommended default at every step.",
 	selectHint: "↑/↓ choose · Enter confirm",
 	steps: {
@@ -234,6 +298,14 @@ export const WIZARD_COPY = {
 			detail: "interlinked only stops it getting worse (tighten-only ratchets).",
 			prompt: "   Seed baselines from current state now? [Y/n]: ",
 		},
+		deadcode: {
+			n: 6,
+			title: "Dead code:",
+			flagLine: "flag — report unused imports/exports on every edit (recommended)",
+			deleteLine: "delete — also instruct the agent to remove them in the same edit",
+			offLine: "off — per-edit checks silent; `interlinked deadcode` sweep still works",
+			prompt: "   Dead code [flag]: ",
+		},
 	},
 	planHeader: "Plan",
 	applyPrompt: "\nApply? [Y/n]: ",
@@ -246,6 +318,7 @@ export const WIZARD_COPY = {
 		"  TDD: a new source file asks for its failing companion test first (strict blocks, balanced warns)",
 		"  coverage: adopt seeds today's % as the floor; every edit holds-or-raises it toward your goal",
 		"  mutation testing: `interlinked mutation` ratchets survivor scores per file; deep-audit lane, not per-edit by default",
+		"  dead code: unused imports/exports flagged per edit (or set delete); `interlinked deadcode` sweeps the whole repo; mutation adjudication catches behaviorally inert code",
 		"  `interlinked verify` — the local CI mirror: types, lint, secrets, deps + the default check set",
 		"  session end: a ranked stop digest and `interlinked status` scorecard, not a wall of warnings",
 		"  agent skills installed per runner teach these gates from inside the agent's own context",
@@ -282,7 +355,16 @@ export function describeWizardPlan(choices: WizardChoices): string[] {
 			? "  Baselines: adopt now — your repo today is the floor; interlinked only stops it getting worse"
 			: "  Baselines: skipped  (run later: interlinked adopt)",
 	);
+	lines.push(`  Dead code: ${describeDeadCodeChoice(choices.deadCode)}`);
 	return lines;
+}
+
+/** One phrase per dead-code posture — shared by the plan and the receipt. */
+function describeDeadCodeChoice(deadCode: WizardDeadCode): string {
+	if (deadCode === "delete")
+		return "flag per edit + instruct the agent to delete  (change: rerun the wizard)";
+	if (deadCode === "off") return "per-edit checks off  (sweep any time: interlinked deadcode)";
+	return "flag per edit — unused imports/exports reported  (sweep: interlinked deadcode)";
 }
 
 /** One receipt line per cap: overrides win; coverage renders as a GOAL the
@@ -325,6 +407,7 @@ export function describePostureReceipt(choices: WizardChoices): string[] {
 			? "  installs: current deps pre-approved; new packages need interlinked allowlist add <eco> <pkg>"
 			: "  installs: fail-closed allowlist — pre-approve current deps: interlinked allowlist snapshot --by you",
 	);
+	lines.push(`  dead code: ${describeDeadCodeChoice(choices.deadCode)}`);
 	lines.push(
 		"  always on: destructive-command, secrets, and install rails; per-check tuning lives in .interlinked/check-policy.json",
 	);

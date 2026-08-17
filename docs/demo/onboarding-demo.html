@@ -339,6 +339,7 @@ var InterlinkedWizard = (() => {
     scope: "diff",
     caps: {},
     adopt: true,
+    deadCode: "flag",
     syncMode: "local"
   };
   function moveSelection(index, delta, length) {
@@ -367,10 +368,11 @@ var InterlinkedWizard = (() => {
     const adopt = raw.adopt === void 0 ? DEFAULT_WIZARD_CHOICES.adopt : !/^(false|no|0)$/i.test(raw.adopt);
     const runners = raw.runners ? raw.runners.split(",").map((r) => r.trim()).filter((r) => r.length > 0) : null;
     const syncMode = raw.syncMode === "realtime" || raw.syncMode === "manual" ? raw.syncMode : DEFAULT_WIZARD_CHOICES.syncMode;
-    return { runners, mode, scope, caps: {}, adopt, syncMode };
+    const deadCode = raw.deadCode === "delete" || raw.deadCode === "off" ? raw.deadCode : DEFAULT_WIZARD_CHOICES.deadCode;
+    return { runners, mode, scope, caps: {}, adopt, deadCode, syncMode };
   }
   var WIZARD_COPY = {
-    banner: "Interlinked setup \u2014 5 quick decisions",
+    banner: "Interlinked setup \u2014 6 quick decisions",
     bannerHint: "Enter accepts the recommended default at every step.",
     selectHint: "\u2191/\u2193 choose \xB7 Enter confirm",
     steps: {
@@ -403,6 +405,14 @@ var InterlinkedWizard = (() => {
         title: "Baselines \u2014 your repo as it is today becomes the floor;",
         detail: "interlinked only stops it getting worse (tighten-only ratchets).",
         prompt: "   Seed baselines from current state now? [Y/n]: "
+      },
+      deadcode: {
+        n: 6,
+        title: "Dead code:",
+        flagLine: "flag \u2014 report unused imports/exports on every edit (recommended)",
+        deleteLine: "delete \u2014 also instruct the agent to remove them in the same edit",
+        offLine: "off \u2014 per-edit checks silent; `interlinked deadcode` sweep still works",
+        prompt: "   Dead code [flag]: "
       }
     },
     planHeader: "Plan",
@@ -416,6 +426,7 @@ var InterlinkedWizard = (() => {
       "  TDD: a new source file asks for its failing companion test first (strict blocks, balanced warns)",
       "  coverage: adopt seeds today's % as the floor; every edit holds-or-raises it toward your goal",
       "  mutation testing: `interlinked mutation` ratchets survivor scores per file; deep-audit lane, not per-edit by default",
+      "  dead code: unused imports/exports flagged per edit (or set delete); `interlinked deadcode` sweeps the whole repo; mutation adjudication catches behaviorally inert code",
       "  `interlinked verify` \u2014 the local CI mirror: types, lint, secrets, deps + the default check set",
       "  session end: a ranked stop digest and `interlinked status` scorecard, not a wall of warnings",
       "  agent skills installed per runner teach these gates from inside the agent's own context",
@@ -444,7 +455,14 @@ var InterlinkedWizard = (() => {
     lines.push(
       choices.adopt ? "  Baselines: adopt now \u2014 your repo today is the floor; interlinked only stops it getting worse" : "  Baselines: skipped  (run later: interlinked adopt)"
     );
+    lines.push(`  Dead code: ${describeDeadCodeChoice(choices.deadCode)}`);
     return lines;
+  }
+  function describeDeadCodeChoice(deadCode) {
+    if (deadCode === "delete")
+      return "flag per edit + instruct the agent to delete  (change: rerun the wizard)";
+    if (deadCode === "off") return "per-edit checks off  (sweep any time: interlinked deadcode)";
+    return "flag per edit \u2014 unused imports/exports reported  (sweep: interlinked deadcode)";
   }
   function capReceiptBits(caps) {
     return METRIC_DEFS.map((d) => {
@@ -470,6 +488,7 @@ var InterlinkedWizard = (() => {
     lines.push(
       choices.adopt ? "  installs: current deps pre-approved; new packages need interlinked allowlist add <eco> <pkg>" : "  installs: fail-closed allowlist \u2014 pre-approve current deps: interlinked allowlist snapshot --by you"
     );
+    lines.push(`  dead code: ${describeDeadCodeChoice(choices.deadCode)}`);
     lines.push(
       "  always on: destructive-command, secrets, and install rails; per-check tuning lives in .interlinked/check-policy.json"
     );

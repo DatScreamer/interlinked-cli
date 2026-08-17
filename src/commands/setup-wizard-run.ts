@@ -32,8 +32,10 @@ import {
 	parseWizardYesNo as parseYesNo,
 	WIZARD_COPY,
 	type WizardChoices,
+	type WizardDeadCode,
 	type WizardDeps,
 	type WizardMode,
+	writeDeadCodeConfig,
 	writeScopeConfig,
 } from "./setup-wizard.js";
 
@@ -49,6 +51,7 @@ export function realWizardDeps(): WizardDeps {
 		},
 		adopt: () => adoptCommand({}),
 		writeScope: writeScopeConfig,
+		writeDeadCode: writeDeadCodeConfig,
 	};
 }
 
@@ -225,6 +228,33 @@ async function askAdopt(rl: AskInterface, choices: WizardChoices): Promise<void>
 	choices.adopt = parseYesNo(raw, true);
 }
 
+const DEADCODE_OPTIONS: readonly WizardDeadCode[] = ["flag", "delete", "off"];
+
+function deadcodeRow(index: number, selected: boolean): string {
+	const copy = WIZARD_COPY.steps.deadcode;
+	const line = [copy.flagLine, copy.deleteLine, copy.offLine][index] ?? "";
+	return selected ? c.bold(`  ▸ ${line}`) : `    ${line}`;
+}
+
+async function askDeadCode(rl: AskInterface, choices: WizardChoices): Promise<void> {
+	console.log(`${WIZARD_COPY.steps.deadcode.n}) ${WIZARD_COPY.steps.deadcode.title}`);
+	if (canArrowSelect()) {
+		const picked = await selectFromList({
+			labels: DEADCODE_OPTIONS as string[],
+			renderLine: deadcodeRow,
+			initial: 0,
+		});
+		choices.deadCode = DEADCODE_OPTIONS[picked] ?? "flag";
+		return;
+	}
+	console.log(deadcodeRow(0, false));
+	console.log(deadcodeRow(1, false));
+	console.log(deadcodeRow(2, false));
+	const raw = await rl.question(WIZARD_COPY.steps.deadcode.prompt);
+	const v = raw.trim().toLowerCase();
+	if (v === "delete" || v === "off") choices.deadCode = v;
+}
+
 /** The readline slice the questions consume — injectable in principle. */
 interface AskInterface {
 	question(prompt: string): Promise<string>;
@@ -247,6 +277,7 @@ export async function runSetupWizardInteractive(cwd: string = process.cwd()): Pr
 		await askScope(rl, choices);
 		await askCaps(rl, choices);
 		await askAdopt(rl, choices);
+		await askDeadCode(rl, choices);
 
 		console.log(`\n${c.bold(WIZARD_COPY.planHeader)}`);
 		for (const line of describeWizardPlan(choices)) console.log(line);

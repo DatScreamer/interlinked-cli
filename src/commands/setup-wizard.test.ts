@@ -15,6 +15,7 @@ import {
 	describePostureReceipt,
 	describeWizardPlan,
 	type WizardDeps,
+	writeDeadCodeConfig,
 	writeScopeConfig,
 } from "./setup-wizard.js";
 
@@ -38,6 +39,10 @@ function recordingDeps(): WizardDeps & { calls: string[] } {
 			calls.push(`scope:${scope}`);
 			void cwd;
 		},
+		writeDeadCode: (cwd, action) => {
+			calls.push(`deadcode:${action}`);
+			void cwd;
+		},
 	};
 }
 
@@ -46,7 +51,13 @@ describe("applyWizardChoices — positive (must compose)", () => {
 	it("P1: defaults run enable, strict mode, diff scope, and adopt — and write no caps", async () => {
 		const deps = recordingDeps();
 		await applyWizardChoices("/repo", DEFAULT_WIZARD_CHOICES, deps);
-		expect(deps.calls).toEqual(["enable:all:local", "mode:strict", "scope:diff", "adopt"]);
+		expect(deps.calls).toEqual([
+			"enable:all:local",
+			"mode:strict",
+			"scope:diff",
+			"deadcode:flag",
+			"adopt",
+		]);
 	});
 
 	// test-contract: public-api — an edited cap writes exactly that cap, before adopt seeds baselines against it
@@ -121,6 +132,49 @@ describe("writeScopeConfig — positive/negative", () => {
 		writeFileSync(gr, "{ not json");
 		expect(() => writeScopeConfig(dir, "diff")).toThrow(/scope not written/);
 		expect(readFileSync(gr, "utf-8")).toBe("{ not json");
+		rmSync(dir, { recursive: true, force: true });
+	});
+});
+
+describe("writeDeadCodeConfig — positive/negative", () => {
+	// test-contract: behavior — the flag/delete write scopes the structural
+	// family to the dead-code checks when the family is off (enabling dead-code
+	// detection must not drag in the other structural checks)
+	it("P8: 'delete' on a family-off repo enables only the dead-code checks, action recorded", () => {
+		const dir = mkdtempSync(join(tmpdir(), "wiz-deadcode-"));
+		writeDeadCodeConfig(dir, "delete");
+		const gr = JSON.parse(readFileSync(join(dir, ".interlinked", "guard-rules.json"), "utf-8"));
+		expect(gr.structural_checks.enabled).toBe(true);
+		expect(gr.structural_checks.dead_imports).toBe(true);
+		expect(gr.structural_checks.dead_exports).toBe(true);
+		expect(gr.structural_checks.dead_code_action).toBe("delete");
+		expect(gr.structural_checks.smart_tsc).toBe(false);
+		expect(gr.structural_checks.blast_radius).toBe(false);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	// test-contract: invariant — a repo already running the full family keeps
+	// its sibling checks; the write touches only the dead-code keys
+	it("N8: family-on repos get a minimal patch, sibling checks untouched", () => {
+		const dir = mkdtempSync(join(tmpdir(), "wiz-deadcode-on-"));
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(dir, ".interlinked", "guard-rules.json"),
+			JSON.stringify({ structural_checks: { enabled: true, smart_tsc: true } }),
+		);
+		writeDeadCodeConfig(dir, "flag");
+		const gr = JSON.parse(readFileSync(join(dir, ".interlinked", "guard-rules.json"), "utf-8"));
+		expect(gr.structural_checks.smart_tsc).toBe(true);
+		expect(gr.structural_checks.dead_code_action).toBe("flag");
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	// test-contract: behavior — "off" disables only the two dead-code checks
+	it("N9: 'off' writes dead_imports/dead_exports false and nothing else", () => {
+		const dir = mkdtempSync(join(tmpdir(), "wiz-deadcode-off-"));
+		writeDeadCodeConfig(dir, "off");
+		const gr = JSON.parse(readFileSync(join(dir, ".interlinked", "guard-rules.json"), "utf-8"));
+		expect(gr.structural_checks).toEqual({ dead_imports: false, dead_exports: false });
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
