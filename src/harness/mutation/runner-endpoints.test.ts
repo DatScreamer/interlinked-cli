@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configuredRunnerEndpoints } from "./runner-endpoints.js";
+import { configuredMaxTestScope, configuredRunnerEndpoints } from "./runner-endpoints.js";
 
 describe("configuredRunnerEndpoints", () => {
 	it("P1: reads runner_url + runner_urls + token from the local rules file", () => {
@@ -70,5 +70,45 @@ describe("configuredRunnerEndpoints", () => {
 		]);
 		const cfg = configuredRunnerEndpoints("/repo", (p) => files.get(p) ?? null);
 		expect(cfg).toEqual({ endpoints: [] });
+	});
+});
+
+describe("configuredMaxTestScope (plan 25 Class-2 knob)", () => {
+	// test-contract: public-api — local file wins, shared file is the fallback,
+	// invalid values fall through to the shipped default (undefined)
+	it("P: reads a positive max_test_scope, local file winning over shared", () => {
+		const files = new Map<string, string>([
+			[
+				"/repo/.interlinked/guard-rules.local.json",
+				JSON.stringify({ per_edit_mutation: { max_test_scope: 300 } }),
+			],
+			[
+				"/repo/.interlinked/guard-rules.json",
+				JSON.stringify({ per_edit_mutation: { max_test_scope: 40 } }),
+			],
+		]);
+		expect(configuredMaxTestScope("/repo", (p) => files.get(p) ?? null)).toBe(300);
+	});
+
+	// test-contract: behavior — the shared rules file backs the local one
+	it("P: falls back to the shared rules file when no local override exists", () => {
+		const files = new Map<string, string>([
+			[
+				"/repo/.interlinked/guard-rules.json",
+				JSON.stringify({ per_edit_mutation: { max_test_scope: 40 } }),
+			],
+		]);
+		expect(configuredMaxTestScope("/repo", (p) => files.get(p) ?? null)).toBe(40);
+	});
+
+	// test-contract: boundary — only positive finite numbers configure the cap
+	it("N: zero, negative, non-numeric, malformed, and absent all yield undefined", () => {
+		const bad = (payload: string | null): number | undefined =>
+			configuredMaxTestScope("/repo", () => payload);
+		expect(bad(null)).toBeUndefined();
+		expect(bad("{not json")).toBeUndefined();
+		expect(bad(JSON.stringify({ per_edit_mutation: { max_test_scope: 0 } }))).toBeUndefined();
+		expect(bad(JSON.stringify({ per_edit_mutation: { max_test_scope: -5 } }))).toBeUndefined();
+		expect(bad(JSON.stringify({ per_edit_mutation: { max_test_scope: "many" } }))).toBeUndefined();
 	});
 });

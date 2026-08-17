@@ -70,3 +70,26 @@ export function configuredRunnerEndpoints(
 	);
 	return m.token ? { endpoints, token: m.token } : { endpoints };
 }
+
+/** `per_edit_mutation.max_test_scope` from either rules file (local wins),
+ *  validated to a positive finite number; undefined ⇒ the shipped default.
+ *  Same CLI-side reader stance as {@link configuredRunnerEndpoints}: this is
+ *  for callers running OUTSIDE the daemon's config pipeline. */
+export function configuredMaxTestScope(
+	cwd: string,
+	readFile: (path: string) => string | null,
+): number | undefined {
+	for (const name of ["guard-rules.local.json", "guard-rules.json"]) {
+		const raw = readFile(join(cwd, ".interlinked", name));
+		if (raw === null) continue;
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (!isJsonObject(parsed) || !isJsonObject(parsed.per_edit_mutation)) continue;
+			const v = parsed.per_edit_mutation.max_test_scope;
+			if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+		} catch (err) {
+			void err; // malformed file → fall through to the next source / default
+		}
+	}
+	return undefined;
+}

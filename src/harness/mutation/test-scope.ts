@@ -183,8 +183,12 @@ export function computeMutationTestScope(args: {
 	editedRelPath: string;
 	projectRoot: string;
 	depView: DependencyView;
+	/** Per-repo ceiling override (`per_edit_mutation.max_test_scope`);
+	 *  absent ⇒ {@link MAX_MUTATION_TEST_SCOPE}. */
+	maxScope?: number;
 }): MutationTestScopeResult {
 	const { editedRelPath, projectRoot, depView } = args;
+	const scopeCap = args.maxScope ?? MAX_MUTATION_TEST_SCOPE;
 	if (depView.answerScope !== "repo" || !depView.hasFile(resolveAbs(editedRelPath, projectRoot))) {
 		return { tests: null, reason: "unknown_file" };
 	}
@@ -194,7 +198,7 @@ export function computeMutationTestScope(args: {
 	const excludedNonRunnable = selected.filter((t) => !isRunnableTestEntry(t));
 	const extra = excludedNonRunnable.length > 0 ? { excludedNonRunnable } : {};
 	if (runnable.length === 0) return { tests: null, reason: "no_affected_tests", ...extra };
-	if (runnable.length > MAX_MUTATION_TEST_SCOPE) {
+	if (runnable.length > scopeCap) {
 		// Declining the full (over-cap) set to `tests: null` would drop the
 		// target's own companion kill tests too, and the runner's four-stem
 		// filename fallback never finds `<base>.mutation-kill.test.ts` — so ship
@@ -226,9 +230,16 @@ export function computeMutationTestScope(args: {
 export function computeMutationTestScopeForRepo(args: {
 	editedRelPath: string;
 	projectRoot: string;
+	/** Per-repo ceiling override (`per_edit_mutation.max_test_scope`). */
+	maxScope?: number;
 }): MutationTestScopeResult {
 	const graph = new ProjectGraph(args.projectRoot);
 	graph.initialize();
 	const depView = new InternalDependencyView(graph);
-	return computeMutationTestScope({ editedRelPath: args.editedRelPath, projectRoot: args.projectRoot, depView });
+	return computeMutationTestScope({
+		editedRelPath: args.editedRelPath,
+		projectRoot: args.projectRoot,
+		depView,
+		...(args.maxScope !== undefined ? { maxScope: args.maxScope } : {}),
+	});
 }

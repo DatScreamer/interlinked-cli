@@ -134,6 +134,44 @@ describe("computeMutationTestScope — negative (must not fire / must decline ho
 		expect(result.reason).toBe("over_cap");
 		expect(result.uncappedCount).toBe(MAX_MUTATION_TEST_SCOPE + 1);
 	});
+
+	// test-contract: public-api — per_edit_mutation.max_test_scope overrides the
+	// shipped ceiling in BOTH directions (plan 25 Class-2 knob): the default is
+	// calibrated against THIS repo's hubs, and another repo's hub may need more
+	it("P: a maxScope override raises the ceiling so a big-hub scope ships whole", () => {
+		const edges: Record<string, string[]> = {};
+		const dependents: string[] = [];
+		for (let i = 0; i < MAX_MUTATION_TEST_SCOPE + 1; i++) dependents.push(abs(`src/__tests__/t${i}.test.ts`));
+		edges[abs("src/hub.ts")] = dependents;
+		const view = stubView(edges);
+		const result = computeMutationTestScope({
+			editedRelPath: "src/hub.ts",
+			projectRoot: ROOT,
+			depView: view,
+			maxScope: MAX_MUTATION_TEST_SCOPE + 10,
+		});
+		expect(result.reason).toBeUndefined();
+		expect(result.tests).toHaveLength(MAX_MUTATION_TEST_SCOPE + 1);
+	});
+
+	it("N: a lower maxScope declines a scope the default would have shipped", () => {
+		const edges: Record<string, string[]> = {};
+		edges[abs("src/small.ts")] = [
+			abs("src/__tests__/a.test.ts"),
+			abs("src/__tests__/b.test.ts"),
+			abs("src/__tests__/c.test.ts"),
+		];
+		const view = stubView(edges);
+		const result = computeMutationTestScope({
+			editedRelPath: "src/small.ts",
+			projectRoot: ROOT,
+			depView: view,
+			maxScope: 2,
+		});
+		expect(result.tests).toBeNull();
+		expect(result.reason).toBe("over_cap");
+		expect(result.uncappedCount).toBe(3);
+	});
 });
 
 describe("computeMutationTestScope — over-cap companion fallback", () => {

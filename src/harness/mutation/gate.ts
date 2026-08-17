@@ -45,6 +45,12 @@ export interface PerEditMutationConfig {
 	 *  Bounds how long the agent's turn is held. Omitted ⇒ 25 000 ms. An
 	 *  unreachable runner returns immediately regardless. */
 	harvest_budget_ms?: number | undefined;
+	/** Ceiling on graph-selected test files per mutation run (plan 25 Class-2
+	 *  knob). Absent ⇒ test-scope.ts's MAX_MUTATION_TEST_SCOPE (150, calibrated
+	 *  against THIS repo's largest hub — another repo's hub may legitimately
+	 *  need more). Over the ceiling the scope declines to the companion set,
+	 *  never silently widens toward the whole suite. */
+	max_test_scope?: number | undefined;
 	/** Cloud Sandbox runner endpoint; absent → no runner → honest not-measured. */
 	runner_url?: string | undefined;
 	/**

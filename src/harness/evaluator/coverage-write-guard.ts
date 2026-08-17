@@ -161,6 +161,10 @@ interface GateContext {
 	blockOnCrap?: boolean;
 	/** CRAP score at/above which a touched function blocks. Absent ⇒ {@link DEFAULT_CRAP_THRESHOLD}. */
 	crapThreshold?: number;
+	/** `per_edit_coverage.drop_epsilon` — tolerance for the %-drop backstop.
+	 *  Absent ⇒ the shipped COVERAGE_DROP_EPSILON (0.005). Class-2 knob,
+	 *  plan 25: an engine budget users may tune, not a quality bar. */
+	dropEpsilon?: number;
 	/**
 	 * STAGE a passing target's new coverage baseline instead of persisting it
 	 * in-loop. The entry flushes staged baselines only after the ENTIRE event
@@ -249,6 +253,7 @@ async function runOverlayAndDecide(
 			ctx.editedLines,
 			covOut,
 			scopeId,
+			ctx.dropEpsilon,
 		);
 		if (coverageDecision) return coverageDecision;
 
@@ -483,6 +488,9 @@ async function selectRunAndDecide(call: GateCall, target: GateTarget): Promise<H
 		blockOnTestFailure: cfg.block_on_test_failure === true,
 		blockOnCrap: cfg.block_on_crap === true,
 		crapThreshold: crapThresholdFor(projectRoot, cfg.crap_threshold),
+		...(typeof cfg.drop_epsilon === "number" && cfg.drop_epsilon >= 0
+			? { dropEpsilon: cfg.drop_epsilon }
+			: {}),
 		recordBaseline: call.recordBaseline,
 		...(target.overlayFiles ? { overlayFiles: target.overlayFiles } : {}),
 		...(route.kind === "scoped" ? { selectedTests: route.tests } : {}),

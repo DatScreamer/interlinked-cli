@@ -248,12 +248,13 @@ function dropVerdict(
 	scopeId: string | undefined,
 	uncoveredSample: number[],
 	out: CoverageDecisionOut | undefined,
+	dropEpsilon?: number,
 ): HarnessDecision | null {
 	if (scopeId !== undefined && entry.scope !== scopeId) {
 		if (out) out.scopeChanged = { priorFraction: entry.fraction };
 		return null;
 	}
-	if (now < entry.fraction - COVERAGE_DROP_EPSILON) {
+	if (now < entry.fraction - (dropEpsilon ?? COVERAGE_DROP_EPSILON)) {
 		return blockForDrop(relPath, entry.fraction, now, uncoveredSample);
 	}
 	return null;
@@ -270,10 +271,11 @@ function perFileRegressionBlock(
 	scopeId?: string,
 	uncoveredSample: number[] = [],
 	out?: CoverageDecisionOut,
+	dropEpsilon?: number,
 ): HarnessDecision | null {
 	const entry = readFileCoverageBaselineEntry(projectRoot, relPath);
 	if (entry !== null) {
-		const drop = dropVerdict(entry, relPath, now, scopeId, uncoveredSample, out);
+		const drop = dropVerdict(entry, relPath, now, scopeId, uncoveredSample, out, dropEpsilon);
 		if (drop) return drop;
 	}
 	const floor = minCoverageFor(projectRoot);
@@ -331,6 +333,8 @@ export function decideFromCoverage(
 	editedLines: Set<number> | undefined,
 	out: CoverageDecisionOut,
 	scopeId?: string,
+	/** `per_edit_coverage.drop_epsilon` override; absent ⇒ {@link COVERAGE_DROP_EPSILON}. */
+	dropEpsilon?: number,
 ): HarnessDecision | null {
 	const verdict = hasPerLineData(cov)
 		? decidePerLine(relPath, cov, editedLines)
@@ -345,6 +349,7 @@ export function decideFromCoverage(
 		scopeId,
 		sampleUncoveredLines(cov),
 		out,
+		dropEpsilon,
 	);
 	if (regression) return regression;
 

@@ -287,7 +287,13 @@ export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneRe
 	// Reverse-import-graph test selection, not the runner's filename-glob guess:
 	// a hub file's real tests are often not named after it. Computed BEFORE the
 	// overlay set so the overlays can close over every test the runner loads.
-	const scope = computeMutationTestScopeForRepo({ editedRelPath: key, projectRoot: args.cwd });
+	const { configuredMaxTestScope } = await import("../harness/mutation/runner-endpoints.js");
+	const maxScope = configuredMaxTestScope(args.cwd, readDiskSafe);
+	const scope = computeMutationTestScopeForRepo({
+		editedRelPath: key,
+		projectRoot: args.cwd,
+		...(maxScope !== undefined ? { maxScope } : {}),
+	});
 	// The full graph scope when it fit; else, on an over-cap decline, the target's
 	// own companion kill tests (test-scope.ts::companionScope) — never `[]` when a
 	// companion exists, so an over-cap file still ships `<base>.mutation-kill.test.ts`
