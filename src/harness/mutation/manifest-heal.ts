@@ -13,7 +13,7 @@
 // parsed `files` map.
 
 import { isTestPath } from "../coverage-test-selector.js";
-import { normalizeManifestKey } from "./manifest.js";
+import { normalizeManifestKey } from "./manifest-key.js";
 import type { IdentityInstability, MutantRecord, MutantStatus, StableId, SymbolRecord } from "./types.js";
 
 /** Caution ranking for a status conflict when merging two duplicate copies of

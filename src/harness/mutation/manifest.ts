@@ -7,13 +7,13 @@
 // statuses. Pure functions apart from the JSON load/save.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { isJsonObject } from "../../lib/json-types.js";
 import { isTestPath } from "../coverage-test-selector.js";
-import { normalizeFindingPath } from "../findings/provenance.js";
 import type { SymbolHashEntry } from "./identity.js";
 import { freshInstability, mutantIdsChurned, updateInstability } from "./instability.js";
 import { healManifestFiles } from "./manifest-heal.js";
+import { normalizeManifestKey } from "./manifest-key.js";
 import type {
 	MeasurementProvenance,
 	MutantIdentity,
@@ -29,46 +29,12 @@ export function mutationManifestPath(dir: string): string {
 	return join(dir, "mutation-manifest.json");
 }
 
-/**
- * Normalize a raw `file` argument into the manifest's ONE canonical key: a
- * repo-relative, forward-slash path with no leading "./". This is the single
- * choke point every manifest reader/writer funnels a path through —
- * `applyMeasuredRun` and `fileRecords` below, plus accept.ts's `locate` /
- * `withMutant` — so an absolute path, a "./"-prefixed path, and a backslash
- * path all collapse onto the SAME key instead of each earning an independent
- * record.
- *
- * Measured defect (2026-07-31): Claude Code's hook event carries an ABSOLUTE
- * `file_path`, while the brownfield-adoption sweep (`seedFileBaseline`, driven
- * from a plain repo-relative path list) keys the SAME files by their
- * repo-relative path. 17 files ended up with two independent records, so the
- * survivor-diff invariant compared an edit against a record that was not its
- * own — half of every affected file's measurement history was invisible to
- * the ratchet.
- *
- * Reuses `normalizeFindingPath` (findings/provenance.ts) for the string-level
- * cleanup (backslash → "/", strip a leading "./") rather than re-deriving it —
- * `findings/corpus.ts`'s `toRepoRelative` composes the exact same
- * `isAbsolute(file) ? relative(cwd, file) : file` shape for the same reason.
- * `cwd` defaults to `process.cwd()` — the harness's documented convention that
- * every `.interlinked/` path resolves against the process cwd (the guarded
- * repo root) — but real callers on the live gate path (gate.ts /
- * pre-tool-coverage-gates.ts) thread the daemon's actual `ctx.cwd` explicitly,
- * since a daemon started with `--cwd` can diverge from `process.cwd()`.
- */
-export function normalizeManifestKey(file: string, cwd: string = process.cwd()): string {
-	const posix = normalizeFindingPath(file);
-	// Both branches go through the SAME resolve -> relative round-trip. An earlier
-	// version returned a relative input after string cleanup only, which left this
-	// "canonical" key non-canonical for exactly the spellings a choke point exists
-	// to collapse: measured 2026-07-31, one file produced FIVE distinct keys —
-	// `src//a.ts`, `src/./a.ts`, `src/sub/../a.ts` and `../<repo>/src/a.ts` each
-	// survived alongside `src/a.ts`. That is the same two-spellings/one-map class
-	// this function was introduced to kill, reintroduced inside the fix itself.
-	// `resolve` collapses `//`, `/./` and `/../`, so the round-trip is idempotent.
-	const abs = isAbsolute(posix) ? posix : resolve(cwd, posix);
-	return normalizeFindingPath(relative(cwd, abs));
-}
+// `normalizeManifestKey` moved to ./manifest-key.ts (2026-08-16) to break the
+// manifest ↔ manifest-heal import cycle — it was the single VALUE edge the
+// healer needed. Re-exported here for the many existing callers; its full
+// docstring (the 2026-07-31 five-keys / seventeen-double-records defect
+// history) moved with it.
+export { normalizeManifestKey } from "./manifest-key.js";
 
 /**
  * Thrown by `applyMeasuredRun` when the resolved key names a test/spec file.
@@ -187,9 +153,12 @@ function parseManifestShell(value: unknown): MutationManifest | null {
 		// SAFETY: object-shape checked above; per-symbol/per-mutant fields are
 		// trusted, not deep-validated — see docstring above.
 		files: value.files as Record<string, Record<StableId, SymbolRecord>>,
-		...(isJsonObject(value.fileProvenance)
-			? { fileProvenance: value.fileProvenance as Record<string, MeasurementProvenance> }
-			: {}),
+		...(isJsonObject(value.fileProvenance) && {
+			// SAFETY: isJsonObject proves object shape; per-entry provenance fields
+			// are trusted like `files` above — this file is written exclusively by
+			// this codebase's own writers (see parse docstring).
+			fileProvenance: value.fileProvenance as Record<string, MeasurementProvenance>,
+		}),
 	};
 }
 
@@ -242,6 +211,7 @@ export function stampProvenance(args: {
 
 /** The conditions a file's records were measured under, or null when nothing
  *  recorded them — which is NOT the same as "measured under today's rules". */
+// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
 export function provenanceOf(
 	manifest: MutationManifest,
 	file: string,
@@ -281,11 +251,13 @@ function fileRecords(manifest: MutationManifest, file: string, cwd?: string): Re
  * size reflects the file, not the change. Callers use this to treat the first
  * measurement of a file as BASELINE ESTABLISHMENT rather than a verdict.
  */
+// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
 export function hasFileBaseline(manifest: MutationManifest, file: string, cwd?: string): boolean {
 	return Object.keys(fileRecords(manifest, file, cwd)).length > 0;
 }
 
 /** Symbols whose hash differs from the base manifest (or are new) — the changed region (spec §3). */
+// interlinked: defer function_arg_count -- positional (base, next, file, cwd) mirrors the survivor-diff call sites; options-object refactor tracked with the branded-key work
 export function changedSymbols(
 	base: MutationManifest,
 	file: string,
@@ -302,6 +274,7 @@ export function changedSymbols(
 }
 
 /** mutantIds accepted (grandfathered survivors + reviewed equivalents) in the base. */
+// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
 export function acceptedSurvivors(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
 	const out = new Set<StableId>();
 	for (const symbol of Object.values(fileRecords(base, file, cwd))) {
@@ -313,6 +286,7 @@ export function acceptedSurvivors(base: MutationManifest, file: string, cwd?: st
 }
 
 /** symbolIds currently quarantined (identity unstable → survivors WARN, not BLOCK). */
+// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
 export function quarantinedSymbols(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
 	const out = new Set<StableId>();
 	for (const [symbolId, symbol] of Object.entries(fileRecords(base, file, cwd))) {

@@ -1,8 +1,11 @@
 // ===========================================
-// interlinked mutation sweep — work the survivor list, one file at a time
+// interlinked mutation sweep — work mutation targets, one file at a time
 // ===========================================
-// `mutation survivors` says WHAT to measure; this drives it. The sweep walks a
-// ranked slice of the work-list through the same single-file pipeline
+// `mutation survivors` says WHAT debt to work; this drives it. By default the
+// sweep walks a ranked slice of that work-list. `--all-eligible` widens the
+// queue to every mutation-eligible source file, including files absent from the
+// manifest and files whose last measurement found zero survivors. Both paths
+// use the same single-file pipeline
 // `mutation measure` uses (`measureOneFile`), recording each clean result into
 // the manifest the per-edit gate enforces against.
 //
@@ -12,7 +15,9 @@
 // so each box sweeps a disjoint slice, and the ranked order is deterministic,
 // so no coordinator is needed to keep them from colliding.
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { isTestPath } from "../harness/coverage-test-selector.js";
+import { findManifestFiles } from "../harness/manifest-file-walk.js";
 import { summarizeSurvivors } from "../harness/mutation/survivors.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header } from "../lib/formatter.js";
@@ -30,6 +35,8 @@ export interface MutationSweepOptions {
 	budgetMs?: string;
 	skipPreflight?: boolean;
 	unqualifiedOnly?: boolean;
+	allEligible?: boolean;
+	measuredBefore?: string;
 	dryRun?: boolean;
 	cwd?: string;
 	json?: boolean;
@@ -45,6 +52,10 @@ export interface SweepTarget {
 	 *  has been measured under the current regime, so a re-sweep would re-pay
 	 *  for an answer already held. */
 	qualified: boolean;
+	/** ISO timestamp of the file's current measurement provenance. Null means
+	 *  the file is absent from the manifest or carries legacy, unqualified
+	 *  records. */
+	measuredAt?: string | null;
 }
 
 /**
@@ -61,11 +72,30 @@ export function unqualifiedOnly(targets: readonly SweepTarget[]): SweepTarget[] 
 	return targets.filter((t) => !t.qualified);
 }
 
+/**
+ * Select files not measured at or after a fixed campaign cutoff.
+ *
+ * A long census can be restarted with the SAME cutoff: files recorded by an
+ * earlier batch now have provenance at/after the cutoff and drop out, while
+ * old, missing, legacy, or malformed provenance stays in the queue. The last
+ * case is deliberately conservative — an unreadable timestamp is not evidence
+ * that the file is current.
+ */
+export function measuredBefore(targets: readonly SweepTarget[], cutoffMs: number): SweepTarget[] {
+	return targets.filter((target) => {
+		if (!target.measuredAt) return true;
+		const measuredAtMs = Date.parse(target.measuredAt);
+		return !Number.isFinite(measuredAtMs) || measuredAtMs < cutoffMs;
+	});
+}
+
 export interface SweepSelection {
 	limit?: number | undefined;
 	shard?: Shard | undefined;
 	/** Skip files that already carry provenance (restart-friendly). */
 	unqualifiedOnly?: boolean | undefined;
+	/** Skip files measured at or after this fixed campaign cutoff. */
+	measuredBeforeMs?: number | undefined;
 }
 
 /**
@@ -77,7 +107,11 @@ export interface SweepSelection {
  * the output.
  */
 export function selectSweepTargets(targets: readonly SweepTarget[], selection: SweepSelection): SweepTarget[] {
-	const pool = selection.unqualifiedOnly === true ? unqualifiedOnly(targets) : targets;
+	const qualifiedPool = selection.unqualifiedOnly === true ? unqualifiedOnly(targets) : [...targets];
+	const pool =
+		selection.measuredBeforeMs === undefined
+			? qualifiedPool
+			: measuredBefore(qualifiedPool, selection.measuredBeforeMs);
 	const sharded = selection.shard ? shardOf(pool, selection.shard) : [...pool];
 	const limit = selection.limit;
 	return limit !== undefined && limit > 0 ? sharded.slice(0, limit) : sharded;
@@ -161,20 +195,73 @@ export function renderSweepSummary(summary: SweepSummary, selection: SweepSelect
 	return lines.join("\n");
 }
 
-/** The manifest's open-survivor files, ranked, excluding deleted paths — the
- *  same ordering `mutation survivors` prints, so the two never disagree. */
-async function loadTargets(cwd: string, configDir: string, fileFilter: string | undefined): Promise<SweepTarget[] | null> {
+const MUTATION_SOURCE_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i;
+
+/** The exact full-census domain: JS/TS product source under `src/`. */
+export function eligibleMutationFiles(cwd: string): string[] {
+	return findManifestFiles(join(cwd, "src"), (name) => MUTATION_SOURCE_EXT.test(name))
+		.map((file) => `src/${file}`)
+		.filter((file) => !file.endsWith(".d.ts") && !isTestPath(file));
+}
+
+/**
+ * Merge the current source domain with manifest rows.
+ *
+ * A manifest-only work-list cannot prove full coverage: it cannot name a file
+ * nobody measured, and it loses measured-clean files when callers filter on
+ * open survivors. The source inventory is authoritative for membership; the
+ * manifest contributes debt and provenance when it has them.
+ */
+export function mergeEligibleTargets(
+	manifestRows: readonly SweepTarget[],
+	eligibleFiles: readonly string[],
+): SweepTarget[] {
+	const byFile = new Map(manifestRows.map((row) => [row.file, row]));
+	return eligibleFiles
+		.map((file): SweepTarget => {
+			const row = byFile.get(file);
+			return row ?? { file, open: 0, uncovered: 0, qualified: false, measuredAt: null };
+		})
+		.sort((a, b) => b.open - a.open || b.uncovered - a.uncovered || a.file.localeCompare(b.file));
+}
+
+function matchesFileFilter(file: string, fileFilter: string | undefined): boolean {
+	return !fileFilter || file.toLowerCase().includes(fileFilter.toLowerCase());
+}
+
+/** The manifest's open-survivor files by default; every eligible source file
+ *  in census mode. Deleted manifest paths are excluded in both modes. */
+async function loadTargets(
+	cwd: string,
+	configDir: string,
+	fileFilter: string | undefined,
+	allEligible: boolean,
+): Promise<SweepTarget[] | null> {
 	const { loadManifest } = await import("../harness/mutation/manifest.js");
 	const { existsSync } = await import("node:fs");
 	const manifest = loadManifest(configDir);
 	if (!manifest) return null;
 	const summary = summarizeSurvivors(manifest, {
-		file: fileFilter,
 		exists: (file: string) => existsSync(resolve(cwd, file)),
 	});
-	return summary.files
-		.filter((f) => f.open > 0 && !f.stale)
-		.map((f) => ({ file: f.file, open: f.open, uncovered: f.uncovered, qualified: f.provenance !== null }));
+	const rows = summary.files.map((file): SweepTarget => ({
+		file: file.file,
+		open: file.open,
+		uncovered: file.uncovered,
+		qualified: file.provenance !== null,
+		measuredAt: file.provenance?.at ?? null,
+	}));
+	if (allEligible) {
+		return mergeEligibleTargets(rows, eligibleMutationFiles(cwd)).filter((target) =>
+			matchesFileFilter(target.file, fileFilter),
+		);
+	}
+	return rows.filter(
+		(target) =>
+			target.open > 0 &&
+			existsSync(resolve(cwd, target.file)) &&
+			matchesFileFilter(target.file, fileFilter),
+	);
 }
 
 /**
@@ -194,6 +281,15 @@ async function resolveSweepEndpoints(opts: MutationSweepOptions, cwd: string): P
 	return configuredRunnerEndpoints(cwd, readDiskSafe).endpoints;
 }
 
+function parseMeasuredBefore(value: string | undefined): { measuredBeforeMs?: number } | { error: string } {
+	if (value === undefined) return {};
+	const measuredBeforeMs = Date.parse(value);
+	if (/^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(measuredBeforeMs)) return { measuredBeforeMs };
+	return {
+		error: `--measured-before must be an ISO timestamp (e.g. 2026-08-13T14:30:00Z). Got "${value}".`,
+	};
+}
+
 function parseSelection(opts: MutationSweepOptions): SweepSelection | { error: string } {
 	const shard = opts.shard ? parseShard(opts.shard) : undefined;
 	if (opts.shard && !shard) {
@@ -201,10 +297,13 @@ function parseSelection(opts: MutationSweepOptions): SweepSelection | { error: s
 	}
 	const parsed = Number.parseInt(opts.limit ?? "", 10);
 	const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+	const cutoff = parseMeasuredBefore(opts.measuredBefore);
+	if ("error" in cutoff) return cutoff;
 	return {
 		...(shard ? { shard } : {}),
 		...(limit !== undefined ? { limit } : {}),
 		...(opts.unqualifiedOnly === true ? { unqualifiedOnly: true } : {}),
+		...cutoff,
 	};
 }
 
@@ -319,7 +418,7 @@ export async function mutationSweepCommand(
 		return;
 	}
 
-	const all = await loadTargets(cwd, configDir, opts.file);
+	const all = await loadTargets(cwd, configDir, opts.file, opts.allEligible === true);
 	if (all === null) {
 		outputError(mode, "No mutation manifest — measure a file first: `interlinked mutation measure <file> --record`.");
 		process.exitCode = 1;

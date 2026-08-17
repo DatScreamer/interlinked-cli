@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearManifestCache } from "../harness/mutation/manifest.js";
 import type { MeasureOneResult } from "./mutation-measure-support.js";
 import {
+	eligibleMutationFiles,
 	laneEndpoints,
+	measuredBefore,
+	mergeEligibleTargets,
 	mutationSweepCommand,
 	renderSweepLine,
 	renderSweepSummary,
@@ -62,6 +65,71 @@ describe("selectSweepTargets", () => {
 
 	it("N2: a limit at or above the list length is the identity", () => {
 		expect(selectSweepTargets(rows, { limit: 99 })).toHaveLength(5);
+	});
+
+	it("mutant-kill: no measuredBeforeMs means no cutoff filtering at all, even for a file with real provenance", () => {
+		const withProvenance = [{ file: "a.ts", open: 5, uncovered: 0, qualified: true, measuredAt: "2026-08-01T00:00:00.000Z" }];
+		expect(selectSweepTargets(withProvenance, {}).map((r) => r.file)).toEqual(["a.ts"]);
+	});
+
+	it("mutant-kill: a limit of exactly 0 is treated as 'no limit', not an empty slice", () => {
+		expect(selectSweepTargets(rows, { limit: 0 })).toHaveLength(5);
+	});
+});
+
+describe("measuredBefore — restart one fixed census", () => {
+	const cutoffMs = Date.parse("2026-08-13T12:00:00.000Z");
+	const rows = [
+		{ ...target("old.ts", 9), qualified: true, measuredAt: "2026-08-13T11:59:59.999Z" },
+		{ ...target("exact.ts", 8), qualified: true, measuredAt: "2026-08-13T12:00:00.000Z" },
+		{ ...target("new.ts", 7), qualified: true, measuredAt: "2026-08-13T12:00:00.001Z" },
+		{ ...target("missing.ts", 0), measuredAt: null },
+		{ ...target("legacy.ts", 0), measuredAt: "not-a-date" },
+	];
+
+	it("P1: keeps old, absent, and unreadable provenance", () => {
+		expect(measuredBefore(rows, cutoffMs).map((row) => row.file)).toEqual(["old.ts", "missing.ts", "legacy.ts"]);
+	});
+
+	it("P2: excludes a measurement exactly at or newer than the cutoff", () => {
+		expect(measuredBefore(rows, cutoffMs).map((row) => row.file)).not.toContain("exact.ts");
+		expect(measuredBefore(rows, cutoffMs).map((row) => row.file)).not.toContain("new.ts");
+	});
+
+	it("P3: cutoff filtering happens before sharding and limiting", () => {
+		const selected = selectSweepTargets(rows, { measuredBeforeMs: cutoffMs, shard: { index: 1, count: 2 }, limit: 1 });
+		expect(selected.map((row) => row.file)).toEqual(["missing.ts"]);
+	});
+});
+
+describe("mergeEligibleTargets — source inventory closes manifest blind spots", () => {
+	it("P1: includes files absent from the manifest and preserves measured-clean rows", () => {
+		const rows = [
+			{ ...target("src/debt.ts", 5), qualified: true, measuredAt: "2026-08-01T00:00:00.000Z" },
+			{ ...target("src/clean.ts", 0), qualified: true, measuredAt: "2026-08-02T00:00:00.000Z" },
+		];
+		const merged = mergeEligibleTargets(rows, ["src/missing.ts", "src/clean.ts", "src/debt.ts"]);
+		expect(merged.map((row) => row.file)).toEqual(["src/debt.ts", "src/clean.ts", "src/missing.ts"]);
+		expect(merged.find((row) => row.file === "src/missing.ts")).toMatchObject({
+			open: 0,
+			qualified: false,
+			measuredAt: null,
+		});
+	});
+
+	it("N1: manifest-only deleted paths cannot enter the current source domain", () => {
+		const merged = mergeEligibleTargets([target("src/deleted.ts", 99)], ["src/current.ts"]);
+		expect(merged.map((row) => row.file)).toEqual(["src/current.ts"]);
+	});
+
+	it("mutant-kill: sorts by uncovered descending when open is tied", () => {
+		const rows = [
+			{ ...target("src/low.ts", 3), uncovered: 1 },
+			{ ...target("src/high.ts", 3), uncovered: 9 },
+			{ ...target("src/mid.ts", 3), uncovered: 5 },
+		];
+		const merged = mergeEligibleTargets(rows, ["src/low.ts", "src/high.ts", "src/mid.ts"]);
+		expect(merged.map((r) => r.file)).toEqual(["src/high.ts", "src/mid.ts", "src/low.ts"]);
 	});
 });
 
@@ -130,6 +198,30 @@ describe("renderSweepLine", () => {
 		expect(line).toContain("2");
 		expect(line).toContain("src/a.ts");
 	});
+
+	it("mutant-kill: measured line carries the checkmark icon", () => {
+		expect(renderSweepLine(result("src/a.ts"))).toContain("✓");
+	});
+
+	it("mutant-kill: busy line is the exact phrase with its bullet, not the generic status:reason format", () => {
+		const line = renderSweepLine(result("src/a.ts", { status: "busy", reason: "503" }));
+		expect(line).toContain("·");
+		expect(line).toContain("src/a.ts  runner busy — not measured");
+	});
+
+	it("mutant-kill: not_measurable line uses the parenthesized-reason format with its bullet, not the generic colon format", () => {
+		const line = renderSweepLine(result("src/a.ts", { status: "not_measurable", reason: "no_tests" }));
+		expect(line).toContain("·");
+		expect(line).toContain("src/a.ts  not measurable (no_tests)");
+		expect(line).not.toContain("not_measurable: no_tests");
+	});
+
+	it("mutant-kill: an unrecognized status uses the generic 'status: reason' format with a cross icon, not the not-measurable format", () => {
+		const line = renderSweepLine(result("src/a.ts", { status: "error", reason: "boom" }));
+		expect(line).toContain("✗");
+		expect(line).toContain("error: boom");
+		expect(line).not.toContain("not measurable");
+	});
 });
 
 describe("renderSweepSummary", () => {
@@ -142,6 +234,51 @@ describe("renderSweepSummary", () => {
 	it("N1: a sweep that measured nothing says so instead of claiming success", () => {
 		const text = renderSweepSummary(summarizeSweep([result("a.ts", { status: "busy" })]), {});
 		expect(text).toMatch(/0 measured|nothing measured/i);
+	});
+
+	it("mutant-kill: shard suffix uses index+1, not index-1 (1-based display)", () => {
+		const text = renderSweepSummary(summarizeSweep([result("a.ts")]), { shard: { index: 2, count: 5 } });
+		expect(text).toContain("(shard 3/5)");
+	});
+
+	it("mutant-kill: with no shard, the summary carries no stray shard suffix or placeholder text, and starts with a blank line", () => {
+		const text = renderSweepSummary(summarizeSweep([result("a.ts")]), {});
+		expect(text).not.toContain("Stryker");
+		expect(text.split("\n")[0]).toBe("");
+	});
+
+	it("mutant-kill: the per-status counts line reports each status label with its own count", () => {
+		const text = renderSweepSummary(summarizeSweep([result("a.ts"), result("b.ts", { status: "busy" })]), {});
+		expect(text).toContain("1 measured · 1 busy · 0 not measurable · 0 failed");
+	});
+
+	it("mutant-kill: zero measured files says the exact phrase, newline-joined, not a survivor-delta line", () => {
+		const text = renderSweepSummary(summarizeSweep([result("a.ts", { status: "busy" })]), {});
+		expect(text).toContain("nothing in this sweep reached the manifest");
+		expect(text).not.toContain("survivors 0");
+		expect(text.split("\n").length).toBeGreaterThan(1);
+	});
+
+	it("mutant-kill: the delta suffix is before-minus-after with a '-' sign on improvement, newline-joined", () => {
+		const text = renderSweepSummary(summarizeSweep([result("a.ts")]), {}); // before=5, after=2
+		expect(text).toContain("(-3)");
+		expect(text.split("\n").length).toBeGreaterThan(1);
+	});
+
+	it("mutant-kill: delta sign flips to '+' when survivors increased", () => {
+		const worse = result("a.ts", {
+			record: { recorded: true, before: { mutants: 10, survivors: 2 }, after: { mutants: 10, survivors: 5 } },
+		});
+		const text = renderSweepSummary(summarizeSweep([worse]), {});
+		expect(text).toContain("(+3)");
+	});
+
+	it("mutant-kill: a zero delta still gets the '-' sign (the >=0 boundary), not '+'", () => {
+		const unchanged = result("a.ts", {
+			record: { recorded: true, before: { mutants: 10, survivors: 4 }, after: { mutants: 10, survivors: 4 } },
+		});
+		const text = renderSweepSummary(summarizeSweep([unchanged]), {});
+		expect(text).toContain("(-0)");
 	});
 });
 
@@ -264,6 +401,29 @@ describe("laneEndpoints — surviving a runner that disconnects", () => {
 
 	it("N2: an empty endpoint list stays empty rather than throwing", () => {
 		expect(laneEndpoints([], 0)).toEqual([]);
+	});
+});
+
+describe("eligibleMutationFiles — extension matching", () => {
+	let cwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "eligible-files-"));
+		mkdirSync(join(cwd, "src"), { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("mutant-kill: requires the extension at the END of the filename, not merely present anywhere in it", () => {
+		writeFileSync(join(cwd, "src", "keep.ts.bak"), "not real source\n");
+		expect(eligibleMutationFiles(cwd)).not.toContain("src/keep.ts.bak");
+	});
+
+	it("N: a genuine .ts file at the end of the name is still eligible", () => {
+		writeFileSync(join(cwd, "src", "real.ts"), "export const x = 1;\n");
+		expect(eligibleMutationFiles(cwd)).toContain("src/real.ts");
 	});
 });
 
@@ -471,6 +631,53 @@ describe("mutationSweepCommand", () => {
 		expect(files).toEqual(["src/alpha.ts"]);
 	});
 
+	it("P9: --all-eligible includes missing and measured-clean source while excluding tests and declarations", async () => {
+		writeFileSync(join(cwd, "src", "types.d.ts"), "export interface Thing {}\n");
+		writeFileSync(join(cwd, "src", "ignored.test.ts"), "export const testOnly = true;\n");
+		mkdirSync(join(cwd, "src", "__tests__"), { recursive: true });
+		writeFileSync(join(cwd, "src", "__tests__", "helper.ts"), "export const helper = true;\n");
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/there.ts": [] }));
+
+		await mutationSweepCommand({ cwd, json: true, allEligible: true, dryRun: true });
+
+		const payload = reported() as unknown as { selected: Array<{ file: string; open: number }>; total: number };
+		expect(payload.total).toBe(2);
+		expect(payload.selected.map((row) => row.file)).toEqual(["src/here.ts", "src/there.ts"]);
+		expect(eligibleMutationFiles(cwd)).toEqual(["src/here.ts", "src/there.ts"]);
+	});
+
+	it("P10: --measured-before resumes a full census without redoing files recorded after its cutoff", async () => {
+		writeFileSync(join(cwd, "src", "missing.ts"), "export const missing = 3;\n");
+		writeManifest({
+			...survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/there.ts": [{ mutantId: "m2" }] }),
+			fileProvenance: {
+				"src/here.ts": {
+					at: "2026-08-13T11:00:00.000Z",
+					scope: "import_graph",
+					testCount: 1,
+					surface: "sweep",
+				},
+				"src/there.ts": {
+					at: "2026-08-13T13:00:00.000Z",
+					scope: "import_graph",
+					testCount: 1,
+					surface: "sweep",
+				},
+			},
+		});
+
+		await mutationSweepCommand({
+			cwd,
+			json: true,
+			allEligible: true,
+			measuredBefore: "2026-08-13T12:00:00.000Z",
+			dryRun: true,
+		});
+
+		const payload = reported() as unknown as { selected: Array<{ file: string }> };
+		expect(payload.selected.map((row) => row.file)).toEqual(["src/here.ts", "src/missing.ts"]);
+	});
+
 	it("N1: measurement errors set a nonzero exit code — a CI caller must not read a failed sweep as progress", async () => {
 		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
 		await mutationSweepCommand(
@@ -523,5 +730,186 @@ describe("mutationSweepCommand", () => {
 		);
 		expect(errs.some((l) => l.includes("src/here.ts"))).toBe(true);
 		expect(errs.some((l) => /sweeping \d+ of \d+/.test(l))).toBe(true);
+	});
+
+	it("N4: an invalid --measured-before value is refused before any runner work", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		let called = false;
+		await mutationSweepCommand({ cwd, json: true, measuredBefore: "yesterday" }, async () => {
+			called = true;
+			return result("src/here.ts");
+		});
+		expect(called).toBe(false);
+		expect(process.exitCode).toBe(1);
+		expect(logs.join("\n")).toMatch(/--measured-before must be an ISO timestamp/);
+	});
+
+	// ---- laneTag: the "[runner i/N · done/total]" stderr suffix ----------
+
+	it("mutant-kill: with a single runner, the progress line is exactly renderSweepLine's output (no lane-tag suffix)", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		const measured: MeasureOneResult = {
+			file: "src/here.ts",
+			status: "measured",
+			mutants: 1,
+			survivors: 0,
+			survivorList: [],
+			record: { recorded: true, before: { mutants: 1, survivors: 1 }, after: { mutants: 1, survivors: 0 } },
+			notes: [],
+		};
+		await mutationSweepCommand({ cwd, runnerUrl: ["http://a.invalid"] }, async () => measured);
+		expect(errs).toContain(`${renderSweepLine(measured)}\n`);
+	});
+
+	it("mutant-kill: with 2 runners, the progress line carries a lane tag in the 'runner i/N · done/total' format", async () => {
+		writeManifest(
+			survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/there.ts": [{ mutantId: "m2" }] }),
+		);
+		await mutationSweepCommand(
+			{ cwd, runnerUrl: ["http://a.invalid", "http://b.invalid"] },
+			async (args): Promise<MeasureOneResult> => ({
+				file: args.file,
+				status: "measured",
+				mutants: 1,
+				survivors: 0,
+				survivorList: [],
+				record: { recorded: true, before: { mutants: 1, survivors: 1 }, after: { mutants: 1, survivors: 0 } },
+				notes: [],
+			}),
+		);
+		expect(errs.some((l) => /\[runner \d\/2 · \d\/2\]/.test(l))).toBe(true);
+	});
+
+	// ---- loadTargets: qualified/open filtering, --all-eligible + --file ----
+
+	it("mutant-kill: qualified reflects whether the file carries real provenance, not a constant", async () => {
+		writeFileSync(join(cwd, "src", "unprovenanced.ts"), "export const z = 1;\n");
+		writeManifest({
+			...survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/unprovenanced.ts": [{ mutantId: "m2" }] }),
+			fileProvenance: {
+				"src/here.ts": { at: "2026-08-01T00:00:00.000Z", scope: "import_graph", testCount: 1, surface: "sweep" },
+			},
+		});
+		await mutationSweepCommand({ cwd, json: true, allEligible: true, dryRun: true });
+		const payload = reported() as unknown as { selected: Array<{ file: string; qualified: boolean }> };
+		const here = payload.selected.find((r) => r.file === "src/here.ts");
+		const un = payload.selected.find((r) => r.file === "src/unprovenanced.ts");
+		expect(here?.qualified).toBe(true);
+		expect(un?.qualified).toBe(false);
+	});
+
+	it("mutant-kill: a manifest file with zero open survivors is excluded from the default (non-all-eligible) sweep", async () => {
+		writeFileSync(join(cwd, "src", "clean.ts"), "export const c = 1;\n");
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/clean.ts": [] }));
+		const files: string[] = [];
+		await mutationSweepCommand({ cwd, json: true, runnerUrl: ["http://a.invalid"] }, async (args) => {
+			files.push(args.file);
+			return result(args.file);
+		});
+		expect(files).toEqual(["src/here.ts"]);
+	});
+
+	it("mutant-kill: --all-eligible plus --file together actually narrow the selection (not just --all-eligible alone)", async () => {
+		writeFileSync(join(cwd, "src", "alpha.ts"), "export const a = 1;\n");
+		writeFileSync(join(cwd, "src", "beta.ts"), "export const b = 1;\n");
+		writeManifest(survivedManifest({ "src/alpha.ts": [{ mutantId: "m1" }], "src/beta.ts": [{ mutantId: "m2" }] }));
+		await mutationSweepCommand({ cwd, json: true, allEligible: true, dryRun: true, file: "alpha" });
+		const payload = reported() as unknown as { selected: Array<{ file: string }> };
+		expect(payload.selected.map((r) => r.file)).toEqual(["src/alpha.ts"]);
+	});
+
+	// ---- endpoint gate: measureOne must never run when no runner is configured ----
+
+	it("mutant-kill: with no runner configured, measureOne is never invoked (fails before any work starts)", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		let called = false;
+		await mutationSweepCommand({ cwd, json: true }, async (): Promise<MeasureOneResult> => {
+			called = true;
+			return result("src/here.ts");
+		});
+		expect(called).toBe(false);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("mutant-kill: with no --runner-url, a configured runner_url in guard-rules.local.json is actually consulted", async () => {
+		writeFileSync(
+			join(cwd, ".interlinked", "guard-rules.local.json"),
+			JSON.stringify({ per_edit_mutation: { runner_url: "http://configured.invalid" } }),
+		);
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		const seenUrls: string[][] = [];
+		await mutationSweepCommand({ cwd, json: true }, async (args): Promise<MeasureOneResult> => {
+			seenUrls.push(args.runnerUrls ?? []);
+			return result(args.file);
+		});
+		expect(seenUrls[0]).toEqual(["http://configured.invalid"]);
+	});
+
+	it("mutant-kill: a trailing-comma runner-url list drops the resulting empty entry", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		const seenUrls: string[][] = [];
+		await mutationSweepCommand({ cwd, json: true, runnerUrl: ["http://a.invalid,"] }, async (args) => {
+			seenUrls.push(args.runnerUrls ?? []);
+			return result(args.file);
+		});
+		expect(seenUrls[0]).toEqual(["http://a.invalid"]);
+	});
+
+	// ---- normal (non-json) mode dry-run rendering ----
+
+	it("mutant-kill: normal (non-json) dry-run prints readable text, not 'undefined' or a thrown error", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		await mutationSweepCommand({ cwd, dryRun: true });
+		const text = logs.join("\n");
+		expect(text).toContain("dry run");
+		expect(text).toContain("src/here.ts");
+		expect(text).not.toContain("undefined");
+	});
+
+	// ---- --measured-before parsing edge cases ----
+
+	it("mutant-kill: --measured-before rejects a valid-but-non-ISO date string like a bare date", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		await mutationSweepCommand({ cwd, json: true, measuredBefore: "2026-08-13" }, async () => result("src/here.ts"));
+		expect(process.exitCode).toBe(1);
+		expect(logs.join("\n")).toMatch(/--measured-before must be an ISO timestamp/);
+	});
+
+	// ---- parseSelection: --limit, --shard, --unqualified-only actually apply ----
+
+	it("mutant-kill: --limit narrows the dry-run selection to N files", async () => {
+		writeManifest(
+			survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/there.ts": [{ mutantId: "m2" }] }),
+		);
+		await mutationSweepCommand({ cwd, json: true, dryRun: true, limit: "1" });
+		const payload = reported() as unknown as { selected: unknown[] };
+		expect(payload.selected).toHaveLength(1);
+	});
+
+	it("mutant-kill: a valid --shard actually narrows the dry-run selection (not silently dropped)", async () => {
+		for (const name of ["a", "b", "c", "d"]) writeFileSync(join(cwd, "src", `${name}.ts`), "export const x=1;\n");
+		writeManifest(
+			survivedManifest({
+				"src/a.ts": [{ mutantId: "m1" }],
+				"src/b.ts": [{ mutantId: "m2" }],
+				"src/c.ts": [{ mutantId: "m3" }],
+				"src/d.ts": [{ mutantId: "m4" }],
+			}),
+		);
+		await mutationSweepCommand({ cwd, json: true, dryRun: true, shard: "1/2" });
+		const payload = reported() as unknown as { selected: unknown[] };
+		expect(payload.selected.length).toBeLessThan(4);
+	});
+
+	it("mutant-kill: opts.unqualifiedOnly actually narrows the dry-run selection to unqualified files", async () => {
+		writeManifest({
+			...survivedManifest({ "src/here.ts": [{ mutantId: "m1" }], "src/there.ts": [{ mutantId: "m2" }] }),
+			fileProvenance: {
+				"src/here.ts": { at: "2026-08-01T00:00:00.000Z", scope: "import_graph", testCount: 1, surface: "sweep" },
+			},
+		});
+		await mutationSweepCommand({ cwd, json: true, dryRun: true, unqualifiedOnly: true });
+		const payload = reported() as unknown as { selected: Array<{ file: string }> };
+		expect(payload.selected.map((r) => r.file)).toEqual(["src/there.ts"]);
 	});
 });

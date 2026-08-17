@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadLedger } from "../harness/mutation/disposition-store.js";
 import { clearManifestCache, loadManifest } from "../harness/mutation/manifest.js";
 import { buildDisposition, mutationDispositionCommand } from "./mutation-disposition.js";
 
@@ -217,7 +218,7 @@ describe("mutationDispositionCommand", () => {
 		expect(logs.join("\n")).toContain("src/a.ts");
 	});
 
-	it("P6: records a dead_code disposition and writes it to the on-disk manifest", async () => {
+	it("P6: records a dead_code disposition into the durable LEDGER, not the manifest", async () => {
 		writeManifest();
 		await mutationDispositionCommand({
 			file: "src/a.ts",
@@ -229,27 +230,36 @@ describe("mutationDispositionCommand", () => {
 			json: true,
 		});
 		expect(process.exitCode).toBe(0);
-		const payload = JSON.parse(logs.join("\n")) as { recorded: boolean; disposition: unknown };
+		const payload = JSON.parse(logs.join("\n")) as { recorded: boolean; disposition: unknown; store: string };
 		expect(payload.recorded).toBe(true);
+		expect(payload.store).toBe("ledger");
 		expect(payload.disposition).toEqual({ kind: "dead_code", resolution: "delete", issueRef: "#42" });
+		// The judgment lives in the sidecar ledger, keyed by (file, symbolId, mutantId)
+		// with the enclosing symbol's hash as the invalidation key; complexity_delta is
+		// null in M0.
+		const ledger = loadLedger(configDir);
+		expect(ledger.records).toHaveLength(1);
+		expect(ledger.records[0]?.mutantId).toBe("m1");
+		expect(ledger.records[0]?.symbolId).toBe("s1");
+		expect(ledger.records[0]?.symbolHash).toBe("h");
+		expect(ledger.records[0]?.complexity_delta).toBeNull();
+		expect(ledger.records[0]?.disposition).toEqual({ kind: "dead_code", resolution: "delete", issueRef: "#42" });
+		// The manifest is UNTOUCHED — no disposition written (a re-measure would have
+		// wiped it, plan 18 §1.3), and the status stays exactly as measured.
 		const onDisk = loadManifest(configDir);
-		expect(onDisk?.files["src/a.ts"]?.s1?.mutants.m1?.disposition).toEqual({
-			kind: "dead_code",
-			resolution: "delete",
-			issueRef: "#42",
-		});
-		// The disposition annotates the survivor; it must not silently mark it killed.
+		expect(onDisk?.files["src/a.ts"]?.s1?.mutants.m1?.disposition).toBeUndefined();
 		expect(onDisk?.files["src/a.ts"]?.s1?.mutants.m1?.status).toBe("survived");
 	});
 
-	it("P7: records a bare unresolved disposition (no evidence)", async () => {
+	it("P7: a bare unresolved (no evidence) is REFUSED — the absence of a judgment is not a record", async () => {
 		writeManifest();
 		await mutationDispositionCommand({ file: "src/a.ts", id: "m1", kind: "unresolved", cwd, json: true });
-		const onDisk = loadManifest(configDir);
-		expect(onDisk?.files["src/a.ts"]?.s1?.mutants.m1?.disposition).toEqual({ kind: "unresolved" });
+		expect(process.exitCode).toBe(1);
+		expect(logs.join("\n")).toMatch(/Refused|bare `unresolved`/);
+		expect(loadLedger(configDir).records).toHaveLength(0);
 	});
 
-	it("P8: records an unresolved disposition with counterexample-search evidence", async () => {
+	it("P8: records an unresolved disposition with counterexample-search evidence into the ledger", async () => {
 		writeManifest();
 		await mutationDispositionCommand({
 			file: "src/a.ts",
@@ -262,8 +272,8 @@ describe("mutationDispositionCommand", () => {
 			cwd,
 			json: true,
 		});
-		const onDisk = loadManifest(configDir);
-		const disposition = onDisk?.files["src/a.ts"]?.s1?.mutants.m1?.disposition as {
+		expect(process.exitCode).toBe(0);
+		const disposition = loadLedger(configDir).records[0]?.disposition as {
 			kind: string;
 			evidence?: { runs: number; strategy: string };
 		};
@@ -272,12 +282,30 @@ describe("mutationDispositionCommand", () => {
 		expect(disposition.evidence?.strategy).toBe("fuzz");
 	});
 
-	it("N1: normal (non-json) output states both the disposition and that the survivor is unresolved", async () => {
+	it("P9: --list renders the honest empty state when no dispositions exist", async () => {
+		writeManifest();
+		await mutationDispositionCommand({ list: true, cwd });
+		expect(process.exitCode).toBe(0);
+		expect(logs.join("\n")).toMatch(/No recorded dispositions/);
+	});
+
+	it("P10: --show round-trips a recorded disposition by id", async () => {
+		writeManifest();
+		await mutationDispositionCommand({ file: "src/a.ts", id: "m1", kind: "dead_code", resolution: "delete", cwd });
+		logs.length = 0;
+		await mutationDispositionCommand({ show: true, id: "m1", cwd, json: true });
+		const record = JSON.parse(logs.join("\n")) as { mutantId: string; disposition: { kind: string } };
+		expect(record.mutantId).toBe("m1");
+		expect(record.disposition.kind).toBe("dead_code");
+	});
+
+	it("N1: normal (non-json) output states the disposition, its durability, and that the survivor is unresolved", async () => {
 		writeManifest();
 		await mutationDispositionCommand({ file: "src/a.ts", id: "m1", kind: "dead_code", resolution: "implement", cwd });
 		const text = logs.join("\n");
 		expect(text).toContain("Recorded: m1 (src/a.ts)");
 		expect(text).toMatch(/dead code \(implement\)/);
+		expect(text).toMatch(/durable/);
 		expect(text).toMatch(/Status is unchanged/);
 	});
 

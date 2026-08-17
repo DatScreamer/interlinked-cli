@@ -231,6 +231,9 @@ function nextSteps(s: SurvivorSummary, opts: RenderOptions): string[] {
 		return [
 			"",
 			c.dim("  Kill one: add a test that fails under the replacement, then"),
+			c.dim(
+				"  ground each new case: // test-contract: <public-api|invariant|bug|security|boundary> — <specific rationale>",
+			),
 			c.dim(`  re-measure with: interlinked mutation measure ${opts.file} --record`),
 		];
 	}
@@ -305,8 +308,9 @@ export async function mutationSurvivorsCommand(opts: MutationSurvivorsOptions): 
 	}
 
 	const { loadManifest } = await import("../harness/mutation/manifest.js");
-	const manifest = loadManifest(configDir);
-	if (!manifest) {
+	const { loadLedger, withDispositions } = await import("../harness/mutation/disposition-store.js");
+	const baseManifest = loadManifest(configDir);
+	if (!baseManifest) {
 		outputError(
 			mode,
 			`No mutation manifest at ${join(configDir, "mutation-manifest.json")}. Measure a file first: \`interlinked mutation measure <file> --record\`.`,
@@ -314,6 +318,11 @@ export async function mutationSurvivorsCommand(opts: MutationSurvivorsOptions): 
 		process.exitCode = 1;
 		return;
 	}
+	// Apply the durable disposition ledger onto the manifest before ranking: a
+	// recorded dead_code/duplicate survivor leaves the work-list, while an
+	// evidence-only `unresolved` (suppression level 0) stays open. No edit to
+	// survivors.ts — withDispositions returns a manifest-shaped copy.
+	const manifest = withDispositions(baseManifest, loadLedger(configDir));
 
 	const top = Number.parseInt(opts.top ?? "", 10);
 	const limit = Number.isFinite(top) && top > 0 ? top : 20;
