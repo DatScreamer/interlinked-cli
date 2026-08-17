@@ -40,7 +40,9 @@ While stress-testing the hook script under 10-way parallel invocation, the
 runner-adapter path (`dist/hook-entry.js`) was found to take the cold-fallback
 shortcut on daemon timeout and **allow** the edit — bypassing the inline
 `.graph.*` gate that the legacy script (`.interlinked/hooks/interlinked-activity.mjs`)
-runs from `guards-inline.ts::inlineGraphShardCheck`. This broke the
+runs from `cold-write-guards.ts::checkGraphShardWrite` (embedded into the .mjs
+by `guards-inline.ts`; was `guards-inline.ts::inlineGraphShardCheck` before the
+two copies converged). This broke the
 protocol's "must go through predict/reveal/reconcile" guarantee whenever
 the daemon was busy or dead.
 
@@ -157,8 +159,10 @@ Each ran five iterations back-to-back during the verification loop;
 ## When the daemon dies (it shouldn't, but just in case)
 
 The inline fail-closed gate in
-`src/lib/hook-template-chunks/guards-inline.ts::inlineGraphShardCheck`
-fires when the harness socket is unreachable AND the target has a
+`src/lib/hook-template-chunks/cold-write-guards.ts::checkGraphShardWrite`
+(one implementation; `hook-entry-cold-gates.ts` imports it and the generated
+.mjs embeds its serialized source) fires when the harness socket is
+unreachable AND the target has a
 fresh `.graph.*` shard colocated. The agent gets:
 
 ```
