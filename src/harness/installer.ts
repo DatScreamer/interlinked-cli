@@ -85,7 +85,11 @@ export function manifestPath(cwd: string): string {
 }
 
 function resolveSettingsPath(cwd: string, relPath: string): string {
-	if (relPath.startsWith("~/")) return join(homedir(), relPath.slice(2));
+	// env-first: os.homedir() reads the process environ via libuv, which
+	// per-thread process.env.HOME writes never reach — under Stryker's
+	// worker-threads pool a test HOME redirect resolved to the REAL home.
+	const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+	if (relPath.startsWith("~/")) return join(home, relPath.slice(2));
 	if (relPath.startsWith("/")) return relPath;
 	return join(cwd, relPath);
 }
@@ -229,7 +233,7 @@ function installSingle(
 	// the caller still gets a manifest entry for the JSON fragment that
 	// did land.
 	if (adapter.postInstall) {
-		const postInstallBase = scope === SCOPE_USER ? homedir() : cwd;
+		const postInstallBase = scope === SCOPE_USER ? resolveSettingsPath(cwd, "~/") : cwd;
 		try {
 			adapter.postInstall({ cwd: postInstallBase, scope, dryRun });
 		} catch (err) {

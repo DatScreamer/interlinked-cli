@@ -58,6 +58,28 @@ function scopeFromEnv(): string[] {
 export default defineConfig({
 	test: {
 		include: scopeFromEnv(),
+		// Mutation-context quarantine (2026-08-10, night-baseline diagnosis):
+		// content-gate.test.ts spawns REAL biome, which fails-open inside
+		// Stryker sandboxes — its "biome failure" case then fails the DRY RUN
+		// and aborts report-less (the instant-ENOENT class), poisoning every
+		// graph-widened scope that transitively includes it. Excluded from
+		// MUTATION runs only; the ordinary suite still runs it. Kill-power
+		// cost: mutants only this file kills read as survivors — revisit by
+		// making the test sandbox-robust (skip when biome spawn fails).
+		exclude: [
+			"**/node_modules/**",
+			"src/harness/__tests__/content-gate.test.ts",
+			// Mutation-context quarantine (2026-08-16, census ENOENT-report
+			// diagnosis): the build-delta cases exercise distBuildHash, which
+			// hashes dist/harness/server.js + dist/hook-entry.js — and a Stryker
+			// sandbox tree has NO dist/ (gitignored: never tree-copied, never
+			// overlaid), so "changed" comes back false and the dry run aborts
+			// report-less for EVERY file whose graph scope includes this test.
+			// Ordinary suite still runs it. Kill-power cost: reload.ts mutants
+			// only this file kills read as survivors — revisit by making the
+			// fixture own the artifact paths it hashes.
+			"src/commands/reload.integration.test.ts",
+		],
 		// NO `pool` override here — deliberately. A `pool: "forks"` was added on
 		// 2026-08-04 to dodge `process.chdir()` throwing under worker threads, but
 		// it was the wrong layer twice over: Stryker's vitest runner pins its own

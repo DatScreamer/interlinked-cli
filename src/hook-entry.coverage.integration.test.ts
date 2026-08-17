@@ -24,6 +24,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -847,17 +848,51 @@ describe("runHookEntry — unknown explicit runner", () => {
 describe("hook-entry as a direct-run subprocess", () => {
 	const here = dirname(fileURLToPath(import.meta.url));
 	const entry = join(here, "hook-entry.ts");
-	const tsxBin = join(here, "..", "node_modules", ".bin", "tsx");
+	// Resolve tsx through module resolution, never a hand-built
+	// node_modules/.bin path: a Stryker sandbox copies this file to
+	// .stryker-tmp/sandbox-*/src with no .bin directory beside it, so the
+	// literal path spawned ENOENT (status null) and every dry run that
+	// scoped this file died as "expected null to be +0" with the cause
+	// invisible. package.json is always an exported subpath, and spawning
+	// process.execPath removes the shebang/exec-bit dependency too.
+	const tsxCli = join(
+		dirname(createRequire(import.meta.url).resolve("tsx/package.json")),
+		"dist",
+		"cli.mjs",
+	);
 
 	function runSubprocess(args: string[], input: string, extraEnv: Record<string, string>) {
-		return spawnSync(tsxBin, [entry, ...args], {
+		const childHome = join(tmp, "home");
+		mkdirSync(childHome, { recursive: true });
+		const childEnv: NodeJS.ProcessEnv = {
+			PATH: process.env.PATH ?? dirname(process.execPath),
+			HOME: childHome,
+			USERPROFILE: childHome,
+			TMPDIR: tmp,
+			TMP: tmp,
+			TEMP: tmp,
+			NODE_ENV: "test",
+			NO_COLOR: "1",
+			INTERLINKED_HOME: interlinkedDir,
+			INTERLINKED_DATA_DIR: interlinkedDir,
+			INTERLINKED_SOCKET: missingSocket(),
+			...extraEnv,
+		};
+		const r = spawnSync(process.execPath, [tsxCli, entry, ...args], {
 			input,
 			encoding: "utf-8",
-			env: { ...process.env, ...extraEnv },
+			cwd: tmp,
+			env: childEnv,
 			timeout: 30_000,
 		});
+		// A spawn-layer failure (missing binary/cwd, timeout kill) yields
+		// status null; throw the real error rather than letting an assertion
+		// report a bare "expected null to be +0".
+		if (r.error) throw r.error;
+		return r;
 	}
 
+	// test-contract: hermeticity — the direct-run contract must execute in a fresh child process without inheriting Vitest/Stryker loaders, worker IDs, user data paths, or the repository daemon's socket state.
 	it("reads stdin JSON, dispatches via --runner/--event flags, and exits 0 (cold allow)", () => {
 		const payload = JSON.stringify({
 			session_id: "subproc1",
