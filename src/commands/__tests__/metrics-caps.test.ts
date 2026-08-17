@@ -56,7 +56,7 @@ function writeCaps(overrides: Record<string, number>): void {
 }
 
 interface JsonReport {
-	caps: { crap: number; cyclomatic: number; cyclomaticReview: number };
+	caps: { crap: number; cyclomatic: number; cyclomaticReview: number; minCoveragePct: number };
 	scope: { functions: number };
 	gates: {
 		functionsCyclomaticReview: number;
@@ -93,7 +93,12 @@ describe("metricsCommand — caps drive the JSON report (G4)", () => {
 	it("defaults to the shipped caps (CRAP 30, cyclomatic 25) when no override file exists", async () => {
 		await metricsCommand({ cwd: tmp, json: true });
 		const r = lastJson();
-		expect(r.caps).toEqual({ crap: 30, cyclomatic: 25, cyclomaticReview: 15 });
+		expect(r.caps).toEqual({
+			crap: 30,
+			cyclomatic: 25,
+			cyclomaticReview: 15,
+			minCoveragePct: 60,
+		});
 		// branchy (cyclomatic ~13) is comfortably UNDER the default bad cap of 25
 		// and under the default review lower bound of 15 — neither bad nor review.
 		expect(r.scope.functions).toBeGreaterThanOrEqual(1);
@@ -105,7 +110,12 @@ describe("metricsCommand — caps drive the JSON report (G4)", () => {
 		writeCaps({ max_cyclomatic: 10, crap_threshold: 15 });
 		await metricsCommand({ cwd: tmp, json: true });
 		const r = lastJson();
-		expect(r.caps).toEqual({ crap: 15, cyclomatic: 10, cyclomaticReview: 15 });
+		expect(r.caps).toEqual({
+			crap: 15,
+			cyclomatic: 10,
+			cyclomaticReview: 15,
+			minCoveragePct: 60,
+		});
 		// branchy is now OVER the tightened cyclomatic cap of 10 → "bad", not review.
 		expect(r.gates.functionsCyclomaticBad).toBe(1);
 		// The review band is (15, 10] — empty when the bad cap drops below the

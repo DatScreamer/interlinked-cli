@@ -35,9 +35,10 @@ import {
 } from "../harness/coverage-lcov.js";
 import { type CoverageSummary, loadCoverageSummary } from "../harness/coverage-ratchet.js";
 import {
-	companionTestCandidates,
 	isTddExemptPath,
 } from "../harness/evaluator/tdd-new-file-gate.js";
+import { hasCompanionTest } from "../harness/evaluator/companion-test.js";
+import { minCoverageFor } from "../harness/tested-file-policy.js";
 import { crapThresholdFor, maxCyclomaticFor } from "../harness/metric-caps.js";
 import { getOutputMode, output } from "../lib/output.js";
 import {
@@ -385,9 +386,11 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		fns.push(...fileFns);
 
 		const companionExpected = !isTddExemptPath(rel);
-		const companion = companionExpected
-			? companionTestCandidates(abs).some((p) => existsSync(p))
-			: null;
+		// hasCompanionTest (not the raw candidate list): recognizes qualified
+		// names (update.integration.test.ts) and — via cwd as projectRoot —
+		// separate-tree layouts. Both were missed before 2026-08-17 (68 of 218
+		// "missing companion" rows were false positives).
+		const companion = companionExpected ? hasCompanionTest(abs, cwd) : null;
 		if (companion === false) missingCompanion.push(rel);
 
 		files.push({
@@ -424,6 +427,7 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			crap: crapGate,
 			cyclomatic: cyclomaticBad,
 			cyclomaticReview: CYCLOMATIC_REVIEW,
+			minCoveragePct: minCoverageFor(cwd),
 		},
 		gates: {
 			functionsOverCrap: crapVals.filter((x) => x >= crapGate).length,

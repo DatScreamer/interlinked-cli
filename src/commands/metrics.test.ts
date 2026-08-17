@@ -500,6 +500,21 @@ describe("metricsCommand — output modes", () => {
 		expect(logged).not.toContain("Files missing a companion test");
 	});
 
+	it("normal mode splits the missing-companion list by coverage when data is present", async () => {
+		// P: coverage available → the section header carries the under/covered
+		// split and each row carries its line%. src/a.ts is covered (90% ≥ the
+		// 60% default), src/b.ts has no summary entry → counts as under.
+		m.loadCoverageFinal.mockReturnValue(new Map([["src/a.ts", perFile("src/a.ts")]]));
+		m.loadCoverageSummary.mockReturnValue({
+			"src/a.ts": { lines: { pct: 90 }, branches: { pct: 80 } },
+		});
+		await metricsCommand({ cwd: CWD });
+		expect(logged).toContain("Files missing a companion test (2: 1 under 60% lines, 1 covered via other tests)");
+		expect(logged).toContain("covered elsewhere (≥60% lines):");
+		expect(logged).toContain("(90% lines)");
+		expect(logged).toContain("(no coverage data)");
+	});
+
 	it("short mode emits the one-line summary including (no coverage)", async () => {
 		await metricsCommand({ cwd: CWD, short: true });
 		expect(logged).toContain("2 files");

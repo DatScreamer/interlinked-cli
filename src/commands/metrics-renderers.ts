@@ -56,6 +56,11 @@ export interface MetricsReport {
 		 *  `(cyclomaticReview, cyclomatic]`. Threaded so the renderer reads the same
 		 *  band edges the command computed (historical default: 15 → "16–25"). */
 		cyclomaticReview: number;
+		/** Line-coverage % below which a companion-less file counts as untested
+		 *  (same resolver as the `untested_files` gate: baseline override, else
+		 *  `DEFAULT_MIN_COVERAGE_PCT`). Threaded so the renderer's split reads
+		 *  the number the gate enforces. */
+		minCoveragePct: number;
 	};
 	gates: {
 		functionsOverCrap: number;
@@ -133,15 +138,64 @@ export function renderNormal(r: MetricsReport): string {
 	}
 	if (r.missingCompanion.length > 0) {
 		lines.push("");
-		lines.push(c.bold(`  Files missing a companion test (${r.missingCompanion.length})`));
-		for (const f of r.missingCompanion.slice(0, 25)) lines.push(`    ${c.yellow("✗")} ${f}`);
-		if (r.missingCompanion.length > 25) {
-			lines.push(c.dim(`    … and ${r.missingCompanion.length - 25} more`));
-		}
+		lines.push(...renderMissingCompanionSection(r));
 	}
 	return lines.join("\n");
 }
 
 function gateStr(n: number): string {
 	return n === 0 ? c.green("0") : c.red(String(n));
+}
+
+const MISSING_COMPANION_LIST_CAP = 25;
+
+/**
+ * The "missing a companion test" section. Without coverage data this is the
+ * historical flat list. WITH coverage data the list splits on the same
+ * threshold the `untested_files` gate enforces (`caps.minCoveragePct`):
+ * a file with no companion but high line coverage is exercised through other
+ * tests (a naming/ownership gap), while a companion-less file that coverage
+ * barely reaches is a genuine test gap — the actionable subset the flat list
+ * buried (2026-08-17: 218 flagged, only ~3 under-covered).
+ */
+function renderMissingCompanionSection(r: MetricsReport): string[] {
+	const lines: string[] = [];
+	const linePctByFile = new Map(r.files.map((f) => [f.file, f.linePct]));
+	const pct = (f: string): number | null => linePctByFile.get(f) ?? null;
+	if (!r.scope.coverageAvailable) {
+		lines.push(c.bold(`  Files missing a companion test (${r.missingCompanion.length})`));
+		pushCappedFileList(lines, r.missingCompanion, () => "");
+		return lines;
+	}
+	const uncovered = r.missingCompanion.filter((f) => (pct(f) ?? 0) < r.caps.minCoveragePct);
+	const covered = r.missingCompanion.filter((f) => (pct(f) ?? 0) >= r.caps.minCoveragePct);
+	lines.push(
+		c.bold(
+			`  Files missing a companion test (${r.missingCompanion.length}: ` +
+				`${uncovered.length} under ${r.caps.minCoveragePct}% lines, ${covered.length} covered via other tests)`,
+		),
+	);
+	const suffix = (f: string): string => {
+		const p = pct(f);
+		return p === null ? "  (no coverage data)" : `  (${Math.round(p)}% lines)`;
+	};
+	pushCappedFileList(lines, uncovered, suffix);
+	if (covered.length > 0) {
+		lines.push(c.dim(`    covered elsewhere (≥${r.caps.minCoveragePct}% lines):`));
+		pushCappedFileList(lines, covered, suffix);
+	}
+	return lines;
+}
+
+function pushCappedFileList(
+	lines: string[],
+	files: string[],
+	suffix: (f: string) => string,
+): void {
+	for (const f of files.slice(0, MISSING_COMPANION_LIST_CAP)) {
+		lines.push(`    ${c.yellow("✗")} ${f}${c.dim(suffix(f))}`);
+	}
+	if (files.length > MISSING_COMPANION_LIST_CAP) {
+		lines.push(c.dim(`    … and ${files.length - MISSING_COMPANION_LIST_CAP} more`));
+	}
 }

@@ -27,11 +27,8 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 
 import { isGeneratedFile } from "./checks/shared.js";
 import { stripCommentsAndStrings } from "./checks/shared-text-utils.js";
-import {
-	companionTestCandidates,
-	hasTddExemptDirective,
-	isTddExemptPath,
-} from "./evaluator/tdd-new-file-gate.js";
+import { hasCompanionTest as hasAnyCompanionTest } from "./evaluator/companion-test.js";
+import { hasTddExemptDirective, isTddExemptPath } from "./evaluator/tdd-new-file-gate.js";
 
 /**
  * Default minimum line-coverage percent that counts a companion-less file as
@@ -275,35 +272,15 @@ export function isTestableSourceFile(file: { filePath: string; content: string }
 	return true;
 }
 
-/**
- * Ordered companion-test paths checked for `srcAbs`. Extends the TDD gate's
- * `companionTestCandidates` (`<base>.test`, `__tests__/<base>.test`, +`.spec`
- * variants) with the repo's INFIXED companion conventions —
- * `<base>.coverage.test` and `<base>.fixtures.test` (e.g.
- * `grep-accelerator.coverage.test.ts`). Kept local to this module so the
- * every-file-tested gate recognizes every companion shape actually in use
- * without widening the TDD new-file gate's contract.
- */
-function testedFileCompanions(srcAbs: string): string[] {
-	const base = companionTestCandidates(srcAbs);
-	const dir = dirname(srcAbs);
-	const ext = extname(srcAbs);
-	const stem = basename(srcAbs, ext);
-	const infixed: string[] = [];
-	for (const kind of ["test", "spec"] as const) {
-		for (const infix of ["coverage", "fixtures"] as const) {
-			infixed.push(join(dir, `${stem}.${infix}.${kind}${ext}`));
-			infixed.push(join(dir, "__tests__", `${stem}.${infix}.${kind}${ext}`));
-		}
-	}
-	return [...base, ...infixed];
-}
-
 /** Whether a companion test file exists on disk for `relPath`. `cwd` resolves
- *  the relative path to the absolute one `testedFileCompanions` requires. */
+ *  the relative path to absolute and doubles as the project root for
+ *  separate-tree layouts. Delegates to the shared qualified-name predicate
+ *  (`evaluator/companion-test.ts`), which subsumes the infixed conventions
+ *  this module used to enumerate by hand (`<base>.coverage.test`,
+ *  `<base>.fixtures.test`) — ANY `<base>.<qualifier>.test/.spec` now counts. */
 export function hasCompanionTest(relPath: string, cwd: string): boolean {
 	const abs = isAbsolute(relPath) ? relPath : resolve(cwd, relPath);
-	return testedFileCompanions(abs).some((candidate) => existsSync(candidate));
+	return hasAnyCompanionTest(abs, cwd);
 }
 
 /** Verify-side verdict for a single file's test exposure. */

@@ -12,8 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readOpenDebts } from "../obligation-ledger-io.js";
 import { resetRepoProfileCache } from "../repo-profile.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "../types.js";
+import { companionTestCandidates } from "./companion-test.js";
 import {
-	companionTestCandidates,
 	evaluateTddNewFileGate,
 	evaluateTddNewFileGateForEvent,
 	hasTddExemptDirective,
