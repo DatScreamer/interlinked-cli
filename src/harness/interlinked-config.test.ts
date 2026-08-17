@@ -229,6 +229,19 @@ describe("mergeConfig — validation", () => {
 		expect(invalid.tool_classes.modify_budget_ms).toBe(22);
 	});
 
+	it("rejects a non-number value even when it coerces truthily against >= 0", () => {
+		// test-contract: invariant — pickNumber must gate on typeof v === "number" before the
+		// v >= 0 check runs; null coerces to 0 under ToNumber, so `null >= 0` is true, but a
+		// budget/timing field must never accept a non-number and must fall back instead.
+		const base = distinctBase();
+		const cfg = mergeConfig(base, {
+			daemon: { idle_shutdown_ms: null },
+			tool_classes: { read_budget_ms: null },
+		});
+		expect(cfg.daemon.idle_shutdown_ms).toBe(123);
+		expect(cfg.tool_classes.read_budget_ms).toBe(11);
+	});
+
 	it("accepts every supported log level and falls back for invalid values", () => {
 		for (const level of ["debug", "info", "warn", "error"] as const) {
 			const fallback = level === "debug" ? "info" : "debug";
