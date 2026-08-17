@@ -64,22 +64,54 @@ afterEach(() => {
 });
 
 describe("evaluateTddNewFileGate — mode gating", () => {
-	it("returns null when test_first_mode is not 'enforce'", () => {
+	it("N: returns null when test_first_mode is 'nudge' (below the gate's floor)", () => {
 		const decision = evaluateTddNewFileGate({
 			filePath: join(tmp, "src/foo.ts"),
 			cwd: tmp,
 			session: undefined,
-			testFirstMode: "warn",
+			testFirstMode: "nudge",
 		});
 		expect(decision).toBeNull();
 	});
 
-	it("returns null when test_first_mode is undefined", () => {
+	it("N: returns null when test_first_mode is undefined", () => {
 		const decision = evaluateTddNewFileGate({
 			filePath: join(tmp, "src/foo.ts"),
 			cwd: tmp,
 			session: undefined,
 			testFirstMode: undefined,
+		});
+		expect(decision).toBeNull();
+	});
+
+	// test-contract: behavior — balanced-mode ladder (2026-08-17): "warn" runs the
+	// same missing-companion detection but resolves allow+warning, never a block.
+	it("P: 'warn' mode surfaces the missing companion as an allow+warning", () => {
+		// Seed a test layout so the repo-profile demotion path is not what fires.
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, "src/other.test.ts"), "import { it } from 'vitest';\n");
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			content: "export function foo(): number { return 1; }\n",
+			testFirstMode: "warn",
+		});
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.rule_id).toBe("tdd_new_file_gate");
+		expect(decision?.warnings?.[0]).toContain("[interlinked:tdd]");
+		expect(decision?.warnings?.[0]).toContain("foo.test.ts");
+		expect(decision?.warnings?.[0]).toContain('test_first_mode "warn"');
+	});
+
+	it("N: 'warn' mode stays silent when the companion already exists", () => {
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, "src/foo.test.ts"), "import { it } from 'vitest';\n");
+		const decision = evaluateTddNewFileGate({
+			filePath: join(tmp, "src/foo.ts"),
+			cwd: tmp,
+			session: undefined,
+			testFirstMode: "warn",
 		});
 		expect(decision).toBeNull();
 	});

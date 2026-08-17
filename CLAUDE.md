@@ -536,7 +536,7 @@ sit at 54% (20/37), so backfill those first. Re-derive these numbers with
 |------|----------|
 | `docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> built-in guard rules by category |
 | `docs/generated/quality-checks.md` | All <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> PostToolUse quality checks |
-| `docs/generated/structural-checks.md` | All <!-- gen:structural_check_count -->25<!-- /gen:structural_check_count --> structural checks by tier |
+| `docs/generated/structural-checks.md` | All <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
 **How guard evaluation works:**

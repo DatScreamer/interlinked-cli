@@ -80,7 +80,10 @@ export interface TddNewFileGateArgs {
  *  decision when a new `.ts`/`.tsx` file is being created without a
  *  companion test. */
 export function evaluateTddNewFileGate(args: TddNewFileGateArgs): HarnessDecision | null {
-	if (args.testFirstMode !== ENFORCE_MODE) return null;
+	// "warn" runs the same detection but resolves to allow+warning below —
+	// the balanced-mode ladder (2026-08-17). "nudge" and undefined stay silent
+	// at this gate (the always-on test-first nudge covers them elsewhere).
+	if (args.testFirstMode !== ENFORCE_MODE && args.testFirstMode !== "warn") return null;
 	if (!args.filePath) return null;
 	if (!SOURCE_EXT_RE.test(args.filePath)) return null;
 	if (isExemptPath(args.filePath)) return null;
@@ -139,6 +142,18 @@ function missingCompanionVerdict(
 		`(Searched: ${candidates.map((c) => shortest(c, args.cwd)).join(", ")}.)` +
 		surfaceLine +
 		` If this file has no testable surface, add "// interlinked-tdd: exempt" as the first line.`;
+	if (args.testFirstMode === "warn") {
+		return {
+			decision: "allow",
+			warnings: [
+				`[interlinked:tdd] ${body} (test_first_mode "warn": advisory here — ` +
+					`strict mode blocks this. interlinked mode strict to enforce.)`,
+			],
+			rule_id: "tdd_new_file_gate",
+			severity: "low",
+			category: "tdd",
+		};
+	}
 	if (getRepoProfile(projectRoot).testLayout === "none") {
 		return {
 			decision: "allow",

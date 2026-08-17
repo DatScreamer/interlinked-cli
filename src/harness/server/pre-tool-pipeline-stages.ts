@@ -39,7 +39,9 @@ import { checkFunctionComplexity, checkMissingReturnTypes } from "../generic-che
 import { checkProjectTestsClean, checkProjectTypecheckClean } from "../project-typecheck-gate.js";
 import {
 	collectSoftwareVersionReferences,
+	countAmbientSeams,
 	countAsAnyCasts,
+	countAssertionStrength,
 	countConsoleStatements,
 	countNonNullAssertions,
 	countPublicApiSurface,
@@ -362,6 +364,8 @@ export function captureDiffAwareBaseline(
 						CWD,
 						preContent,
 					),
+					ambientSeams: countAmbientSeams(preContent, baselineFilePath),
+					assertionStrength: countAssertionStrength(preContent),
 				});
 			} catch (e) {
 				void e;

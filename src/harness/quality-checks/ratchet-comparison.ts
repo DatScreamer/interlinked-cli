@@ -11,7 +11,9 @@
 import { capturePrimitiveViolations } from "../discovered-primitives.js";
 import type { PreEditBaseline } from "../types.js";
 import {
+	countAmbientSeams,
 	countAsAnyCasts,
+	countAssertionStrength,
 	countConsoleStatements,
 	countNonNullAssertions,
 	countPublicApiSurface,
@@ -67,6 +69,8 @@ export function runRatchetComparison(ctx: RatchetContext): QualityCheckResult[] 
 		results.push(...checkConsoleStatementRatchet(absPath, pre, postContent));
 		results.push(...checkPublicApiSurfaceRatchet(absPath, pre, postContent));
 		results.push(...checkTypeDensityRatchet(absPath, pre, postContent));
+		results.push(...checkSeamRatchet(absPath, pre, postContent));
+		results.push(...checkAssertionStrengthRatchet(absPath, pre, postContent));
 	} catch {
 		/* intentional: non-fatal — file may have been deleted between edits */
 	}
@@ -289,6 +293,75 @@ function checkTypeDensityRatchet(
 			name: "type_density_ratchet",
 			severity: "warning",
 			message: `Type density regressed: ${regressions.join(", ")}. Replace bare \`: any\` / \`: unknown\` / \`: Function\` / \`: {}\` with named shapes, and add explicit types to exported function signatures so cold readers know the contract.`,
+			file: absPath,
+		},
+	];
+}
+
+/** Ambient-seam ratchet (plan 25 lane 2): clock/random/env reads must not
+ *  rise vs the pre-edit baseline. One warning names the dimensions that grew,
+ *  with the injection fix. Fails open when the baseline predates the field. */
+function checkSeamRatchet(
+	absPath: string,
+	pre: PreEditBaseline,
+	postContent: string,
+): QualityCheckResult[] {
+	if (!pre.ambientSeams) return [];
+	const post = countAmbientSeams(postContent, absPath);
+	const grew: string[] = [];
+	if (post.clock > pre.ambientSeams.clock)
+		grew.push(`clock ${pre.ambientSeams.clock}→${post.clock}`);
+	if (post.random > pre.ambientSeams.random)
+		grew.push(`random ${pre.ambientSeams.random}→${post.random}`);
+	if (post.env > pre.ambientSeams.env) grew.push(`env ${pre.ambientSeams.env}→${post.env}`);
+	if (grew.length === 0) return [];
+	return [
+		{
+			name: "seam_ratchet",
+			severity: "warning",
+			message:
+				`Ambient-seam reads increased (${grew.join(", ")}). Inject the dependency ` +
+				`instead: take \`clock: () => number\` (default Date.now) or \`rng: () => number\` ` +
+				`(default Math.random) as a parameter, or read process.env once at the config ` +
+				`boundary and pass the value through arguments. Seams are what make code ` +
+				`hermetic to test and cheap to port.`,
+			file: absPath,
+		},
+	];
+}
+
+/** Test-file scope for the assertion-strength ratchet (plan 25 lane 4):
+ *  `.test.ts(x)` / `.spec.ts(x)` filenames, or anywhere under `__tests__/`.
+ *  Deliberately narrower than the shared `isStrictTestFile` predicate — no
+ *  `/tests/` directory match, no non-TS extensions — since the matcher
+ *  vocabulary this ratchet counts is meaningless outside a TS test file. */
+const ASSERTION_STRENGTH_TEST_PATH_RE = /\.(?:test|spec)\.tsx?$|(?:^|\/)__tests__\//;
+
+/** Assertion-strength ratchet (plan 25 lane 4): fires only on PURE weakening
+ *  — the edit adds a weak matcher (toContain/toMatch/toBeTruthy/toBeDefined)
+ *  without adding any exact matcher (toBe/toEqual/toStrictEqual) to offset
+ *  it. Test files only; fails open when the baseline predates the field. */
+function checkAssertionStrengthRatchet(
+	absPath: string,
+	pre: PreEditBaseline,
+	postContent: string,
+): QualityCheckResult[] {
+	if (!pre.assertionStrength) return [];
+	const posix = absPath.replace(/\\/g, "/");
+	if (!ASSERTION_STRENGTH_TEST_PATH_RE.test(posix)) return [];
+	const post = countAssertionStrength(postContent);
+	const weakGrew = post.weak > pre.assertionStrength.weak;
+	const exactGrew = post.exact > pre.assertionStrength.exact;
+	if (!weakGrew || exactGrew) return [];
+	return [
+		{
+			name: "assertion_strength_ratchet",
+			severity: "warning",
+			message:
+				`Weak assertions increased (${pre.assertionStrength.weak} → ${post.weak}) with no new ` +
+				`exact-value assertions (${pre.assertionStrength.exact} → ${post.exact}). Prefer ` +
+				`toBe/toEqual/toStrictEqual over toContain/toMatch/toBeTruthy/toBeDefined — mutation ` +
+				`testing kills mutants with exact observables, and weak matchers let them survive.`,
 			file: absPath,
 		},
 	];

@@ -11,12 +11,14 @@
 
 import { GENERIC_AGENT_LAZINESS_META } from "./generic-agent-laziness.js";
 import { GENERIC_API_SHAPE_META } from "./generic-api-shape.js";
+import { GENERIC_BOUNDARY_CONTRACTS_META } from "./generic-boundary-contracts.js";
 import { GENERIC_C_META } from "./generic-c.js";
 import { GENERIC_CORE_JS_META } from "./generic-core-js.js";
 import { GENERIC_CROSS_FILE_META } from "./generic-cross-file.js";
 import { GENERIC_DEMO_DATA_META } from "./generic-demo-data.js";
 import { GENERIC_ENDPOINT_META } from "./generic-endpoint.js";
 import { GENERIC_ITERATION_SAFETY_META } from "./generic-iteration-safety.js";
+import { GENERIC_PORTABILITY_META } from "./generic-portability.js";
 import { GENERIC_REACT_WARNINGS_META } from "./generic-react-warnings.js";
 import { GENERIC_SWIFT_META } from "./generic-swift.js";
 import { GENERIC_TEST_HYGIENE_META } from "./generic-test-hygiene.js";
@@ -39,4 +41,6 @@ export const GENERIC_CHECK_META: Record<string, CheckMeta> = {
 	...GENERIC_ENDPOINT_META,
 	...GENERIC_SWIFT_META,
 	...GENERIC_TYPE_DISCIPLINE_META,
+	...GENERIC_PORTABILITY_META,
+	...GENERIC_BOUNDARY_CONTRACTS_META,
 };

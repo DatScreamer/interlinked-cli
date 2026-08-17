@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	countAmbientSeams,
 	countAsAnyCasts,
+	countAssertionStrength,
 	countConsoleStatements,
 	countNonNullAssertions,
 	countPublicApiSurface,
@@ -136,5 +138,65 @@ describe("countTypeDensity", () => {
 			untypedExportedParams: 0,
 			missingExportedReturnType: 0,
 		});
+	});
+});
+
+describe("countAmbientSeams (plan 25 lane 2)", () => {
+	// test-contract: behavior — each seam dimension counts direct ambient reads
+	it("P1: counts clock, random, and env reads in a plain source file", () => {
+		const src =
+			"const t = Date.now();\nconst d = new Date();\nconst r = Math.random();\nconst k = process.env.API_KEY;\nconst j = process.env['MODE'];\n";
+		expect(countAmbientSeams(src, "src/service.ts")).toEqual({ clock: 2, random: 1, env: 2 });
+	});
+
+	// test-contract: boundary — env reads are the config boundary's JOB
+	it("N1: a config-boundary file's env reads do not count", () => {
+		const src = "export const MODE = process.env.MODE;\n";
+		expect(countAmbientSeams(src, "src/lib/config.ts").env).toBe(0);
+		expect(countAmbientSeams(src, "vitest.config.ts").env).toBe(0);
+		expect(countAmbientSeams(src, "src/test-setup/home-sandbox.ts").env).toBe(0);
+	});
+
+	// test-contract: boundary — string/comment mentions are not seams, and a
+	// constructed Date with arguments is deterministic input, not a clock read
+	it("N2: literals, comments, and new Date(arg) do not count", () => {
+		const src =
+			'// call Date.now() sparingly\nconst s = "Math.random()";\nconst d = new Date(1700000000000);\n';
+		expect(countAmbientSeams(src, "src/service.ts")).toEqual({ clock: 0, random: 0, env: 0 });
+	});
+});
+
+describe("countAssertionStrength (plan 25 lane 4)", () => {
+	// test-contract: behavior — each weak/exact matcher counts its calls in test content
+	it("P1: counts weak and exact matcher calls", () => {
+		const src =
+			'expect(x).toContain("a");\nexpect(y).toMatch(/foo/);\nexpect(z).toBeTruthy();\n' +
+			"expect(w).toBeDefined();\nexpect(a).toBe(1);\nexpect(b).toEqual({ c: 1 });\n" +
+			"expect(c).toStrictEqual([1]);\n";
+		expect(countAssertionStrength(src)).toEqual({ weak: 4, exact: 3 });
+	});
+
+	// test-contract: boundary — matchers deliberately left OFF the "use exactly"
+	// list (toBeFalsy/toBeUndefined) must not count toward weak
+	it("N1: matchers excluded from the exact list are not counted", () => {
+		const src = "expect(x).toBeFalsy();\nexpect(y).toBeUndefined();\n";
+		expect(countAssertionStrength(src)).toEqual({ weak: 0, exact: 0 });
+	});
+
+	// test-contract: boundary — string/comment mentions of matcher names are not calls
+	it("N2: literals and comments do not count", () => {
+		const src = '// use toBe() and toContain() here\nconst s = "call toEqual(x) in your test";\n';
+		expect(countAssertionStrength(src)).toEqual({ weak: 0, exact: 0 });
+	});
+
+	// test-contract: boundary — toBeTruthy/toBeDefined must not also register as
+	// a `toBe(` exact match (substring-overlap regression guard)
+	it("N3: toBeTruthy/toBeDefined are not double-counted as toBe", () => {
+		const src = "expect(x).toBeTruthy();\nexpect(y).toBeDefined();\n";
+		expect(countAssertionStrength(src)).toEqual({ weak: 2, exact: 0 });
+	});
+
+	it("returns zero counts on empty input", () => {
+		expect(countAssertionStrength("")).toEqual({ weak: 0, exact: 0 });
 	});
 });

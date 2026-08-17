@@ -42,6 +42,9 @@ vi.mock("./structural-checks/misc-checks.js", () => ({
 vi.mock("./structural-checks/cycles.js", () => ({
 	checkImportCycles: vi.fn(() => []),
 }));
+vi.mock("./structural-checks/new-import-cycle.js", () => ({
+	checkNewImportCycle: vi.fn(() => []),
+}));
 vi.mock("./structural-checks/dead-exports.js", () => ({
 	checkDeadExports: vi.fn(() => []),
 }));
@@ -87,6 +90,7 @@ import {
 } from "./structural-checks/export-surface.js";
 import { checkImportResolution } from "./structural-checks/imports.js";
 import { checkJSDocParamMismatch } from "./structural-checks/misc-checks.js";
+import { checkNewImportCycle } from "./structural-checks/new-import-cycle.js";
 import {
 	getPreToolUseContext,
 	runStructuralChecks,
@@ -315,6 +319,7 @@ describe("runStructuralChecks — per-check dispatch", () => {
 		expect(checkExportSurface).toHaveBeenCalled();
 		expect(checkImportResolution).toHaveBeenCalled();
 		expect(checkImportCycles).toHaveBeenCalled();
+		expect(checkNewImportCycle).toHaveBeenCalled();
 		expect(checkJSDocParamMismatch).toHaveBeenCalled();
 		expect(checkCrossFileSwitchDiscriminant).toHaveBeenCalled();
 		expect(checkSingleImplementationInterface).toHaveBeenCalled();
@@ -367,9 +372,11 @@ describe("runStructuralChecks — per-check dispatch", () => {
 			hallucinated_imports: false,
 			cross_package_imports: false,
 			undefined_env_vars: false,
-			// The two taste checks are gated by `!== false`, so flip them off too.
+			// The two taste checks and new_import_cycle are gated by `!== false`,
+			// so flip them off too.
 			cross_file_switch_discriminant: false,
 			single_implementation_interface: false,
+			new_import_cycle: false,
 		});
 
 		runStructuralChecks(writeEvent(TS), off, graph, sessions, noExports, noBodies);
@@ -377,6 +384,7 @@ describe("runStructuralChecks — per-check dispatch", () => {
 		expect(checkExportSurface).not.toHaveBeenCalled();
 		expect(checkImportResolution).not.toHaveBeenCalled();
 		expect(checkImportCycles).not.toHaveBeenCalled();
+		expect(checkNewImportCycle).not.toHaveBeenCalled();
 		expect(checkCrossFileSwitchDiscriminant).not.toHaveBeenCalled();
 		expect(checkSingleImplementationInterface).not.toHaveBeenCalled();
 		// jsdoc is unconditional — always runs.

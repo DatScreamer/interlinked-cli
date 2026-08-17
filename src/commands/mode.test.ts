@@ -105,6 +105,65 @@ describe("writeMode", () => {
 	});
 });
 
+describe("writeMode — enforcement-gate posture (guard-rules.json ladder)", () => {
+	function readGuardRules(): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(tmp, ".interlinked", "guard-rules.json"), "utf-8"));
+	}
+
+	// test-contract: behavior — a mode is a posture: strict/balanced/lenient must
+	// ladder the TDD gate, per-edit coverage, and session-end nudges (2026-08-17).
+	it("P: strict sets TDD enforce, characterize block, and strict per-edit coverage (no debt)", () => {
+		writeMode(tmp, "strict", false);
+		expect(readGuardRules()).toMatchObject({
+			structural_checks: {
+				test_first: true,
+				test_first_mode: "enforce",
+				characterize_mode: "block",
+			},
+			per_edit_coverage: { enabled: true, debt_mode: false },
+			verification_stop_checks: { enabled: true },
+			commit_cadence: { enabled: true },
+		});
+	});
+
+	it("P: balanced sets TDD warn and debt-mode coverage", () => {
+		writeMode(tmp, "balanced", false);
+		expect(readGuardRules()).toMatchObject({
+			structural_checks: { test_first: true, test_first_mode: "warn" },
+			per_edit_coverage: { enabled: true, debt_mode: true },
+		});
+	});
+
+	it("P: lenient turns the gates and nudges off", () => {
+		writeMode(tmp, "lenient", false);
+		expect(readGuardRules()).toMatchObject({
+			structural_checks: { test_first: false, characterize_mode: "off" },
+			per_edit_coverage: { enabled: false },
+			verification_stop_checks: { enabled: false },
+			commit_cadence: { enabled: false },
+		});
+	});
+
+	it("P: the merge preserves unrelated guard-rules sections", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "guard-rules.json"),
+			JSON.stringify({ diff_aware: { enabled: true }, per_edit_coverage: { debt_wip_limit: 2 } }),
+		);
+		writeMode(tmp, "strict", false);
+		const rules = readGuardRules();
+		expect(rules).toMatchObject({
+			diff_aware: { enabled: true },
+			per_edit_coverage: { enabled: true, debt_mode: false, debt_wip_limit: 2 },
+		});
+	});
+
+	it("N: custom applies no gate overrides at all", () => {
+		writeMode(tmp, "custom", false);
+		expect(existsSync(join(tmp, ".interlinked", "guard-rules.json"))).toBe(false);
+	});
+});
+
 describe("modeCommand — show current", () => {
 	it("reports built-in default when no config exists", async () => {
 		const cap = captureStdout();

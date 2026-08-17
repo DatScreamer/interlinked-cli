@@ -670,3 +670,122 @@ describe("runRatchetComparison — defensive error swallow", () => {
 		expect(names(results)).toEqual(["suppression_ratchet"]);
 	});
 });
+
+describe("runRatchetComparison — seam_ratchet (plan 25 lane 2)", () => {
+	// test-contract: behavior — adding an ambient clock read must warn with the
+	// grown dimension and the injection fix
+	it("P1: fires when the edit adds a clock read", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				baseline: zeroBaseline({ ambientSeams: { clock: 0, random: 0, env: 0 } }),
+				postContent: "const t = Date.now();\n",
+			}),
+		);
+		expect(names(results)).toEqual(["seam_ratchet"]);
+		expect(results[0]?.message).toContain("clock 0→1");
+		expect(results[0]?.message).toContain("Inject the dependency");
+	});
+
+	it("N1: holding or removing seams stays silent", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				baseline: zeroBaseline({ ambientSeams: { clock: 2, random: 1, env: 0 } }),
+				postContent: "const t = Date.now();\n",
+			}),
+		);
+		expect(names(results)).toEqual([]);
+	});
+
+	// test-contract: boundary — a baseline captured before the field existed
+	// must fail open, never fire
+	it("N2: fails open when the baseline lacks ambientSeams", () => {
+		const results = runRatchetComparison(
+			makeCtx({ postContent: "const t = Date.now();\nconst r = Math.random();\n" }),
+		);
+		expect(names(results)).toEqual([]);
+	});
+});
+
+describe("runRatchetComparison — assertion_strength_ratchet (plan 25 lane 4)", () => {
+	// test-contract: behavior — pure weakening (weak grows, exact does not) fires
+	it("P1: fires when the edit adds a weak matcher with no offsetting exact matcher", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.test.ts",
+				baseline: zeroBaseline({ assertionStrength: { weak: 0, exact: 0 } }),
+				postContent: "expect(x).toContain(1);\n",
+			}),
+		);
+		expect(names(results)).toEqual(["assertion_strength_ratchet"]);
+		expect(results[0]?.message).toContain("0 → 1");
+		expect(results[0]?.message).toContain("exact-value");
+	});
+
+	// test-contract: boundary — the path predicate also matches __tests__/ and .spec.tsx
+	it("P2: fires under a __tests__/ directory and a .spec.tsx filename", () => {
+		const dirResults = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/__tests__/touched.ts",
+				baseline: zeroBaseline({ assertionStrength: { weak: 0, exact: 0 } }),
+				postContent: "expect(x).toMatch(/a/);\n",
+			}),
+		);
+		expect(names(dirResults)).toEqual(["assertion_strength_ratchet"]);
+
+		const specResults = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.spec.tsx",
+				baseline: zeroBaseline({ assertionStrength: { weak: 0, exact: 0 } }),
+				postContent: "expect(x).toBeTruthy();\n",
+			}),
+		);
+		expect(names(specResults)).toEqual(["assertion_strength_ratchet"]);
+	});
+
+	// test-contract: boundary — an offsetting exact matcher means it's not PURE weakening
+	it("N1: adding an exact matcher alongside the weak one stays silent", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.test.ts",
+				baseline: zeroBaseline({ assertionStrength: { weak: 0, exact: 0 } }),
+				postContent: "expect(x).toContain(1);\nexpect(y).toBe(2);\n",
+			}),
+		);
+		expect(names(results)).toEqual([]);
+	});
+
+	it("N2: holding or removing weak matchers stays silent", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.test.ts",
+				baseline: zeroBaseline({ assertionStrength: { weak: 2, exact: 0 } }),
+				postContent: "expect(x).toContain(1);\n",
+			}),
+		);
+		expect(names(results)).toEqual([]);
+	});
+
+	// test-contract: boundary — non-test files are out of scope regardless of content
+	it("N3: a non-test file stays silent even though weak grew", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.ts",
+				baseline: zeroBaseline({ assertionStrength: { weak: 0, exact: 0 } }),
+				postContent: "expect(x).toContain(1);\n",
+			}),
+		);
+		expect(names(results)).toEqual([]);
+	});
+
+	// test-contract: boundary — a baseline captured before the field existed
+	// must fail open, never fire
+	it("N4: fails open when the baseline lacks assertionStrength", () => {
+		const results = runRatchetComparison(
+			makeCtx({
+				absPath: "/repo/src/touched.test.ts",
+				postContent: "expect(x).toContain(1);\n",
+			}),
+		);
+		expect(names(results)).toEqual([]);
+	});
+});

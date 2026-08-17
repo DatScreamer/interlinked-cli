@@ -37,7 +37,11 @@ export {
 	runProjectWideChecksAsync,
 } from "./quality-checks/project-wide.js";
 export {
+	type AmbientSeamCounts,
+	type AssertionStrengthCounts,
+	countAmbientSeams,
 	countAsAnyCasts,
+	countAssertionStrength,
 	countConsoleStatements,
 	countNonNullAssertions,
 	countPublicApiSurface,

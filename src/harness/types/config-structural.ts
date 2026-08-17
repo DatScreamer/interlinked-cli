@@ -46,6 +46,10 @@ export interface StructuralChecksConfig {
 	co_dependency_staleness: boolean;
 	/** Detect circular dependency introduction */
 	import_cycles: boolean;
+	/** Plan 25 lane 5 — delta check: warn only on the specific edit that
+	 *  CLOSES a new import cycle through the edited file (vs import_cycles'
+	 *  whole-state view of pre-existing cycles too). */
+	new_import_cycle?: boolean;
 	/** Warn when interface/type shape changes affect other files */
 	interface_change_impact: boolean;
 	/** Warn when edited source file has no corresponding test file */
@@ -94,6 +98,11 @@ export interface StructuralChecksConfig {
 	test_first: boolean;
 	/** TDD enforcement mode: "nudge" (info), "warn" (warning), "enforce" (blocks commit) */
 	test_first_mode: "nudge" | "warn" | "enforce";
+	/** Characterize-before-touch (plan 25 lane 1): editing a file on the
+	 *  untested list requires a characterization test first. "block" refuses
+	 *  the edit, "warn" allows with a warning (default), "off" disables.
+	 *  Mode-laddered: strict=block, balanced=warn, lenient=off. */
+	characterize_mode?: "block" | "warn" | "off";
 	/** Detect duplicate switch discriminant (x.kind) across files */
 	cross_file_switch_discriminant?: boolean;
 	/** Detect interfaces with exactly one implementor (premature abstraction) */

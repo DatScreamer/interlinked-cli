@@ -155,17 +155,15 @@ export interface PreEditBaseline {
 	 *  Optional — older callers/tests may not capture it; the ratchet check
 	 *  fails open in that case. */
 	typeDensity?: import("../quality-checks/ratchet-metrics.js").TypeDensityCounts;
-	/** Software/model/dependency version references captured before the edit.
-	 *  Used by the PostToolUse software_version_regression check to detect
-	 *  accidental downgrades caused by stale model memory. Optional so older
-	 *  direct test callers continue to fail open. */
+	/** Software/model/dependency version references captured before the edit. Used by
+	 *  software_version_regression to detect stale-memory downgrades. Optional — older direct test callers fail open. */
 	softwareVersions?: import("../quality-checks/software-version-regression.js").SoftwareVersionReference[];
-	/** Per-primitive bare-unsafe-builtin counts captured before the edit.
-	 *  Keyed by wrapper name (e.g. "safeParseInt" → 3 bare parseInt
-	 *  calls in this file). The discovered_primitive_ratchet check
-	 *  compares the post-edit counts and warns on any increase. Optional
-	 *  — older direct test callers continue to fail open. */
+	/** Per-primitive bare-unsafe-builtin counts before the edit, keyed by wrapper name; discovered_primitive_ratchet warns on any increase. Optional — older direct test callers fail open. */
 	discoveredPrimitiveViolations?: Record<string, number> | undefined;
+	/** Ambient-seam counts before the edit (plan 25 lane 2); seam_ratchet warns on any rise. Optional — fails open. */
+	ambientSeams?: import("../quality-checks/ratchet-metrics.js").AmbientSeamCounts | undefined;
+	/** Assertion-strength counts before the edit (plan 25 lane 4); assertion_strength_ratchet warns on pure weakening. Optional — fails open. */
+	assertionStrength?: import("../quality-checks/ratchet-metrics.js").AssertionStrengthCounts | undefined;
 }
 
 export interface GuardRulesConfig {
@@ -427,13 +425,13 @@ export interface PerEditCoverageConfig {
 	 * message names.
 	 */
 	debt_wip_limit?: number;
-	/**
-	 * CRAP score at/above which a touched function blocks the edit when
-	 * {@link block_on_crap} is on. **Default: 30** (the McCabe / SonarQube CRAP
-	 * cutoff — a cyclomatic-10 function at 0% coverage scores 110; the same
-	 * function fully covered scores 10). Ignored when `block_on_crap` is off.
-	 */
+	/** CRAP score at/above which a touched function blocks when
+	 *  {@link block_on_crap} is on. Default 30 (McCabe/SonarQube cutoff).
+	 *  Ignored when `block_on_crap` is off. */
 	crap_threshold?: number;
+	/** %-drop backstop tolerance (Class-2 knob, plan 25). Default 0.005;
+	 *  raise only for float/scope wobble, never to permit real regressions. */
+	drop_epsilon?: number;
 }
 
 /** Config for the PreToolUse Bash git-session-scope gate. See

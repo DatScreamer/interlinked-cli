@@ -21,6 +21,8 @@ import {
 	type ModeName,
 	type ModePreset,
 } from "../harness/modes.js";
+import { mergeIntoGuardRules } from "../harness/rules/guard-rules-write.js";
+import type { JsonObject } from "../lib/json-types.js";
 
 export interface ModeCommandOptions {
 	diff?: boolean;
@@ -231,6 +233,27 @@ export function writeMode(cwd: string, mode: ModeName, local: boolean): void {
 	existing.version = existing.version ?? 1;
 	existing.mode = mode;
 	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`);
+	applyModeGuardOverrides(cwd, mode);
+}
+
+/** A mode is a POSTURE, not just check severities: apply the preset's
+ *  philosophy-dependent gates (TDD, per-edit coverage, session-end nudges)
+ *  into the shared guard-rules.json, merge-preserving. Later hand edits win
+ *  until the mode is re-applied; "custom" applies nothing. A failed merge
+ *  (malformed existing file) warns rather than aborting — the check-policy
+ *  half of the switch already landed and remains valid on its own. */
+function applyModeGuardOverrides(cwd: string, mode: ModeName): void {
+	const preset = getPreset(mode);
+	const overrides = preset?.guard_overrides;
+	if (!overrides) return;
+	// SAFETY: ModeGuardOverrides is a plain nested record of booleans/strings —
+	// structurally a JsonObject; TS can't see that through the interface name.
+	const r = mergeIntoGuardRules(cwd, overrides as JsonObject);
+	if (!r.ok) {
+		process.stderr.write(
+			`[interlinked] mode ${mode}: gate overrides NOT applied (${r.error}) — fix ${r.path} and re-run interlinked mode ${mode}\n`,
+		);
+	}
 }
 
 // -----------------------------------------------------------------------------

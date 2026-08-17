@@ -31,10 +31,46 @@ or block.
 | **Cyclomatic — slew** | a uniquely-named ≤cap function jumps **>2** branches in one edit | tolerance **2**/edit | Extract cohesive branches into named helpers; do not stage one logical complexity increase across edits |
 | **Cognitive — over cap** | edit leaves a function over the cognitive cap | **30** | Flatten: guard clauses, extract the deepest-nested block |
 | **Cognitive — slew** | a uniquely-named ≤cap function jumps **>4** cognitive points in one edit | tolerance **4**/edit | Flatten rather than extract-in-place; a branch pulled out unchanged keeps its nesting cost |
-| **Per-edit coverage** | edit adds an uncovered executable line/function, or drops a file's coverage vs its high-water | gate default on; drop ε 0.005; floor default 0 (off) | Stay within the source/test pair and add coverage; default debt mode allows the first uncovered/red edit but blocks unrelated wandering |
+| **Per-edit coverage** | edit adds an uncovered executable line/function, or drops a file's coverage vs its high-water | gate default on; drop ε 0.005; hard floor `min_coverage` default 0 (off) | Stay within the source/test pair and add coverage; default debt mode allows the first uncovered/red edit but blocks unrelated wandering |
+
+**Coverage has a GOAL, not a cap (2026-08-17).** `coverage_goal` in
+`metric-caps.json` (set via `interlinked caps set coverage <pct>`) is the target
+the ratchets climb toward — default **100**, adjustable to a less ambitious 80/90,
+free to move in either direction because no gate reads it. Enforcement is the
+pair above it: `interlinked adopt` seeds today's per-file % as the floor
+(hold-or-rise), and added lines must be covered — so a brownfield repo is never
+bricked and coverage only moves toward the goal. The separate `min_coverage`
+hard floor blocks outright and, once set, only rises (baseline-integrity gate).
 | **CRAP** | a touched function is both complex AND under-covered | **25**, default on | Decompose OR add coverage (both lower CRAP) |
 | **Per-edit mutation** | a measured edit adds a changed-region survivor/uncovered site, makes affected tests red, or exceeds the site limit | default **off**; site limit **50**; `mode: block\|warn\|off` | Strengthen the test, fix/remove the source behavior, or split an oversized behavioral change |
 | **Baseline-integrity** | a Write/Edit *loosens* any `.interlinked/` water-line | per-file direction | Meet the bar; don't edit the baseline |
+
+**Modes ladder the philosophy-dependent gates (2026-08-17).** `interlinked mode`
+writes gate posture into `guard-rules.json` alongside its check-policy overrides:
+`strict` = new-file TDD gate blocks + characterize-before-touch blocks +
+per-edit coverage strict (no debt); `balanced` = both TDD-family gates warn +
+coverage debt mode; `lenient` = TDD/characterize gates, per-edit coverage, and
+session-end nudges off. Findings still surface as warnings in lenient; security
+rails and every tighten-only ratchet ignore the mode. Hand edits to
+`guard-rules.json` win until the mode is re-applied.
+
+**Refactor-readiness additions (plan 25, 2026-08-17).**
+- `characterize_before_touch` (`structural_checks.characterize_mode`): editing
+  a file on the untested list asks for a characterization test FIRST — capture
+  today's behavior with exact assertions, then change it. Same
+  `// interlinked-tdd: exempt` escape as the new-file gate.
+- Ratchet-family dimensions: `seam_ratchet` (ambient clock/random/env reads
+  must not rise) and `assertion_strength_ratchet` (an edit may not add weak
+  matchers without adding exact ones, test files only).
+- `new_import_cycle` (structural, default warn): fires the moment an edit
+  closes a module cycle that did not exist before.
+- Advisory portability family: `dynamic_code_execution`,
+  `builtin_prototype_mutation`, `float_equality_comparison`, plus
+  `test_contract_annotation` (mutation-directed files only) and
+  `unvalidated_input_boundary`.
+- Class-2 knobs: `per_edit_mutation.max_test_scope` (default 150) and
+  `per_edit_coverage.drop_epsilon` (default 0.005) — engine budgets, tunable;
+  the slew tolerances and daemon timings deliberately are not.
 
 **Line cap** — three surfaces, one policy: PreToolUse block (pure before/after delta — shrinking
 or holding an over-cap file is always allowed, the refactor-down path), a `large_files` verify

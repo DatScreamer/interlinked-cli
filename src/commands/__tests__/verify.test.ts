@@ -331,6 +331,16 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				// detection algorithm only (docs/external-pulse/anti-slop.md).
 				"conditional_empty_object_spread",
 				"unknown_type_alias",
+				// Plan 25 lanes 6-8 (2026-08-17): portability lint (checks/portability.ts)
+				// + boundary/contract wave (checks/test-contract-annotation.ts,
+				// checks/unvalidated-input-boundary.ts). All advisory pending dogfood
+				// FP calibration, except test_contract_annotation, which is
+				// adoption-triggered (zero-FP by construction).
+				"dynamic_code_execution",
+				"builtin_prototype_mutation",
+				"float_equality_comparison",
+				"test_contract_annotation",
+				"unvalidated_input_boundary",
 				// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling +
 				// two low-not-zero-FP heuristics pending cross-repo calibration.
 				"readme_script_drift",

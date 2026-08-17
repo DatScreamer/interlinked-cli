@@ -9,6 +9,9 @@
 // Tool-id table lives in tool-ids.ts (extracted at the 500-line cap);
 // re-exported here so existing importers keep working.
 export { TOOL_IDS } from "./tool-ids.js";
+// Swift/iOS advisory-skip ids likewise extracted to advisory-skips-swift.ts
+// (2026-08-17, same 500-line-cap reason) — spread back into the Set below.
+import { SWIFT_ADVISORY_SKIP_IDS } from "./advisory-skips-swift.js";
 
 /**
  * Public API — consumed by `verify.ts` and `__tests__/verify.test.ts`.
@@ -426,47 +429,9 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// redundant. Advisory per CLAUDE.md's heuristic-checks-go-advisory rule;
 	// promote once dogfood FP rate is measured.
 	"test_subprocess_default_timeout",
-	// === Swift / iOS heuristic checks ===
-	// swift_unhandled_task_error: scope-tracked across up to 30 lines of a
-	// Task body — heuristic on what counts as the "task body" boundary.
-	// Real bugs are clearly TPs; closures-returning-Task patterns may FP.
-	"swift_unhandled_task_error",
-	// swift_global_var_no_isolation: file-scope brace-depth tracking; can
-	// FP on `var` inside `extension Module { }` and similar. Stays advisory
-	// until measured. Swift 6 strict-concurrency mode catches the same
-	// thing at compile-time when it's enabled — this check is the bridge
-	// for codebases still on Swift 5 / 5.10 default mode.
-	"swift_global_var_no_isolation",
-	// swift_self_in_escaping_closure: 20-line lookahead from `@escaping`;
-	// misses captures further down and may FP on uses that legitimately
-	// don't escape (e.g., the closure runs synchronously before return).
-	// Advisory until refined to read the @escaping closure's call shape.
-	"swift_self_in_escaping_closure",
-	// swift_notification_observer_no_removal: file-scope absence-of-pairing.
-	// FPs when the removal lives in a sibling file (rare but real).
-	"swift_notification_observer_no_removal",
-	// swift_timer_no_invalidate: same file-scope absence-of-pairing heuristic.
-	"swift_timer_no_invalidate",
-	// swift_combine_no_store: same file-scope absence-of-pairing heuristic.
-	// FPs on assign(to: &$published) where the `to:` parameter takes an
-	// inout Published and manages its own lifecycle (we still flag).
-	"swift_combine_no_store",
-	// swift_try_question_discarded: statement-position heuristic. Misses
-	// `try?` inside conditionals where the operator is on a separate line;
-	// FPs on tools that intentionally use `try?` for fire-and-forget calls.
-	"swift_try_question_discarded",
-	// swift_fatalerror_in_guard: a taste call — `guard let x = … else
-	// { fatalError() }` is a force-unwrap with a better message. Advisory
-	// because the message IS sometimes load-bearing for crash triage.
-	"swift_fatalerror_in_guard",
-	// swift_print_in_view_body: detects body-scope `print()` via brace
-	// counting. FPs on `let _ = { print(); return ... }()` patterns where
-	// the print is genuinely part of view construction (rare). Advisory
-	// until measured.
-	"swift_print_in_view_body",
-	// swift_abbreviations: pure style enforcement — the most heuristic of
-	// the batch. Advisory by design; promotes only if a project opts in.
-	"swift_abbreviations",
+	// === Swift / iOS heuristic checks — extracted to advisory-skips-swift.ts
+	// (500-line cap); see that file for per-id rationale. ===
+	...SWIFT_ADVISORY_SKIP_IDS,
 	// === Coding-standards inline heuristics (2026-06) — advisory ===
 	// unjustified_cast: regex over comment/string-stripped content; casts whose
 	// safety is obvious from nearby code read as FPs. The net-new ratchet is the
@@ -488,6 +453,17 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	// but a named alias for `unknown` is occasionally deliberate (documented
 	// boundary type). Advisory pending dogfood FP calibration.
 	"unknown_type_alias",
+	// === Plan 25 lanes 6-8 (2026-08-17): portability lint + boundary/contract wave ===
+	// dynamic_code_execution: eval/new Function/non-literal require|import; heuristic non-literal-arg detection, advisory pending dogfood FP calibration.
+	"dynamic_code_execution",
+	// builtin_prototype_mutation: monkey-patched builtin prototype/global reassignment; heuristic line-anchored match, advisory pending dogfood FP calibration.
+	"builtin_prototype_mutation",
+	// float_equality_comparison: === / !== against a float literal; real bug class but a taste call at low magnitudes, advisory pending dogfood FP calibration.
+	"float_equality_comparison",
+	// test_contract_annotation: adoption-triggered (silent until a file already uses test-contract:), so zero-FP by construction — advisory because it's a convention nudge, not a defect.
+	"test_contract_annotation",
+	// unvalidated_input_boundary: .json()/process.argv boundary heuristic sibling of unvalidated_json_boundary; advisory pending dogfood FP calibration.
+	"unvalidated_input_boundary",
 ]);
 
 /** Public API — consumed by `verify.ts` and `tool-results.ts`. */

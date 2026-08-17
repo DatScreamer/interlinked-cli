@@ -200,3 +200,75 @@ function countUntypedParams(paramList: string): number {
 // so the ratchet baseline, capture, and comparison can use it alongside the
 // as-any and non-null counters.
 export { countUnjustifiedCasts } from "../checks/cast-justification.js";
+
+// ===========================================
+// Ambient-seam counters (plan 25, lane 2)
+// ===========================================
+// A "seam" read is a direct call into ambient global state — wall clock,
+// randomness, process environment — instead of an injected dependency. Each
+// one makes the surrounding code harder to test, non-hermetic, and harder to
+// port (the seam is exactly what a new language rebinds). The ratchet holds
+// the per-file count: an edit may remove seams freely and may never add one.
+// The always-on advisory detectors (`untestable_time_in_source`,
+// `process_env_outside_config`) cover diff scope; this ratchet adds the
+// hold-the-line semantics in whole-file scope.
+
+const CLOCK_SEAM_PATTERN = /\bDate\s*\.\s*now\s*\(|\bnew\s+Date\s*\(\s*\)/g;
+const RANDOM_SEAM_PATTERN = /\bMath\s*\.\s*random\s*\(/g;
+const ENV_SEAM_PATTERN = /\bprocess\s*\.\s*env\s*[.[]/g;
+/** Files whose JOB is the config boundary — env reads belong there. Mirrors
+ *  the `process_env_outside_config` check's boundary wording: a config
+ *  module, a `.config.*` file, a `/config/` directory, or a setup/bootstrap
+ *  file. */
+const CONFIG_BOUNDARY_PATH_RE =
+	/\.config\.[a-z]+$|(^|\/)config[^/]*\.[a-z]+$|(^|\/)config\/|(^|\/)(?:test-)?setup(\/|[^/]*\.[a-z]+$)|(^|\/)bootstrap[^/]*\.[a-z]+$/i;
+
+export interface AmbientSeamCounts {
+	clock: number;
+	random: number;
+	env: number;
+}
+
+/** Count ambient-seam reads in `content`. `filePath` decides the env
+ *  exemption: config-boundary files legitimately read `process.env`. */
+export function countAmbientSeams(content: string, filePath: string): AmbientSeamCounts {
+	const stripped = stripAllLiterals(content);
+	const posix = filePath.replace(/\\/g, "/");
+	return {
+		clock: (stripped.match(CLOCK_SEAM_PATTERN) || []).length,
+		random: (stripped.match(RANDOM_SEAM_PATTERN) || []).length,
+		env: CONFIG_BOUNDARY_PATH_RE.test(posix)
+			? 0
+			: (stripped.match(ENV_SEAM_PATTERN) || []).length,
+	};
+}
+
+// ===========================================
+// Assertion-strength counters (plan 25, lane 4)
+// ===========================================
+// A WEAK matcher (toContain/toMatch/toBeTruthy/toBeDefined) accepts a wide
+// range of post-mutation values, so a mutant that corrupts the exact result
+// can still slip past it. An EXACT matcher (toBe/toEqual/toStrictEqual) pins
+// one specific observable, so mutation testing kills more of what it should.
+// The ratchet (in ratchet-comparison.ts) reads these counts and fires only
+// on pure weakening; this module only counts — the test-file scope filter
+// lives at the comparison layer, so capturing counts for any file is safe.
+
+const WEAK_MATCHER_PATTERN = /\b(?:toContain|toMatch|toBeTruthy|toBeDefined)\s*\(/g;
+const EXACT_MATCHER_PATTERN = /\b(?:toBe|toEqual|toStrictEqual)\s*\(/g;
+
+export interface AssertionStrengthCounts {
+	weak: number;
+	exact: number;
+}
+
+/** Count weak (toContain/toMatch/toBeTruthy/toBeDefined) and exact
+ *  (toBe/toEqual/toStrictEqual) matcher calls in `content`. Strings/comments
+ *  are stripped first so a matcher name mentioned in prose doesn't count. */
+export function countAssertionStrength(content: string): AssertionStrengthCounts {
+	const stripped = stripAllLiterals(content);
+	return {
+		weak: countMatches(stripped, WEAK_MATCHER_PATTERN),
+		exact: countMatches(stripped, EXACT_MATCHER_PATTERN),
+	};
+}

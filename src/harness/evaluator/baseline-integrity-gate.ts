@@ -355,6 +355,11 @@ function detectMetricCaps(file: string, before: unknown, after: unknown): Baseli
 	if (isNum(bMin) && isNum(aMin) && aMin < bMin) {
 		out.push(fmt(file, "min_coverage", bMin, aMin, `metric-caps min_coverage lowered ${bMin}→${aMin}. The coverage floor may only rise.`));
 	}
+	// `coverage_goal` is deliberately NOT direction-locked (2026-08-17): it is a
+	// display/nudge TARGET, not a gate input — lowering it from 100 to 80 is a
+	// legitimate team choice, and no enforcement reads it, so moving it gains an
+	// agent nothing. The gamed levers stay locked above: min_coverage (floor)
+	// and the caps.
 	return out;
 }
 

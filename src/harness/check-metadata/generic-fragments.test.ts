@@ -13,12 +13,14 @@ import { describe, expect, it } from "vitest";
 import { GENERIC_CHECK_META } from "./generic.js";
 import { GENERIC_AGENT_LAZINESS_META } from "./generic-agent-laziness.js";
 import { GENERIC_API_SHAPE_META } from "./generic-api-shape.js";
+import { GENERIC_BOUNDARY_CONTRACTS_META } from "./generic-boundary-contracts.js";
 import { GENERIC_C_META } from "./generic-c.js";
 import { GENERIC_CORE_JS_META } from "./generic-core-js.js";
 import { GENERIC_CROSS_FILE_META } from "./generic-cross-file.js";
 import { GENERIC_DEMO_DATA_META } from "./generic-demo-data.js";
 import { GENERIC_ENDPOINT_META } from "./generic-endpoint.js";
 import { GENERIC_ITERATION_SAFETY_META } from "./generic-iteration-safety.js";
+import { GENERIC_PORTABILITY_META } from "./generic-portability.js";
 import { GENERIC_REACT_WARNINGS_META } from "./generic-react-warnings.js";
 import { GENERIC_SWIFT_META } from "./generic-swift.js";
 import { GENERIC_TEST_HYGIENE_META } from "./generic-test-hygiene.js";
@@ -321,6 +323,14 @@ const FRAGMENTS: Record<string, { meta: Record<string, CheckMeta>; keys: string[
 		meta: GENERIC_TYPE_DISCIPLINE_META,
 		keys: ["conditional_empty_object_spread", "unknown_type_alias"],
 	},
+	"generic-portability": {
+		meta: GENERIC_PORTABILITY_META,
+		keys: ["dynamic_code_execution", "builtin_prototype_mutation", "float_equality_comparison"],
+	},
+	"generic-boundary-contracts": {
+		meta: GENERIC_BOUNDARY_CONTRACTS_META,
+		keys: ["test_contract_annotation", "unvalidated_input_boundary"],
+	},
 };
 
 describe("GENERIC_CHECK_META fragments", () => {
@@ -374,16 +384,19 @@ describe("GENERIC_CHECK_META composition", () => {
 		}
 	});
 
-	it("preserves the full 234-key total", () => {
+	it("preserves the full 239-key total", () => {
 		const fragmentKeyTotal = allFragments.reduce((n, frag) => n + Object.keys(frag).length, 0);
 		// 217 + cognitive_complexity (2026-07-24) + 8 Bun-regression detector pack
 		// (assert-erasure ×3, reinterpret ×2, placeholder-const, unsafe-span ×2, 2026-07-20)
 		// + raw_control_bytes (2026-07-25) + procfs_probe_in_test (2026-07-31)
 		// + type_predicate_drift (2026-08-09) + homedir_write_escape (2026-08-10)
 		// + conditional_empty_object_spread + unknown_type_alias (2026-08-14,
-		// type-discipline wave, ported from dmmulroy/anti-slop).
-		expect(Object.keys(GENERIC_CHECK_META).length).toBe(234);
+		// type-discipline wave, ported from dmmulroy/anti-slop) = 234; prior: 234.
+		// + dynamic_code_execution + builtin_prototype_mutation +
+		// float_equality_comparison + test_contract_annotation +
+		// unvalidated_input_boundary (2026-08-17, Plan 25 lanes 6-8) = 239.
+		expect(Object.keys(GENERIC_CHECK_META).length).toBe(239);
 		// Sum-of-parts == whole confirms no key was dropped by the spread.
-		expect(fragmentKeyTotal).toBe(234);
+		expect(fragmentKeyTotal).toBe(239);
 	});
 });

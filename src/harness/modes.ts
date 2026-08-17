@@ -22,19 +22,60 @@ export interface ModePreset {
 	/** Override the global default action for checks that aren't named
 	 *  explicitly. Omit to keep the built-in default (`warn_after`). */
 	default_action?: CheckAction;
+	/** Philosophy-dependent GATES this mode sets in guard-rules.json (2026-08-17).
+	 *  A mode used to govern check severities only, which under-specified what
+	 *  strict/balanced/lenient actually mean; the gates users argue about — TDD
+	 *  on new files, per-edit coverage, session-end nudges — now ladder with the
+	 *  mode so one answer carries the posture. Applied merge-preserving via
+	 *  `mergeIntoGuardRules`; later hand edits to guard-rules.json win until the
+	 *  mode is re-applied. Deliberately NOT here: slew tolerances (measured
+	 *  constants, not preference), security rails, and every tighten-only
+	 *  ratchet. */
+	guard_overrides?: ModeGuardOverrides;
+	/** Human-readable receipt lines describing what this mode enforces —
+	 *  rendered by the wizard's posture receipt and the browser demo. */
+	posture?: readonly string[];
+}
+
+/** The subset of guard-rules.json a mode may set. Kept narrow on purpose:
+ *  each field is a gate whose right setting is team philosophy, not fact. */
+export interface ModeGuardOverrides {
+	structural_checks?: {
+		test_first?: boolean;
+		test_first_mode?: "nudge" | "warn" | "enforce";
+		characterize_mode?: "block" | "warn" | "off";
+	};
+	per_edit_coverage?: {
+		enabled?: boolean;
+		debt_mode?: boolean;
+	};
+	verification_stop_checks?: { enabled?: boolean };
+	commit_cadence?: { enabled?: boolean };
 }
 
 // -----------------------------------------------------------------------------
 // Presets
 // -----------------------------------------------------------------------------
 
-/** Balanced — today's shipping defaults. Truly-destructive commands already
+/** Balanced — the warn-first middle ground. Truly-destructive commands already
  *  block (guard rules, outside this system). Everything else warns. */
 export const BALANCED: ModePreset = {
 	name: "balanced",
 	description:
-		"Default. Destructive commands blocked; type errors and lint issues warn after edits land.",
+		"Warn-first middle ground: destructive commands blocked; type errors and lint issues warn after edits land.",
 	check_overrides: {},
+	guard_overrides: {
+		structural_checks: { test_first: true, test_first_mode: "warn", characterize_mode: "warn" },
+		per_edit_coverage: { enabled: true, debt_mode: true },
+		verification_stop_checks: { enabled: true },
+		commit_cadence: { enabled: true },
+	},
+	posture: [
+		"new source file without a test → warns (never blocks)",
+		"editing an untested legacy file → asks for a characterization test (warn)",
+		"per-edit coverage on, debt mode: an uncovered edit opens debt you settle in-pair",
+		"session-end verification + commit-cadence nudges on",
+	],
 };
 
 /** Strict — promote low-FP, high-value checks from post → pre_block so
@@ -43,7 +84,7 @@ export const BALANCED: ModePreset = {
 export const STRICT: ModePreset = {
 	name: "strict",
 	description:
-		"Block edits that would introduce type, lint, or test-quality errors before they land.",
+		"Default. Block edits that would introduce type, lint, or test-quality errors before they land.",
 	check_overrides: {
 		// Test-quality — tiny regex/AST checks, very low FP.
 		focused_tests: "ask",
@@ -58,6 +99,18 @@ export const STRICT: ModePreset = {
 		commented_out_code: "warn_before",
 		default_export: "warn_before",
 	},
+	guard_overrides: {
+		structural_checks: { test_first: true, test_first_mode: "enforce", characterize_mode: "block" },
+		per_edit_coverage: { enabled: true, debt_mode: false },
+		verification_stop_checks: { enabled: true },
+		commit_cadence: { enabled: true },
+	},
+	posture: [
+		"new source file without a companion test → blocked (TDD gate)",
+		"editing an untested legacy file without a characterization test → blocked",
+		"per-edit coverage strict: an uncovered added line blocks the edit (no debt)",
+		"session-end verification + commit-cadence nudges on",
+	],
 };
 
 /** Lenient — warn on everything possible; only the guard-rules layer (which
@@ -69,9 +122,22 @@ export const LENIENT: ModePreset = {
 		"Advisory only — warn on issues but never block. Destructive guard rules still apply.",
 	check_overrides: {},
 	default_action: "info",
+	guard_overrides: {
+		structural_checks: { test_first: false, characterize_mode: "off" },
+		per_edit_coverage: { enabled: false },
+		verification_stop_checks: { enabled: false },
+		commit_cadence: { enabled: false },
+	},
+	posture: [
+		"TDD + characterize gates off; per-edit coverage off",
+		"session-end nudges off — findings still surface as warnings",
+		"security rails (destructive commands, secrets, installs) still block",
+	],
 };
 
-export const ALL_PRESETS: readonly ModePreset[] = [BALANCED, STRICT, LENIENT] as const;
+/** Display order = wizard order: strict is the recommended default (operator
+ *  decision 2026-08-17 — ambition is the default posture), balanced last. */
+export const ALL_PRESETS: readonly ModePreset[] = [STRICT, LENIENT, BALANCED] as const;
 
 const PRESETS_BY_NAME: Readonly<Record<string, ModePreset>> = {
 	balanced: BALANCED,

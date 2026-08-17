@@ -73,7 +73,9 @@ vi.mock("../structure/structure-loader.js", () => ({
 // the captured baseline.
 vi.mock("../quality-checks.js", () => ({
 	collectSoftwareVersionReferences: vi.fn(() => []),
+	countAmbientSeams: vi.fn(() => ({ clock: 9, random: 10, env: 11 })),
 	countAsAnyCasts: vi.fn(() => 1),
+	countAssertionStrength: vi.fn(() => ({ weak: 12, exact: 13 })),
 	countConsoleStatements: vi.fn(() => 2),
 	countNonNullAssertions: vi.fn(() => 3),
 	countPublicApiSurface: vi.fn(() => 4),
@@ -938,6 +940,8 @@ describe("captureDiffAwareBaseline", () => {
 		expect(baseline?.publicApiSurfaceCount).toBe(4);
 		expect(baseline?.typeDensity).toEqual({ value: 7 });
 		expect(baseline?.discoveredPrimitiveViolations).toEqual({});
+		expect(baseline?.ambientSeams).toEqual({ clock: 9, random: 10, env: 11 });
+		expect(baseline?.assertionStrength).toEqual({ weak: 12, exact: 13 });
 		expect(typeof baseline?.capturedAt).toBe("number");
 		// Coverage absent → CRAP fail-open leaves crapScores undefined.
 		expect(baseline?.crapScores).toBeUndefined();

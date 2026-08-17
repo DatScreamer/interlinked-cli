@@ -50,6 +50,7 @@ import {
 	checkJSDocParamMismatch,
 	checkTestProximity,
 } from "./structural-checks/misc-checks.js";
+import { checkNewImportCycle } from "./structural-checks/new-import-cycle.js";
 import {
 	type PreToolContext,
 	preCheckBlastRadius,
@@ -166,6 +167,15 @@ export function runStructuralChecks(
 	// Tier 2: Import cycle detection
 	if (config.import_cycles) {
 		results.push(...checkImportCycles(filePath, relPath, graph));
+	}
+
+	// Tier 2: New import cycle detection (delta — the edit that closes a
+	// cycle, plan 25 lane 5). Gated `!== false` (optional field, default on)
+	// so absence in older/local configs still runs it, matching the
+	// cross_file_switch_discriminant / single_implementation_interface
+	// taste-check precedent below.
+	if (config.new_import_cycle !== false) {
+		results.push(...checkNewImportCycle(filePath, relPath, event, graph));
 	}
 
 	// Tier 2: Interface change impact

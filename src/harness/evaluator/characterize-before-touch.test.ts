@@ -1,0 +1,169 @@
+// Tests for the characterize-before-touch gate (plan 25, lane 1).
+//
+// Shape mirrors tdd-new-file-gate.test.ts: build a tmpdir with an
+// untested-files baseline, call the evaluator, assert the decision. No mocks —
+// the gate only touches the filesystem and the session's written-file set.
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resetUntestedFilesBaselineCache } from "../tested-file-policy.js";
+import type { SessionTrajectory } from "../types.js";
+import { evaluateCharacterizeBeforeTouch } from "./characterize-before-touch.js";
+
+let tmp: string;
+
+function makeSession(writtenAbs: string[] = []): SessionTrajectory {
+	// The gate reads only `files_written`; every other trajectory field is
+	// irrelevant to it, matching the tdd-new-file-gate.test.ts convention.
+	// SAFETY: minimal stand-in — the cast is sound because only files_written is read.
+	return { files_written: new Set(writtenAbs) } as unknown as SessionTrajectory;
+}
+
+function seedBaseline(files: string[]): void {
+	mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+	writeFileSync(
+		join(tmp, ".interlinked", "untested-files-baseline.json"),
+		JSON.stringify({ version: 1, min_coverage_pct: 60, files }),
+	);
+}
+
+function seedSource(rel: string, content = "export const x = 1;\n"): string {
+	const abs = join(tmp, rel);
+	mkdirSync(join(abs, ".."), { recursive: true });
+	writeFileSync(abs, content);
+	return abs;
+}
+
+beforeEach(() => {
+	tmp = mkdtempSync(join(tmpdir(), "interlinked-cbt-"));
+	resetUntestedFilesBaselineCache();
+});
+
+afterEach(() => {
+	rmSync(tmp, { recursive: true, force: true });
+	resetUntestedFilesBaselineCache();
+});
+
+describe("characterize-before-touch — positive (must fire)", () => {
+	// test-contract: behavior — editing a listed untested file without any
+	// companion test must fire; block mode refuses, warn mode allows + warns
+	it("P1: block mode blocks an edit to a listed file with no companion test", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d?.decision).toBe("block");
+		expect(d?.rule_id).toBe("characterize_before_touch");
+		expect(d?.reason).toContain("characterization test");
+		expect(d?.reason).toContain("legacy.test.ts");
+	});
+
+	it("P2: warn mode allows the same edit and carries the warning", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "warn",
+		});
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.[0]).toContain("[interlinked:characterize]");
+		expect(d?.warnings?.[0]).toContain("untested-files");
+	});
+});
+
+describe("characterize-before-touch — negative (must not fire)", () => {
+	it("N1: a file NOT on the untested list passes silently", () => {
+		seedBaseline(["src/other.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N2: a companion test on disk satisfies the gate", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		seedSource("src/legacy.test.ts", "import './legacy.js';\n");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N3: a companion test written earlier this session satisfies the gate", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession([join(tmp, "src", "legacy.test.ts")]),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N4: mode off disables the gate entirely", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource("src/legacy.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "off",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N5: the file-level exempt directive stands the gate down", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const abs = seedSource(
+			"src/legacy.ts",
+			"// interlinked-tdd: exempt — wiring-only entry point\nexport const x = 1;\n",
+		);
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N6: test files themselves are never gated", () => {
+		seedBaseline(["src/legacy.test.ts"]);
+		const abs = seedSource("src/legacy.test.ts");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N7: a file absent from disk is the new-file TDD gate's territory, not this gate's", () => {
+		seedBaseline(["src/legacy.ts"]);
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: join(tmp, "src", "legacy.ts"),
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+});

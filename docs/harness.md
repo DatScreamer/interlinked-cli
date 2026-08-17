@@ -479,7 +479,7 @@ or removing a rule).
 | C/C++ | compile, clang-tidy | Disabled |
 | Cross-language | Secrets-in-source, Semgrep, gitleaks, dependency audit, prompt injection | Secrets enabled |
 
-### Structural Checks (PostToolUse) — <!-- gen:structural_check_count -->25<!-- /gen:structural_check_count --> checks
+### Structural Checks (PostToolUse) — <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> checks
 
 > **Full reference:** See `docs/generated/structural-checks.md` (auto-generated).
 

@@ -125,6 +125,14 @@ export const STRUCTURAL_CHECK_META: Record<string, CheckMeta> = {
 		determinism: "fully_deterministic",
 		externality: "local_write",
 	},
+	new_import_cycle: {
+		name: "New Import Cycle",
+		description:
+			"Delta check: warns only on the specific edit that closes a new circular import chain (silent on cycles that already existed)",
+		tier: 2,
+		determinism: "fully_deterministic",
+		externality: "local_write",
+	},
 	interface_change_impact: {
 		name: "Interface Change Impact",
 		description: "Identifies files affected when an interface or type definition changes",

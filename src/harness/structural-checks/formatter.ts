@@ -18,6 +18,8 @@ const CHECK_INSTRUCTIONS: Record<string, string> = {
 		"Coordinate with the other agent(s) via MCP messaging. They may be working with a stale understanding of this file's contract.",
 	import_cycles:
 		"Break the cycle by extracting shared types/interfaces into a separate module, or by using dynamic imports for one direction.",
+	new_import_cycle:
+		"This specific edit closed the loop — undo the new import, or break the cycle by extracting shared types/interfaces into a separate module.",
 	interface_change_impact:
 		"Verify all files that import this interface/type still conform to the new shape. Run type-check to confirm.",
 	test_proximity:

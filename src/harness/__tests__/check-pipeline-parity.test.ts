@@ -129,6 +129,13 @@ function readRegistrySources(): string {
 		// POSTTOOLUSE_ONLY_CHECKS below) — same "deferred verify-surface
 		// wiring" precedent as the quality-frontier wave above.
 		"entries-warnings/type-discipline.ts",
+		// Plan 25 lanes 6-8 (2026-08-17): portability lint (dynamic_code_execution,
+		// builtin_prototype_mutation, float_equality_comparison) + boundary/contract
+		// wave (test_contract_annotation, unvalidated_input_boundary). Shipped
+		// PostToolUse-enforced only (see POSTTOOLUSE_ONLY_CHECKS below) — same
+		// "deferred verify-surface wiring" precedent as the type-discipline wave above.
+		"entries-warnings/portability.ts",
+		"entries-warnings/boundary-contracts.ts",
 		"entries-taste.ts",
 		"entries-c-cpp.ts",
 		"builders.ts",
@@ -384,6 +391,20 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"conditional_empty_object_spread",
 	"detectUnknownTypeAlias",
 	"unknown_type_alias",
+	// Plan 25 lanes 6-8 (2026-08-17): portability lint + boundary/contract wave.
+	// Shipped PostToolUse-enforced now; their verify-surface wiring (interface +
+	// init + push + streamCqSection) is a deferred batch, matching the
+	// type-discipline precedent above.
+	"detectDynamicCodeExecution",
+	"dynamic_code_execution",
+	"detectBuiltinPrototypeMutation",
+	"builtin_prototype_mutation",
+	"detectFloatEqualityComparison",
+	"float_equality_comparison",
+	"detectTestContractAnnotation",
+	"test_contract_annotation",
+	"detectUnvalidatedInputBoundary",
+	"unvalidated_input_boundary",
 	// Package publish invariants — needs pre-edit disk content to diff against
 	// post-edit proposed content, so the check only makes sense at PreToolUse
 	// where those two states differ. Running it during `interlinked verify`

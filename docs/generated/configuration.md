@@ -26,6 +26,7 @@ Controls which checks suppress pre-existing findings when editing files.
 | `duplicate_symbols` | `true` | Flags identical export names across files that could cause ambiguous imports |
 | `co_dependency_staleness` | `true` | Warns when a file's dependencies were recently edited but this file wasn't updated |
 | `import_cycles` | `true` | Detects circular import chains that can cause runtime issues |
+| `new_import_cycle` | `true` | Delta check: warns only on the specific edit that closes a new circular import chain (silent on cycles that already existed) |
 | `interface_change_impact` | `true` | Identifies files affected when an interface or type definition changes |
 | `test_proximity` | `true` | Suggests running related tests when editing source files |
 | `smart_tsc` | `true` | Runs tsc only on the edited file when export surface didn't change (avoids full project rebuild) |

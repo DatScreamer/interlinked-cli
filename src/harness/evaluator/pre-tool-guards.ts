@@ -29,6 +29,7 @@ import { isInspectionWrapperCall } from "./inspection-wrapper.js";
 import { evaluateManifestEdit } from "./manifest-edit-guard.js";
 import { evaluatePackageInstall } from "./package-install-guard.js";
 import { computeFullNewContent, containsSecrets } from "./pre-tool-helpers.js";
+import { evaluateCharacterizeForEvent } from "./characterize-before-touch.js";
 import { evaluateTddNewFileGateForEvent } from "./tdd-new-file-gate.js";
 import { isBash, isFileOperation, isFileWrite } from "./tool-classifiers.js";
 
@@ -219,17 +220,23 @@ export function evaluateTddGate(
 ): HarnessDecision | null {
 	if (isFileWrite(toolName)) {
 		const d = evaluateTddNewFileGateForEvent(event, rules, session);
-		if (d) {
-			// Merge the gate's own warnings (the opened-debt notice, the
-			// layout-"none" demotion note) into the shared array — the
-			// `{ ...d, warnings }` spread REPLACES d.warnings with the shared
-			// array, which silently dropped them before (found 2026-07-15: the
-			// debt-mode allow came back with empty warnings).
-			if (d.warnings) warnings.push(...d.warnings.filter((w) => !warnings.includes(w)));
-			return { ...d, warnings };
-		}
+		if (d) return mergeGateWarnings(d, warnings);
+		// Brownfield sibling (plan 25 lane 1): the new-file gate covers
+		// creations; this covers edits to files the untested list says have no
+		// behavior-pinning test.
+		const c = evaluateCharacterizeForEvent(event, rules, session);
+		if (c) return mergeGateWarnings(c, warnings);
 	}
 	return null;
+}
+
+/** Merge a gate's own warnings (opened-debt notice, demotion notes) into the
+ *  shared array before returning — the `{ ...d, warnings }` spread REPLACES
+ *  `d.warnings` with the shared array, which silently dropped them before
+ *  (found 2026-07-15: the debt-mode allow came back with empty warnings). */
+function mergeGateWarnings(d: HarnessDecision, warnings: string[]): HarnessDecision {
+	if (d.warnings) warnings.push(...d.warnings.filter((w) => !warnings.includes(w)));
+	return { ...d, warnings };
 }
 
 /**

@@ -61,6 +61,7 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		duplicate_symbols: true,
 		co_dependency_staleness: true,
 		import_cycles: true,
+		new_import_cycle: true,
 		interface_change_impact: true,
 		test_proximity: true,
 		smart_tsc: true,
@@ -88,6 +89,9 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		// stuck in red/regression. Flip to "warn" in `.interlinked/guard-rules.local.json`
 		// for one-off escapes; use "nudge" to downgrade to info-only.
 		test_first_mode: "enforce",
+		// Warn by default: blocking every legacy-file edit on day one would
+		// brick brownfield adoption; strict mode promotes this to "block".
+		characterize_mode: "warn",
 		cross_file_switch_discriminant: true,
 		single_implementation_interface: true,
 	},
