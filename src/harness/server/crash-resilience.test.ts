@@ -65,3 +65,62 @@ describe("installCrashResilience", () => {
 		expect(String(spy.mock.calls[0]?.[0])).toContain("async-throw");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Pre-listen vs post-listen (audit F1). Surviving an error is right only for a
+// daemon that is SERVING; before the bind it produces a pid-holding process
+// that answers nothing.
+// ---------------------------------------------------------------------------
+describe("installCrashResilience — startup-phase routing", () => {
+	function lastHandlerFor(event: "uncaughtException" | "unhandledRejection"): (e: unknown) => void {
+		const listeners =
+			event === "uncaughtException"
+				? process.listeners("uncaughtException")
+				: process.listeners("unhandledRejection");
+		return listeners.at(-1) as (e: unknown) => void;
+	}
+
+	// P1: an error BEFORE startup completes goes to the terminal handler.
+	it("routes a pre-listen uncaughtException to onStartupFailure instead of surviving", () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const onStartupFailure = vi.fn();
+		installCrashResilience({ isStartupComplete: () => false, onStartupFailure });
+		lastHandlerFor("uncaughtException")(new Error("bind blew up"));
+		expect(onStartupFailure).toHaveBeenCalledWith("uncaughtException", expect.any(Error));
+		// The survive path must NOT also run — it is what kept the zombie alive.
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	// P2: the same routing applies to an unhandled rejection (the shape a
+	// rejected top-level await actually produces).
+	it("routes a pre-listen unhandledRejection to onStartupFailure", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const onStartupFailure = vi.fn();
+		installCrashResilience({ isStartupComplete: () => false, onStartupFailure });
+		lastHandlerFor("unhandledRejection")("rejected");
+		expect(onStartupFailure).toHaveBeenCalledWith("unhandledRejection", "rejected");
+	});
+
+	// N1: once the daemon is serving, continuity wins again.
+	it("survives a POST-listen error even with a startup handler installed", () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const onStartupFailure = vi.fn();
+		installCrashResilience({ isStartupComplete: () => true, onStartupFailure });
+		expect(() => lastHandlerFor("uncaughtException")(new Error("late boom"))).not.toThrow();
+		expect(onStartupFailure).not.toHaveBeenCalled();
+		expect(String(spy.mock.calls[0]?.[0])).toContain("kept the daemon alive");
+	});
+
+	// N2: a predicate with no handler (and a handler with no predicate) must
+	// keep the historic behavior rather than half-arming the fail-fast path.
+	it("survives when only one of the two options is supplied", () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		installCrashResilience({ isStartupComplete: () => false });
+		expect(() => lastHandlerFor("uncaughtException")(new Error("no handler"))).not.toThrow();
+		const onStartupFailure = vi.fn();
+		installCrashResilience({ onStartupFailure });
+		lastHandlerFor("uncaughtException")(new Error("no predicate"));
+		expect(onStartupFailure).not.toHaveBeenCalled();
+		expect(spy).toHaveBeenCalledTimes(2);
+	});
+});

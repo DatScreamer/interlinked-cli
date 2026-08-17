@@ -137,6 +137,32 @@ export function parseLabeledCases(source: string): LabeledCase[] {
 	return cases;
 }
 
+/**
+ * Every `it()`/`test()` case-opener line in `source`, regardless of P/N
+ * labeling — the raw walker output before direction filtering. Reuses the
+ * same {@link scanBlockOpeners} + comment-skipping the labeled-case parser
+ * above uses, so both stay in agreement about what counts as a "case
+ * opener" line.
+ *
+ * Consumers that need "how many test cases exist" independent of the
+ * check-evidence P/N labeling convention (e.g. the mutation-kill-evidence
+ * Stop nudge, which counts case INTRODUCTION rather than direction) use this
+ * instead of {@link parseLabeledCases}, which silently drops every unlabeled
+ * case — true of almost every mutation-directed test file, which name kill
+ * targets ("kills the >= to > mutant"), not P1/N1 evidence directions.
+ */
+export function countTestCaseOpeners(source: string): number {
+	const lines = source.split("\n");
+	let count = 0;
+	for (const line of lines) {
+		if (isCommentLine(line.trim())) continue;
+		for (const opener of scanBlockOpeners(line)) {
+			if (opener.kind === "test") count++;
+		}
+	}
+	return count;
+}
+
 /** Tally parsed cases by direction. */
 export function countCases(cases: readonly LabeledCase[]): {
 	positive: number;

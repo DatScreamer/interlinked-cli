@@ -43,6 +43,41 @@ export interface DaemonLedgerEvent {
 	 *  be attributed without it. */
 	ext_mb?: number;
 	uptime_s?: number;
+	/** Was this exit INTENDED? Recorded on the row so a diagnosis reads
+	 *  straight off `daemon-events.jsonl` instead of re-deriving the taxonomy
+	 *  from a reason string every time. See {@link classifyExitReason}. */
+	disposition?: ExitDisposition;
+}
+
+/** Planned = someone asked for this exit (a restart, a recycle, a stop).
+ *  Unplanned = the daemon lost, and the guard had a gap. Unknown = a reason a
+ *  newer daemon writes that this reader has not been taught yet. */
+export type ExitDisposition = "planned" | "unplanned" | "unknown";
+
+/** Exits the system asked for. `anti-stomp` and `already-running` belong here:
+ *  a loser standing down so ONE binder proceeds is the mutex working. */
+const PLANNED_EXIT_REASONS = new Set([
+	"build-refresh",
+	"rss-ceiling",
+	"idle-timeout",
+	"handover",
+	"explicit-stop",
+	"explicit-restart",
+	"anti-stomp",
+	"already-running",
+]);
+
+/** Exits nobody asked for. `signal` is here because an UNEXPLAINED SIGTERM is
+ *  the storm's signature (a reaper killing a healthy daemon); an intentional
+ *  `harness stop` records an `explicit-stop` handover first, which upgrades the
+ *  reason before it is classified. */
+const UNPLANNED_EXIT_REASONS = new Set(["signal", "oom", "startup-failed", "crash"]);
+
+export function classifyExitReason(reason: string | undefined): ExitDisposition {
+	if (reason === undefined) return "unknown";
+	if (PLANNED_EXIT_REASONS.has(reason)) return "planned";
+	if (UNPLANNED_EXIT_REASONS.has(reason)) return "unplanned";
+	return "unknown";
 }
 
 const LEDGER_REL = join(".interlinked", "daemon-events.jsonl");
@@ -65,6 +100,28 @@ export function recordDaemonEvent(projectRoot: string, evt: DaemonLedgerEvent): 
 		// becomes agent-visible noise, and there is no safer channel left.
 		void err;
 	}
+}
+
+/** Bytes per megabyte, for the memory fields on an exit row. */
+const BYTES_PER_MB = 1048576;
+
+/** Append the `exit` row for THIS process, with the memory + uptime context a
+ *  post-mortem needs. Split out of server.ts's `shutdownWith` so every exit
+ *  path records the same shape — the heap/external split included, which is
+ *  the first question of any memory diagnosis. */
+export function recordDaemonExit(projectRoot: string, reason: string, startedAtMs: number): void {
+	const mem = process.memoryUsage();
+	recordDaemonEvent(projectRoot, {
+		at: Date.now(),
+		pid: process.pid,
+		event: "exit",
+		reason,
+		disposition: classifyExitReason(reason),
+		rss_mb: Math.round(mem.rss / BYTES_PER_MB),
+		heap_mb: Math.round(mem.heapUsed / BYTES_PER_MB),
+		ext_mb: Math.round((mem.external + mem.arrayBuffers) / BYTES_PER_MB),
+		uptime_s: Math.round((Date.now() - startedAtMs) / 1000),
+	});
 }
 
 function parseEventLine(line: string): DaemonLedgerEvent | null {
@@ -130,9 +187,32 @@ export function describeLastExit(events: DaemonLedgerEvent[], nowMs: number): st
 		lastHandover !== null && lastExit.at >= lastHandover.at && lastExit.at - lastHandover.at < 60_000;
 	const reason = handoverExplains ? (lastHandover?.reason ?? "handover") : (lastExit.reason ?? "unknown");
 	const rss = lastExit.rss_mb !== undefined ? `, rss ${lastExit.rss_mb}MB` : "";
+	const disposition = classifyExitReason(reason);
 	const normal =
-		reason === "build-refresh" || reason === "rss-ceiling" || reason === "idle-timeout"
-			? " — planned restart, not a crash; self-heal brings it back"
-			: "";
+		disposition === "planned"
+			? " — planned exit, not a crash; self-heal brings it back"
+			: disposition === "unplanned"
+				? " — unplanned"
+				: "";
 	return `last daemon (pid ${lastExit.pid}) exited ${ageS}s ago: ${reason}${rss}${normal}`;
+}
+
+/**
+ * One sentence about the most recent event of ANY kind — a `start` counts as
+ * much as an `exit`.
+ *
+ * `describeLastExit` quotes the last EXIT, which lied in the exact case that
+ * matters: on 2026-08-15 a Write was refused with "last daemon (pid 50829)
+ * exited 276s ago: startup-failed" while a NEWER daemon was answering. The exit
+ * was real and stale; the start after it was the news. Callers reporting an
+ * outage should quote this, not the exit alone.
+ */
+export function describeLastLedgerEvent(events: DaemonLedgerEvent[], nowMs: number): string | null {
+	const last = events.length > 0 ? events[events.length - 1] : undefined;
+	if (last === undefined) return null;
+	const ageS = Math.max(0, Math.round((nowMs - last.at) / 1000));
+	const reason = last.reason !== undefined ? `: ${last.reason}` : "";
+	const disposition =
+		last.event === "exit" ? ` (${last.disposition ?? classifyExitReason(last.reason)})` : "";
+	return `last ledger event ${ageS}s ago — pid ${last.pid} ${last.event}${reason}${disposition}`;
 }

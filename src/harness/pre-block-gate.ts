@@ -94,8 +94,13 @@ function matchKey(m: InlineMatch): string {
 
 /** Split `newMatches` into introduced/pre-existing against the baseline's
  *  matches: each baseline occurrence "pays for" one identical-text new
- *  occurrence; the surplus is introduced. */
-function splitIntroduced(
+ *  occurrence; the surplus is introduced.
+ *
+ *  Exported: mutation-kill-evidence-stop-check.ts (the Stop-time kill-evidence
+ *  nudge) reuses this exact introduced-only semantics against a DIFFERENT
+ *  check's output (checkTestLegitimacy's missing-contract findings) rather
+ *  than re-deriving the multiset diff. */
+export function splitIntroduced(
 	newMatches: InlineMatch[],
 	baselineMatches: InlineMatch[],
 ): { introduced: InlineMatch[]; preexisting: InlineMatch[] } {
@@ -119,10 +124,43 @@ function splitIntroduced(
 	return { introduced, preexisting };
 }
 
+/** Mirror of {@link splitIntroduced} for the opposite diff direction: which
+ *  `baselineMatches` have no surviving counterpart in `newMatches` — a line
+ *  this edit REMOVES rather than one it introduces. Each new occurrence "pays
+ *  for" one identical-text baseline occurrence; the leftover baseline matches
+ *  are the ones this edit deleted. `splitIntroduced` only ever answered "did
+ *  this edit ADD a bad line" — this answers the mirror question, "did this
+ *  edit REMOVE a good line" (docs/design/luna-gate-audit-2026-08-14.md §3,
+ *  GATE 2 — assertion-removal delta on mutation-directed test files). */
+export function splitRemoved(
+	newMatches: InlineMatch[],
+	baselineMatches: InlineMatch[],
+): { removed: InlineMatch[] } {
+	const budget = new Map<string, number>();
+	for (const m of newMatches) {
+		const k = matchKey(m);
+		budget.set(k, (budget.get(k) ?? 0) + 1);
+	}
+	const removed: InlineMatch[] = [];
+	for (const m of baselineMatches) {
+		const k = matchKey(m);
+		const n = budget.get(k) ?? 0;
+		if (n > 0) {
+			budget.set(k, n - 1);
+		} else {
+			removed.push(m);
+		}
+	}
+	return { removed };
+}
+
 /** File-level suppressions for `filePath`, or an empty set when no
  *  `projectRoot` was supplied. Path is repo-relativized (POSIX) to match the
- *  keys `verify-suppressions.json` is written with. */
-function fileSuppressionsFor(filePath: string, projectRoot: string | undefined): FileSuppressions {
+ *  keys `verify-suppressions.json` is written with. Exported: reused by
+ *  mutation-directed-profile.ts so a file-level suppression of GATE
+ *  1/2's synthetic check ids works the same way every other pre_block
+ *  surface's file-level suppression does — one FileSuppressions loader. */
+export function fileSuppressionsFor(filePath: string, projectRoot: string | undefined): FileSuppressions {
 	if (!projectRoot) return new Set();
 	const rel = relative(projectRoot, resolve(projectRoot, filePath)).replace(/\\/g, "/");
 	return loadFileSuppressions(join(projectRoot, ".interlinked"), rel);

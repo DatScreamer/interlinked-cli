@@ -48,6 +48,24 @@ export function sanitizeSessionId(id: string): string {
 	return cleaned.slice(0, 64);
 }
 
+/** Every daemon socket file present under `.interlinked/` — the legacy raw
+ *  `harness.sock` plus any framed `harness-<id>.sock`. Callers that need to ask
+ *  "is ANY daemon serving this repo?" (the startup-lock waiter, the hook's
+ *  cold-fallback freshness probe) enumerate here rather than guessing one path:
+ *  a framed-only deployment has no raw socket, and probing only the raw path
+ *  reported a healthy daemon as unreachable. Never throws. */
+export function daemonSocketPaths(repoRoot: string): string[] {
+	const base = join(repoRoot, ".interlinked");
+	try {
+		return readdirSync(base)
+			.filter((name) => /^harness(-.+)?\.sock$/.test(name))
+			.sort()
+			.map((name) => join(base, name));
+	} catch {
+		return [];
+	}
+}
+
 export interface DiscoveredDaemon {
 	session_id: string;
 	paths: DaemonPaths;

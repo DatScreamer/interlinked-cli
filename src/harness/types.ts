@@ -70,6 +70,13 @@ export type {
 	HarnessEvent,
 	HookEventName,
 } from "./types/events.js";
+export type {
+	WorkspaceChangeSet,
+	WorkspaceEffectKind,
+	WorkspaceFileEffect,
+	WorkspaceFileFingerprint,
+	WorkspaceSnapshot,
+} from "./workspace-effects.js";
 export { ASK_CAPABLE_AGENTS, agentSupportsAsk } from "./types/events.js";
 // --- Phase 1 failure-recovery channels ---
 export type {

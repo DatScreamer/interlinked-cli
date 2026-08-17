@@ -135,3 +135,68 @@ describe("computeMutationTestScope — negative (must not fire / must decline ho
 		expect(result.uncappedCount).toBe(MAX_MUTATION_TEST_SCOPE + 1);
 	});
 });
+
+describe("computeMutationTestScope — over-cap companion fallback", () => {
+	// The trajectory.ts defect (bug #2): its reverse-import graph resolved 158
+	// tests, over MAX_MUTATION_TEST_SCOPE, so the scope declined to nothing — the
+	// runner then fell back to its four-stem filename glob and NEVER ran
+	// trajectory.mutation-kill.test.ts, so every mutant only that kill test would
+	// catch reported as a false survivor. An over-cap decline must STILL ship the
+	// target's own companion kill tests.
+
+	/** An over-cap hub of unrelated (but co-located, under `__tests__/`) tests,
+	 *  plus whatever companion candidates the case wants to add. */
+	function overCapView(extraDependents: string[]): DependencyView {
+		const dependents: string[] = [];
+		for (let i = 0; i <= MAX_MUTATION_TEST_SCOPE; i++) {
+			dependents.push(abs(`src/harness/__tests__/unrelated-${i}.test.ts`));
+		}
+		return stubView({ [abs("src/harness/trajectory.ts")]: [...dependents, ...extraDependents] });
+	}
+
+	function scopeForTrajectory(view: DependencyView) {
+		return computeMutationTestScope({ editedRelPath: "src/harness/trajectory.ts", projectRoot: ROOT, depView: view });
+	}
+
+	it("P1: over cap still ships the target's own companion + mutation-kill tests, while `tests` stays null", () => {
+		const result = scopeForTrajectory(
+			overCapView([abs("src/harness/trajectory.test.ts"), abs("src/harness/trajectory.mutation-kill.test.ts")]),
+		);
+		// The full (over-cap) set is still DECLINED — provenance must never read as
+		// a complete import-graph run.
+		expect(result.tests).toBeNull();
+		expect(result.reason).toBe("over_cap");
+		// …but the companion kill tests ship instead of the runner's lossy stem glob.
+		expect(result.companionScope).toContain("src/harness/trajectory.test.ts");
+		expect(result.companionScope).toContain("src/harness/trajectory.mutation-kill.test.ts");
+		// ONLY the target's own companions — never the 151-strong hub of co-located
+		// but unrelated tests (that would just re-approach the cap it declined).
+		expect(result.companionScope).toHaveLength(2);
+	});
+
+	it("P2: an umbrella companion under __tests__/ resolves to the SUT's directory", () => {
+		const result = scopeForTrajectory(overCapView([abs("src/harness/__tests__/trajectory.test.ts")]));
+		expect(result.reason).toBe("over_cap");
+		expect(result.companionScope).toEqual(["src/harness/__tests__/trajectory.test.ts"]);
+	});
+
+	it("P3: a co-located *.survivors.test.ts importing the SUT ships under a NON-base name — the survivor clause", () => {
+		const result = scopeForTrajectory(overCapView([abs("src/harness/legacy.survivors.test.ts")]));
+		expect(result.reason).toBe("over_cap");
+		expect(result.companionScope).toEqual(["src/harness/legacy.survivors.test.ts"]);
+	});
+
+	it("N1: an over-cap file with NO co-located companion omits companionScope (the runner glob still applies)", () => {
+		const result = scopeForTrajectory(overCapView([]));
+		expect(result.reason).toBe("over_cap");
+		expect(result.companionScope).toBeUndefined();
+	});
+
+	it("N2: a same-named test in a DIFFERENT directory is not a companion (co-location is required)", () => {
+		// `src/other/trajectory.test.ts` shares the base name but not the directory —
+		// it is some other tree's file, not this target's companion.
+		const result = scopeForTrajectory(overCapView([abs("src/other/trajectory.test.ts")]));
+		expect(result.reason).toBe("over_cap");
+		expect(result.companionScope).toBeUndefined();
+	});
+});

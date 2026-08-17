@@ -88,7 +88,10 @@ export interface MutationTestScopeResult {
 	 * graph-selected set was over cap) — callers fall back to the runner's own
 	 * filename-glob scoping in that case, never to "no scope" (which would
 	 * silently run the WHOLE suite; see `vitest.stryker.config.ts`'s own
-	 * empty-glob guard).
+	 * empty-glob guard). Over-cap is the exception that STILL carries a scope:
+	 * `tests` is null (the full set was declined) but {@link companionScope}
+	 * holds the target's own companion kill tests, which callers ship instead
+	 * of the lossy glob.
 	 */
 	tests: string[] | null;
 	/** Why `tests` is null, when it is. Absent when `tests` is non-null. */
@@ -97,6 +100,21 @@ export interface MutationTestScopeResult {
 	 *  caller can report "N tests found, using filename fallback instead"
 	 *  rather than silently truncating to an arbitrary N. */
 	uncappedCount?: number;
+	/**
+	 * On `reason: "over_cap"` ONLY: a REDUCED, non-empty scope of the target's
+	 * OWN co-located companion/kill tests — its `<base>.test.ts`/`.spec`, any
+	 * `<base>.<descriptor>.test.ts` (`.mutation-kill`, `.survivors`, …), and any
+	 * co-located `*.survivor(s).*` — each of which statically depends on the SUT
+	 * (they are drawn from the affected-test set). The full graph scope is
+	 * declined because it is over cap, but these must STILL run: a plain
+	 * filename-stem glob (the runner's own `testScopeFor`) matches only
+	 * `<base>.test.ts` and silently drops `<base>.mutation-kill.test.ts`, so
+	 * every mutant that only the kill test would catch reports as a FALSE
+	 * survivor. Callers ship this as the runner `testScope` AND in the overlay
+	 * closure. Absent when the target has no such companion in the affected set
+	 * (nothing to ship — behavior is then exactly the prior glob fallback).
+	 */
+	companionScope?: string[];
 	/**
 	 * BFS dependents that matched `isTestSourcePath`'s directory-membership
 	 * rule but are NOT a runnable spec by filename convention (a fixture/
@@ -114,6 +132,42 @@ function resolveAbs(editedRelPath: string, projectRoot: string): string {
 	// callers) — resolve once here so this function's own callers only ever
 	// hand it repo-relative paths, matching `selectAffectedTests`'s own input.
 	return projectRoot.endsWith("/") ? `${projectRoot}${editedRelPath}` : `${projectRoot}/${editedRelPath}`;
+}
+
+/**
+ * The target's OWN companion kill tests among `candidates` (repo-relative POSIX
+ * paths already known to statically depend on the SUT — i.e. entries of the
+ * affected-test set). A companion is a runnable test file CO-LOCATED with the
+ * SUT (its directory, or that directory's `__tests__/`) whose stem is:
+ *   - exactly `<base>` — the conventional `<base>.test.ts`/`.spec` companion; or
+ *   - `<base>.<descriptor>` — a sibling kill/variant test such as
+ *     `<base>.mutation-kill.test.ts` or `<base>.survivors.test.ts`; or
+ *   - any co-located `*.survivor(s).*` — the spec's explicit survivor glob.
+ *
+ * This is the set an over-cap decline must still ship: the runner's own
+ * filename-stem fallback (`testScopeFor`) only ever tries the four `<base>.test`
+ * candidates, so a `<base>.mutation-kill.test.ts` — and every mutant it alone
+ * kills — vanishes when the graph scope is declined to nothing. Order-preserving
+ * over `candidates`, which the caller already sorted + deduped.
+ */
+function companionKillTests(sutRel: string, candidates: readonly string[]): string[] {
+	const sut = sutRel.replace(/\\/g, "/");
+	const slash = sut.lastIndexOf("/");
+	const sutDir = slash >= 0 ? sut.slice(0, slash) : "";
+	const sutBase = (slash >= 0 ? sut.slice(slash + 1) : sut).replace(/\.[cm]?[jt]sx?$/i, "");
+	return candidates.filter((raw) => {
+		const t = raw.replace(/\\/g, "/");
+		const ts = t.lastIndexOf("/");
+		// Strip a trailing `/__tests__` so an umbrella test resolves to the
+		// SUT's own directory — the same co-location rule coverage-pairing uses.
+		const dir = (ts >= 0 ? t.slice(0, ts) : "").replace(/\/__tests__$/, "");
+		if (dir !== sutDir) return false;
+		const name = ts >= 0 ? t.slice(ts + 1) : t;
+		const stem = name.replace(/\.(?:test|spec)\.[cm]?[jt]sx?$/i, "");
+		if (stem === sutBase) return true; // <base>.test.ts / <base>.spec.ts
+		if (stem.startsWith(`${sutBase}.`)) return true; // <base>.mutation-kill / <base>.survivors / …
+		return /(?:^|[.\-])survivors?(?:[.\-]|$)/i.test(stem); // *.survivor(s).*
+	});
 }
 
 /**
@@ -141,7 +195,18 @@ export function computeMutationTestScope(args: {
 	const extra = excludedNonRunnable.length > 0 ? { excludedNonRunnable } : {};
 	if (runnable.length === 0) return { tests: null, reason: "no_affected_tests", ...extra };
 	if (runnable.length > MAX_MUTATION_TEST_SCOPE) {
-		return { tests: null, reason: "over_cap", uncappedCount: runnable.length, ...extra };
+		// Declining the full (over-cap) set to `tests: null` would drop the
+		// target's own companion kill tests too, and the runner's four-stem
+		// filename fallback never finds `<base>.mutation-kill.test.ts` — so ship
+		// the reduced companion scope alongside the decline. Non-empty only.
+		const companionScope = companionKillTests(editedRelPath, runnable);
+		return {
+			tests: null,
+			reason: "over_cap",
+			uncappedCount: runnable.length,
+			...(companionScope.length > 0 ? { companionScope } : {}),
+			...extra,
+		};
 	}
 	return { tests: runnable, ...extra };
 }

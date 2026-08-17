@@ -63,6 +63,14 @@ export interface ReapOptions {
 	 *  protection and the ancestor protection — this is the equivalent of
 	 *  `pkill -f interlinked-cli/dist/harness/server`). */
 	killAll?: boolean;
+	/** PIDs this sweep must never signal, whatever `ps` says — in practice the
+	 *  daemons that ANSWERED a socket probe (see
+	 *  `harness-daemon-control.ts::collectServingDaemonPids`). A reaper that
+	 *  kills a working daemon opens the guard gap that makes the next caller
+	 *  start another one; that loop is the 2026-08-15 restart storm. Honored
+	 *  even under `killAll`, which is a "clean up the mess" verb, not a stop
+	 *  verb — `stopAllDaemons` is the way to stop a live daemon. */
+	protectPids?: Set<number>;
 }
 
 /**
@@ -106,7 +114,10 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 	}
 	const ancestorPids = collectAncestorPids();
 	const activePid = readActiveHarnessPid(cwd);
-	const candidates = collectReapCandidates(ps, cwd, ancestorPids, activePid, killAll);
+	const protect = opts.protectPids ?? new Set<number>();
+	const candidates = collectReapCandidates(ps, cwd, ancestorPids, activePid, killAll).filter(
+		(c) => !protect.has(c.pid),
+	);
 	if (dryRun) {
 		return { candidates, killed: [], dryRun: true };
 	}

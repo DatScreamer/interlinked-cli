@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	classifyExitReason,
 	describeLastExit,
+	describeLastLedgerEvent,
 	readRecentDaemonEvents,
 	recordDaemonEvent,
+	recordDaemonExit,
 } from "./daemon-ledger.js";
 
 /**
@@ -35,6 +38,20 @@ describe("recordDaemonEvent / readRecentDaemonEvents", () => {
 		const events = readRecentDaemonEvents(dir);
 		expect(events).toHaveLength(1);
 		expect(events[0]).toMatchObject({ pid: 42, event: "exit", reason: "build-refresh" });
+	});
+
+	// P: the exit row every daemon exit path shares — reason plus the memory
+	// split and uptime a post-mortem needs, for THIS process.
+	it("recordDaemonExit writes reason, pid, memory split and uptime", () => {
+		recordDaemonExit(dir, "startup-failed", Date.now() - 5_000);
+		const row = readRecentDaemonEvents(dir)[0];
+		expect(row).toMatchObject({ event: "exit", reason: "startup-failed", pid: process.pid });
+		expect(row?.rss_mb).toBeGreaterThan(0);
+		expect(row?.heap_mb).toBeGreaterThan(0);
+		expect(typeof row?.ext_mb).toBe("number");
+		// ~5s elapsed; allow for a slow CI tick either way.
+		expect(row?.uptime_s).toBeGreaterThanOrEqual(4);
+		expect(row?.uptime_s).toBeLessThan(30);
 	});
 
 	it("keeps events in append order", () => {
@@ -107,5 +124,67 @@ describe("describeLastExit — the sentence the block message shows", () => {
 	it("returns null with no exit events at all", () => {
 		recordDaemonEvent(dir, { at: NOW - 1_000, pid: 7, event: "start" });
 		expect(describeLastExit(readRecentDaemonEvents(dir), NOW)).toBeNull();
+	});
+});
+
+// ── Exit disposition: planned vs unplanned (2026-08-15 restart storm) ────────
+// The storm's diagnosis stalled on a ledger where a reaper's SIGTERM and an
+// intentional `harness stop` were the same row. Every exit now carries which
+// it was.
+
+describe("classifyExitReason — positive (must fire)", () => {
+	it("P1: recycles and handovers are planned", () => {
+		for (const r of ["build-refresh", "rss-ceiling", "idle-timeout", "handover"]) {
+			expect(classifyExitReason(r)).toBe("planned");
+		}
+	});
+	it("P2: an explicit stop/restart is planned", () => {
+		expect(classifyExitReason("explicit-stop")).toBe("planned");
+		expect(classifyExitReason("explicit-restart")).toBe("planned");
+	});
+	it("P3: a startup-lock loser standing down is planned", () => {
+		expect(classifyExitReason("anti-stomp")).toBe("planned");
+	});
+	it("P4: signal / oom / startup-failed are unplanned", () => {
+		for (const r of ["signal", "oom", "startup-failed", "crash"]) {
+			expect(classifyExitReason(r)).toBe("unplanned");
+		}
+	});
+	it("P5: recordDaemonExit stamps the disposition on the row", () => {
+		recordDaemonExit(dir, "explicit-stop", NOW - 1000);
+		const rows = readRecentDaemonEvents(dir);
+		expect(rows[rows.length - 1]?.disposition).toBe("planned");
+	});
+});
+
+describe("classifyExitReason — negative (must not fire)", () => {
+	it("N1: an unknown reason is 'unknown', never guessed as planned", () => {
+		expect(classifyExitReason("teleported")).toBe("unknown");
+	});
+	it("N2: a missing reason is 'unknown'", () => {
+		expect(classifyExitReason(undefined)).toBe("unknown");
+	});
+});
+
+describe("describeLastLedgerEvent — quotes the LAST event, not the last exit", () => {
+	it("P1: a start after an exit is what gets reported", () => {
+		const events = [
+			{ at: NOW - 276_000, pid: 50829, event: "exit" as const, reason: "startup-failed" },
+			{ at: NOW - 4_000, pid: 60001, event: "start" as const },
+		];
+		const text = describeLastLedgerEvent(events, NOW);
+		expect(text).toContain("pid 60001 start");
+		expect(text).toContain("4s ago");
+		expect(text).not.toContain("50829");
+	});
+	it("P2: an exit row reports its disposition", () => {
+		const text = describeLastLedgerEvent(
+			[{ at: NOW - 1_000, pid: 7, event: "exit" as const, reason: "signal" }],
+			NOW,
+		);
+		expect(text).toContain("unplanned");
+	});
+	it("N1: an empty ledger describes nothing", () => {
+		expect(describeLastLedgerEvent([], NOW)).toBeNull();
 	});
 });

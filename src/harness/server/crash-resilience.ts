@@ -38,10 +38,35 @@ export function logFatalButSurvive(kind: string, err: unknown): void {
 	}
 }
 
+/** Survival is the right contract only for a daemon that is actually SERVING.
+ *  Before the sockets are bound there is nothing to keep alive: surviving a
+ *  startup failure produces a process that holds the pid file and answers
+ *  nothing — the zombie class `isDaemonSocketServing` exists to detect from the
+ *  outside, and the one a fresh-eyes audit reproduced three times (2026-08-14,
+ *  F1). Both fields must be supplied for the fail-fast path to arm; with
+ *  neither, every error is survived exactly as before. */
+export interface CrashResilienceOptions {
+	/** True once every socket this daemon intends to serve is bound. */
+	isStartupComplete?: () => boolean;
+	/** Terminal handler for an error that arrives BEFORE startup completes.
+	 *  Expected to log, record the exit, and terminate — never to return and
+	 *  leave the process resident. */
+	onStartupFailure?: (kind: string, err: unknown) => void;
+}
+
 /** Register the process-level survival handlers. Call ONCE, as early in startup
  *  as possible, so throws during init are caught too. Node permits multiple
  *  listeners; this adds exactly one of each. */
-export function installCrashResilience(): void {
-	process.on("uncaughtException", (err) => logFatalButSurvive("uncaughtException", err));
-	process.on("unhandledRejection", (reason) => logFatalButSurvive("unhandledRejection", reason));
+export function installCrashResilience(opts: CrashResilienceOptions = {}): void {
+	const handle = (kind: string, err: unknown): void => {
+		// `=== false` (not `!...()`) so an ABSENT predicate keeps the historic
+		// survive-always behavior rather than reading undefined as "incomplete".
+		if (opts.onStartupFailure && opts.isStartupComplete?.() === false) {
+			opts.onStartupFailure(kind, err);
+			return;
+		}
+		logFatalButSurvive(kind, err);
+	};
+	process.on("uncaughtException", (err) => handle("uncaughtException", err));
+	process.on("unhandledRejection", (reason) => handle("unhandledRejection", reason));
 }

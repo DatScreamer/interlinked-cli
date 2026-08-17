@@ -111,8 +111,17 @@ export interface SymbolRecord {
  * import-graph scope; `completions.ts` read 106 and 0. Same source, same
  * engine, no test written in between — the narrower scope simply loaded fewer
  * tests, so fewer mutants died.
+ *
+ * `companion_fallback` is a THIRD regime, distinct from both: the full
+ * import-graph scope was over cap (test-scope.ts's `MAX_MUTATION_TEST_SCOPE`)
+ * and declined, so only the target's OWN co-located companion/kill tests were
+ * shipped. It kills MORE than `glob_fallback` (it includes the sibling
+ * `*.mutation-kill.*` / `*.survivor(s).*` tests a four-stem filename guess
+ * silently drops) but FEWER than a complete `import_graph` run, so its counts
+ * are comparable to neither — the reason it is labelled apart rather than
+ * folded into `glob_fallback`.
  */
-export type MeasurementScope = "import_graph" | "glob_fallback" | "unknown";
+export type MeasurementScope = "import_graph" | "companion_fallback" | "glob_fallback" | "unknown";
 
 /** Which surface produced a measurement. Kept because the surfaces differ in
  *  scope and budget, not merely in who typed the command. */
