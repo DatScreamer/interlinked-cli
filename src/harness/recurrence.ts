@@ -5,7 +5,8 @@
 // user-reported misses into actionable recurrence rows.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { interlinkedPath } from "../lib/interlinked-path.js";
 import {
 	deriveSignature,
 	SIGNATURE_ASSEMBLY_CAP,
@@ -105,7 +106,6 @@ export interface RecurrenceAction {
 }
 
 const RECURRENCES_FILE = "recurrences.jsonl";
-const INTERLINKED_DIR = ".interlinked";
 
 export function aggregateRecurrences(
 	events: readonly RecurrenceEvent[],
@@ -223,7 +223,7 @@ export function proposeAction(row: Recurrence): RecurrenceAction {
 }
 
 export function recurrencesPath(cwd: string): string {
-	return join(cwd, INTERLINKED_DIR, RECURRENCES_FILE);
+	return interlinkedPath(cwd, RECURRENCES_FILE);
 }
 
 export function recordRecurrenceEvent(event: RecurrenceEvent, cwd: string): void {

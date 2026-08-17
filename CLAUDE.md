@@ -341,7 +341,7 @@ duplicated policy numbers drift, which is a class this repo's own
 | `src/harness/structural-checks.ts` | 25 dependency-aware checks (export surface, import resolution, cycles, blast radius) |
 | `src/harness/checks/<family>.ts` | 50+ inline code analysis checks split by family (SQL injection, complexity, async/await, PII, secrets, etc.). New detectors go here. |
 | `src/harness/generic-checks.ts` | Compatibility barrel re-exporting from `checks/<family>.ts`. Do not add new detectors here; import from `checks/<family>.js` directly. |
-| `src/harness/check-registry.ts` | Compatibility shim that auto-re-exports from `check-registry/index.js`. Do not edit. |
+| ~~`src/harness/check-registry.ts`~~ | **Removed 2026-08-17** — the flat-file compatibility shim had zero importers. Import from `check-registry/index.js`. |
 
 **Stop-event reflection helpers** (formatters returning `string | null`, called from the `server.ts` Stop / SessionEnd branch; never block — all stderr warnings only):
 | File | Purpose |
@@ -406,8 +406,8 @@ against current code, May 2026):
    `src/harness/check-registry/types.ts` — `pre_block` is reserved for
    fully-deterministic, zero-FP errors only.
 3. Metadata entry in `src/harness/check-metadata.ts`.
-4. ~~Legacy-mirror entry~~ — `src/harness/check-registry.ts` is now an
-   auto-re-exporting compatibility shim. No manual sync step. Skip.
+4. ~~Legacy-mirror entry~~ — the flat `src/harness/check-registry.ts` shim is
+   deleted (2026-08-17). No manual sync step. Skip.
 5. Verify wiring is split across `src/commands/verify/`:
    - `advisory.ts` — `DEFAULT_ADVISORY_SKIPS`, skip-set helpers
    - `file-checks.ts` — per-file check orchestration
@@ -774,7 +774,7 @@ one allowlist, every ecosystem:
 |---|---|---|
 | Shell `npm install <pkg>`, `pip install <pkg>`, `cargo add`, `go get`, … | PreToolUse Bash gate | `src/harness/evaluator/package-install-guard.ts` |
 | Edit/Write to `package.json` / `requirements.txt` / `pyproject.toml` / `Cargo.toml` / `Gemfile` / `go.mod` that adds a new dep | PreToolUse Write gate | `src/harness/evaluator/manifest-edit-guard.ts` |
-| Same shell commands when the daemon is unreachable | Cold-fallback gate | `src/hook-entry.ts::coldPackageInstallBlockReason` + `src/lib/hook-template-chunks/guards-inline.ts::inlinePackageInstallCheck` |
+| Same shell commands when the daemon is unreachable | Cold-fallback gate | `src/hook-entry-cold-gates.ts::coldPackageInstallBlockReason` (allowlist-aware) + `src/lib/hook-template-chunks/package-install-cold-guard.ts::checkPackageInstallCold` (the .mjs copy: refuses every install verb — it cannot reach the parser or the allowlist) |
 
 Coverage: **npm / pnpm / yarn / bun + pip / pip3 / pipx / poetry / uv +
 cargo + gem / bundle + go**. URL-based specs (`git+`, tarball, `file:`)

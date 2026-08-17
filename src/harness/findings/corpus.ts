@@ -13,6 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { INTERLINKED_DIR, interlinkedPath } from "../../lib/interlinked-path.js";
 import { parseFinding } from "./parse-finding.js";
 import {
 	computeCompleteness,
@@ -93,21 +94,20 @@ export interface Finding {
 	anchor_tree?: string | undefined;
 }
 
-const INTERLINKED_DIR = ".interlinked";
 const FINDINGS_SUBDIR = "findings";
 const CORPUS_FILE = "corpus.jsonl";
 const GLOBAL_CORPUS_FILE = "findings-corpus.jsonl";
 const ID_KEY_LENGTH = 12;
 
 export function findingsCorpusPath(cwd: string): string {
-	return join(cwd, INTERLINKED_DIR, FINDINGS_SUBDIR, CORPUS_FILE);
+	return interlinkedPath(cwd, FINDINGS_SUBDIR, CORPUS_FILE);
 }
 
 /** Cross-repo cache. `INTERLINKED_HOME` overrides the home base (test isolation;
  *  keeps the real `~/.interlinked` untouched). */
 export function globalCorpusPath(): string {
 	const base = process.env.INTERLINKED_HOME ?? homedir();
-	return join(base, INTERLINKED_DIR, GLOBAL_CORPUS_FILE);
+	return interlinkedPath(base, GLOBAL_CORPUS_FILE);
 }
 
 function slug(value: string): string {

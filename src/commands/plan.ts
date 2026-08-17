@@ -17,6 +17,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { interlinkedPath } from "../lib/interlinked-path.js";
 import type {
 	CapturedPlan,
 	PlanSource,
@@ -31,7 +32,6 @@ interface CommonOpts {
 }
 
 const PLANS_DIR_NAME = "plans";
-const INTERLINKED_DIR = ".interlinked";
 const DEFAULT_LIST_LIMIT = 20;
 
 const PLAN_SOURCES: ReadonlySet<PlanSource> = new Set([
@@ -96,7 +96,7 @@ export async function planShowCommand(
 		process.exitCode = 2;
 		return;
 	}
-	const path = join(cwd, INTERLINKED_DIR, PLANS_DIR_NAME, `${trimmed}.jsonl`);
+	const path = interlinkedPath(cwd, PLANS_DIR_NAME, `${trimmed}.jsonl`);
 	if (!existsSync(path)) {
 		const message = `No plan captured for session: ${trimmed}`;
 		if (opts.json) {
@@ -157,7 +157,7 @@ export async function planShowCommand(
  *  the NEWEST CapturedPlan from each file. Files with no parseable
  *  entries are silently skipped. */
 function loadAllNewestPlans(cwd: string): CapturedPlan[] {
-	const dir = join(cwd, INTERLINKED_DIR, PLANS_DIR_NAME);
+	const dir = interlinkedPath(cwd, PLANS_DIR_NAME);
 	if (!existsSync(dir)) return [];
 	let entries: string[] = [];
 	try {

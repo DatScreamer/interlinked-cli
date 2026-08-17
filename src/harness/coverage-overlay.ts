@@ -45,10 +45,9 @@ import {
 	symlinkSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { INTERLINKED_DIR, interlinkedPath } from "../lib/interlinked-path.js";
 import { removeInTree, writeFileInTree } from "./overlay-safe-write.js";
 
-/** Directory under projectRoot that holds overlay trees. */
-const INTERLINKED_DIR = ".interlinked";
 /** mkdtemp prefix for one overlay tree. */
 const COV_OVERLAY_PREFIX = ".cov-overlay-";
 /** Top-level entries never mirrored (linked or skipped instead). */
@@ -297,7 +296,7 @@ export function createCoverageOverlay(
 	proposedContent: string,
 	extraFiles?: ReadonlyArray<OverlayFile>,
 ): CoverageOverlay {
-	const overlayParent = join(projectRoot, INTERLINKED_DIR);
+	const overlayParent = interlinkedPath(projectRoot);
 	mkdirSync(overlayParent, { recursive: true });
 	// Self-healing leak control: reap siblings a dead daemon left behind
 	// before growing the pile (each tree is a near-full working-tree copy).

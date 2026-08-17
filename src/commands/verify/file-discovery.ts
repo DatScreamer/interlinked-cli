@@ -16,6 +16,7 @@
 import { execSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
+import { INTERLINKED_DIR } from "../../lib/interlinked-path.js";
 
 /** Public API — the language-source extensions. Consumed by `verify.ts`,
  *  individual checks as their applicability filter, and tests. Do not widen
@@ -75,7 +76,6 @@ const BLOCKED_BASENAMES = new Set([
 	"go.sum",
 ]);
 
-const INTERLINKED_DIR = ".interlinked";
 const MAX_WALK_ENTRIES = 50_000;
 const MAX_FILE_BYTES = 1_000_000;
 

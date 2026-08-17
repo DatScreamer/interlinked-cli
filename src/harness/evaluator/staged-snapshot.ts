@@ -20,9 +20,9 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { INTERLINKED_DIR, interlinkedPath } from "../../lib/interlinked-path.js";
 import { copyDirInTree, symlinkInTree, writeFileInTree } from "../overlay-safe-write.js";
 
-const INTERLINKED_DIR = ".interlinked";
 const SNAPSHOT_PREFIX = ".commit-snapshot-";
 const GIT_TIMEOUT_MS = 30_000;
 
@@ -203,7 +203,7 @@ export function materializeIndexSnapshot(
 ): StagedSnapshot | null {
 	let root: string | null = null;
 	try {
-		const parent = join(projectRoot, INTERLINKED_DIR);
+		const parent = interlinkedPath(projectRoot);
 		mkdirSync(parent, { recursive: true });
 		root = realpathSync(mkdtempSync(join(parent, SNAPSHOT_PREFIX)));
 		if (baseTree === "head") {
