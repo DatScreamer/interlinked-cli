@@ -239,6 +239,22 @@ export function registerQualityCommands(program: Command): void {
 		});
 
 	// ===========================================
+	// Deadcode — whole-repo reachability scan (the SCAN half of the two
+	// dead-code controls; per-edit detection is `structural_checks.enabled`)
+	// ===========================================
+	program
+		.command("deadcode")
+		.description(
+			"Scan the whole repo for dead-code candidates: unreachable files, unused import bindings, unused exports",
+		)
+		.option("--cwd <path>", "Project root (default: current directory)")
+		.option("--json", "Machine-readable output (full, uncapped)")
+		.action(async (opts: { json?: boolean; cwd?: string }) => {
+			const { deadcodeCommand } = await import("../commands/deadcode.js");
+			process.exitCode = await deadcodeCommand(opts);
+		});
+
+	// ===========================================
 	// Metrics — whole-codebase test-quality scan
 	// ===========================================
 	const metricsCmd = program
