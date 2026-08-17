@@ -117,7 +117,11 @@ export function checkDuplicateSymbols(
  *
  * Tier 1: Detect unused imports after editing a file.
  */
-export function checkDeadImports(filePath: string, relPath: string): StructuralCheckResult[] {
+export function checkDeadImports(
+	filePath: string,
+	relPath: string,
+	deadCodeAction?: "flag" | "delete",
+): StructuralCheckResult[] {
 	let content: string;
 	try {
 		content = readFileSync(filePath, "utf-8");
@@ -148,7 +152,11 @@ export function checkDeadImports(filePath: string, relPath: string): StructuralC
 		{
 			check: "dead_imports",
 			severity: "warning",
-			message: `Unused imports in ${relPath}: \`${deadBindings.join("`, `")}\`. Remove them to reduce dependencies.`,
+			message:
+				`Unused imports in ${relPath}: \`${deadBindings.join("`, `")}\`. Remove them to reduce dependencies.` +
+				(deadCodeAction === "delete"
+					? ' Action: dead_code_action is "delete" — remove the unused binding(s) in this edit, or justify keeping them with a comment.'
+					: ""),
 			file: filePath,
 		},
 	];

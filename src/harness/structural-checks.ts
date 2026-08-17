@@ -161,7 +161,7 @@ export function runStructuralChecks(
 
 	// Tier 1: Dead import detection
 	if (config.dead_imports) {
-		results.push(...checkDeadImports(filePath, relPath));
+		results.push(...checkDeadImports(filePath, relPath, config.dead_code_action));
 	}
 
 	// Tier 2: Import cycle detection
@@ -190,7 +190,7 @@ export function runStructuralChecks(
 
 	// Tier 1: Dead exports
 	if (config.dead_exports) {
-		results.push(...checkDeadExports(filePath, relPath, graph));
+		results.push(...checkDeadExports(filePath, relPath, graph, config.dead_code_action));
 	}
 
 	// Tier 1: Hallucinated imports

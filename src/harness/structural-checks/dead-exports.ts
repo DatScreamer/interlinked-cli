@@ -17,7 +17,14 @@ export function checkDeadExports(
 	filePath: string,
 	relPath: string,
 	graph: ProjectGraph,
+	deadCodeAction?: "flag" | "delete",
 ): StructuralCheckResult[] {
+	// Exports stay caveated under "delete": the graph cannot see
+	// runtime/dynamic consumers, so the instruction is verify-then-delete.
+	const deleteSuffix =
+		deadCodeAction === "delete"
+			? ' Action: dead_code_action is "delete" — verify no runtime/dynamic consumer exists (import analysis cannot see them), then delete the unused export(s).'
+			: "";
 	const exports = graph.getExports(filePath);
 	if (exports.length === 0) return [];
 
@@ -47,7 +54,7 @@ export function checkDeadExports(
 			{
 				check: "dead_exports",
 				severity: "info",
-				message: `${relPath} exports ${exportNames.length} symbol(s) but has no importers in the project. Exports: \`${exportNames.slice(0, 5).join("`, `")}\`${exportNames.length > 5 ? ` +${exportNames.length - 5} more` : ""}.`,
+				message: `${relPath} exports ${exportNames.length} symbol(s) but has no importers in the project. Exports: \`${exportNames.slice(0, 5).join("`, `")}\`${exportNames.length > 5 ? ` +${exportNames.length - 5} more` : ""}.${deleteSuffix}`,
 				file: filePath,
 			},
 		];
@@ -65,7 +72,7 @@ export function checkDeadExports(
 		{
 			check: "dead_exports",
 			severity: "info",
-			message: `Unused exports in ${relPath}: \`${names.join("`, `")}\`${deadExports.length > 5 ? ` +${deadExports.length - 5} more` : ""}. No file in the project imports them.`,
+			message: `Unused exports in ${relPath}: \`${names.join("`, `")}\`${deadExports.length > 5 ? ` +${deadExports.length - 5} more` : ""}. No file in the project imports them.${deleteSuffix}`,
 			file: filePath,
 		},
 	];

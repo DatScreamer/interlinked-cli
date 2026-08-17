@@ -247,6 +247,28 @@ describe("checkDuplicateSymbols", () => {
 // =============================================================================
 
 describe("checkDeadImports", () => {
+	// test-contract: behavior — dead_code_action "delete" (operator request
+	// 2026-08-17) turns the flag into an in-edit delete instruction
+	it("P: appends the delete instruction when dead_code_action is 'delete'", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["import { unused } from './m';", "", "const n = 1;"].join("\n"),
+		);
+		const res = checkDeadImports(FILE, REL, "delete");
+		expect(res[0]?.message).toContain("`unused`");
+		expect(res[0]?.message).toContain('dead_code_action is "delete"');
+		expect(res[0]?.message).toContain("remove the unused binding(s) in this edit");
+	});
+
+	it("N: default action ('flag' / omitted) carries no delete instruction", () => {
+		mockFs.readFileSync.mockReturnValue(
+			["import { unused } from './m';", "", "const n = 1;"].join("\n"),
+		);
+		for (const res of [checkDeadImports(FILE, REL), checkDeadImports(FILE, REL, "flag")]) {
+			expect(res[0]?.message).toContain("`unused`");
+			expect(res[0]?.message).not.toContain("dead_code_action");
+		}
+	});
+
 	it("reads source as UTF-8 before scanning it", () => {
 		mockFs.readFileSync.mockImplementation((_path, encoding) => {
 			if (encoding !== "utf-8") return Buffer.from("not text");

@@ -18,6 +18,7 @@ import {
 	HIGH_PRECISION_OPF_CALIBRATION_PATH,
 	SECONDS_PER_WEEK,
 } from "./default-config-resolvers.js";
+import { DEFAULT_STRUCTURAL_CHECKS } from "./default-structural.js";
 
 /**
  * Public API — consumed by `rules/loader.ts` via `getDefaultConfig()`
@@ -51,50 +52,9 @@ export const DEFAULT_CONFIG: GuardRulesConfig = {
 		scan_file_injection: true,
 		max_scan_bytes: 100_000,
 	},
-	structural_checks: {
-		// Off by default: dependency-graph scans add latency and warning volume that
-		// many repos don't want by default. Re-enable per repo via
-		// .interlinked/guard-rules.local.json once you've sized the project graph cost.
-		enabled: false,
-		export_surface: true,
-		import_resolution: true,
-		duplicate_symbols: true,
-		co_dependency_staleness: true,
-		import_cycles: true,
-		new_import_cycle: true,
-		interface_change_impact: true,
-		test_proximity: true,
-		smart_tsc: true,
-		blast_radius: true,
-		stale_read_warning: true,
-		sibling_awareness: true,
-		staleness_window_s: 300,
-		blast_radius_threshold: 5,
-		recently_failed: true,
-		completion_tracking: true,
-		route_context: true,
-		redundant_reread: true,
-		dead_imports: true,
-		completion_reminder_threshold: 10,
-		dead_exports: true,
-		hallucinated_imports: true,
-		cross_package_imports: true,
-		undefined_env_vars: true,
-		layer_violations: false,
-		impact_analysis: true,
-		impact_high_threshold: 4,
-		test_first: true,
-		// Default hardened 2026-04-24: the TDD commit gate blocks `git commit`
-		// when a source edit has no matching test-file change or the cycle is
-		// stuck in red/regression. Flip to "warn" in `.interlinked/guard-rules.local.json`
-		// for one-off escapes; use "nudge" to downgrade to info-only.
-		test_first_mode: "enforce",
-		// Warn by default: blocking every legacy-file edit on day one would
-		// brick brownfield adoption; strict mode promotes this to "block".
-		characterize_mode: "warn",
-		cross_file_switch_discriminant: true,
-		single_implementation_interface: true,
-	},
+	// Extracted to a pure data leaf (default-structural.ts) so browser-bundled
+	// surfaces can read the catalog; same object by reference (pinned).
+	structural_checks: DEFAULT_STRUCTURAL_CHECKS,
 	repo_confinement_allowlist: ["~/.claude"],
 	// No linked sibling projects by default — single-root confinement. A
 	// multi-repo workspace (e.g. public CLI + private cloud) declares its

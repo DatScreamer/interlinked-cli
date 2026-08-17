@@ -77,6 +77,32 @@ describe("checkDeadExports", () => {
 	});
 
 	describe("no importers at all (L35 branch)", () => {
+		// test-contract: behavior — dead_code_action "delete" (operator request
+		// 2026-08-17) instructs verify-then-delete; exports stay caveated because
+		// import analysis cannot see runtime/dynamic consumers
+		it("P: appends the verify-then-delete instruction when dead_code_action is 'delete'", () => {
+			const graph = makeGraph({
+				exports: [exp("alpha")],
+				importers: [],
+			});
+			const res = checkDeadExports(FILE, REL, graph, "delete");
+			expect(res[0]?.message).toContain('dead_code_action is "delete"');
+			expect(res[0]?.message).toContain("verify no runtime/dynamic consumer");
+		});
+
+		it("N: default action ('flag' / omitted) carries no delete instruction", () => {
+			const graph = makeGraph({
+				exports: [exp("alpha")],
+				importers: [],
+			});
+			for (const res of [
+				checkDeadExports(FILE, REL, graph),
+				checkDeadExports(FILE, REL, graph, "flag"),
+			]) {
+				expect(res[0]?.message).not.toContain("dead_code_action");
+			}
+		});
+
 		it("flags every named export when nothing imports the file", () => {
 			const graph = makeGraph({
 				exports: [exp("alpha"), exp("beta")],

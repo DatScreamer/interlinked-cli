@@ -76,6 +76,11 @@ export interface StructuralChecksConfig {
 	redundant_reread: boolean;
 	/** PostToolUse: detect unused imports after editing */
 	dead_imports: boolean;
+	/** What the dead-code checks ask of the agent (operator setting 2026-08-17):
+	 *  "flag" (default) reports candidates; "delete" instructs the agent to
+	 *  remove them (imports: in this edit; exports: after verifying no
+	 *  runtime/dynamic consumer). The harness never deletes code itself. */
+	dead_code_action?: "flag" | "delete";
 	/** Completion tracking reminder threshold (tool calls since export change, default: 10) */
 	completion_reminder_threshold: number;
 	/** Detect exports with zero importers in the project graph */
