@@ -49,6 +49,10 @@ import {
 	isVendoredOrFixturePath,
 	stripCommentsAndStrings,
 } from "./shared.js";
+// Shared offset→line helper (1-based; the comment/string stripper preserves
+// line count, so it is valid over stripped text). Direct in-package import —
+// shared.ts sits at its line cap and cannot carry another re-export line.
+import { offsetToLine } from "./shared-text-utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -269,11 +273,6 @@ function topLevelCommaIndex(s: string): number {
 function stripTrailingAssertMessage(arg: string): string {
 	const idx = topLevelCommaIndex(arg);
 	return idx === -1 ? arg : arg.slice(0, idx);
-}
-
-/** Convert a char offset in the stripped source to a 1-based line number. */
-function offsetToLine(stripped: string, offset: number): number {
-	return stripped.slice(0, offset).split("\n").length;
 }
 
 function recordMatch(

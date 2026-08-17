@@ -179,6 +179,82 @@ export function stripCommentsAndStrings(content: string): string {
 	return stripStrings(stripComments(content));
 }
 
+// ===========================================
+// Offset → line helpers
+// ===========================================
+
+/**
+ * Normalize a char offset the way `String.prototype.slice(0, offset)` does,
+ * so both helpers below stay byte-for-byte equivalent to the
+ * `text.slice(0, offset).split("\n").length` idiom they replace — including
+ * its (never-exercised, but pinned) negative-offset behaviour, where a
+ * negative offset counts back from the END of the string.
+ */
+function sliceEnd(length: number, offset: number): number {
+	if (offset < 0) return Math.max(0, length + offset);
+	return Math.min(offset, length);
+}
+
+/**
+ * 1-based line number containing `offset`. One-shot form: O(offset), no
+ * allocation. Use this when a scan resolves at most a handful of offsets
+ * against a given string; use {@link buildLineIndex} when the same string is
+ * queried repeatedly (that form is O(log n) per lookup).
+ *
+ * Semantics are those of the seven per-file copies this replaced: 1-indexed,
+ * a `\n` belongs to the line it terminates, and an offset past the end
+ * resolves to the last line.
+ */
+export function offsetToLine(text: string, offset: number): number {
+	const end = sliceEnd(text.length, offset);
+	let line = 1;
+	for (let i = 0; i < end; i++) {
+		if (text.charCodeAt(i) === 10) line++;
+	}
+	return line;
+}
+
+/** Char offsets at which each line starts (index k = start of line k+1). */
+export function buildLineStarts(text: string): number[] {
+	const starts = [0];
+	for (let i = 0; i < text.length; i++) {
+		if (text.charCodeAt(i) === 10) starts.push(i + 1);
+	}
+	return starts;
+}
+
+/** Precomputed line table for one content string. */
+export interface LineIndex {
+	/** Char offsets at which each line starts (index k = start of line k+1). */
+	readonly lineStarts: readonly number[];
+	/** 1-based line containing `offset` — binary search, O(log n). */
+	lineAt(offset: number): number;
+}
+
+/**
+ * Build a reusable line table for `text`. Pick this over {@link offsetToLine}
+ * when one scan resolves many offsets against the same string: a per-call
+ * linear scan makes an adversarial many-candidate file quadratic.
+ */
+export function buildLineIndex(text: string): LineIndex {
+	const lineStarts = buildLineStarts(text);
+	const length = text.length;
+	return {
+		lineStarts,
+		lineAt(offset: number): number {
+			const target = sliceEnd(length, offset);
+			let lo = 0;
+			let hi = lineStarts.length - 1;
+			while (lo < hi) {
+				const mid = (lo + hi + 1) >> 1;
+				if ((lineStarts[mid] ?? 0) <= target) lo = mid;
+				else hi = mid - 1;
+			}
+			return lo + 1;
+		},
+	};
+}
+
 /**
  * Scan original lines but match against pre-stripped lines.
  * Returns matches from the original content for display, but only

@@ -33,6 +33,9 @@ import {
 	isVendoredOrFixturePath,
 	JS_TS_ALL_EXTS,
 } from "./shared.js";
+// Shared line table. Direct in-package import — shared.ts sits at its line cap
+// and cannot carry another re-export line.
+import { buildLineIndex } from "./shared-text-utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -426,34 +429,15 @@ function interpolationVerdict(argRaw: string, lookbehind: string): string | null
 	return subs.every((s) => isExemptDynamicPart(s, lookbehind)) ? null : TEMPLATE_MSG;
 }
 
-/** Char offsets where each line starts (both lex views preserve offsets). */
-function buildLineStarts(text: string): number[] {
-	const starts = [0];
-	for (let i = 0; i < text.length; i++) {
-		if (text.charAt(i) === "\n") starts.push(i + 1);
-	}
-	return starts;
-}
-
-/** 1-based line for a char offset (binary search over buildLineStarts). */
-function lineForOffset(lineStarts: number[], offset: number): number {
-	let lo = 0;
-	let hi = lineStarts.length - 1;
-	while (lo < hi) {
-		const mid = (lo + hi + 1) >> 1;
-		if ((lineStarts[mid] ?? 0) <= offset) lo = mid;
-		else hi = mid - 1;
-	}
-	return lo + 1;
-}
-
 function collectFindings(content: string): InlineMatch[] {
 	// Call sites matched in the stripped view (string-embedded call text is
 	// blanked there); args read from the code view at the same offset. One
 	// global pass; per-hit work is window-bounded (near-linear everywhere).
 	const { codeText, strippedText } = lexTwoViews(content);
 	const rawLines = content.split("\n");
-	const lineStarts = buildLineStarts(codeText);
+	// Repeated lookups over one string (both lex views preserve offsets) — the
+	// precomputed O(log n) form.
+	const lineIndex = buildLineIndex(codeText);
 
 	const matches: InlineMatch[] = [];
 	const seen = new Set<number>();
@@ -461,7 +445,7 @@ function collectFindings(content: string): InlineMatch[] {
 	let hit: RegExpExecArray | null;
 	while ((hit = callRe.exec(strippedText)) !== null) {
 		if (matches.length >= MAX_MATCHES_PER_FILE) break;
-		const lineNo = lineForOffset(lineStarts, hit.index + hit[0].indexOf("RegExp"));
+		const lineNo = lineIndex.lineAt(hit.index + hit[0].indexOf("RegExp"));
 		if (seen.has(lineNo)) continue;
 		const arg = readFirstArg(codeText, hit.index + hit[0].length);
 		if (arg === null) continue;

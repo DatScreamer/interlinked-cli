@@ -31,6 +31,10 @@ import {
 	JS_TS_ALL_EXTS,
 	stripComments,
 } from "./shared.js";
+// Shared offset→line helper (1-based; the comment/string stripper preserves
+// line count, so it is valid over stripped text). Direct in-package import —
+// shared.ts sits at its line cap and cannot carry another re-export line.
+import { offsetToLine } from "./shared-text-utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -162,11 +166,6 @@ function findCatchBlocks(code: string): CatchBlock[] {
 		m = catchRe.exec(code);
 	}
 	return blocks;
-}
-
-/** 1-based line number of a char offset (input preserves newlines). */
-function offsetToLine(code: string, offset: number): number {
-	return code.slice(0, offset).split("\n").length;
 }
 
 function recordMatch(

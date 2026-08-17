@@ -14,7 +14,7 @@
 //      `src/harness/__tests__/check-pipeline-parity.test.ts::VERIFY_ONLY_CHECKS`.
 
 import { readFileSync } from "node:fs";
-import { basename, extname, join, relative } from "node:path";
+import { extname, join, relative } from "node:path";
 
 import {
 	checkAwaitInLoop,
@@ -27,6 +27,12 @@ import {
 } from "../../harness/generic-checks.js";
 import { type Finding, scoreFindings } from "../../harness/suggestion-scorer.js";
 import { loadFileSuppressions, scanInlineSuppressions } from "../../harness/suppressions.js";
+// Canonical "is this a test file" predicate (multi-language). Replaces a local
+// two-arg copy that recognised only `.test`/`.spec` basenames and `__tests__/`.
+// Verified equivalent on this repo's file list before the swap: 1361 of 2559
+// JS/TS files fire under both, with zero files gained or lost. See the probe
+// scratch/is-test-file-divergence.mts.
+import { isTestFile } from "../../harness/taste-checks-shared.js";
 
 const JS_TS_CODE_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 
@@ -79,13 +85,6 @@ function buildChecks(content: string, file: string): SuggestionCheck[] {
 	];
 }
 
-function isTestFile(file: string, base: string): boolean {
-	if (base.endsWith(".test")) return true;
-	if (base.endsWith(".spec")) return true;
-	if (file.includes("__tests__")) return true;
-	return false;
-}
-
 interface RunSuggestionsArgs {
 	files: string[];
 	cwd: string;
@@ -115,8 +114,7 @@ export function runSuggestions(args: RunSuggestionsArgs): Map<string, Finding[]>
 		const ext = extname(file).toLowerCase();
 		if (!JS_TS_CODE_EXTS.includes(ext)) continue;
 
-		const base = basename(file, ext);
-		if (isTestFile(file, base)) continue;
+		if (isTestFile(file)) continue;
 
 		const relPath = relative(cwd, file);
 		const inlineSup = scanInlineSuppressions(content);

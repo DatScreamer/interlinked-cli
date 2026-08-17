@@ -25,6 +25,10 @@ import {
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+// Shared offset→line helper (1-based; the comment/string stripper preserves
+// line count, so it is valid over stripped text). Direct in-package import —
+// shared.ts sits at its line cap and cannot carry another re-export line.
+import { buildLineIndex, offsetToLine } from "./shared-text-utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -93,22 +97,6 @@ function hasInlineGuard(surrounding: string): boolean {
 /** Escape special regex metacharacters in a variable name. */
 function escapeForRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// ─── Line-number helpers ──────────────────────────────────────────────────────
-
-/** Convert a char offset in the stripped source to a 1-based line number. */
-function offsetToLine(stripped: string, offset: number): number {
-	return stripped.slice(0, offset).split("\n").length;
-}
-
-/** Build an array of char offsets where each line starts (for fast window slicing). */
-function buildLineOffsets(text: string): number[] {
-	const offsets: number[] = [0];
-	for (let i = 0; i < text.length; i++) {
-		if (text.charAt(i) === "\n") offsets.push(i + 1);
-	}
-	return offsets;
 }
 
 // ─── Match recording ──────────────────────────────────────────────────────────
@@ -184,7 +172,10 @@ function detectTwoStepShape(
 	matches: InlineMatch[],
 	seen: Set<number>,
 ): void {
-	const lineOffsets = buildLineOffsets(stripped);
+	// Repeated offset→line lookups over one string plus window slicing off the
+	// same table — the precomputed form, not the one-shot scan.
+	const lineIndex = buildLineIndex(stripped);
+	const lineOffsets = lineIndex.lineStarts;
 	const assignRe = new RegExp(TWO_STEP_ASSIGN_RE.source, "g");
 
 	let assignHit: RegExpExecArray | null;
@@ -193,7 +184,7 @@ function detectTwoStepShape(
 		const varName = assignHit[1];
 		if (varName === undefined) continue;
 
-		const assignLineNo = offsetToLine(stripped, assignHit.index);
+		const assignLineNo = lineIndex.lineAt(assignHit.index);
 		const windowStart = assignHit.index + assignHit[0].length;
 		const lookaheadEndLine = assignLineNo + TWO_STEP_LOOKAHEAD_LINES;
 		const windowEnd =

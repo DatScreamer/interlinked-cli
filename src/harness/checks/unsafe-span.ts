@@ -27,6 +27,10 @@ import {
 	isTestFile,
 	JS_TS_ALL_EXTS,
 } from "./shared.js";
+// Shared line table (this file's binary-search resolver was the model for it).
+// Direct in-package import — shared.ts sits at its line cap and cannot carry
+// another re-export line.
+import { buildLineIndex } from "./shared-text-utils.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,28 +42,6 @@ const MAX_UNSAFE_SPAN_LINES = 5;
 const MAX_SUPPRESSION_SPAN_LINES = 10;
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
-
-/** Char offsets at which each line starts (index k = start of line k+1). */
-function buildLineStarts(text: string): number[] {
-	const starts = [0];
-	for (let i = 0; i < text.length; i++) {
-		if (text.charAt(i) === "\n") starts.push(i + 1);
-	}
-	return starts;
-}
-
-/** 1-based line containing `offset` — binary search over the line starts (a
- * per-call scan from 0 made adversarial many-candidate files quadratic). */
-function offsetToLine(lineStarts: number[], offset: number): number {
-	let lo = 0;
-	let hi = lineStarts.length - 1;
-	while (lo < hi) {
-		const mid = (lo + hi + 1) >> 1;
-		if ((lineStarts[mid] ?? 0) <= offset) lo = mid;
-		else hi = mid - 1;
-	}
-	return lo + 1;
-}
 
 /** Count newlines in `text[from, to)` — keeps the scanner's line counter cheap. */
 function countNewlines(text: string, from: number, to: number): number {
@@ -275,7 +257,9 @@ export function checkRustUnsafeSpan(content: string, filePath: string): InlineMa
 	const stripped = stripRustForScan(content);
 	const strippedLines = stripped.split("\n");
 	const rawLines = content.split("\n");
-	const lineStarts = buildLineStarts(stripped);
+	// Repeated lookups over one string — the precomputed O(log n) form (a
+	// per-call linear scan made adversarial many-candidate files quadratic).
+	const lineIndex = buildLineIndex(stripped);
 	const braceClose = buildBraceMatchMap(stripped);
 	const matches: InlineMatch[] = [];
 
@@ -286,14 +270,14 @@ export function checkRustUnsafeSpan(content: string, filePath: string): InlineMa
 		const openIdx = hit.index + hit[0].length - 1;
 		const closeIdx = braceClose.get(openIdx);
 		if (closeIdx === undefined) continue;
-		const openLine = offsetToLine(lineStarts, openIdx);
-		const closeLine = offsetToLine(lineStarts, closeIdx);
+		const openLine = lineIndex.lineAt(openIdx);
+		const closeLine = lineIndex.lineAt(closeIdx);
 		// Nonblank interior count can only exceed the cap when the interior
 		// has more than cap TOTAL lines — skip the line walk for small blocks.
 		if (closeLine - openLine - 1 <= MAX_UNSAFE_SPAN_LINES) continue;
 		const span = countNonblankBetween(strippedLines, openLine, closeLine);
 		if (span <= MAX_UNSAFE_SPAN_LINES) continue;
-		const lineNo = offsetToLine(lineStarts, hit.index);
+		const lineNo = lineIndex.lineAt(hit.index);
 		matches.push({
 			line: lineNo,
 			text: `rust_unsafe_span: unsafe block spans ${span} nonblank lines — narrow it to the operations that need it (78% of Bun's post-port unsafe blocks are one line) — ${rawLineExcerpt(rawLines, lineNo)}`,
