@@ -403,6 +403,20 @@ describe("parser-imports (mutation coverage)", () => {
 			const out = parseImports('import { subtype value } from "./m.js"', "/tmp/x.ts");
 			expect(out[0]?.symbols).toEqual(["subtype value"]);
 		});
+
+		// test-contract: boundary — /^type\s+/ must consume the FULL run of
+		// whitespace after "type", not just one character. A weakened \s
+		// (single-char) quantifier leaves one leading space behind; that
+		// space then satisfies the as-split's OWN leading \s+ on its own,
+		// so the split point shifts left by one whitespace char and real
+		// content that should precede "as" is swallowed into the delimiter
+		// instead of surviving as symbols[0].
+		it("strips a multi-space 'type' prefix in full, not just a single whitespace char", () => {
+			const out = parseImports('import {type  as  asx  } from "./m.js"', "/tmp/x.ts");
+			expect(out).toEqual([
+				{ fromFile: "/tmp/x.ts", specifier: "./m.js", symbols: ["as  asx"], isTypeOnly: false },
+			]);
+		});
 	});
 
 	describe("further anchor-drop regressions (default / namespace / side-effect imports)", () => {
