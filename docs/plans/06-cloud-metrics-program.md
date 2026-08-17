@@ -53,3 +53,6 @@ Ranked; item 1 is already proven in production and is the template.
 - Lane 3 first, when cognitive-cap promotion needs cross-repo FP evidence.
 - Lane 1 re-enable locally only if the runner round-trip fits `budget_ms`.
 - Lane A trust-boundary work when multi-agent/BFT (R1) resumes.
+- **Mutation lane superseded (2026-08-16):** the cloud mutation runner now has
+  its own decision record and build plan — `docs/plans/24-cloud-mutation-runner.md`.
+  This program keeps the non-mutation metric lanes only.

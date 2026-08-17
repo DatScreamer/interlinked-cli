@@ -1,8 +1,8 @@
 # Interlinked CLI — Architecture
 
 For user workflows and command playbooks, start with:
-- `cli/docs/how-to-use.md`
-- `cli/docs/command-reference.md`
+- `docs/how-to-use.md`
+- `docs/command-reference.md`
 
 ## 1. Vision
 

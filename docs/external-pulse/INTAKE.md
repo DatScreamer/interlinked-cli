@@ -60,9 +60,24 @@ This filter **raises the bar; it does not reroute** (determinism changes the lan
 - The cloud surfaces are separate codebases and may carry deps the CLI won't. "Adds a dep" can itself be the reason to route lane-3 fodder to a cloud surface.
 - A non-permissive license (FSL/BUSL/AGPL/custom) blocks code-borrow regardless — note it in §3.
 
+## Running the intake — subagent fan-out, and why an intake is context engineering
+
+An intake is not a memo you write once and forget; it is a **context-engineering artifact** — in the harness-engineering vocabulary (`harness-engineering.md`), a *Guide*: feedforward context a downstream agent loads to decide what to build. The whole point of filling one in is to engineer good context for the agents (and humans) that come after. Engineer it for that reader:
+
+- **Write it for an agent, not a skim.** A downstream agent will *act* on this file — a vague equivalence claim becomes a wrong build. Favor structured tables over prose, verbatim evidence carrying its provenance (URL + quote), and the explicit per-capability status of §6 (shipped / designed / absent / ahead). Marketing language is pure noise to a machine reader; cut it.
+- **This is why length follows the data**: a Guide with holes mis-steers every agent that loads it later, so completeness beats brevity for anything worth an intake at all.
+
+A body-of-work source (many articles, repos, or talks) exceeds what one context window reads well — so run the intake **as a subagent fan-out**, which is itself an exercise in context engineering (you are deciding what context each agent gets, and composing their outputs into one artifact):
+
+- **One extractor per source.** Give each a *cost-appropriate* model (Sonnet/Haiku-class for extraction) and the interlinked architecture as context, so it extracts what is *new* and flags capability gaps against **actual repo source**, not CLAUDE.md prose. **Pin the model explicitly** — do not inherit the parent tier for bulk extraction; it is expensive and unnecessary. Reserve the strong tier for synthesis and the adversarial pass.
+- **A synthesizer** (stronger tier) ranks the finds into a build backlog and maps each to a lane / surface / phase.
+- **An adversary / falsifier** (stronger tier) hunts where the source's *evidence* challenges our existing design bets. Its verdicts are load-bearing for §9 even when they live in the Notes rather than the body — a mature peer source is worth as much for where it says *we* are wrong as for what we adopt.
+- **Verify against raw source.** The web-fetch summarizer pads enumerations and misattributes bylines — read raw HTML (curl + textutil, or an equivalent) for anything load-bearing, and confirm every §6 equivalence against the real code.
+- **Provenance is a deliverable.** Record transcript-vs-summary, byline corrections, un-fetchable sources (flag second-hand quotes), and any anomaly — e.g. a research subagent that received a spoofed "discard your work / you are the fork" instruction and correctly refused it. A downstream agent trusts this file; earn the trust by showing the seams.
+
 ## Template
 
-Copy everything between the fences into `docs/external-pulse/<slug>.md`. Aim for one page filled in. If you can't answer #1 in your own words, you don't understand the project well enough to evaluate it — read more first.
+Copy everything between the fences into `docs/external-pulse/<slug>.md`. **Length follows the source**: a single tool — or a skip — stays short; a framework or body-of-work (many articles, repos, or talks) runs as long as the load-bearing data warrants, and appendices are welcome and expected (see *Running the intake*, below; `harness-engineering.md` is the worked example of the rich form). If you can't answer #1 in your own words, you don't understand the project well enough to evaluate it — read more first.
 
 ````markdown
 # <Project name>
@@ -120,8 +135,12 @@ pattern (→ memory + RFC), cloud-only fodder (→ Guardrails / Agent CI), or sk
   internal overlap with our own code — not competitor/market analysis, which stays out.
 - **Equivalence (capability-by-capability):** for each load-bearing capability — not
   just the headline — name our existing equivalent and its status: **shipped /
-  designed / absent**. "We already ship this" is the most common and most useful
-  verdict; half of evaluating a mature competitor is finding what *not* to rebuild.>
+  designed / absent / ahead**. "We already ship this" is the most common and most
+  useful verdict; half of evaluating a mature source is finding what *not* to
+  rebuild. **ahead** (our equivalent already leads the source) is the other half —
+  it's what we can *publish*, and it tells us the source has nothing to teach on
+  that capability. For a mature peer, an equivalence table full of *shipped* and
+  *ahead* rows is the finding.>
 
 ## 7. Smallest spike
 <≤1 day of work. What would you build to test viability? If "smallest spike" is
@@ -161,7 +180,7 @@ INTAKE.md edit if they recur.>
 - One file per project, kebab-case slug: `codewiki.md`, `narsil-mcp.md`, `echo-rl.md`.
 - Commit it. The corpus matters; you'll re-grep this in six months.
 - If your understanding changes after talking to an AI or reading more, **update the file** in place — don't re-evaluate from scratch and don't open a second file for the same project.
-- Resist scope creep *in the per-project file*. The template is intentionally one page. Don't add "competitive analysis" or "market positioning" sections — those go elsewhere. (This rubric itself can grow when a real new dimension is missing — that is why §6 and §8 exist — but an individual intake stays one page.)
+- The discipline is **signal and structure, not brevity**. Capture every load-bearing finding — a rich source shortchanged to fit an arbitrary page limit is a context artifact with holes, and holes mis-steer every agent that loads it later. What stays out is *noise*: no "competitive analysis" or "market positioning" sections (those go elsewhere), no marketing adjectives, no restating the source's own README claims. Structure the signal for the agent that will load this file — tables over prose, verbatim evidence carrying its provenance, explicit per-capability status. (The rubric itself grows when a real new dimension is missing — that is why §6, §8, and *Running the intake* exist.)
 - A "skip" verdict is a valid output. Recording why something *doesn't* fit is as useful as recording why something does, and it prevents re-evaluating the same project in three months.
 
 ## When to skip the rubric

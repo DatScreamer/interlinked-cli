@@ -1,12 +1,12 @@
 # Route Bash-mediated writes through the harness content-quality pipeline
 
-**Status:** Proposed.
-**Scope:** `interlinked verify`'s pre_block Bash rule + new `interlinked write` CLI subcommand + harness coordination.
+**Status:** Implemented for supported gated writers; tool-independent post-effect enforcement is in the Aug 13 working tree. Arbitrary Bash pre-commit transactions remain future work.
+**Scope:** Bash pre-block routing, `interlinked write`/`multi-edit`, observed filesystem ChangeSets, and Stop residue reconciliation.
 **Related:** `multi-edit-atomic-coordinated-edits.md` (the usual driver for why an agent wants to write via Bash in the first place).
 
 ## Problem
 
-The harness runs a rich content-quality pipeline on every Edit/Write tool
+The harness runs a rich content-quality pipeline on Edit/Write tool
 call: pre_block registry rules, biome diff-overlay, tsc diff-overlay,
 magic-literal / strong-typing / floating-promise inline checks, etc. The
 gate decides whether the proposed new content may land.
@@ -35,6 +35,12 @@ MultiEdit for the full shape.
 The net effect today: agents sometimes have no legal path to a structural
 change and get trapped in a ping-pong of diff-overlay rejections.
 
+The local daemon now also snapshots Git-visible files plus standalone ignored local files around
+potentially mutating calls and routes the observed ChangeSet through PostToolUse checks, including
+successful Bash calls. Bulk ignored directory trees remain collapsed and make the snapshot
+explicitly incomplete. That closes the ordinary tool-name bypass after execution; it does not make
+arbitrary shell execution reversible.
+
 ## Goal
 
 Preserve the gate's protection AND admit the legitimate multi-site-atomic
@@ -48,8 +54,8 @@ use case. In shape:
 
 ## Non-goals
 
-- Intercepting arbitrary shell redirections (`cat > file`, `sed -i`) at
-  the kernel level. That's a kernel/syscall-interposition project.
+- Predicting or transactionally intercepting arbitrary shell redirections (`cat > file`, `sed -i`)
+  before execution. Current local coverage observes their repository effects after execution.
 - Making every Bash write free-gated — we explicitly do not want "just let
   node -e through."
 
@@ -65,7 +71,7 @@ interlinked write --batch <manifest.json>
 Shape:
 - Single-file: `cat newcontent.ts | interlinked write src/foo.ts --stdin`
   or `interlinked write src/foo.ts --from-file /tmp/newcontent.ts`
-- Batch (for multi-file atomic): `interlinked write --batch manifest.json`
+- Batch (gate final state together, then commit with rollback protection): `interlinked write --batch manifest.json`
   where manifest is:
   ```jsonc
   {
@@ -83,9 +89,11 @@ Behavior:
    for each file, in the same shape as Edit/Write diff-overlay.
 3. If **any** check fails, exit non-zero, print the same structured
    diagnostic the Edit hook would print (machine-readable via `--json`),
-   and leave all files untouched. Transactional — all-or-nothing.
-4. If all checks pass, write the files atomically (write to `<path>.tmp`
-   then rename).
+   and leave all files untouched.
+4. If all checks pass, stage sibling temp files and rename each target. A later rename failure
+   triggers best-effort restoration of already-renamed targets and reports incomplete rollback.
+   Existing target modes are preserved on both commit and rollback. Each rename is atomic; the
+   multi-file sequence is not a filesystem transaction.
 
 ### Step 2 — Pre_block rule revision
 
@@ -151,28 +159,24 @@ With `--json`:
 }
 ```
 
-## Migration
+## Migration status
 
-Step-by-step rollout:
-
-1. Land `gateProposedContent` as a pure function reusing existing
-   diff-overlay code paths.
-2. Land `interlinked write` CLI subcommand (single-file + `--batch`).
-3. Update the Bash pre_block message to mention `interlinked write` for
-   multi-site coordination.
-4. Optional: a lightweight shell wrapper `ilw` aliased to
-   `interlinked write --stdin` for terse one-liners.
+1. `gateProposedContent` reuses the content check/diff-overlay paths. **Done.**
+2. `interlinked write` supports single-file and `--batch`. **Done.**
+3. The Bash pre-block points writers to the supported gated path. **Done.**
+4. An `ilw` shell alias remains optional and is not part of the CLI contract.
 
 ## Acceptance
 
-- [ ] `interlinked write` implemented with unit tests.
-- [ ] `--batch` accepts a manifest and applies transactionally.
-- [ ] Output shape matches Edit diff-overlay (same failure JSON).
-- [ ] Bash pre_block rule message updated.
-- [ ] Round-trip test: a known-coordinated edit that previously tripped
+- [x] `interlinked write` implemented with unit tests.
+- [x] `--batch` accepts a manifest, gates the final state, and rollback-protects partial commit failure.
+- [x] Output uses the shared gate failure shape.
+- [x] Bash pre_block rule message points to the gated writer.
+- [x] Round-trip test: a known-coordinated edit that previously tripped
       the Edit tool succeeds via `interlinked write --batch`.
-- [ ] Round-trip test: a deliberately broken batch fails cleanly, leaves
+- [x] Round-trip test: a deliberately broken batch fails cleanly, leaves
       files untouched.
+- [ ] Arbitrary Bash runs in a local overlay and promotes only an approved ChangeSet.
 
 ## Security considerations
 
@@ -180,6 +184,7 @@ Step-by-step rollout:
   Edit/Write (the agent itself supplies content).
 - Path must be inside the project root or an explicit allowlist. No
   writes to `/etc`, `$HOME`, etc. without an explicit `--unsafe-outside-repo`
-  flag (which also requires an interactive confirmation).
+  flag. The current CLI flag is non-interactive, so an agent must not infer
+  authorization to use it merely because the option exists.
 - No shell interpolation of paths — all paths pass through strict
   `resolve()` + `startsWith(projectRoot)` validation.

@@ -89,7 +89,7 @@ Commands:
   viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
   watch [options]                            Monitor server for pending work (messages, tasks, agents)
   workspace                                  Registry workspace management (ws_ IDs)
-  write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> for atomic multi-file writes.
+  write [options] [path]                     Write file(s) through the content-quality gate (pre_block + biome + tsc diff-overlay). Supports --stdin, --from-file, and --batch <manifest.json> with rollback protection.
   help [command]                             display help for command
 ```
 

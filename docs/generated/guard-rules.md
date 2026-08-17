@@ -170,7 +170,7 @@ These evaluate on every PreToolUse event (before tool execution).
 | `builtin-pkill-f` | high | block | pkill -f matches processes across ALL projects/sessions Use specific PID: kill <pid>. To kill local dev processes, be specific: pkill -f 'wrangler dev' |
 | `builtin-killall` | high | block | killall terminates ALL processes with matching name Use specific PID: kill <pid> |
 | `builtin-pkill-node` | high | block | Would kill processes across all projects Use specific PID or port-based killing: lsof -ti :<port> | xargs kill. To kill local dev processes, be specific: pkill -f 'wrangler dev' |
-| `builtin-pgrep-xargs-kill` | high | block | Pattern kills processes system-wide Use specific PID or port-based killing |
+| `builtin-pgrep-xargs-kill` | high | block | Pattern kills processes system-wide (same blast radius whether piped, substituted, or looped) Enumerate, confirm, then kill: run `pgrep -fl '<pattern>'` first to SEE the matches are yours, then kill those exact PIDs — `kill <pid> <pid> …` (or `pgrep -f '<pattern>' | xargs -n1 kill` once you have verified the list). Listing first is the safe step the raw pipe skips. |
 | `builtin-kill-signal` | high | block | Sending termination signals is dangerous. Use plain 'kill <PID>' (SIGTERM) instead Use plain: kill <PID> |
 | `builtin-kill-multi-pid` | high | block | Killing multiple PIDs at once is dangerous Kill one PID at a time |
 | `builtin-kill-substitution` | high | block | kill with command substitution or piped xargs is dangerous Find the PID first, then kill it by number |

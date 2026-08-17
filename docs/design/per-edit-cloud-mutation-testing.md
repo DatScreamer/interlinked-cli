@@ -44,14 +44,14 @@ say mutation does *not* block edits:
 
 - `per-edit-coverage-enforcement.md:23` — *"Mutation: commit-time obligation
   (unchanged — the one that can't fit per-edit)."*
-- `harness-system-diagrams.md:108` (§0 box 7) — *"Mutation (box 7) is a per-plan
+- `harness-system-diagrams.md:108` (§0 of harness-system-diagrams.md, box 7) — *"Mutation (box 7) is a per-plan
   obligation, hard-gated at commit — not a per-edit block."*
 
 This doc **promotes mutation to a per-edit block and demotes the commit gate to the
 degraded-path fallback** (§12). Enabling basis: `harness-system-diagrams.md:162`
 (*"supersedes the old 'heavy work can never be synchronous' stance … the cloud tier
 targets the same ~25s by horizontal fan-out"*) and
-`feedback_pretooluse_cloud_synchronous_block`. It answers §108's two objections:
+`feedback_pretooluse_cloud_synchronous_block`. It answers the two objections at `harness-system-diagrams.md:108`:
 
 1. *"A Pre-block fires no Post, so it couldn't carry the survivor list."* — The
    PreToolUse **block `reason` carries the full survivor list + four-way guidance**
@@ -300,6 +300,13 @@ nothing on the gated path; Artifacts is a one-interface swap.
 > the cloud runner path (Artifacts provisioner, §10) being generally
 > available. The governance lock (`allow_agent_override: false`) applies
 > whenever the gate is enabled.
+>
+> **Cloud runner: see `docs/plans/24-cloud-mutation-runner.md`** (2026-08-16)
+> — the decision record and build plan for the parallelized substrate this
+> section's availability model waits on: Workflows-v2 campaign driver,
+> Artifacts-pinned SHAs per measure job, Sandbox/Container execution of this
+> doc's runner contract, one-DO-per-repo manifest fold, BYO-agent primary
+> mode. Its M1 is this document's §10 provisioner made real.
 
 > **Per-edit mutation is default-on and hard-gating when measured. Availability is a
 > capability question, not an agent choice.** Users may choose local-only/free
@@ -400,6 +407,33 @@ a forged clean pass.
 5. **`unavailable_behavior`** (§12 config): default `allow_unmeasured`; `"block"` =
    fail-closed opt-in. Resolved as a config knob, not an open question.
 6. **Fan-out width / language:** start 1 `standard-4`, TS first (Stryker).
+
+## 13b. Candidate ratchet: per-file mutation latency budget (2026-08-11)
+
+Observed during the first whole-repo baseline (two-box overnight run): per-file
+measure time spans ~6s to >900s. The spread is not driven by line count alone —
+it is **mutant count × scoped-suite wall time**. `commands/verify/section-table-*`
+siblings are decomposition products under the 500-line cap, yet each one costs
+15+ minutes because their test scope pulls the whole verify-pipeline suite;
+meanwhile 300-line files with tight unit tests clear in under 30s.
+
+The proposal: treat **mutation latency itself as a ratchetable testability
+metric**. A file that cannot be mutation-measured inside a budget is too big,
+too coupled, or only integration-tested — all three are things the product
+already wants to push against, and no existing cap measures the third.
+
+- Metric: wall seconds for a full scoped measure of the file (recorded in the
+  manifest per receipt — already captured).
+- Ratchet shape: high-water per file, shrink-only, same
+  `baseline_integrity_gate` protection as the other water-lines. Repo default
+  cap for NEW files (e.g. 120s); grandfather list for the existing heavy tail.
+- Phase: post/verify cadence (never on the hook path — it needs a runner).
+- Proxy lattice, made explicit: LOC ~ mutant count (cheap, per-edit);
+  test-scope fan-in ~ per-mutant cost (graph-derived, per-edit); measured
+  latency = ground truth (runner, cadence). Ratchet the proxies per-edit,
+  verify against ground truth at cadence, and let proxy/ground-truth drift
+  trigger recalibration — the same calibrate-against-the-tree discipline the
+  Check Evidence Contract already enforces for detectors.
 
 ## 14. Build sequence (ends at the Artifacts seam)
 
