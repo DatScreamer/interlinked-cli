@@ -51,6 +51,27 @@ function buildRows(cwd: string): CapRow[] {
 	});
 }
 
+/**
+ * Render one `caps` row. Coverage is a FLOOR, not a cap; an unset floor (0)
+ * must never render as "coverage 0 %" in a list of maxima — that reads as
+ * "capped at zero" (operator report 2026-08-16). Same semantics as
+ * `formatMetricDefaultRow` in harness/metric-caps.ts.
+ */
+function formatCapShowRow(r: CapRow): string {
+	if (r.stricter === "higher" && r.value === 0) {
+		return (
+			`${r.key.padEnd(11)} floor unset — \`interlinked adopt\` seeds your repo's current %` +
+			` (hold-or-rise) [${r.source}]`
+		);
+	}
+	const unit = r.unit ? ` ${r.unit}` : "";
+	const bound = r.stricter === "higher" ? "≥" : "≤";
+	return (
+		`${r.key.padEnd(11)} ${bound} ${String(r.value).padStart(3)}${unit.padEnd(9)} ` +
+		`[${r.source}; ${r.stricter}-is-stricter; default ${r.defaultValue}]`
+	);
+}
+
 /** `interlinked caps` — show the four effective caps + where each came from. */
 export async function capsShowAction(
 	opts: { json?: boolean },
@@ -65,13 +86,7 @@ export async function capsShowAction(
 		return 0;
 	}
 	console.log("Quality-metric caps  (change: interlinked caps set <metric> <value>):");
-	for (const r of rows) {
-		const unit = r.unit ? ` ${r.unit}` : "";
-		console.log(
-			`  ${r.key.padEnd(11)} ${String(r.value).padStart(4)}${unit.padEnd(9)} ` +
-				`[${r.source}; ${r.stricter}-is-stricter; default ${r.defaultValue}]`,
-		);
-	}
+	for (const r of rows) console.log(`  ${formatCapShowRow(r)}`);
 	console.log("Run `interlinked caps explain` for what each metric means.");
 	return 0;
 }

@@ -89,6 +89,30 @@ export interface MetricDef {
 	fixHint: string;
 }
 
+/**
+ * One display row for a metric's SHIPPED DEFAULT, shared by every surface
+ * that lists them (`interlinked caps`, the setup wizard, the browser demo —
+ * the demo bundles this module, so the wording cannot drift).
+ *
+ * The row must respect the metric's direction. Four caps are maxima; coverage
+ * is a FLOOR (higher-is-stricter, hold-or-rise), and its shipped default of 0
+ * means "no floor until `interlinked adopt` seeds your repo's actual level" —
+ * NOT "coverage capped at 0%". Rendering the raw number produced exactly that
+ * misreading (operator report, 2026-08-16: "no one talks about coverage in
+ * terms of zero percent as a maximum cap").
+ */
+export function formatMetricDefaultRow(def: MetricDef): string {
+	const key = def.key.padEnd(11);
+	if (def.stricter === "higher") {
+		const value =
+			def.defaultValue === 0
+				? "floor — adopt seeds your repo's current %, then it only rises"
+				: `≥ ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} floor, only rises`;
+		return `${key} ${value}`;
+	}
+	return `${key} ≤ ${String(def.defaultValue).padStart(3)}${def.unit ? ` ${def.unit}` : ""}`;
+}
+
 /** The canonical glossary. Order is the display order. */
 export const METRIC_DEFS: readonly MetricDef[] = [
 	{

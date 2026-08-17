@@ -71,9 +71,9 @@ Zero-arg behavior:
   interlinked            setup wizard (if unconfigured) or status dashboard
 
 Quick start:
-  interlinked install-hooks --runner claude-code    install local agent hooks
+  interlinked enable                                install hooks + skills
   interlinked harness start                         start local guard server
-  interlinked status                                 dashboard
+  interlinked status                                dashboard
   interlinked login --server <url>                  optional server auth
 `,
 );

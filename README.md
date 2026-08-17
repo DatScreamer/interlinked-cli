@@ -5,6 +5,14 @@ hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates
 every tool call against deterministic rules; blocks the dangerous ones in
 milliseconds; keeps a local activity log you can grep.
 
+**The exit ramp, up front:** `interlinked disable` stands the guard down and
+`interlinked uninstall-hooks` removes every hook entry this CLI installed —
+manifest-driven, restoring your runners' settings files to their prior state.
+Nothing phones home, everything lives in `.interlinked/` in your repo, and
+removal is one command. Try it on a throwaway repo first if you like; the
+whole setup is `interlinked` (the wizard) and the whole teardown is those two
+commands.
+
 ## Why this matters for responsible AI at scale
 
 Once an AI agent can write code, run shell commands, and install dependencies
@@ -103,6 +111,26 @@ as long as the clone stays put. If you move or delete the clone, rerun
 `interlinked install-hooks` from the new location (or `interlinked
 uninstall-hooks` first). The tarball-install smoke test in `.github/workflows/ci.yml`
 exercises the same end-to-end path.
+
+## Which onboarding command do I run?
+
+Four commands can start you off, and they do different amounts of work.
+Use the table to pick one — the short answer is `enable`.
+
+| Command | What it does | When to use it |
+|---|---|---|
+| `interlinked` (no args) | First-run wizard: prompts for server/agent/sync settings, then runs `enable` (+ optional login). Outside a TTY it runs the same bootstrap with defaults and no prompts | A brand-new project, when you want to be asked the questions rather than pass flags |
+| `interlinked enable` | Installs hooks + skills, writes `.interlinked/` config, starts the harness | **Canonical.** Every other path, including CI and non-interactive shells |
+| `interlinked setup` | `enable`, then handles login/auth in one step | You also want to authenticate against an Interlinked MCP Server right away |
+| `interlinked init` | A heavier, interactive onboarding flow: detects clients, installs hooks directly (no skills), logs in, attaches a workspace, and verifies the result | You're connecting to a team's Interlinked MCP Server and want guided workspace setup |
+
+**Use `enable`.** It is the one this README's Quick Start uses, and bare
+`interlinked` and `setup` both call it internally — they only wrap it in
+prompts or a login step. `init` is the exception: it installs hooks on its
+own path and installs **no** skills, so your agent gets the gates without
+the instructions for reading them (see *Quick start* below for why that
+matters). Reach for `setup` or `init` only when you need the login and
+workspace steps they add.
 
 ## What you get
 
@@ -251,6 +279,21 @@ overrides go in `.interlinked/guard-rules.local.json` (gitignored).
   version-check ping. The CLI makes no outbound network calls on its own.
 - Hook events, guard decisions, and quality findings stay in
   `.interlinked/` under the repo root.
+
+## Further documentation
+
+This README covers the essentials. For more detail:
+
+| Doc | Covers |
+|---|---|
+| [`docs/harness.md`](./docs/harness.md) | Harness architecture: guard evaluation, reservations, quality checks |
+| [`docs/command-reference.md`](./docs/command-reference.md) | Every command and flag, hand-maintained |
+| [`docs/generated/`](./docs/generated/) | Auto-generated reference: guard rules, quality checks, structural checks, configuration defaults |
+
+`docs/generated/` is regenerated from the live registries by `npm run docs`,
+and `npm run docs:check` fails CI when the committed prose drifts from the
+source it was derived from. Read those files rather than trusting counts
+quoted elsewhere.
 
 ## Contributing and reporting issues
 

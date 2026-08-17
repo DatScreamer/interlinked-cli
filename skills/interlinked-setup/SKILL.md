@@ -14,7 +14,7 @@ hooks, guard, and activity capture work with zero network.
 ## Load this when
 - Installing Interlinked or connecting a runner (Claude Code / Codex / Copilot CLI / Gemini / Cursor).
 - `interlinked doctor` reports failures, or hooks are not firing / not capturing events.
-- The guard daemon is down, stale, or tool calls are being blocked with a "daemon unreachable" reason.
+- The guard daemon is down, stale, a **zombie**, or tool calls are blocked with a "daemon unreachable" reason.
 - Changing the server URL, sync mode, or check-policy/operational tier.
 - Disabling or fully removing Interlinked.
 
@@ -32,10 +32,17 @@ hooks, guard, and activity capture work with zero network.
 
 | Command | What it does | When to use |
 |---|---|---|
+| bare `interlinked` (unconfigured repo) | **The harness-first setup wizard** (2026-08-16): five one-line decisions — runners to hook, enforcement mode (`balanced`/`strict`/`lenient`), review scope (`diff`/`whole-file` → `guard-rules.json` `diff_aware.enabled`), cap overrides, and brownfield `adopt` — each Enter-accepts a recommended default, shows the plan, then composes `enable` + `mode` + `caps set` + `adopt`. Local-first: never asks about a server. Non-TTY: env-driven (`INTERLINKED_MODE` / `INTERLINKED_SCOPE` / `INTERLINKED_ADOPT` / `INTERLINKED_CLIENTS`). A failed step reports and continues — every step is individually re-runnable via the owning command. | A new user's first touch; the fastest correct install. |
 | `interlinked enable` | Full setup: writes `.interlinked/` config, installs per-client hooks, updates `.gitignore`, installs statusline (Claude/Copilot), installs every bundled Interlinked skill, **auto-starts the daemon**. Idempotent; re-running **clears any stand-down**. | The normal way to turn Interlinked on. |
-| `interlinked setup` | Runs `enable`, then `login` if no token (skips login on localhost / when a token is present). | One-shot bootstrap with server auth. |
-| `interlinked init` | Interactive/auto onboarding wizard (`--yes` for non-interactive). | Guided first-run. |
-| `interlinked install-hooks` | **Adapter path**: writes only hook entries + `installer-manifest.json` (no full config scaffold). | Precise, manifest-tracked hook install. |
+| `interlinked setup` | Runs `enable`, then `login` if no token (skips login on localhost / when a token is present). | You also want server auth right away. |
+| `interlinked init` | Interactive/auto onboarding wizard (`--yes` for non-interactive): installs hooks on its own path, logs in, attaches a workspace — and installs **no skills**. | Guided team/workspace setup only. |
+| `interlinked install-hooks` | **Adapter path**: writes only hook entries + `installer-manifest.json` (no config scaffold, **no skills**). | Precise, manifest-tracked hook install. |
+
+> **`enable` is the canonical entry point** — the CLI `--help` epilog and the README both
+> recommend it, and bare `interlinked` and `setup` just wrap it. Prefer it over `install-hooks`:
+> only `enable` installs the skills that teach an agent how to read a block. Without them the
+> first block is a message the agent must guess at, and the likeliest guess is to work around
+> the gate.
 
 Key `enable` flags: `--server <url>` · `--agent <name>` · `--clients <list>`
 (`claude,copilot,gemini,codex,cursor`) · `--sync-mode <realtime|local|manual>` ·
@@ -53,6 +60,19 @@ interlinked install-hooks --runner claude-code --scope project
 > binary. Codex automatically detects skill changes; if an active session does not, restart it.
 > Copilot needs `/skills reload` to pick up skill changes.
 
+## Native shell sandbox posture
+
+Enable each client's strictest usable native sandbox separately; Interlinked hook installation does
+not turn the provider sandbox on. Bash PreToolUse reports `[interlinked:sandbox]` as `attested`,
+`configured`, `disabled`, or `unknown`. Treat `configured` as weaker than per-call attestation because
+CLI/profile overrides can change the active call. Explicit Codex escalated/`danger-full-access` calls
+and Claude unsandboxed settings are reported as disabled evidence.
+
+Native workspace-write sandboxes constrain host/network reach but still allow real writes inside the
+project. They complement Interlinked's post-call filesystem ChangeSet and Stop residue backstop; they
+do not provide rollback or replace the deterministic PreToolUse guards. See **interlinked-harness**
+for interpreting the warning.
+
 ## Operating the daemon
 
 | Command | Purpose |
@@ -60,7 +80,7 @@ interlinked install-hooks --runner claude-code --scope project
 | `interlinked harness start [--verbose] [--json]` | Start the daemon (background). Reaps orphans first and auto-rebuilds stale `dist/`, so a cold start can take a few seconds. |
 | `interlinked harness stop` | SIGTERM the daemon. |
 | `interlinked harness restart` | Stop + fresh start; **the only way to pick up config/mode changes**. Note: clears per-session trajectory state. |
-| `interlinked harness status [--json]` | Running/PID, socket, RSS, mode, orphan count, build staleness. |
+| `interlinked harness status [--json]` | **Liveness** (three states, below) + socket, RSS, mode, orphan count, build staleness. `--json` adds `liveness` and `socket_answered`. |
 | `interlinked daemons [--cleanup]` | List **all** per-session daemons; `--cleanup` purges dead-PID records. |
 | `interlinked harness reap [--force] [--all]` | List (default) or kill orphan daemons. |
 
@@ -68,6 +88,22 @@ interlinked install-hooks --runner claude-code --scope project
 interlinked harness status --json      # is it up? which mode?
 interlinked harness restart            # after editing config / changing mode
 ```
+
+### Liveness is a round-trip, not a PID
+
+`status` and `doctor` both send a real event and wait for the answer, because a daemon can stay
+process-alive while its listener is dead. Three states, and both surfaces use the same words:
+
+| `harness status` | `doctor` | Meaning |
+|---|---|---|
+| `running (PID …) — socket answering` | `pass` — `Running (PID …) -- socket answering` | Verified: something answered. |
+| `ZOMBIE — process alive (PID …), no socket answering` | **`fail`** — same remedy line | **The guard is off.** Tool calls fail closed (or run ungated on a fail-open runner). |
+| `not running` | `warn` — inline fallback | Honest and expected; the inline subset still guards. |
+
+Only an answered probe prints `running (PID …)`, so that line can no longer appear above
+`Socket: not found`. **Fix a zombie with `interlinked harness restart`** — both surfaces print
+that remedy inline. A pid-alive daemon gets one confirming re-probe, so a daemon still binding
+right after `restart` is not mislabelled.
 
 ## Diagnosing problems
 
@@ -84,9 +120,28 @@ interlinked env               # list supported env vars + current values
 ```
 
 What "healthy" looks like in `doctor`: config dir + both config files present, hook script
-present, per-client "Hooks installed", and **Harness server: Running (PID …)** (vs
-"Not running — inline fallback"). A missing token on a non-localhost server is a `fail`; on
-localhost it is only a `warn` (dev mode allows unauthenticated).
+present, per-client "Hooks installed", and **Harness server: Running (PID …) -- socket
+answering**. A zombie is a **`fail`** here, never a pass. Hook detection shares one ownership
+predicate with the installers, so an adapter (`hook-entry.js`) install is recognised as
+installed rather than reported missing. A missing token on a non-localhost server is a `fail`;
+on localhost it is only a `warn` (dev mode allows unauthenticated).
+
+### When the daemon will not stay up
+
+A daemon that fails **before** binding its socket exits **78** (`EX_CONFIG`) and appends an
+`exit` row with `reason: "startup-failed"` to `.interlinked/daemon-events.jsonl`. It no longer
+lingers as a zombie. Read that ledger before theorising — it separates a failed bind (78) from
+a graceful stop, a lost ownership race (**0**, orderly, not a failure), and a crash.
+
+```bash
+tail -n 20 .interlinked/daemon-events.jsonl   # why did it leave?
+interlinked harness reap                       # list orphan daemons (--force kills)
+interlinked harness restart                    # the usual fix
+```
+
+Bind attempts are bounded with backoff, and a socket that **answers** is never unlinked — a
+live incumbent wins and the newcomer exits instead of stomping it. Only a silent, stale socket
+file is cleared and retried.
 
 **Dev loop after editing the CLI source:** `interlinked reload` rebuilds the CLI in its own
 checkout, refreshes this repo's hooks and deployed skills, and restarts the daemon **only if

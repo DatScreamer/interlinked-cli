@@ -138,6 +138,14 @@ scripts/*
 # smoke step and the hook's packaging gate.
 !scripts/ci-local.sh
 !scripts/ci-packaging.sh
+# Onboarding-demo generator + template — the committed docs/demo/ page is
+# GENERATED from these plus the real wizard module, and the freshness pin
+# (src/commands/onboarding-demo-freshness.test.ts) re-runs the generator in
+# --check mode: a fresh clone without them fails the pin, and the demo could
+# silently drift from the terminal wizard, which is the exact failure the
+# zero-drift design exists to prevent.
+!scripts/gen-onboarding-demo.mts
+!scripts/onboarding-demo-template.html
 !scripts/smoke-tarball-install.sh
 
 # Session-internal phase plans + work-in-progress design notes. The older
@@ -192,6 +200,12 @@ scratch/*
 # only 2 of 252 checks had a recorded run; the adjudication verdicts inside it
 # are reviewed judgments and belong in PR diffs like any other policy record.
 !.interlinked/check-corpus.json
+# Mutation adjudication ledger (plan 18) — the durable record of WHY a survivor is
+# not a defect. Committed policy: the judgments inside it are reviewed decisions and
+# belong in PR diffs, and the manifest they annotate is gitignored local state that
+# does not survive a fresh clone. Monotonic under baseline_integrity_gate: records
+# may be removed or weakened by hand, never added or strengthened.
+!.interlinked/mutation-dispositions.json
 !.interlinked/package-allowlist.json
 !.interlinked/sanitizers.json
 !.interlinked/security-config.json

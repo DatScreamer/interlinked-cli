@@ -4,6 +4,8 @@
 // Displays sessions, recent activity, sync status, and optional server health.
 // Works fully offline — MCP Server checks are optional with graceful degradation.
 
+import { join } from "node:path";
+import { loadEnforcementLedger } from "../harness/enforcement-ledger.js";
 import { formatActivitySummary } from "../lib/activity-utils.js";
 import { getClient } from "../lib/api-client.js";
 import { type ResolvedConfig, resolveConfig } from "../lib/config.js";
@@ -247,6 +249,26 @@ function renderServerSection(data: StatusData): string[] {
 	return lines;
 }
 
+/**
+ * Scorecard section — lifetime outcome counters from the enforcement ledger
+ * (harness/enforcement-ledger.ts: monotonic folds over activity.jsonl). The
+ * onboarding conversion moment is seeing the harness DO something; this makes
+ * that visible in the same-day `interlinked status`. Fresh installs get an
+ * honest zero-state naming the next step, never a hidden section.
+ */
+function renderScorecard(cwd: string): string[] {
+	const ledger = loadEnforcementLedger(join(cwd, ".interlinked"));
+	if (ledger.evaluated === 0) {
+		return [c.dim("  Nothing judged yet — make any edit in your agent and check back.")];
+	}
+	const since = ledger.since ? ` since ${ledger.since.slice(0, 10)}` : "";
+	return [
+		kvLine("Tool calls judged", `${ledger.evaluated}${since}`),
+		kvLine("Findings surfaced", String(ledger.caught)),
+		kvLine("Dangerous calls refused", String(ledger.blocked)),
+	];
+}
+
 /** Sync Status section core — shared by normal + full modes. */
 function renderSyncStatus(data: StatusData): string[] {
 	const lines: string[] = [];
@@ -308,6 +330,15 @@ function renderNormal(data: StatusData): string {
 			),
 		);
 	}
+
+	// Scorecard — the value-made-visible section (onboarding item 4,
+	// 2026-08-16): lifetime outcome counters from the enforcement ledger, so a
+	// first-day user sees "the harness judged N calls, caught M, refused K"
+	// the same day they installed. Counters are monotonic and fold from
+	// activity.jsonl (enforcement-ledger.ts); absent ledger = fresh install,
+	// render an honest zero-state that names the next step instead of hiding.
+	lines.push(header("Scorecard"));
+	lines.push(...renderScorecard(process.cwd()));
 
 	// Recent Activity section
 	lines.push(header("Recent Activity"));

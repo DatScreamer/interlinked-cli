@@ -1,0 +1,572 @@
+<title>Interlinked Setup Wizard</title>
+<style>
+  :root {
+    --ground: #F2F4F6; --panel-chrome: #E5E9ED; --ink: #1A2129; --dim: #5C6875;
+    --accent: #0E7490; --rail-border: #D5DBE1;
+    --t-ground: #101418; --t-ink: #E6EDF3; --t-dim: #8B949E; --t-green: #3FB950;
+    --t-bold: #FFFFFF; --t-chrome: #1B2129;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0B0E12; --panel-chrome: #161B22; --ink: #E6EDF3; --dim: #8B949E;
+      --accent: #38BDF8; --rail-border: #232B33;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0B0E12; --panel-chrome: #161B22; --ink: #E6EDF3; --dim: #8B949E;
+    --accent: #38BDF8; --rail-border: #232B33;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif;
+    margin: 0; padding: 2.5rem 1.25rem 4rem;
+  }
+  main { max-width: 68rem; margin: 0 auto; }
+  h1 {
+    font: 700 1.35rem/1.3 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: -0.01em; margin: 0 0 0.35rem; text-wrap: balance;
+  }
+  .sub { color: var(--dim); margin: 0 0 1.75rem; max-width: 46rem; }
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 17rem; gap: 1.25rem; align-items: start; }
+  @media (max-width: 58rem) { .stage { grid-template-columns: minmax(0, 1fr); } }
+
+  .term {
+    background: var(--t-ground); border-radius: 8px; overflow: hidden;
+    box-shadow: 0 12px 32px rgba(3, 8, 14, 0.28);
+  }
+  .term-bar {
+    background: var(--t-chrome); padding: 0.55rem 0.9rem; display: flex; gap: 0.45rem;
+    align-items: center;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #3A424B; }
+  .term-title {
+    margin-left: 0.4rem; color: var(--t-dim);
+    font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .screen {
+    padding: 1rem 1.1rem 1.25rem; min-height: 24rem; overflow-x: auto;
+    font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--t-ink); white-space: pre-wrap; word-break: break-word;
+  }
+  .screen .b { color: var(--t-bold); font-weight: 700; }
+  .screen .d { color: var(--t-dim); }
+  .screen .g { color: var(--t-green); }
+  .screen .in { color: var(--t-ink); }
+  .cursor-row { display: inline; }
+  #kbd {
+    background: transparent; border: 0; outline: 0; color: var(--t-ink); caret-color: transparent;
+    font: inherit; padding: 0; margin: 0; width: 14rem;
+  }
+  .caret {
+    display: inline-block; width: 0.55em; height: 1.05em; vertical-align: text-bottom;
+    background: var(--t-green); animation: blink 1.1s steps(1) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .rail { display: flex; flex-direction: column; gap: 0.65rem; }
+  .note {
+    border: 1px solid var(--rail-border);
+    border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.82rem; color: var(--dim);
+    transition: border-color 160ms cubic-bezier(0.16, 1, 0.3, 1), background 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .note.on {
+    border-color: var(--accent); color: var(--ink);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+  }
+  .note b { font: 600 0.78rem ui-monospace, "SF Mono", Menlo, monospace; display: block; margin-bottom: 0.15rem; color: inherit; }
+  .note code { font: 0.76rem ui-monospace, "SF Mono", Menlo, monospace; }
+  .controls { margin-top: 0.9rem; display: flex; gap: 0.75rem; align-items: baseline; flex-wrap: wrap; }
+  button {
+    background: none; border: 1px solid var(--rail-border); border-radius: 6px;
+    color: var(--accent); font: 600 0.82rem ui-monospace, "SF Mono", Menlo, monospace;
+    padding: 0.4rem 0.8rem; cursor: pointer;
+  }
+  button:hover, button:focus-visible { border-color: var(--accent); outline: none; }
+  .hint { color: var(--dim); font-size: 0.8rem; }
+  footer {
+    margin-top: 2.25rem; padding-top: 1rem; border-top: 1px solid var(--rail-border);
+    color: var(--dim); font-size: 0.8rem; max-width: 46rem;
+  }
+  footer code { font: 0.76rem ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+<main>
+  <h1>interlinked — first-run setup</h1>
+  <p class="sub">
+    The five decisions a new repo makes, exactly as the terminal asks them.
+    This page executes the wizard's real module: copy, menus, defaults, and
+    the plan renderer are the shipped code, not a transcript.
+  </p>
+  <div class="stage">
+    <div class="term" aria-label="Interactive terminal demo">
+      <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="term-title">~/your-repo — interlinked</span></div>
+      <div class="screen" id="screen" tabindex="0"></div>
+    </div>
+    <aside class="rail" aria-label="What each step writes">
+      <div class="note" data-note="runners"><b>1 · runners</b>Installs hook entries per detected agent CLI (<code>enable</code> path; manifest-tracked, reversible).</div>
+      <div class="note" data-note="mode"><b>2 · mode</b>Writes <code>.interlinked/check-policy.json</code>: per-check actions for ~260 checks.</div>
+      <div class="note" data-note="scope"><b>3 · scope</b>Writes <code>diff_aware.enabled</code> in <code>.interlinked/guard-rules.json</code>: judge the edit, or the whole file.</div>
+      <div class="note" data-note="caps"><b>4 · caps</b>Overrides land in <code>.interlinked/metric-caps.json</code> (<code>interlinked caps set</code> later).</div>
+      <div class="note" data-note="adopt"><b>5 · baselines</b>Runs <code>interlinked adopt</code>: tighten-only floors seeded from the repo as it is.</div>
+      <div class="note" data-note="done"><b>after</b><code>interlinked status</code> shows the scorecard; <code>interlinked disable</code> is the exit ramp.</div>
+      <div class="controls">
+        <button id="restart" type="button">restart demo</button>
+        <span class="hint">Type answers or press Enter for every default.</span>
+      </div>
+    </aside>
+  </div>
+  <footer>
+    <strong>Drift contract:</strong> this page is generated by
+    <code>scripts/gen-onboarding-demo.mts</code>, which bundles
+    <code>src/commands/setup-wizard.ts</code>, the same module the terminal
+    renders from (<code>WIZARD_COPY</code>, presets, caps, plan). A freshness
+    test regenerates and byte-compares it; if the wizard changes and this page
+    does not, CI fails.
+  </footer>
+</main>
+<script>
+var InterlinkedWizard = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // <stdin>
+  var stdin_exports = {};
+  __export(stdin_exports, {
+    ALL_PRESETS: () => ALL_PRESETS,
+    DEFAULT_WIZARD_CHOICES: () => DEFAULT_WIZARD_CHOICES,
+    METRIC_DEFS: () => METRIC_DEFS,
+    WIZARD_COPY: () => WIZARD_COPY,
+    choicesFromNonInteractive: () => choicesFromNonInteractive,
+    describeWizardPlan: () => describeWizardPlan,
+    formatMetricDefaultRow: () => formatMetricDefaultRow,
+    moveSelection: () => moveSelection,
+    parseWizardCapOverrides: () => parseWizardCapOverrides,
+    parseWizardYesNo: () => parseWizardYesNo
+  });
+
+  // node-stub:node:fs
+  var refuse = (name) => () => {
+    throw new Error("node builtin " + name + " is not available in the demo bundle");
+  };
+  var readFileSync = refuse("fs.readFileSync");
+  var writeFileSync = refuse("fs.writeFileSync");
+  var mkdirSync = refuse("fs.mkdirSync");
+  var appendFileSync = refuse("fs.appendFileSync");
+  var statSync = refuse("fs.statSync");
+
+  // node-stub:node:path
+  var refuse2 = (name) => () => {
+    throw new Error("node builtin " + name + " is not available in the demo bundle");
+  };
+  var readFileSync2 = refuse2("fs.readFileSync");
+  var writeFileSync2 = refuse2("fs.writeFileSync");
+  var mkdirSync2 = refuse2("fs.mkdirSync");
+  var appendFileSync2 = refuse2("fs.appendFileSync");
+  var statSync2 = refuse2("fs.statSync");
+
+  // src/commands/setup-wizard.ts
+  var WIZARD_MODES = ["balanced", "strict", "lenient"];
+  var DEFAULT_WIZARD_CHOICES = {
+    runners: null,
+    mode: "balanced",
+    scope: "diff",
+    caps: {},
+    adopt: true,
+    syncMode: "local"
+  };
+  function moveSelection(index, delta, length) {
+    if (length <= 0) return 0;
+    return ((index + delta) % length + length) % length;
+  }
+  function parseWizardYesNo(raw, defaultValue) {
+    const v = raw.trim().toLowerCase();
+    if (!v) return defaultValue;
+    if (["y", "yes", "1", "true"].includes(v)) return true;
+    if (["n", "no", "0", "false"].includes(v)) return false;
+    return defaultValue;
+  }
+  function parseWizardCapOverrides(raw) {
+    const caps = {};
+    for (const pair of raw.split(",")) {
+      const [k, val] = pair.split("=").map((s) => s.trim());
+      const n = Number(val);
+      if (k && Number.isFinite(n)) caps[k] = n;
+    }
+    return caps;
+  }
+  function choicesFromNonInteractive(raw) {
+    const mode = WIZARD_MODES.includes(raw.mode) ? raw.mode : DEFAULT_WIZARD_CHOICES.mode;
+    const scope = raw.scope === "diff" || raw.scope === "whole-file" ? raw.scope : DEFAULT_WIZARD_CHOICES.scope;
+    const adopt = raw.adopt === void 0 ? DEFAULT_WIZARD_CHOICES.adopt : !/^(false|no|0)$/i.test(raw.adopt);
+    const runners = raw.runners ? raw.runners.split(",").map((r) => r.trim()).filter((r) => r.length > 0) : null;
+    const syncMode = raw.syncMode === "realtime" || raw.syncMode === "manual" ? raw.syncMode : DEFAULT_WIZARD_CHOICES.syncMode;
+    return { runners, mode, scope, caps: {}, adopt, syncMode };
+  }
+  var WIZARD_COPY = {
+    banner: "Interlinked setup \u2014 5 quick decisions",
+    bannerHint: "Enter accepts the recommended default at every step.",
+    selectHint: "\u2191/\u2193 choose \xB7 Enter confirm",
+    steps: {
+      runners: {
+        n: 1,
+        title: "Agent runners to hook",
+        detectedPrefix: "detected: ",
+        prompt: (ids) => `   Hook all detected? [Y] or list ids (${ids.join(",")}): `,
+        noneDetected: "No agent runners detected \u2014 hooks install when one appears (interlinked enable)."
+      },
+      mode: {
+        n: 2,
+        title: "Enforcement mode:",
+        prompt: (recommended) => `   Mode [${recommended}]: `
+      },
+      scope: {
+        n: 3,
+        title: "Review scope:",
+        diffLine: "judge only what the agent changes (recommended)",
+        wholeFileLine: "judge every touched file in full \u2014 stricter, noisier on legacy code",
+        prompt: "   Scope [diff]: "
+      },
+      caps: {
+        n: 4,
+        title: "Quality caps (shipped defaults):",
+        prompt: "   Accept all? [Y] or overrides like cyclomatic=15,lines=400: "
+      },
+      adopt: {
+        n: 5,
+        title: "Baselines \u2014 your repo as it is today becomes the floor;",
+        detail: "interlinked only stops it getting worse (tighten-only ratchets).",
+        prompt: "   Seed baselines from current state now? [Y/n]: "
+      }
+    },
+    planHeader: "Plan",
+    applyPrompt: "\nApply? [Y/n]: ",
+    aborted: "Aborted \u2014 nothing was written.",
+    complete: "Setup complete.",
+    nextSteps: [
+      "Make any edit in your agent \u2014 the harness judges it live.",
+      "  interlinked status     scorecard (edits judged, findings, blocks)",
+      "  interlinked mode       switch enforcement mode any time",
+      "  interlinked disable    the exit ramp \u2014 restores every settings file"
+    ]
+  };
+  function describeWizardPlan(choices) {
+    const lines = [];
+    lines.push(
+      `  Runners: ${choices.runners ? choices.runners.join(", ") : "all detected"}  (change: interlinked enable --clients \u2026)`
+    );
+    lines.push(`  Mode: ${choices.mode}  (change: interlinked mode <name>)`);
+    lines.push(
+      `  Scope: ${choices.scope === "diff" ? "diff \u2014 judge only what the agent changes" : "whole-file \u2014 judge every touched file in full"}`
+    );
+    const capEntries = Object.entries(choices.caps);
+    lines.push(
+      capEntries.length === 0 ? "  Caps: shipped defaults  (view: interlinked caps)" : `  Caps: ${capEntries.map(([k, v]) => `${k}=${v}`).join(", ")}  (change: interlinked caps set)`
+    );
+    lines.push(
+      choices.adopt ? "  Baselines: adopt now \u2014 your repo today is the floor; interlinked only stops it getting worse" : "  Baselines: skipped  (run later: interlinked adopt)"
+    );
+    return lines;
+  }
+
+  // src/harness/modes.ts
+  var BALANCED = {
+    name: "balanced",
+    description: "Default. Destructive commands blocked; type errors and lint issues warn after edits land.",
+    check_overrides: {}
+  };
+  var STRICT = {
+    name: "strict",
+    description: "Block edits that would introduce type, lint, or test-quality errors before they land.",
+    check_overrides: {
+      // Test-quality — tiny regex/AST checks, very low FP.
+      focused_tests: "ask",
+      placeholder_test: "ask",
+      assertion_free_test: "ask",
+      tautological_assertion: "ask",
+      // Type/promise correctness — fully deterministic.
+      promise_reject_non_error: "ask",
+      floating_promises: "ask",
+      // Agent-quality — clear rules.
+      broad_object_types: "warn_before",
+      commented_out_code: "warn_before",
+      default_export: "warn_before"
+    }
+  };
+  var LENIENT = {
+    name: "lenient",
+    description: "Advisory only \u2014 warn on issues but never block. Destructive guard rules still apply.",
+    check_overrides: {},
+    default_action: "info"
+  };
+  var ALL_PRESETS = [BALANCED, STRICT, LENIENT];
+
+  // src/harness/metric-caps.ts
+  var DEFAULT_MAX_LINES = 500;
+  var DEFAULT_MAX_CYCLOMATIC = 25;
+  var DEFAULT_MAX_COGNITIVE_CAP = 30;
+  var DEFAULT_CRAP_THRESHOLD = 30;
+  var DEFAULT_MIN_COVERAGE = 0;
+  function formatMetricDefaultRow(def) {
+    const key = def.key.padEnd(11);
+    if (def.stricter === "higher") {
+      const value = def.defaultValue === 0 ? "floor \u2014 adopt seeds your repo's current %, then it only rises" : `\u2265 ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} floor, only rises`;
+      return `${key} ${value}`;
+    }
+    return `${key} \u2264 ${String(def.defaultValue).padStart(3)}${def.unit ? ` ${def.unit}` : ""}`;
+  }
+  var METRIC_DEFS = [
+    {
+      key: "lines",
+      configKey: "max_lines",
+      label: "file size (lines)",
+      unit: "lines",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_LINES,
+      definition: "The number of lines in a single hand-written code file. Large files are harder for a human or agent to read, review, and safely edit, and slower to run a full mutation-test pass over. Generated, test, .d.ts, and non-code files are exempt.",
+      howToConfigure: "`interlinked caps set lines <n>` (or .interlinked/metric-caps.json \u2192 max_lines)",
+      fixHint: "Split the file into a re-exporting entry module plus smaller sibling modules grouped by responsibility. Shrinking or holding an over-cap file is always allowed."
+    },
+    {
+      key: "cyclomatic",
+      configKey: "max_cyclomatic",
+      label: "cyclomatic complexity (per function)",
+      unit: "branches",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_CYCLOMATIC,
+      definition: "The number of independent paths through a single function \u2014 +1 for each branch point: if / else-if / for / while / case / catch / && / || / ?:. High complexity means more test cases are needed to cover the function and it is harder to reason about. Enforced per function, and additionally ratcheted: a named function may not INCREASE its complexity even below the cap (no edit makes a function worse).",
+      howToConfigure: "`interlinked caps set cyclomatic <n>` (or .interlinked/metric-caps.json \u2192 max_cyclomatic)",
+      fixHint: "Extract cohesive groups of branches into smaller, named helper functions. There is no suppression; decomposition is the only way past."
+    },
+    {
+      key: "cognitive",
+      configKey: "max_cognitive",
+      label: "cognitive complexity (per function)",
+      unit: "",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_COGNITIVE_CAP,
+      definition: "SonarSource's readability model: nesting is penalized (+1 plus the current depth per if/loop/switch/ternary/catch), boolean-run transitions cost 1, and a flat switch is nearly free \u2014 so it disagrees with cyclomatic exactly where human readers disagree with branch counting. Surfaced per edit as a PreToolUse warning when a function GROWS past the cap (delta semantics; holding or shrinking an over-cap function is always allowed). The stricter Sonar-default 15 fires separately as the advisory `cognitive_complexity` check.",
+      howToConfigure: "`interlinked caps set cognitive <n>` (or .interlinked/metric-caps.json \u2192 max_cognitive)",
+      fixHint: "Flatten with early returns, extract nested blocks into named helpers (extraction to top level also clears the lambda-depth penalty), or split mixed &&/|| chains into named intermediate booleans."
+    },
+    {
+      key: "crap",
+      configKey: "crap_threshold",
+      label: "CRAP score (per function)",
+      unit: "",
+      stricter: "lower",
+      defaultValue: DEFAULT_CRAP_THRESHOLD,
+      definition: "Change Risk Anti-Patterns = cyclomatic\xB2 \xB7 (1 \u2212 coverage)\xB3 + cyclomatic, per function. It is high only when a function is BOTH complex AND under-tested \u2014 a fully-covered function scores exactly its cyclomatic complexity; an uncovered complex function explodes. It is the single number for 'this function is risky to change.'",
+      howToConfigure: "`interlinked caps set crap <n>` (or .interlinked/metric-caps.json \u2192 crap_threshold)",
+      fixHint: "Add tests to cover the function, reduce its cyclomatic complexity, or both. At full coverage CRAP equals cyclomatic complexity, so keeping cyclomatic under its cap keeps CRAP safe."
+    },
+    {
+      key: "coverage",
+      configKey: "min_coverage",
+      label: "test coverage (per file)",
+      unit: "%",
+      stricter: "higher",
+      defaultValue: DEFAULT_MIN_COVERAGE,
+      definition: "The fraction of statements in a file executed by the test suite. The harness enforces a NON-DECREASE ratchet against a per-file high-water baseline \u2014 no edit may add an uncovered line or lower a file's coverage \u2014 independently of this floor. min_coverage is an additional hard floor (0 = floor off, ratchet only).",
+      howToConfigure: "`interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json \u2192 min_coverage)",
+      fixHint: "Add tests that execute the added or changed lines before (or alongside) the code change."
+    }
+  ];
+  return __toCommonJS(stdin_exports);
+})();
+
+globalThis.InterlinkedWizard = InterlinkedWizard;
+</script>
+<script>
+(() => {
+  const W = globalThis.InterlinkedWizard;
+  const COPY = W.WIZARD_COPY;
+  const screen = document.getElementById("screen");
+  const notes = Array.from(document.querySelectorAll(".note"));
+  const DEMO_RUNNERS = ["claude", "codex"];
+
+  let choices; let step; let lineEl; let input;
+
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  function out(text, cls) {
+    const div = document.createElement("div");
+    if (cls) div.innerHTML = '<span class="' + cls + '">' + esc(text) + "</span>";
+    else div.innerHTML = esc(text);
+    screen.appendChild(div);
+  }
+  function outHtml(html) {
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    screen.appendChild(div);
+  }
+  function light(name) {
+    for (const n of notes) n.classList.toggle("on", n.dataset.note === name);
+  }
+  function prompt(text, onEnter, onArrow) {
+    const row = document.createElement("div");
+    row.className = "cursor-row";
+    row.innerHTML = esc(text);
+    input = document.createElement("input");
+    input.id = "kbd"; input.setAttribute("aria-label", text.trim());
+    input.autocomplete = "off"; input.spellcheck = false;
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    row.appendChild(input); row.appendChild(caret);
+    screen.appendChild(row);
+    input.addEventListener("keydown", (e) => {
+      if (onArrow && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        onArrow(e.key === "ArrowUp" ? -1 : 1);
+        return;
+      }
+      if (e.key !== "Enter") return;
+      const v = input.value;
+      row.innerHTML = esc(text) + '<span class="in">' + esc(v) + "</span>";
+      onEnter(v);
+    });
+    input.focus();
+    screen.scrollTop = screen.scrollHeight;
+  }
+
+  // Arrow-key single-select mirroring the TUI: rows repaint in place, the
+  // shared W.moveSelection owns wrap-around, Enter takes the highlighted row
+  // unless the user typed a value (typing still wins, as in the terminal).
+  function selectMenu(items, renderRow, initial, promptText, onPick) {
+    let sel = initial;
+    const rowEls = items.map(() => {
+      const el = document.createElement("div");
+      screen.appendChild(el);
+      return el;
+    });
+    const paint = () => {
+      rowEls.forEach((el, i) => { el.innerHTML = renderRow(i, i === sel); });
+    };
+    paint();
+    outHtml('<span class="d">   ' + esc(W.WIZARD_COPY.selectHint) + "</span>");
+    prompt(promptText, (typed) => onPick(sel, typed), (delta) => {
+      sel = W.moveSelection(sel, delta, items.length);
+      paint();
+    });
+  }
+
+  const steps = {
+    runners() {
+      light("runners");
+      const s = COPY.steps.runners;
+      outHtml(esc(s.n + ") " + s.title + "  ") + '<span class="d">' + esc(s.detectedPrefix + DEMO_RUNNERS.join(", ")) + "</span>");
+      prompt(s.prompt(DEMO_RUNNERS), (v) => {
+        const t = v.trim();
+        if (t && !/^(y|yes)$/i.test(t)) {
+          choices.runners = t.split(",").map((x) => x.trim()).filter(Boolean);
+        }
+        steps.mode();
+      });
+    },
+    mode() {
+      light("mode");
+      const s = COPY.steps.mode;
+      out(s.n + ") " + s.title);
+      const initial = Math.max(0, W.ALL_PRESETS.findIndex((p) => p.name === W.DEFAULT_WIZARD_CHOICES.mode));
+      const renderRow = (i, on) => {
+        const p = W.ALL_PRESETS[i];
+        const name = esc(p.name.padEnd(9));
+        const marker = on ? '<span class="g">&#8250; </span>' : "  ";
+        const nameHtml = on ? '<span class="g">' + name + "</span>" : name;
+        return "  " + marker + nameHtml + ' <span class="d">' + esc(p.description) + "</span>";
+      };
+      selectMenu(W.ALL_PRESETS, renderRow, initial, s.prompt(W.DEFAULT_WIZARD_CHOICES.mode), (sel, typed) => {
+        const t = typed.trim().toLowerCase();
+        if (W.ALL_PRESETS.some((p) => p.name === t)) choices.mode = t;
+        else choices.mode = W.ALL_PRESETS[sel].name;
+        steps.scope();
+      });
+    },
+    scope() {
+      light("scope");
+      const s = COPY.steps.scope;
+      out(s.n + ") " + s.title);
+      const scopeItems = ["diff", "whole-file"];
+      const renderRow = (i, on) => {
+        const label = esc(i === 0 ? "diff      " : "whole-file");
+        const detail = esc(i === 0 ? s.diffLine : s.wholeFileLine);
+        const marker = on ? '<span class="g">&#8250; </span>' : "  ";
+        const labelHtml = on ? '<span class="g">' + label + "</span>" : label;
+        return "  " + marker + labelHtml + ' <span class="d">' + detail + "</span>";
+      };
+      selectMenu(scopeItems, renderRow, 0, s.prompt, (sel, typed) => {
+        const t = typed.trim().toLowerCase();
+        if (t === "whole-file" || (!t && scopeItems[sel] === "whole-file")) choices.scope = "whole-file";
+        steps.caps();
+      });
+    },
+    caps() {
+      light("caps");
+      const s = COPY.steps.caps;
+      out(s.n + ") " + s.title);
+      for (const d of W.METRIC_DEFS) {
+        out("    " + W.formatMetricDefaultRow(d));
+      }
+      prompt(s.prompt, (v) => {
+        const t = v.trim();
+        if (t && !/^(y|yes)$/i.test(t)) choices.caps = W.parseWizardCapOverrides(t);
+        steps.adopt();
+      });
+    },
+    adopt() {
+      light("adopt");
+      const s = COPY.steps.adopt;
+      out(s.n + ") " + s.title);
+      out("   " + s.detail, "d");
+      prompt(s.prompt, (v) => {
+        choices.adopt = W.parseWizardYesNo(v, true);
+        steps.plan();
+      });
+    },
+    plan() {
+      light("done");
+      out("");
+      out(COPY.planHeader, "b");
+      for (const line of W.describeWizardPlan(choices)) out(line);
+      prompt(COPY.applyPrompt.replace(/^\n/, ""), (v) => {
+        if (!W.parseWizardYesNo(v, true)) { out(COPY.aborted); return; }
+        out("");
+        out(COPY.complete, "g");
+        const [first, ...rest] = COPY.nextSteps;
+        out(first);
+        for (const line of rest) out(line, "d");
+        screen.scrollTop = screen.scrollHeight;
+      });
+    },
+  };
+
+  function start() {
+    screen.innerHTML = "";
+    choices = { ...W.DEFAULT_WIZARD_CHOICES, caps: {} };
+    step = 0;
+    out("$ interlinked", "d");
+    out(COPY.banner, "b");
+    out(COPY.bannerHint, "d");
+    out("");
+    steps.runners();
+  }
+  document.getElementById("restart").addEventListener("click", start);
+  screen.addEventListener("click", () => input && input.focus());
+  start();
+})();
+</script>

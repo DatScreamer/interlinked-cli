@@ -9,6 +9,7 @@ import {
 	DEFAULT_MAX_LINES,
 	DEFAULT_MIN_COVERAGE,
 	describeMetricForAgent,
+	formatMetricDefaultRow,
 	loadMetricCaps,
 	METRIC_CAPS_REL,
 	METRIC_DEFS,
@@ -124,5 +125,28 @@ describe("metric-caps", () => {
 		expect(msg).toContain("15");
 		expect(msg).toContain("interlinked caps set cyclomatic");
 		expect(msg.toLowerCase()).toContain("fix:");
+	});
+});
+
+describe("formatMetricDefaultRow — positive/negative (floor-vs-cap display)", () => {
+	// test-contract: bug — the unset coverage floor rendered as "coverage 0 %" in a table of maxima, reading as "capped at zero" (operator report 2026-08-16)
+	it("P: maxima render with ≤ and the unset coverage floor renders as the adopt-seeded floor sentence, never 0 %", () => {
+		const byKey = new Map(METRIC_DEFS.map((d) => [d.key, formatMetricDefaultRow(d)]));
+		expect(byKey.get("lines")).toContain("≤ 500 lines");
+		expect(byKey.get("coverage")).toContain("floor");
+		expect(byKey.get("coverage")).toContain("adopt");
+		expect(byKey.get("coverage")).not.toContain("0 %");
+	});
+
+	// test-contract: boundary — a NONZERO floor renders as a ≥ bound, keeping the higher-is-stricter direction visible
+	it("N: a nonzero higher-is-stricter default renders with ≥, not the floor-unset sentence", () => {
+		const coverage =
+			METRIC_DEFS.find((d) => d.key === "coverage") ??
+			(() => {
+				throw new Error("coverage def missing from METRIC_DEFS");
+			})();
+		const row = formatMetricDefaultRow({ ...coverage, defaultValue: 95 });
+		expect(row).toContain("≥ 95 %");
+		expect(row).not.toContain("adopt seeds");
 	});
 });

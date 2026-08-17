@@ -1,0 +1,189 @@
+// Companion for setup-wizard.ts — the harness-first onboarding flow.
+// The wizard COMPOSES existing machinery (enable/mode/caps/adopt) rather than
+// re-implementing any of it, so these tests pin the composition contract:
+// which deps run, in what order, with what arguments, under which choices —
+// through an injected-deps seam, never by mocking modules.
+
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+	applyWizardChoices,
+	choicesFromNonInteractive,
+	DEFAULT_WIZARD_CHOICES,
+	describeWizardPlan,
+	type WizardDeps,
+	writeScopeConfig,
+} from "./setup-wizard.js";
+
+function recordingDeps(): WizardDeps & { calls: string[] } {
+	const calls: string[] = [];
+	return {
+		calls,
+		enable: async (opts) => {
+			calls.push(`enable:${(opts.clients ?? "all") || "all"}:${opts.syncMode ?? "?"}`);
+		},
+		applyMode: async (name) => {
+			calls.push(`mode:${name}`);
+		},
+		setCap: async (metric, value) => {
+			calls.push(`cap:${metric}=${value}`);
+		},
+		adopt: async () => {
+			calls.push("adopt");
+		},
+		writeScope: (cwd, scope) => {
+			calls.push(`scope:${scope}`);
+			void cwd;
+		},
+	};
+}
+
+describe("applyWizardChoices — positive (must compose)", () => {
+	// test-contract: public-api — the default path is enable → mode → scope → adopt, with no cap writes when caps are untouched
+	it("P1: defaults run enable, balanced mode, diff scope, and adopt — and write no caps", async () => {
+		const deps = recordingDeps();
+		await applyWizardChoices("/repo", DEFAULT_WIZARD_CHOICES, deps);
+		expect(deps.calls).toEqual(["enable:all:local", "mode:balanced", "scope:diff", "adopt"]);
+	});
+
+	// test-contract: public-api — an edited cap writes exactly that cap, before adopt seeds baselines against it
+	it("P2: a changed cap is written via setCap, and before adopt runs", async () => {
+		const deps = recordingDeps();
+		await applyWizardChoices(
+			"/repo",
+			{ ...DEFAULT_WIZARD_CHOICES, caps: { cyclomatic: 15 } },
+			deps,
+		);
+		expect(deps.calls).toContain("cap:cyclomatic=15");
+		expect(deps.calls.indexOf("cap:cyclomatic=15")).toBeLessThan(deps.calls.indexOf("adopt"));
+	});
+
+	// test-contract: public-api — declining adopt (greenfield) skips the baseline seeding but nothing else
+	it("P3: adopt=false skips only the adopt step", async () => {
+		const deps = recordingDeps();
+		await applyWizardChoices("/repo", { ...DEFAULT_WIZARD_CHOICES, adopt: false }, deps);
+		expect(deps.calls).not.toContain("adopt");
+		expect(deps.calls[0]).toMatch(/^enable:/);
+	});
+
+	// test-contract: public-api — chosen runners are passed through to enable verbatim as a comma list
+	it("P4: selected runners reach enable as its clients option", async () => {
+		const deps = recordingDeps();
+		await applyWizardChoices(
+			"/repo",
+			{ ...DEFAULT_WIZARD_CHOICES, runners: ["claude", "codex"] },
+			deps,
+		);
+		expect(deps.calls[0]).toBe("enable:claude,codex:local");
+	});
+});
+
+describe("applyWizardChoices — negative (must not overreach)", () => {
+	// test-contract: invariant — a dep that throws does not abort the remaining steps; the wizard reports and continues
+	it("N1: a failing step is reported but later steps still run", async () => {
+		const deps = recordingDeps();
+		deps.applyMode = async () => {
+			throw new Error("mode exploded");
+		};
+		const result = await applyWizardChoices("/repo", DEFAULT_WIZARD_CHOICES, deps);
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]).toContain("mode");
+		expect(deps.calls).toContain("adopt");
+	});
+});
+
+describe("writeScopeConfig — positive/negative", () => {
+	// test-contract: invariant — the scope writer merges into guard-rules.json without clobbering unrelated keys
+	it("P5: diff scope enables diff_aware while preserving existing keys", () => {
+		const dir = mkdtempSync(join(tmpdir(), "wiz-scope-"));
+		const gr = join(dir, ".interlinked", "guard-rules.json");
+		writeScopeConfig(dir, "diff");
+		const first = JSON.parse(readFileSync(gr, "utf-8"));
+		expect(first.diff_aware.enabled).toBe(true);
+		writeFileSync(gr, JSON.stringify({ ...first, custom_rules: [{ id: "keep-me" }] }, null, 2));
+		writeScopeConfig(dir, "whole-file");
+		const second = JSON.parse(readFileSync(gr, "utf-8"));
+		expect(second.diff_aware.enabled).toBe(false);
+		expect(second.custom_rules).toEqual([{ id: "keep-me" }]);
+		rmSync(dir, { recursive: true, force: true });
+	});
+});
+
+describe("choicesFromNonInteractive — positive/negative", () => {
+	// test-contract: public-api — flags map onto choices; unknown values fall back to defaults rather than failing bootstrap
+	it("P6: mode/scope/adopt flags parse; runners split on commas", () => {
+		const c = choicesFromNonInteractive({
+			mode: "strict",
+			scope: "whole-file",
+			adopt: "false",
+			runners: "claude,gemini",
+		});
+		expect(c.mode).toBe("strict");
+		expect(c.scope).toBe("whole-file");
+		expect(c.adopt).toBe(false);
+		expect(c.runners).toEqual(["claude", "gemini"]);
+	});
+
+	// test-contract: boundary — garbage values degrade to the recommended defaults, never throw during a non-TTY bootstrap
+	it("N2: unknown mode/scope values fall back to defaults", () => {
+		const c = choicesFromNonInteractive({ mode: "yolo", scope: "everything" });
+		expect(c.mode).toBe(DEFAULT_WIZARD_CHOICES.mode);
+		expect(c.scope).toBe(DEFAULT_WIZARD_CHOICES.scope);
+	});
+});
+
+describe("moveSelection — positive/negative (shared arrow-key semantics)", () => {
+	// test-contract: invariant — both surfaces (TUI select + browser demo) wrap top↔bottom through this one function
+	it("P8: wraps past the last item to the first, and from the first back to the last", async () => {
+		const { moveSelection } = await import("./setup-wizard.js");
+		expect(moveSelection(2, 1, 3)).toBe(0);
+		expect(moveSelection(0, -1, 3)).toBe(2);
+		expect(moveSelection(1, 1, 3)).toBe(2);
+	});
+
+	// test-contract: boundary — an empty list can never produce an out-of-range index
+	it("N3: zero-length lists pin to 0 and a zero delta holds position", async () => {
+		const { moveSelection } = await import("./setup-wizard.js");
+		expect(moveSelection(5, 1, 0)).toBe(0);
+		expect(moveSelection(1, 0, 3)).toBe(1);
+	});
+});
+
+describe("parseWizardYesNo / parseWizardCapOverrides — positive/negative (shared parser rules)", () => {
+	// test-contract: public-api — both surfaces accept y/yes/1/true and n/no/0/false; empty takes the default
+	it("P9: yes/no forms parse and empty input takes the default", async () => {
+		const { parseWizardYesNo } = await import("./setup-wizard.js");
+		expect(parseWizardYesNo("YES", false)).toBe(true);
+		expect(parseWizardYesNo("0", true)).toBe(false);
+		expect(parseWizardYesNo("", true)).toBe(true);
+		expect(parseWizardYesNo("", false)).toBe(false);
+	});
+
+	// test-contract: boundary — cap overrides keep valid pairs and drop garbage without throwing
+	it("N4: cap-override parsing drops invalid pairs and keeps valid ones", async () => {
+		const { parseWizardCapOverrides } = await import("./setup-wizard.js");
+		expect(parseWizardCapOverrides("cyclomatic=15, lines = 400")).toEqual({
+			cyclomatic: 15,
+			lines: 400,
+		});
+		expect(parseWizardCapOverrides("nonsense, crap=abc, =5")).toEqual({});
+	});
+});
+
+describe("describeWizardPlan", () => {
+	// test-contract: public-api — the plan summary names every decision so the user sees what will happen before it does
+	it("P7: the rendered plan names mode, scope, runners, and adopt intent", () => {
+		const text = describeWizardPlan({
+			...DEFAULT_WIZARD_CHOICES,
+			runners: ["claude"],
+			caps: { lines: 400 },
+		}).join("\n");
+		expect(text).toContain("balanced");
+		expect(text).toContain("diff");
+		expect(text).toContain("claude");
+		expect(text).toContain("lines");
+		expect(text).toMatch(/baseline|floor|adopt/i);
+	});
+});
