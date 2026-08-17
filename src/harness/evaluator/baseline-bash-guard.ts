@@ -25,24 +25,13 @@
 
 import { isAbsolute, resolve } from "node:path";
 import { effectIsReversible } from "./baseline-effect-guard.js";
+import { isWaterLinePath } from "./water-line-files.js";
 
-/** Water-line files, mirroring BASELINE_RE in baseline-integrity-gate.ts. */
-const BASELINE_BASENAMES = [
-	"coverage-baseline.json",
-	"coverage-edit-baseline.json",
-	"mutation-baseline.json",
-	"mutation-manifest.json",
-	"large-files-baseline.json",
-	"untested-files-baseline.json",
-	"metric-caps.json",
-	"skipped-tests-baseline.json",
-	"check-evidence-baseline.json",
-];
-
-/** True when a resolved path is a `.interlinked/` water-line file. */
+/** True when a resolved path is a `.interlinked/` water-line file.
+ *  The list itself lives in water-line-files.ts — one source of truth for
+ *  every baseline guard (see its OPEN QUESTION note on the guard set's width). */
 function isBaselinePath(candidate: string): boolean {
-	const norm = candidate.replace(/\\/g, "/");
-	return BASELINE_BASENAMES.some((base) => norm.endsWith(`/.interlinked/${base}`));
+	return isWaterLinePath(candidate);
 }
 
 /**

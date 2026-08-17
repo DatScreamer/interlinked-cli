@@ -18,19 +18,18 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { isJsonObject, type JsonObject } from "../../lib/json-types.js";
+import { WATER_LINE_BASENAMES } from "../evaluator/water-line-files.js";
 import { sanitizeSessionId } from "../session-paths.js";
 
-/** The six ratchet water-line files (audited 2026-07-24: only large-files +
+/** The ratchet water-line files (audited 2026-07-24: only large-files +
  *  untested-files are git-tracked; the rest are gitignored or absent — which
- *  is exactly why they must ride the state archive, not the tree). */
-export const BASELINE_FILES: readonly string[] = [
-	"coverage-baseline.json",
-	"coverage-edit-baseline.json",
-	"mutation-baseline.json",
-	"large-files-baseline.json",
-	"untested-files-baseline.json",
-	"metric-caps.json",
-];
+ *  is exactly why they must ride the state archive, not the tree).
+ *
+ *  Derived from the shared guard set: this list used to be a hand-copy that
+ *  had fallen three files behind (mutation-manifest, skipped-tests-baseline,
+ *  check-evidence-baseline), so a Tier-2 restore rebuilt a PARTIAL water-line
+ *  state. Deriving it means the archive cannot drift from the guards again. */
+export const BASELINE_FILES: readonly string[] = WATER_LINE_BASENAMES;
 
 export interface HarnessStateSnapshot {
 	schema: "state-snapshot.v1";

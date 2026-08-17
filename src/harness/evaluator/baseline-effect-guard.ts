@@ -42,19 +42,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { detectBaselineGaming } from "./baseline-integrity-gate.js";
+import { WATER_LINE_PATHS } from "./water-line-files.js";
 
-/** Water-line files, repo-relative. Mirrors BASELINE_RE in the intent gate. */
-const BASELINE_FILES = [
-	".interlinked/coverage-baseline.json",
-	".interlinked/coverage-edit-baseline.json",
-	".interlinked/mutation-baseline.json",
-	".interlinked/mutation-manifest.json",
-	".interlinked/large-files-baseline.json",
-	".interlinked/untested-files-baseline.json",
-	".interlinked/metric-caps.json",
-	".interlinked/skipped-tests-baseline.json",
-	".interlinked/check-evidence-baseline.json",
-];
+/** Water-line files, repo-relative — the shared guard set (water-line-files.ts). */
+const BASELINE_FILES: readonly string[] = WATER_LINE_PATHS;
 
 /** Where undo records live. One file per tool call that loosened a water-line. */
 const UNDO_DIR = ".interlinked/baseline-undo";

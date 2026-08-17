@@ -27,6 +27,7 @@ import {
 	readlinkSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { WATER_LINE_PATHS } from "./evaluator/water-line-files.js";
 
 const MAX_FILES = 25_000;
 const MAX_HASH_BYTES = 8 * 1024 * 1024;
@@ -47,26 +48,26 @@ const FALLBACK_SKIP_DIRS = new Set([
 	"scratch",
 	"tmp",
 ]);
-const EXPLICIT_CONTROL_PATHS = new Set([
+/** Control paths that are NOT ratchet water-lines. The water-line subset is
+ *  derived from WATER_LINE_PATHS below, so this snapshot set is a strict
+ *  superset of the guard set and the two cannot drift apart. */
+const NON_WATER_LINE_CONTROL_PATHS = [
 	".interlinked/check-policy.json",
 	".interlinked/check-policy.local.json",
 	".interlinked/config.json",
 	".interlinked/config.local.json",
-	".interlinked/coverage-baseline.json",
-	".interlinked/coverage-edit-baseline.json",
 	".interlinked/distilled-rules.json",
 	".interlinked/distilled-rules.overrides.json",
 	".interlinked/guard-rules.json",
 	".interlinked/guard-rules.local.json",
-	".interlinked/large-files-baseline.json",
-	".interlinked/metric-caps.json",
-	".interlinked/mutation-baseline.json",
 	".interlinked/package-allowlist.json",
 	".interlinked/security-config.json",
-	".interlinked/skipped-tests-baseline.json",
 	".interlinked/suite-baseline.json",
-	".interlinked/untested-files-baseline.json",
 	".interlinked/verify-suppressions.json",
+];
+const EXPLICIT_CONTROL_PATHS = new Set([
+	...NON_WATER_LINE_CONTROL_PATHS,
+	...WATER_LINE_PATHS,
 ]);
 
 export type WorkspaceEffectKind = "created" | "modified" | "deleted";

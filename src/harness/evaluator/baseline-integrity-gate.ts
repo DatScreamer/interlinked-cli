@@ -18,12 +18,9 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
-import {
-	readDiskContent,
-	reconstructEditContent,
-	safeJsonParse,
-} from "./config-loosening-gate.js";
+import { readDiskContent, reconstructEditContent, safeJsonParse } from "./config-loosening-gate.js";
 import { detectDispositionLedger, isDispositionLedgerPath } from "./disposition-ledger-gate.js";
+import { type WaterLineStem, waterLineStem } from "./water-line-files.js";
 
 export interface BaselineGamingFinding {
 	file: string;
@@ -44,10 +41,8 @@ type BaselineKind =
 	| "skipped-tests"
 	| "check-evidence";
 
-const BASELINE_RE =
-	/(?:^|\/)\.interlinked\/(coverage-baseline|coverage-edit-baseline|mutation-baseline|mutation-manifest|large-files-baseline|untested-files-baseline|metric-caps|skipped-tests-baseline|check-evidence-baseline)\.json$/;
-
-const KIND_MAP: Record<string, BaselineKind> = {
+/** Keyed by WaterLineStem: a new water-line unhandled here is a compile error. */
+const KIND_MAP: Record<WaterLineStem, BaselineKind> = {
 	"coverage-baseline": "coverage",
 	"coverage-edit-baseline": "coverage-edit",
 	"mutation-baseline": "mutation",
@@ -60,10 +55,8 @@ const KIND_MAP: Record<string, BaselineKind> = {
 };
 
 function baselineKind(filePath: string): BaselineKind | null {
-	const m = BASELINE_RE.exec(filePath.replace(/\\/g, "/"));
-	const key = m?.[1];
-	if (!key) return null;
-	return KIND_MAP[key] ?? null;
+	const stem = waterLineStem(filePath);
+	return stem ? (KIND_MAP[stem] ?? null) : null;
 }
 
 function isNum(v: unknown): v is number {
