@@ -34,6 +34,7 @@ export {
   WIZARD_COPY,
   DEFAULT_WIZARD_CHOICES,
   describeWizardPlan,
+  describePostureReceipt,
   moveSelection,
   parseWizardYesNo,
   parseWizardCapOverrides,

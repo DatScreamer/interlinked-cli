@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	coverageGoalFor,
 	crapThresholdFor,
+	DEFAULT_COVERAGE_GOAL,
 	DEFAULT_CRAP_THRESHOLD,
 	DEFAULT_MAX_CYCLOMATIC,
 	DEFAULT_MAX_LINES,
@@ -42,6 +44,22 @@ describe("metric-caps", () => {
 		expect(DEFAULT_MAX_CYCLOMATIC).toBe(25);
 		expect(DEFAULT_CRAP_THRESHOLD).toBe(30);
 		expect(DEFAULT_MIN_COVERAGE).toBe(0);
+		// The goal is ambition-by-default (operator 2026-08-17); the FLOOR above
+		// stays 0 (off) so the goal can never brick a brownfield repo.
+		expect(DEFAULT_COVERAGE_GOAL).toBe(100);
+	});
+
+	it("coverageGoalFor: default 100, valid override honored, out-of-scale dropped", () => {
+		expect(coverageGoalFor(cwd)).toBe(100);
+		writeCaps(cwd, { coverage_goal: 85 });
+		resetMetricCapsCache();
+		expect(coverageGoalFor(cwd)).toBe(85);
+		writeCaps(cwd, { coverage_goal: 0 });
+		resetMetricCapsCache();
+		expect(coverageGoalFor(cwd)).toBe(100); // 0 is not a goal — falls to default
+		writeCaps(cwd, { coverage_goal: 140 });
+		resetMetricCapsCache();
+		expect(coverageGoalFor(cwd)).toBe(100); // beyond the scale's ceiling — dropped
 	});
 
 	it("exposes exactly the five metrics with complete glossary metadata", () => {
@@ -128,25 +146,28 @@ describe("metric-caps", () => {
 	});
 });
 
-describe("formatMetricDefaultRow — positive/negative (floor-vs-cap display)", () => {
-	// test-contract: bug — the unset coverage floor rendered as "coverage 0 %" in a table of maxima, reading as "capped at zero" (operator report 2026-08-16)
-	it("P: maxima render with ≤ and the unset coverage floor renders as the adopt-seeded floor sentence, never 0 %", () => {
+describe("formatMetricDefaultRow — positive/negative (goal-vs-cap display)", () => {
+	// test-contract: bug — coverage must read as a GOAL the ratchets climb toward
+	// (default 100), never as a bound: "coverage 0 %" read as "capped at zero"
+	// (operator 2026-08-16) and "≥/≤" phrasing reads as a gate (operator 2026-08-17)
+	it("P: maxima render with ≤ and coverage renders as the goal-100 sentence with the adopt floor", () => {
 		const byKey = new Map(METRIC_DEFS.map((d) => [d.key, formatMetricDefaultRow(d)]));
 		expect(byKey.get("lines")).toContain("≤ 500 lines");
-		expect(byKey.get("coverage")).toContain("floor");
-		expect(byKey.get("coverage")).toContain("adopt");
-		expect(byKey.get("coverage")).not.toContain("0 %");
+		expect(byKey.get("coverage")).toContain("goal 100 %");
+		expect(byKey.get("coverage")).toContain("adopt seeds today's %");
+		expect(byKey.get("coverage")).not.toContain("≥");
+		expect(byKey.get("coverage")).not.toContain("≤");
 	});
 
-	// test-contract: boundary — a NONZERO floor renders as a ≥ bound, keeping the higher-is-stricter direction visible
-	it("N: a nonzero higher-is-stricter default renders with ≥, not the floor-unset sentence", () => {
+	// test-contract: boundary — an explicit goal of 0 means "goal off, ratchet only", never a zero bound
+	it("N: a zero higher-is-stricter value renders the goal-off sentence, not a bound", () => {
 		const coverage =
 			METRIC_DEFS.find((d) => d.key === "coverage") ??
 			(() => {
 				throw new Error("coverage def missing from METRIC_DEFS");
 			})();
-		const row = formatMetricDefaultRow({ ...coverage, defaultValue: 95 });
-		expect(row).toContain("≥ 95 %");
-		expect(row).not.toContain("adopt seeds");
+		const row = formatMetricDefaultRow({ ...coverage, defaultValue: 0 });
+		expect(row).toContain("goal off");
+		expect(row).not.toContain("≥");
 	});
 });

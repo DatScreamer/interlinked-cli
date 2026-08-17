@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Interlinked Setup Wizard</title>
 <style>
   :root {
@@ -154,6 +155,7 @@ var InterlinkedWizard = (() => {
     METRIC_DEFS: () => METRIC_DEFS,
     WIZARD_COPY: () => WIZARD_COPY,
     choicesFromNonInteractive: () => choicesFromNonInteractive,
+    describePostureReceipt: () => describePostureReceipt,
     describeWizardPlan: () => describeWizardPlan,
     formatMetricDefaultRow: () => formatMetricDefaultRow,
     moveSelection: () => moveSelection,
@@ -181,11 +183,159 @@ var InterlinkedWizard = (() => {
   var appendFileSync2 = refuse2("fs.appendFileSync");
   var statSync2 = refuse2("fs.statSync");
 
+  // src/harness/metric-caps.ts
+  var DEFAULT_MAX_LINES = 500;
+  var DEFAULT_MAX_CYCLOMATIC = 25;
+  var DEFAULT_MAX_COGNITIVE_CAP = 30;
+  var DEFAULT_CRAP_THRESHOLD = 30;
+  var DEFAULT_COVERAGE_GOAL = 100;
+  function formatMetricDefaultRow(def) {
+    const key = def.key.padEnd(11);
+    if (def.stricter === "higher") {
+      const value = def.defaultValue === 0 ? "goal off \u2014 hold-or-rise ratchet only (adopt seeds your repo's current %)" : `goal ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} \u2014 adopt seeds today's % as the floor; ratchets rise toward the goal`;
+      return `${key} ${value}`;
+    }
+    return `${key} \u2264 ${String(def.defaultValue).padStart(3)}${def.unit ? ` ${def.unit}` : ""}`;
+  }
+  var METRIC_DEFS = [
+    {
+      key: "lines",
+      configKey: "max_lines",
+      label: "file size (lines)",
+      unit: "lines",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_LINES,
+      definition: "The number of lines in a single hand-written code file. Large files are harder for a human or agent to read, review, and safely edit, and slower to run a full mutation-test pass over. Generated, test, .d.ts, and non-code files are exempt.",
+      howToConfigure: "`interlinked caps set lines <n>` (or .interlinked/metric-caps.json \u2192 max_lines)",
+      fixHint: "Split the file into a re-exporting entry module plus smaller sibling modules grouped by responsibility. Shrinking or holding an over-cap file is always allowed."
+    },
+    {
+      key: "cyclomatic",
+      configKey: "max_cyclomatic",
+      label: "cyclomatic complexity (per function)",
+      unit: "branches",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_CYCLOMATIC,
+      definition: "The number of independent paths through a single function \u2014 +1 for each branch point: if / else-if / for / while / case / catch / && / || / ?:. High complexity means more test cases are needed to cover the function and it is harder to reason about. Enforced per function, and additionally ratcheted: a named function may not INCREASE its complexity even below the cap (no edit makes a function worse).",
+      howToConfigure: "`interlinked caps set cyclomatic <n>` (or .interlinked/metric-caps.json \u2192 max_cyclomatic)",
+      fixHint: "Extract cohesive groups of branches into smaller, named helper functions. There is no suppression; decomposition is the only way past."
+    },
+    {
+      key: "cognitive",
+      configKey: "max_cognitive",
+      label: "cognitive complexity (per function)",
+      unit: "",
+      stricter: "lower",
+      defaultValue: DEFAULT_MAX_COGNITIVE_CAP,
+      definition: "SonarSource's readability model: nesting is penalized (+1 plus the current depth per if/loop/switch/ternary/catch), boolean-run transitions cost 1, and a flat switch is nearly free \u2014 so it disagrees with cyclomatic exactly where human readers disagree with branch counting. Surfaced per edit as a PreToolUse warning when a function GROWS past the cap (delta semantics; holding or shrinking an over-cap function is always allowed). The stricter Sonar-default 15 fires separately as the advisory `cognitive_complexity` check.",
+      howToConfigure: "`interlinked caps set cognitive <n>` (or .interlinked/metric-caps.json \u2192 max_cognitive)",
+      fixHint: "Flatten with early returns, extract nested blocks into named helpers (extraction to top level also clears the lambda-depth penalty), or split mixed &&/|| chains into named intermediate booleans."
+    },
+    {
+      key: "crap",
+      configKey: "crap_threshold",
+      label: "CRAP score (per function)",
+      unit: "",
+      stricter: "lower",
+      defaultValue: DEFAULT_CRAP_THRESHOLD,
+      definition: "Change Risk Anti-Patterns = cyclomatic\xB2 \xB7 (1 \u2212 coverage)\xB3 + cyclomatic, per function. It is high only when a function is BOTH complex AND under-tested \u2014 a fully-covered function scores exactly its cyclomatic complexity; an uncovered complex function explodes. It is the single number for 'this function is risky to change.'",
+      howToConfigure: "`interlinked caps set crap <n>` (or .interlinked/metric-caps.json \u2192 crap_threshold)",
+      fixHint: "Add tests to cover the function, reduce its cyclomatic complexity, or both. At full coverage CRAP equals cyclomatic complexity, so keeping cyclomatic under its cap keeps CRAP safe."
+    },
+    {
+      key: "coverage",
+      configKey: "coverage_goal",
+      label: "coverage goal (per file)",
+      unit: "%",
+      stricter: "higher",
+      defaultValue: DEFAULT_COVERAGE_GOAL,
+      definition: "The coverage target this repo is climbing toward \u2014 a GOAL, not a cap (coverage cannot be capped, and nothing above the goal is ever penalized). Default 100; a team may set a less ambitious target like 80 or 90. The goal changes no gate and never bricks a brownfield repo: `interlinked adopt` records today's per-file coverage as the floor, every edit must hold-or-raise it, and added lines must be covered \u2014 so coverage only moves toward the goal. The separate `min_coverage` hard floor (default 0 = off) blocks edits below it outright and, once set, may only rise.",
+      howToConfigure: "`interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json \u2192 coverage_goal; the hard floor is min_coverage)",
+      fixHint: "Add tests that execute the added or changed lines before (or alongside) the code change."
+    }
+  ];
+
+  // src/harness/modes.ts
+  var BALANCED = {
+    name: "balanced",
+    description: "Warn-first middle ground: destructive commands blocked; type errors and lint issues warn after edits land.",
+    check_overrides: {},
+    guard_overrides: {
+      structural_checks: { test_first: true, test_first_mode: "warn", characterize_mode: "warn" },
+      per_edit_coverage: { enabled: true, debt_mode: true },
+      verification_stop_checks: { enabled: true },
+      commit_cadence: { enabled: true }
+    },
+    posture: [
+      "new source file without a test \u2192 warns (never blocks)",
+      "editing an untested legacy file \u2192 asks for a characterization test (warn)",
+      "per-edit coverage on, debt mode: an uncovered edit opens debt you settle in-pair",
+      "session-end verification + commit-cadence nudges on"
+    ]
+  };
+  var STRICT = {
+    name: "strict",
+    description: "Default. Block edits that would introduce type, lint, or test-quality errors before they land.",
+    check_overrides: {
+      // Test-quality — tiny regex/AST checks, very low FP.
+      focused_tests: "ask",
+      placeholder_test: "ask",
+      assertion_free_test: "ask",
+      tautological_assertion: "ask",
+      // Type/promise correctness — fully deterministic.
+      promise_reject_non_error: "ask",
+      floating_promises: "ask",
+      // Agent-quality — clear rules.
+      broad_object_types: "warn_before",
+      commented_out_code: "warn_before",
+      default_export: "warn_before"
+    },
+    guard_overrides: {
+      structural_checks: { test_first: true, test_first_mode: "enforce", characterize_mode: "block" },
+      per_edit_coverage: { enabled: true, debt_mode: false },
+      verification_stop_checks: { enabled: true },
+      commit_cadence: { enabled: true }
+    },
+    posture: [
+      "new source file without a companion test \u2192 blocked (TDD gate)",
+      "editing an untested legacy file without a characterization test \u2192 blocked",
+      "per-edit coverage strict: an uncovered added line blocks the edit (no debt)",
+      "session-end verification + commit-cadence nudges on"
+    ]
+  };
+  var LENIENT = {
+    name: "lenient",
+    description: "Advisory only \u2014 warn on issues but never block. Destructive guard rules still apply.",
+    check_overrides: {},
+    default_action: "info",
+    guard_overrides: {
+      structural_checks: { test_first: false, characterize_mode: "off" },
+      per_edit_coverage: { enabled: false },
+      verification_stop_checks: { enabled: false },
+      commit_cadence: { enabled: false }
+    },
+    posture: [
+      "TDD + characterize gates off; per-edit coverage off",
+      "session-end nudges off \u2014 findings still surface as warnings",
+      "security rails (destructive commands, secrets, installs) still block"
+    ]
+  };
+  var ALL_PRESETS = [STRICT, LENIENT, BALANCED];
+  var PRESETS_BY_NAME = {
+    balanced: BALANCED,
+    strict: STRICT,
+    lenient: LENIENT
+  };
+  function getPreset(name) {
+    if (name === "custom") return null;
+    return PRESETS_BY_NAME[name] ?? null;
+  }
+
   // src/commands/setup-wizard.ts
-  var WIZARD_MODES = ["balanced", "strict", "lenient"];
+  var WIZARD_MODES = ["strict", "lenient", "balanced"];
   var DEFAULT_WIZARD_CHOICES = {
     runners: null,
-    mode: "balanced",
+    mode: "strict",
     scope: "diff",
     caps: {},
     adopt: true,
@@ -245,8 +395,8 @@ var InterlinkedWizard = (() => {
       },
       caps: {
         n: 4,
-        title: "Quality caps (shipped defaults):",
-        prompt: "   Accept all? [Y] or overrides like cyclomatic=15,lines=400: "
+        title: "Quality caps + coverage goal (shipped defaults):",
+        prompt: "   Accept all? [Y] or overrides like cyclomatic=15,coverage=90: "
       },
       adopt: {
         n: 5,
@@ -259,6 +409,18 @@ var InterlinkedWizard = (() => {
     applyPrompt: "\nApply? [Y/n]: ",
     aborted: "Aborted \u2014 nothing was written.",
     complete: "Setup complete.",
+    receiptHeader: "Now enforced \u2014 every line names the command that changes it:",
+    tourHeader: "What Interlinked runs for you from here:",
+    tour: [
+      "  every tool call judged live \u2014 ~260 checks + 123 guard rules; security rails block, findings warn",
+      "  TDD: a new source file asks for its failing companion test first (strict blocks, balanced warns)",
+      "  coverage: adopt seeds today's % as the floor; every edit holds-or-raises it toward your goal",
+      "  mutation testing: `interlinked mutation` ratchets survivor scores per file; deep-audit lane, not per-edit by default",
+      "  `interlinked verify` \u2014 the local CI mirror: types, lint, secrets, deps + the default check set",
+      "  session end: a ranked stop digest and `interlinked status` scorecard, not a wall of warnings",
+      "  agent skills installed per runner teach these gates from inside the agent's own context",
+      "  everything local \u2014 no server, no account; `interlinked query` reads what it records"
+    ],
     nextSteps: [
       "Make any edit in your agent \u2014 the harness judges it live.",
       "  interlinked status     scorecard (edits judged, findings, blocks)",
@@ -284,110 +446,35 @@ var InterlinkedWizard = (() => {
     );
     return lines;
   }
-
-  // src/harness/modes.ts
-  var BALANCED = {
-    name: "balanced",
-    description: "Default. Destructive commands blocked; type errors and lint issues warn after edits land.",
-    check_overrides: {}
-  };
-  var STRICT = {
-    name: "strict",
-    description: "Block edits that would introduce type, lint, or test-quality errors before they land.",
-    check_overrides: {
-      // Test-quality — tiny regex/AST checks, very low FP.
-      focused_tests: "ask",
-      placeholder_test: "ask",
-      assertion_free_test: "ask",
-      tautological_assertion: "ask",
-      // Type/promise correctness — fully deterministic.
-      promise_reject_non_error: "ask",
-      floating_promises: "ask",
-      // Agent-quality — clear rules.
-      broad_object_types: "warn_before",
-      commented_out_code: "warn_before",
-      default_export: "warn_before"
-    }
-  };
-  var LENIENT = {
-    name: "lenient",
-    description: "Advisory only \u2014 warn on issues but never block. Destructive guard rules still apply.",
-    check_overrides: {},
-    default_action: "info"
-  };
-  var ALL_PRESETS = [BALANCED, STRICT, LENIENT];
-
-  // src/harness/metric-caps.ts
-  var DEFAULT_MAX_LINES = 500;
-  var DEFAULT_MAX_CYCLOMATIC = 25;
-  var DEFAULT_MAX_COGNITIVE_CAP = 30;
-  var DEFAULT_CRAP_THRESHOLD = 30;
-  var DEFAULT_MIN_COVERAGE = 0;
-  function formatMetricDefaultRow(def) {
-    const key = def.key.padEnd(11);
-    if (def.stricter === "higher") {
-      const value = def.defaultValue === 0 ? "floor \u2014 adopt seeds your repo's current %, then it only rises" : `\u2265 ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} floor, only rises`;
-      return `${key} ${value}`;
-    }
-    return `${key} \u2264 ${String(def.defaultValue).padStart(3)}${def.unit ? ` ${def.unit}` : ""}`;
+  function capReceiptBits(caps) {
+    return METRIC_DEFS.map((d) => {
+      const value = caps[d.key] ?? d.defaultValue;
+      if (d.stricter !== "higher") return `${d.key} \u2264 ${value}`;
+      return value === 0 ? `${d.key} goal off (ratchet only)` : `${d.key} goal ${value} %`;
+    });
   }
-  var METRIC_DEFS = [
-    {
-      key: "lines",
-      configKey: "max_lines",
-      label: "file size (lines)",
-      unit: "lines",
-      stricter: "lower",
-      defaultValue: DEFAULT_MAX_LINES,
-      definition: "The number of lines in a single hand-written code file. Large files are harder for a human or agent to read, review, and safely edit, and slower to run a full mutation-test pass over. Generated, test, .d.ts, and non-code files are exempt.",
-      howToConfigure: "`interlinked caps set lines <n>` (or .interlinked/metric-caps.json \u2192 max_lines)",
-      fixHint: "Split the file into a re-exporting entry module plus smaller sibling modules grouped by responsibility. Shrinking or holding an over-cap file is always allowed."
-    },
-    {
-      key: "cyclomatic",
-      configKey: "max_cyclomatic",
-      label: "cyclomatic complexity (per function)",
-      unit: "branches",
-      stricter: "lower",
-      defaultValue: DEFAULT_MAX_CYCLOMATIC,
-      definition: "The number of independent paths through a single function \u2014 +1 for each branch point: if / else-if / for / while / case / catch / && / || / ?:. High complexity means more test cases are needed to cover the function and it is harder to reason about. Enforced per function, and additionally ratcheted: a named function may not INCREASE its complexity even below the cap (no edit makes a function worse).",
-      howToConfigure: "`interlinked caps set cyclomatic <n>` (or .interlinked/metric-caps.json \u2192 max_cyclomatic)",
-      fixHint: "Extract cohesive groups of branches into smaller, named helper functions. There is no suppression; decomposition is the only way past."
-    },
-    {
-      key: "cognitive",
-      configKey: "max_cognitive",
-      label: "cognitive complexity (per function)",
-      unit: "",
-      stricter: "lower",
-      defaultValue: DEFAULT_MAX_COGNITIVE_CAP,
-      definition: "SonarSource's readability model: nesting is penalized (+1 plus the current depth per if/loop/switch/ternary/catch), boolean-run transitions cost 1, and a flat switch is nearly free \u2014 so it disagrees with cyclomatic exactly where human readers disagree with branch counting. Surfaced per edit as a PreToolUse warning when a function GROWS past the cap (delta semantics; holding or shrinking an over-cap function is always allowed). The stricter Sonar-default 15 fires separately as the advisory `cognitive_complexity` check.",
-      howToConfigure: "`interlinked caps set cognitive <n>` (or .interlinked/metric-caps.json \u2192 max_cognitive)",
-      fixHint: "Flatten with early returns, extract nested blocks into named helpers (extraction to top level also clears the lambda-depth penalty), or split mixed &&/|| chains into named intermediate booleans."
-    },
-    {
-      key: "crap",
-      configKey: "crap_threshold",
-      label: "CRAP score (per function)",
-      unit: "",
-      stricter: "lower",
-      defaultValue: DEFAULT_CRAP_THRESHOLD,
-      definition: "Change Risk Anti-Patterns = cyclomatic\xB2 \xB7 (1 \u2212 coverage)\xB3 + cyclomatic, per function. It is high only when a function is BOTH complex AND under-tested \u2014 a fully-covered function scores exactly its cyclomatic complexity; an uncovered complex function explodes. It is the single number for 'this function is risky to change.'",
-      howToConfigure: "`interlinked caps set crap <n>` (or .interlinked/metric-caps.json \u2192 crap_threshold)",
-      fixHint: "Add tests to cover the function, reduce its cyclomatic complexity, or both. At full coverage CRAP equals cyclomatic complexity, so keeping cyclomatic under its cap keeps CRAP safe."
-    },
-    {
-      key: "coverage",
-      configKey: "min_coverage",
-      label: "test coverage (per file)",
-      unit: "%",
-      stricter: "higher",
-      defaultValue: DEFAULT_MIN_COVERAGE,
-      definition: "The fraction of statements in a file executed by the test suite. The harness enforces a NON-DECREASE ratchet against a per-file high-water baseline \u2014 no edit may add an uncovered line or lower a file's coverage \u2014 independently of this floor. min_coverage is an additional hard floor (0 = floor off, ratchet only).",
-      howToConfigure: "`interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json \u2192 min_coverage)",
-      fixHint: "Add tests that execute the added or changed lines before (or alongside) the code change."
-    }
-  ];
+  function describePostureReceipt(choices) {
+    const preset = getPreset(choices.mode);
+    const lines = [];
+    lines.push(`  mode ${choices.mode} \u2014 ${preset?.description ?? "user-defined policy"}`);
+    for (const p of preset?.posture ?? []) lines.push(`    \xB7 ${p}`);
+    lines.push("    change: interlinked mode strict|balanced|lenient  (preview first: --diff)");
+    lines.push(`  caps: ${capReceiptBits(choices.caps).join(" \xB7 ")}`);
+    lines.push("    change: interlinked caps set <metric> <value>  \xB7  meanings: interlinked caps explain");
+    lines.push(
+      choices.scope === "diff" ? "  scope: diff \u2014 only what the agent changes is judged  (rerun the wizard to widen)" : "  scope: whole-file \u2014 every touched file judged in full  (rerun the wizard to narrow)"
+    );
+    lines.push(
+      choices.adopt ? "  baselines: seeded from today's state; ratchets only tighten  (re-seed: interlinked adopt)" : "  baselines: NOT seeded \u2014 run interlinked adopt before the strict gates bite"
+    );
+    lines.push(
+      choices.adopt ? "  installs: current deps pre-approved; new packages need interlinked allowlist add <eco> <pkg>" : "  installs: fail-closed allowlist \u2014 pre-approve current deps: interlinked allowlist snapshot --by you"
+    );
+    lines.push(
+      "  always on: destructive-command, secrets, and install rails; per-check tuning lives in .interlinked/check-policy.json"
+    );
+    return lines;
+  }
   return __toCommonJS(stdin_exports);
 })();
 
@@ -547,7 +634,14 @@ globalThis.InterlinkedWizard = InterlinkedWizard;
         if (!W.parseWizardYesNo(v, true)) { out(COPY.aborted); return; }
         out("");
         out(COPY.complete, "g");
+        out("");
+        out(COPY.receiptHeader, "b");
+        for (const line of W.describePostureReceipt(choices)) out(line, "d");
+        out("");
+        out(COPY.tourHeader, "b");
+        for (const line of COPY.tour) out(line, "d");
         const [first, ...rest] = COPY.nextSteps;
+        out("");
         out(first);
         for (const line of rest) out(line, "d");
         screen.scrollTop = screen.scrollHeight;

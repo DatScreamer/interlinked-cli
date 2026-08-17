@@ -81,6 +81,14 @@ vi.mock("./harness.js", () => ({
 	isHarnessRunning: vi.fn(),
 }));
 
+const trigramBuildMock = vi.fn(() => ({
+	save: vi.fn(),
+	stats: vi.fn(() => ({ fileCount: 42 })),
+}));
+vi.mock("../harness/trigram-index.js", () => ({
+	TrigramIndex: { build: () => trigramBuildMock() },
+}));
+
 vi.mock("./structure.js", () => ({
 	structureInitCommand: vi.fn(),
 }));
@@ -281,6 +289,28 @@ describe("enableCommand — config lifecycle", () => {
 		expect(out).toContain("Created .interlinked/config.json");
 		// initConfig called with empty opts when no --server.
 		expect(vi.mocked(initConfig)).toHaveBeenCalledWith({}, CWD);
+	});
+
+	// test-contract: behavior — enable folds the trigram index build in
+	// (2026-08-17) so grep acceleration works from the first session without a
+	// separate `interlinked index build` step.
+	it("P: builds the trigram index when absent and announces the file count", async () => {
+		vi.mocked(isConfigured).mockReturnValue(false);
+
+		await enableCommand({});
+
+		expect(trigramBuildMock).toHaveBeenCalledTimes(1);
+		expect(logged(logSpy)).toContain("trigram search index (42 files)");
+	});
+
+	it("N: skips the index build when an index already exists on disk", async () => {
+		vi.mocked(isConfigured).mockReturnValue(false);
+		const { existsSync } = await import("node:fs");
+		vi.mocked(existsSync).mockImplementation((p) => String(p).includes("trigram.lookup"));
+
+		await enableCommand({});
+
+		expect(trigramBuildMock).not.toHaveBeenCalled();
 	});
 
 	it("announces already-enabled and passes --server into initConfig when unconfigured", async () => {

@@ -42,6 +42,7 @@ import { getConfigDir } from "../lib/config.js";
 import { c, header } from "../lib/formatter.js";
 import {
 	type AdoptStepResult,
+	allowlistSnapshotStep,
 	buildIndexStep,
 	coverageStep,
 	largeFilesStep,
@@ -64,7 +65,7 @@ export interface AdoptOptions {
 	suiteBaseline?: boolean;
 }
 
-const STEP_COUNT = 5;
+const STEP_COUNT = 6;
 
 export async function adoptCommand(opts: AdoptOptions): Promise<void> {
 	const cwd = resolve(opts.cwd || process.cwd());
@@ -100,8 +101,9 @@ export async function adoptCommand(opts: AdoptOptions): Promise<void> {
 	runStep(3, () => untestedFilesStep(cwd, scan, dryRun));
 	runStep(4, () => coverageStep(cwd, coverage, dryRun));
 	runStep(5, () => metricCapsStep(cwd, dryRun));
-	// Step 6 is opt-in: the only step that RUNS project code (one suite pass).
-	if (withSuiteBaseline) sayStep(6, await suiteBaselineStep(cwd, dryRun));
+	runStep(6, () => allowlistSnapshotStep(cwd, dryRun));
+	// Step 7 is opt-in: the only step that RUNS project code (one suite pass).
+	if (withSuiteBaseline) sayStep(7, await suiteBaselineStep(cwd, dryRun));
 
 	if (json) {
 		console.log(JSON.stringify({ cwd, dry_run: dryRun, steps }, null, 2));

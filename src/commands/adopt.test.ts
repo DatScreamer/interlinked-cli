@@ -106,6 +106,7 @@ describe("interlinked adopt — full run", () => {
 			"untested_files",
 			"coverage",
 			"metric_caps",
+			"allowlist_snapshot",
 		]);
 
 		// (a) trigram index built + saved
@@ -138,6 +139,26 @@ describe("interlinked adopt — full run", () => {
 		// (e) metric-caps written with defaults
 		const caps = readJson(".interlinked/metric-caps.json");
 		expect(caps.max_lines).toBe(DEFAULT_MAX_LINES);
+
+		// (f) synthetic fixture has no manifest — snapshot honestly reports so
+		expect(steps[5]?.action).toBe("unchanged");
+		expect(steps[5]?.detail).toContain("no manifest");
+	});
+
+	// test-contract: behavior — adopt pre-approves CURRENT deps so the
+	// fail-closed install gate only prompts on genuinely new packages (2026-08-17)
+	it("snapshots existing manifests into the install allowlist", async () => {
+		writeFileSync(
+			join(cwd, "package.json"),
+			JSON.stringify({ name: "fixture", dependencies: { commander: "12.0.0" } }),
+		);
+		const steps = await runAdopt();
+		const snap = steps.find((s) => s.step === "allowlist_snapshot");
+		expect(snap?.action).toBe("written");
+		expect(snap?.detail).toContain("package.json");
+		const allowlist = readJson(".interlinked/package-allowlist.json");
+		const snaps = allowlist.lockfile_snapshots as Record<string, { approved_by: string }>;
+		expect(snaps["package.json"]?.approved_by).toBe("adopt");
 	});
 
 	it("is idempotent: a second run leaves the baselines byte-identical", async () => {
@@ -342,19 +363,19 @@ describe("interlinked adopt — default cwd (opts.cwd omitted)", () => {
 });
 
 describe("interlinked adopt — suiteBaseline opt-in step", () => {
-	it("adds a 6th step when suiteBaseline is requested", async () => {
+	it("adds a 7th step when suiteBaseline is requested", async () => {
 		const steps = await runAdopt({ dryRun: true, suiteBaseline: true } as {
 			dryRun?: boolean;
 			suiteBaseline?: boolean;
 		});
-		expect(steps).toHaveLength(6);
-		expect(steps[5]?.step).toBe("suite_baseline");
+		expect(steps).toHaveLength(7);
+		expect(steps[6]?.step).toBe("suite_baseline");
 		// The synthetic fixture has no package.json / test runner config, so
 		// detectRepoProfile finds nothing to run — "unchanged", not
 		// "would-write". Either way this exercises the withSuiteBaseline=true
-		// branch (step 6 gets appended at all).
-		expect(steps[5]?.action).toBe("unchanged");
-		expect(steps[5]?.detail).toContain("no supported test runner detected");
+		// branch (the suite step gets appended at all).
+		expect(steps[6]?.action).toBe("unchanged");
+		expect(steps[6]?.detail).toContain("no supported test runner detected");
 	});
 });
 
@@ -371,6 +392,7 @@ describe("interlinked adopt — unreadable file during the offender scan", () =>
 				"untested_files",
 				"coverage",
 				"metric_caps",
+				"allowlist_snapshot",
 			]);
 			const large = readJson(".interlinked/large-files-baseline.json");
 			expect(Object.keys(large.files as Record<string, number>)).not.toContain(

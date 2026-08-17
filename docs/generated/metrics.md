@@ -14,7 +14,7 @@ agent on any harness-running codebase is never unsure what a metric means.
 | `cyclomatic` | `max_cyclomatic` | 25 branches | lower is stricter |
 | `cognitive` | `max_cognitive` | 30 | lower is stricter |
 | `crap` | `crap_threshold` | 30 | lower is stricter |
-| `coverage` | `min_coverage` | 0 % | higher is stricter |
+| `coverage` | `coverage_goal` | 100 % | higher is stricter |
 
 ## file size (lines) (`lines`)
 
@@ -48,11 +48,11 @@ Change Risk Anti-Patterns = cyclomatic² · (1 − coverage)³ + cyclomatic, per
 - **Configure:** `interlinked caps set crap <n>` (or .interlinked/metric-caps.json → crap_threshold)
 - **Fix when an edit is blocked:** Add tests to cover the function, reduce its cyclomatic complexity, or both. At full coverage CRAP equals cyclomatic complexity, so keeping cyclomatic under its cap keeps CRAP safe.
 
-## test coverage (per file) (`coverage`)
+## coverage goal (per file) (`coverage`)
 
-The fraction of statements in a file executed by the test suite. The harness enforces a NON-DECREASE ratchet against a per-file high-water baseline — no edit may add an uncovered line or lower a file's coverage — independently of this floor. min_coverage is an additional hard floor (0 = floor off, ratchet only).
+The coverage target this repo is climbing toward — a GOAL, not a cap (coverage cannot be capped, and nothing above the goal is ever penalized). Default 100; a team may set a less ambitious target like 80 or 90. The goal changes no gate and never bricks a brownfield repo: `interlinked adopt` records today's per-file coverage as the floor, every edit must hold-or-raise it, and added lines must be covered — so coverage only moves toward the goal. The separate `min_coverage` hard floor (default 0 = off) blocks edits below it outright and, once set, may only rise.
 
-- **Shipped default:** 0 % (higher is stricter)
-- **Configure:** `interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json → min_coverage)
+- **Shipped default:** 100 % (higher is stricter)
+- **Configure:** `interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json → coverage_goal; the hard floor is min_coverage)
 - **Fix when an edit is blocked:** Add tests that execute the added or changed lines before (or alongside) the code change.
 

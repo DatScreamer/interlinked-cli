@@ -4,7 +4,7 @@
 // which deps run, in what order, with what arguments, under which choices —
 // through an injected-deps seam, never by mocking modules.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import {
 	applyWizardChoices,
 	choicesFromNonInteractive,
 	DEFAULT_WIZARD_CHOICES,
+	describePostureReceipt,
 	describeWizardPlan,
 	type WizardDeps,
 	writeScopeConfig,
@@ -42,10 +43,10 @@ function recordingDeps(): WizardDeps & { calls: string[] } {
 
 describe("applyWizardChoices — positive (must compose)", () => {
 	// test-contract: public-api — the default path is enable → mode → scope → adopt, with no cap writes when caps are untouched
-	it("P1: defaults run enable, balanced mode, diff scope, and adopt — and write no caps", async () => {
+	it("P1: defaults run enable, strict mode, diff scope, and adopt — and write no caps", async () => {
 		const deps = recordingDeps();
 		await applyWizardChoices("/repo", DEFAULT_WIZARD_CHOICES, deps);
-		expect(deps.calls).toEqual(["enable:all:local", "mode:balanced", "scope:diff", "adopt"]);
+		expect(deps.calls).toEqual(["enable:all:local", "mode:strict", "scope:diff", "adopt"]);
 	});
 
 	// test-contract: public-api — an edited cap writes exactly that cap, before adopt seeds baselines against it
@@ -107,6 +108,19 @@ describe("writeScopeConfig — positive/negative", () => {
 		const second = JSON.parse(readFileSync(gr, "utf-8"));
 		expect(second.diff_aware.enabled).toBe(false);
 		expect(second.custom_rules).toEqual([{ id: "keep-me" }]);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	// test-contract: bug-class — a malformed team-shared config must be preserved
+	// as evidence and reported, never silently rebuilt from {} (delegation to
+	// mergeIntoGuardRules, 2026-08-17)
+	it("N7: a malformed guard-rules.json refuses with the file left byte-identical", () => {
+		const dir = mkdtempSync(join(tmpdir(), "wiz-scope-bad-"));
+		const gr = join(dir, ".interlinked", "guard-rules.json");
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		writeFileSync(gr, "{ not json");
+		expect(() => writeScopeConfig(dir, "diff")).toThrow(/scope not written/);
+		expect(readFileSync(gr, "utf-8")).toBe("{ not json");
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
@@ -180,10 +194,48 @@ describe("describeWizardPlan", () => {
 			runners: ["claude"],
 			caps: { lines: 400 },
 		}).join("\n");
-		expect(text).toContain("balanced");
+		expect(text).toContain("strict");
 		expect(text).toContain("diff");
 		expect(text).toContain("claude");
 		expect(text).toContain("lines");
 		expect(text).toMatch(/baseline|floor|adopt/i);
+	});
+});
+
+describe("describePostureReceipt", () => {
+	// test-contract: public-api — the receipt is the discoverability surface: every
+	// enforced thing names the command that changes it (operator decision 2026-08-17)
+	it("P10: a strict receipt names the TDD block, strict coverage, and owner commands", () => {
+		const text = describePostureReceipt({ ...DEFAULT_WIZARD_CHOICES, mode: "strict" }).join("\n");
+		expect(text).toContain("mode strict");
+		expect(text).toContain("blocked (TDD gate)");
+		expect(text).toContain("no debt");
+		expect(text).toContain("interlinked mode strict|balanced|lenient");
+		expect(text).toContain("interlinked caps set");
+		expect(text).toContain("interlinked adopt");
+	});
+
+	it("P11: cap overrides win over shipped defaults in the caps line", () => {
+		const text = describePostureReceipt({
+			...DEFAULT_WIZARD_CHOICES,
+			caps: { cyclomatic: 15, coverage: 95 },
+		}).join("\n");
+		expect(text).toContain("cyclomatic ≤ 15");
+		expect(text).toContain("coverage goal 95 %");
+	});
+
+	// test-contract: boundary — coverage is a GOAL (default 100), never a bound:
+	// no "≥"/"≤" phrasing, and the default renders the ambition, not a zero
+	it("N5: default coverage renders as the 100 % goal, never as a bound", () => {
+		const text = describePostureReceipt({ ...DEFAULT_WIZARD_CHOICES, caps: {} }).join("\n");
+		expect(text).toContain("coverage goal 100 %");
+		expect(text).not.toContain("coverage ≥");
+		expect(text).not.toContain("coverage ≤");
+	});
+
+	it("N6: skipping adopt flips the baseline and install lines to the warning forms", () => {
+		const text = describePostureReceipt({ ...DEFAULT_WIZARD_CHOICES, adopt: false }).join("\n");
+		expect(text).toContain("NOT seeded");
+		expect(text).toContain("allowlist snapshot");
 	});
 });

@@ -23,6 +23,7 @@ import { enableCommand } from "./enable.js";
 import { modeCommand } from "./mode.js";
 import {
 	applyWizardChoices,
+	describePostureReceipt,
 	choicesFromNonInteractive,
 	DEFAULT_WIZARD_CHOICES,
 	describeWizardPlan,
@@ -264,8 +265,12 @@ export async function runSetupWizardInteractive(cwd: string = process.cwd()): Pr
 	}
 
 	console.log(c.green(`\n${WIZARD_COPY.complete}`));
+	console.log(`\n${c.bold(WIZARD_COPY.receiptHeader)}`);
+	for (const line of describePostureReceipt(choices)) console.log(c.dim(line));
+	console.log(`\n${c.bold(WIZARD_COPY.tourHeader)}`);
+	for (const line of WIZARD_COPY.tour) console.log(c.dim(line));
 	const [firstStep, ...restSteps] = WIZARD_COPY.nextSteps;
-	console.log(firstStep);
+	console.log(`\n${firstStep}`);
 	for (const line of restSteps) console.log(c.dim(line));
 }
 
@@ -286,4 +291,8 @@ export async function runSetupWizardNonInteractive(
 	for (const failure of result.failures) {
 		console.log(c.yellow(`[interlinked] step failed (re-runnable): ${failure}`));
 	}
+	console.log(c.dim(`[interlinked] ${WIZARD_COPY.receiptHeader}`));
+	for (const line of describePostureReceipt(choices)) console.log(c.dim(line));
+	console.log(c.dim(`[interlinked] ${WIZARD_COPY.tourHeader}`));
+	for (const line of WIZARD_COPY.tour) console.log(c.dim(line));
 }

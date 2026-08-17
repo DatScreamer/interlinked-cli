@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { loadCheckPolicy } from "../harness/check-policy.js";
+import { takeAllowlistSnapshot } from "./allowlist.js";
 import { coverageSetupGuidance } from "../harness/coverage-adapters.js";
 import {
 	baselinePath,
@@ -49,7 +50,14 @@ import { loadMergedReport, resolveReportPaths } from "./coverage.js";
 /** What one adoption step did (or would do, under --dry-run). */
 export interface AdoptStepResult {
 	/** Machine id (stable — the --json contract). */
-	step: "index" | "large_files" | "untested_files" | "coverage" | "metric_caps" | "suite_baseline";
+	step:
+		| "index"
+		| "large_files"
+		| "untested_files"
+		| "coverage"
+		| "metric_caps"
+		| "allowlist_snapshot"
+		| "suite_baseline";
 	/** Human label for progress lines + the summary table. */
 	label: string;
 	action: "written" | "would-write" | "unchanged" | "failed";
@@ -367,7 +375,42 @@ export function metricCapsStep(cwd: string, dryRun: boolean): AdoptStepResult {
 }
 
 // ===========================================
-// Step 6 (opt-in) — suite green-baseline (`adopt --suite-baseline`)
+// Step 6 — supply-chain allowlist snapshot
+// ===========================================
+
+/** Pre-approve the repo's CURRENT dependency state (2026-08-17). The install
+ *  gate fail-closes `npm install`/`pip install` from the first session, and a
+ *  brand-new adopter's most likely "why is this tool blocking me" moment is a
+ *  dependency they already had. Adopt's whole semantic is "accept current
+ *  reality as the baseline", so the snapshot belongs here: existing manifests
+ *  and lockfiles get hashed into approving grants, and the gate then only
+ *  prompts on genuinely NEW packages. */
+export function allowlistSnapshotStep(cwd: string, dryRun: boolean): AdoptStepResult {
+	const base = { step: "allowlist_snapshot" as const, label: "Install allowlist" };
+	if (dryRun) {
+		return {
+			...base,
+			action: "would-write",
+			detail: "would snapshot existing manifests/lockfiles into the install allowlist",
+		};
+	}
+	try {
+		const { taken } = takeAllowlistSnapshot({ cwd, by: "adopt", reason: "adopt: current deps" });
+		if (taken.length === 0) {
+			return { ...base, action: "unchanged", detail: "no manifest/lockfile found to snapshot" };
+		}
+		return { ...base, action: "written", detail: `snapshotted ${taken.join(", ")}` };
+	} catch (err) {
+		return {
+			...base,
+			action: "failed",
+			detail: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+// ===========================================
+// Step 7 (opt-in) — suite green-baseline (`adopt --suite-baseline`)
 // ===========================================
 
 /** Dependency seam so tests can stub the runner without spawning a suite. */

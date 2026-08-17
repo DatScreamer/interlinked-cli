@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Interlinked Setup Wizard</title>
 <style>
   :root {
@@ -283,7 +284,14 @@
         if (!W.parseWizardYesNo(v, true)) { out(COPY.aborted); return; }
         out("");
         out(COPY.complete, "g");
+        out("");
+        out(COPY.receiptHeader, "b");
+        for (const line of W.describePostureReceipt(choices)) out(line, "d");
+        out("");
+        out(COPY.tourHeader, "b");
+        for (const line of COPY.tour) out(line, "d");
         const [first, ...rest] = COPY.nextSteps;
+        out("");
         out(first);
         for (const line of rest) out(line, "d");
         screen.scrollTop = screen.scrollHeight;

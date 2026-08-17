@@ -23,15 +23,15 @@
 // adopter should never be asked to think about it — `interlinked login` /
 // `enable --server` remain for the users who want it.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { isJsonObject, type JsonObject } from "../lib/json-types.js";
+import { METRIC_DEFS } from "../harness/metric-caps.js";
+import { getPreset } from "../harness/modes.js";
+import { mergeIntoGuardRules } from "../harness/rules/guard-rules-write.js";
 
 /** The review-scope decision: judge only the edited region, or whole files. */
 export type WizardScope = "diff" | "whole-file";
 
 /** Enforcement-mode names accepted by the wizard (mirrors harness/modes.ts). */
-const WIZARD_MODES = ["balanced", "strict", "lenient"] as const;
+const WIZARD_MODES = ["strict", "lenient", "balanced"] as const;
 export type WizardMode = (typeof WIZARD_MODES)[number];
 
 export interface WizardChoices {
@@ -49,7 +49,7 @@ export interface WizardChoices {
 
 export const DEFAULT_WIZARD_CHOICES: WizardChoices = {
 	runners: null,
-	mode: "balanced",
+	mode: "strict",
 	scope: "diff",
 	caps: {},
 	adopt: true,
@@ -120,24 +120,14 @@ export async function applyWizardChoices(
  * including a nested pre-existing `diff_aware` sub-setting — survives.
  */
 export function writeScopeConfig(cwd: string, scope: WizardScope): void {
-	const dir = join(cwd, ".interlinked");
-	const path = join(dir, "guard-rules.json");
-	let existing: JsonObject = {};
-	try {
-		if (existsSync(path)) {
-			const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-			if (isJsonObject(parsed)) existing = parsed;
-		}
-	} catch (err) {
-		void err; // malformed → rewrite cleanly, same stance as caps.ts readExisting
-	}
-	const priorDiffAware = isJsonObject(existing.diff_aware) ? existing.diff_aware : {};
-	const next: JsonObject = {
-		...existing,
-		diff_aware: { ...priorDiffAware, enabled: scope === "diff" },
-	};
-	mkdirSync(dir, { recursive: true });
-	writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+	// Delegates to the ONE merge-preserving guard-rules.json writer (2026-08-17
+	// — this function used to carry its own merge and the policy-drift check
+	// caught the clone). Contract change with the delegation: a MALFORMED
+	// existing file now refuses and throws (preserving the evidence for the
+	// user) instead of rewriting cleanly; the wizard's per-step failure report
+	// surfaces the thrown message and every step stays re-runnable.
+	const r = mergeIntoGuardRules(cwd, { diff_aware: { enabled: scope === "diff" } });
+	if (!r.ok) throw new Error(`scope not written: ${r.error}`);
 }
 
 /**
@@ -235,8 +225,8 @@ export const WIZARD_COPY = {
 		},
 		caps: {
 			n: 4,
-			title: "Quality caps (shipped defaults):",
-			prompt: "   Accept all? [Y] or overrides like cyclomatic=15,lines=400: ",
+			title: "Quality caps + coverage goal (shipped defaults):",
+			prompt: "   Accept all? [Y] or overrides like cyclomatic=15,coverage=90: ",
 		},
 		adopt: {
 			n: 5,
@@ -249,6 +239,18 @@ export const WIZARD_COPY = {
 	applyPrompt: "\nApply? [Y/n]: ",
 	aborted: "Aborted — nothing was written.",
 	complete: "Setup complete.",
+	receiptHeader: "Now enforced — every line names the command that changes it:",
+	tourHeader: "What Interlinked runs for you from here:",
+	tour: [
+		"  every tool call judged live — ~260 checks + 123 guard rules; security rails block, findings warn",
+		"  TDD: a new source file asks for its failing companion test first (strict blocks, balanced warns)",
+		"  coverage: adopt seeds today's % as the floor; every edit holds-or-raises it toward your goal",
+		"  mutation testing: `interlinked mutation` ratchets survivor scores per file; deep-audit lane, not per-edit by default",
+		"  `interlinked verify` — the local CI mirror: types, lint, secrets, deps + the default check set",
+		"  session end: a ranked stop digest and `interlinked status` scorecard, not a wall of warnings",
+		"  agent skills installed per runner teach these gates from inside the agent's own context",
+		"  everything local — no server, no account; `interlinked query` reads what it records",
+	],
 	nextSteps: [
 		"Make any edit in your agent — the harness judges it live.",
 		"  interlinked status     scorecard (edits judged, findings, blocks)",
@@ -279,6 +281,52 @@ export function describeWizardPlan(choices: WizardChoices): string[] {
 		choices.adopt
 			? "  Baselines: adopt now — your repo today is the floor; interlinked only stops it getting worse"
 			: "  Baselines: skipped  (run later: interlinked adopt)",
+	);
+	return lines;
+}
+
+/** One receipt line per cap: overrides win; coverage renders as a GOAL the
+ *  ratchets climb toward (default 100), never as a bound. */
+function capReceiptBits(caps: WizardChoices["caps"]): string[] {
+	return METRIC_DEFS.map((d) => {
+		const value = caps[d.key] ?? d.defaultValue;
+		if (d.stricter !== "higher") return `${d.key} ≤ ${value}`;
+		return value === 0 ? `${d.key} goal off (ratchet only)` : `${d.key} goal ${value} %`;
+	});
+}
+
+/**
+ * The posture receipt — printed AFTER the wizard applies, one line per thing
+ * now enforced, each naming the command that changes it. Discoverability at
+ * the moment curiosity strikes, instead of twenty onboarding questions
+ * (operator decision 2026-08-17). Pure so the browser demo renders the SAME
+ * receipt from the same module.
+ */
+export function describePostureReceipt(choices: WizardChoices): string[] {
+	const preset = getPreset(choices.mode);
+	const lines: string[] = [];
+	lines.push(`  mode ${choices.mode} — ${preset?.description ?? "user-defined policy"}`);
+	for (const p of preset?.posture ?? []) lines.push(`    · ${p}`);
+	lines.push("    change: interlinked mode strict|balanced|lenient  (preview first: --diff)");
+	lines.push(`  caps: ${capReceiptBits(choices.caps).join(" · ")}`);
+	lines.push("    change: interlinked caps set <metric> <value>  ·  meanings: interlinked caps explain");
+	lines.push(
+		choices.scope === "diff"
+			? "  scope: diff — only what the agent changes is judged  (rerun the wizard to widen)"
+			: "  scope: whole-file — every touched file judged in full  (rerun the wizard to narrow)",
+	);
+	lines.push(
+		choices.adopt
+			? "  baselines: seeded from today's state; ratchets only tighten  (re-seed: interlinked adopt)"
+			: "  baselines: NOT seeded — run interlinked adopt before the strict gates bite",
+	);
+	lines.push(
+		choices.adopt
+			? "  installs: current deps pre-approved; new packages need interlinked allowlist add <eco> <pkg>"
+			: "  installs: fail-closed allowlist — pre-approve current deps: interlinked allowlist snapshot --by you",
+	);
+	lines.push(
+		"  always on: destructive-command, secrets, and install rails; per-check tuning lives in .interlinked/check-policy.json",
 	);
 	return lines;
 }

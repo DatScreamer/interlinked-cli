@@ -50,7 +50,7 @@ describe("capsShowAction", () => {
 		expect(nonNull(parsed.cyclomatic).value).toBe(25);
 		expect(nonNull(parsed.lines).value).toBe(500);
 		expect(nonNull(parsed.crap).value).toBe(30);
-		expect(nonNull(parsed.coverage).value).toBe(0);
+		expect(nonNull(parsed.coverage).value).toBe(100); // the GOAL, default 100
 	});
 });
 
@@ -79,7 +79,10 @@ describe("capsSetAction", () => {
 		const f = capsFile();
 		expect(f.max_lines).toBe(500);
 		expect(f.crap_threshold).toBe(20);
-		expect(f.min_coverage).toBe(90);
+		// `caps set coverage` writes the GOAL; the min_coverage hard floor is a
+		// separate hand-edited lever (2026-08-17 goal-vs-cap redesign).
+		expect(f.coverage_goal).toBe(90);
+		expect(f.min_coverage).toBeUndefined();
 	});
 
 	it("merges into an existing file without clobbering other keys", async () => {
@@ -96,11 +99,12 @@ describe("capsSetAction", () => {
 		expect(existsSync(join(cwd, ".interlinked", "metric-caps.json"))).toBe(false);
 	});
 
-	it("rejects a non-numeric or non-positive value (coverage floor 0 allowed)", async () => {
+	it("rejects a non-numeric or out-of-scale value (coverage goal bounded 1..100)", async () => {
 		expect(await capsSetAction("cyclomatic", "abc", {}, { cwd })).toBe(1);
 		expect(await capsSetAction("cyclomatic", "0", {}, { cwd })).toBe(1);
-		expect(await capsSetAction("coverage", "0", {}, { cwd })).toBe(0); // a 0 floor is valid
-		expect(await capsSetAction("coverage", "150", {}, { cwd })).toBe(1); // >100
+		expect(await capsSetAction("coverage", "0", {}, { cwd })).toBe(1); // a goal of 0 is meaningless
+		expect(await capsSetAction("coverage", "150", {}, { cwd })).toBe(1); // beyond the scale's own ceiling
+		expect(await capsSetAction("coverage", "80", {}, { cwd })).toBe(0); // a less ambitious goal is fine
 	});
 
 	it("--json emits the written override", async () => {

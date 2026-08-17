@@ -13,14 +13,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadLargeFileBaseline } from "../harness/large-file-policy.js";
 import {
+	COVERAGE_SCALE_MAX,
 	METRIC_DEFS,
 	resetMetricCapsCache,
 	resolveMetricCaps,
 } from "../harness/metric-caps.js";
 import { isJsonObject, type JsonObject } from "../lib/json-types.js";
-
-/** Highest valid coverage floor (percent). */
-const COVERAGE_MAX = 100;
 
 interface CapRow {
 	key: string;
@@ -52,22 +50,22 @@ function buildRows(cwd: string): CapRow[] {
 }
 
 /**
- * Render one `caps` row. Coverage is a FLOOR, not a cap; an unset floor (0)
- * must never render as "coverage 0 %" in a list of maxima — that reads as
- * "capped at zero" (operator report 2026-08-16). Same semantics as
- * `formatMetricDefaultRow` in harness/metric-caps.ts.
+ * Render one `caps` row. Coverage is a GOAL, not a cap (nothing above it is
+ * penalized, and it cannot exceed the scale's own 100): the number states
+ * where the hold-or-rise ratchet is heading, while `interlinked adopt` seeds
+ * today's per-file % as the floor. Same semantics as `formatMetricDefaultRow`
+ * in harness/metric-caps.ts (operator reports 2026-08-16/17).
  */
 function formatCapShowRow(r: CapRow): string {
-	if (r.stricter === "higher" && r.value === 0) {
+	if (r.stricter === "higher") {
 		return (
-			`${r.key.padEnd(11)} floor unset — \`interlinked adopt\` seeds your repo's current %` +
-			` (hold-or-rise) [${r.source}]`
+			`${r.key.padEnd(11)} goal ${String(r.value).padStart(3)} %` +
+			`     — ratchets rise toward it from your adopted floor [${r.source}; default ${r.defaultValue}]`
 		);
 	}
 	const unit = r.unit ? ` ${r.unit}` : "";
-	const bound = r.stricter === "higher" ? "≥" : "≤";
 	return (
-		`${r.key.padEnd(11)} ${bound} ${String(r.value).padStart(3)}${unit.padEnd(9)} ` +
+		`${r.key.padEnd(11)} ≤ ${String(r.value).padStart(3)}${unit.padEnd(9)} ` +
 		`[${r.source}; ${r.stricter}-is-stricter; default ${r.defaultValue}]`
 	);
 }
@@ -108,7 +106,9 @@ function readExisting(path: string): JsonObject {
 function validateValue(metricKey: string, n: number): string | null {
 	if (!Number.isFinite(n)) return "value must be a number";
 	if (metricKey === "coverage") {
-		return n < 0 || n > COVERAGE_MAX ? "coverage floor must be between 0 and 100" : null;
+		return n < 1 || n > COVERAGE_SCALE_MAX
+			? "coverage goal must be between 1 and 100 (it is a target, not a cap — 100 is the scale's own ceiling)"
+			: null;
 	}
 	return n <= 0 ? `${metricKey} cap must be a positive number` : null;
 }

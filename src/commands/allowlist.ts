@@ -410,7 +410,12 @@ const SNAPSHOT_CANDIDATES = [
 	"packages.config",
 ] as const;
 
-export function snapshotAllowlistCommand(opts: SnapshotOpts): void {
+/** Hash every present manifest/lockfile into an approving snapshot grant.
+ *  Extracted from the CLI command (2026-08-17) so `interlinked adopt` can
+ *  pre-approve the repo's CURRENT dependency state during onboarding — the
+ *  fail-closed install gate then only ever prompts on genuinely NEW packages,
+ *  which is the gate's actual job. Saves only when something was taken. */
+export function takeAllowlistSnapshot(opts: SnapshotOpts): { taken: string[] } {
 	const al = loadAllowlist(opts.cwd);
 	const candidates = opts.lockfile
 		? [opts.lockfile]
@@ -434,13 +439,18 @@ export function snapshotAllowlistCommand(opts: SnapshotOpts): void {
 		};
 		taken.push(name);
 	}
+	if (taken.length > 0) saveAllowlist(opts.cwd, al);
+	return { taken };
+}
+
+export function snapshotAllowlistCommand(opts: SnapshotOpts): void {
+	const { taken } = takeAllowlistSnapshot(opts);
 	if (taken.length === 0) {
 		process.stdout.write(
 			"no manifest/lockfile found to snapshot in this directory\n",
 		);
 		return;
 	}
-	saveAllowlist(opts.cwd, al);
 	process.stdout.write(`snapshotted ${taken.length} file(s):\n`);
 	for (const name of taken) process.stdout.write(`  ${name}\n`);
 }

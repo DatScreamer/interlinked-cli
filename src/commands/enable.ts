@@ -14,6 +14,9 @@ import {
 	resolveConfig,
 	updateLocalConfig,
 } from "../lib/config.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { TrigramIndex } from "../harness/trigram-index.js";
 import { c } from "../lib/formatter.js";
 import { clearGuardDisable } from "../lib/guard-state.js";
 import {
@@ -116,6 +119,7 @@ export async function enableCommand(options: EnableOptions): Promise<void> {
 
 	configureStatusLine(targetClients);
 	installSkillsForClients(cwd, targetClients);
+	ensureIndexBuilt(cwd);
 	await startHarnessIfNeeded(cwd);
 	noteUndetectedClients(detectedNames, targetClients, requestedClients);
 	await maybeScaffoldStructure(options.structure);
@@ -275,6 +279,27 @@ function configureStatusLine(targetClients: ClientName[]): void {
 	if (statusLinePath) {
 		console.log(
 			`\n${c.green("Configured")} status line for ${statusLineClients.join(", ")}: ${c.dim(statusLinePath)}`,
+		);
+	}
+}
+
+/** Build the trigram index when absent (2026-08-17) so grep acceleration
+ *  works from the first session instead of waiting for a separate
+ *  `interlinked index build` nobody was told about. Skips silently when an
+ *  index exists (adopt and the daemon keep it fresh incrementally); a build
+ *  failure warns and continues — search still works without the index, just
+ *  unaccelerated. Runs BEFORE the daemon start so the fresh daemon loads it. */
+function ensureIndexBuilt(cwd: string): void {
+	if (existsSync(join(cwd, ".interlinked", "index", "trigram.lookup"))) return;
+	try {
+		const index = TrigramIndex.build({ cwd });
+		index.save(join(cwd, ".interlinked"));
+		console.log(
+			`\n${c.green("Built")} trigram search index (${index.stats().fileCount} files) — grep acceleration on`,
+		);
+	} catch (err) {
+		console.log(
+			`\n${c.yellow("!")} Trigram index build failed (${err instanceof Error ? err.message : String(err)}). Run: ${c.cyan("interlinked index build")}`,
 		);
 	}
 }

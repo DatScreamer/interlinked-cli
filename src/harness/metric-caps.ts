@@ -42,19 +42,34 @@ export const DEFAULT_MAX_COGNITIVE_CAP = 30;
  *  cutoff: a cyclomatic-10 function at 0% coverage scores 110, fully covered 10. */
 export const DEFAULT_CRAP_THRESHOLD = 30;
 /** Shipped default coverage FLOOR, in percent. 0 = floor disabled (the
- *  per-file non-decrease ratchet still applies independently). */
+ *  per-file non-decrease ratchet still applies independently). This is the
+ *  hard-block lever; the user-facing "coverage" metric is the GOAL below. */
 export const DEFAULT_MIN_COVERAGE = 0;
+/** Shipped default coverage GOAL, in percent — the target the ratchets climb
+ *  toward, default 100 (operator decision 2026-08-17: ambition is the default;
+ *  a team may lower it to 80/90 as a less ambitious target). A goal never
+ *  bricks a brownfield repo: enforcement stays hold-or-rise from the adopted
+ *  baseline plus cover-what-you-add — the goal states where that ratchet is
+ *  heading and drives display/nudges, while `min_coverage` remains the
+ *  separate opt-in hard floor (rise-only under baseline_integrity_gate). */
+export const DEFAULT_COVERAGE_GOAL = 100;
+/** Coverage percentages live on a 0–100 scale; this is the scale's own ceiling
+ *  (shared by the goal validation here and `caps set coverage` bounds). */
+export const COVERAGE_SCALE_MAX = 100;
 
 /** The five metrics, by stable key. */
 export type MetricKey = "lines" | "cyclomatic" | "cognitive" | "crap" | "coverage";
 
-/** Fully-resolved caps for a repo (every key populated). */
+/** Fully-resolved caps for a repo (every key populated). `coverage_goal` is a
+ *  TARGET, not a gate input: enforcement reads `min_coverage` (hard floor) and
+ *  the per-file high-water ratchet; the goal drives display and nudges. */
 export interface MetricCaps {
 	max_lines: number;
 	max_cyclomatic: number;
 	max_cognitive: number;
 	crap_threshold: number;
 	min_coverage: number;
+	coverage_goal: number;
 }
 
 /** Where a resolved cap's value came from (shown by `interlinked caps`). */
@@ -95,19 +110,19 @@ export interface MetricDef {
  * the demo bundles this module, so the wording cannot drift).
  *
  * The row must respect the metric's direction. Four caps are maxima; coverage
- * is a FLOOR (higher-is-stricter, hold-or-rise), and its shipped default of 0
- * means "no floor until `interlinked adopt` seeds your repo's actual level" —
- * NOT "coverage capped at 0%". Rendering the raw number produced exactly that
- * misreading (operator report, 2026-08-16: "no one talks about coverage in
- * terms of zero percent as a maximum cap").
+ * is a GOAL (higher-is-stricter): the target the hold-or-rise ratchet climbs
+ * toward, default 100, never a cap. Two operator reports shaped this wording —
+ * 2026-08-16 ("no one talks about coverage in terms of zero percent as a
+ * maximum cap") and 2026-08-17 ("adjust the number as a goal rather than a
+ * cap; the default should be 100").
  */
 export function formatMetricDefaultRow(def: MetricDef): string {
 	const key = def.key.padEnd(11);
 	if (def.stricter === "higher") {
 		const value =
 			def.defaultValue === 0
-				? "floor — adopt seeds your repo's current %, then it only rises"
-				: `≥ ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} floor, only rises`;
+				? "goal off — hold-or-rise ratchet only (adopt seeds your repo's current %)"
+				: `goal ${def.defaultValue}${def.unit ? ` ${def.unit}` : ""} — adopt seeds today's % as the floor; ratchets rise toward the goal`;
 		return `${key} ${value}`;
 	}
 	return `${key} ≤ ${String(def.defaultValue).padStart(3)}${def.unit ? ` ${def.unit}` : ""}`;
@@ -192,17 +207,22 @@ export const METRIC_DEFS: readonly MetricDef[] = [
 	},
 	{
 		key: "coverage",
-		configKey: "min_coverage",
-		label: "test coverage (per file)",
+		configKey: "coverage_goal",
+		label: "coverage goal (per file)",
 		unit: "%",
 		stricter: "higher",
-		defaultValue: DEFAULT_MIN_COVERAGE,
+		defaultValue: DEFAULT_COVERAGE_GOAL,
 		definition:
-			"The fraction of statements in a file executed by the test suite. The harness " +
-			"enforces a NON-DECREASE ratchet against a per-file high-water baseline — no edit " +
-			"may add an uncovered line or lower a file's coverage — independently of this floor. " +
-			"min_coverage is an additional hard floor (0 = floor off, ratchet only).",
-		howToConfigure: "`interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json → min_coverage)",
+			"The coverage target this repo is climbing toward — a GOAL, not a cap (coverage " +
+			"cannot be capped, and nothing above the goal is ever penalized). Default 100; a " +
+			"team may set a less ambitious target like 80 or 90. The goal changes no gate and " +
+			"never bricks a brownfield repo: `interlinked adopt` records today's per-file " +
+			"coverage as the floor, every edit must hold-or-raise it, and added lines must be " +
+			"covered — so coverage only moves toward the goal. The separate `min_coverage` " +
+			"hard floor (default 0 = off) blocks edits below it outright and, once set, may " +
+			"only rise.",
+		howToConfigure:
+			"`interlinked caps set coverage <pct>` (or .interlinked/metric-caps.json → coverage_goal; the hard floor is min_coverage)",
 		fixHint:
 			"Add tests that execute the added or changed lines before (or alongside) the code change.",
 	},
@@ -223,6 +243,7 @@ interface RawMetricCaps {
 	max_cognitive?: unknown;
 	crap_threshold?: unknown;
 	min_coverage?: unknown;
+	coverage_goal?: unknown;
 }
 
 /** A partial set of overrides parsed from the file (only present, valid keys). */
@@ -236,6 +257,14 @@ let overridesCache = new Map<string, CacheEntry>();
 
 function readPositive(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Goal percentages live on a bounded scale: a goal of 0 is meaningless
+ *  ("aiming for nothing") and 100 is the scale's own ceiling — outside 1..100
+ *  the entry is invalid and falls back to the default. */
+function readGoalPct(value: unknown): number | undefined {
+	const n = readPositive(value);
+	return n !== undefined && n >= 1 && n <= COVERAGE_SCALE_MAX ? n : undefined;
 }
 
 /** Parse a raw object into the present, valid overrides only. Caps must be
@@ -254,6 +283,8 @@ function normalizeOverrides(raw: unknown): MetricCapsOverrides {
 	if (crap !== undefined && crap > 0) out.crap_threshold = crap;
 	const minCoverage = readPositive(obj.min_coverage);
 	if (minCoverage !== undefined) out.min_coverage = minCoverage;
+	const goal = readGoalPct(obj.coverage_goal);
+	if (goal !== undefined) out.coverage_goal = goal;
 	return out;
 }
 
@@ -308,6 +339,7 @@ const DEFAULTS: MetricCaps = {
 	max_cognitive: DEFAULT_MAX_COGNITIVE_CAP,
 	crap_threshold: DEFAULT_CRAP_THRESHOLD,
 	min_coverage: DEFAULT_MIN_COVERAGE,
+	coverage_goal: DEFAULT_COVERAGE_GOAL,
 };
 
 /** A resolved cap value plus where it came from. */
@@ -326,7 +358,8 @@ function resolveOne(
 	return { value: fallback, source: "default" };
 }
 
-/** Resolve all five caps with provenance: metric-caps.json → legacy → default. */
+/** Resolve every cap (and the coverage goal) with provenance:
+ *  metric-caps.json → legacy → default. */
 export function resolveMetricCaps(
 	cwd: string,
 	legacy: LegacyCapInputs = {},
@@ -338,6 +371,7 @@ export function resolveMetricCaps(
 		max_cognitive: resolveOne(o.max_cognitive, undefined, DEFAULTS.max_cognitive),
 		crap_threshold: resolveOne(o.crap_threshold, legacy.crap_threshold, DEFAULTS.crap_threshold),
 		min_coverage: resolveOne(o.min_coverage, undefined, DEFAULTS.min_coverage),
+		coverage_goal: resolveOne(o.coverage_goal, undefined, DEFAULTS.coverage_goal),
 	};
 }
 
@@ -360,6 +394,13 @@ export function crapThresholdFor(cwd: string, legacy?: number): number {
 /** Effective coverage floor (percent) for `cwd`. */
 export function minCoverageFor(cwd: string): number {
 	return loadMetricCaps(cwd).min_coverage ?? DEFAULT_MIN_COVERAGE;
+}
+
+/** Effective coverage GOAL (percent) for `cwd` — the display/nudge target;
+ *  never consulted by a blocking gate (that is `minCoverageFor` + the
+ *  high-water ratchet). */
+export function coverageGoalFor(cwd: string): number {
+	return loadMetricCaps(cwd).coverage_goal ?? DEFAULT_COVERAGE_GOAL;
 }
 
 /** The metric-caps.json `max_lines` override, if any (large-file-policy layers

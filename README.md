@@ -95,10 +95,16 @@ formal npm package. Requires Node.js 22+. Supported on macOS and Linux
 (including WSL on Windows — native Windows is not supported).
 
 ```bash
+npm install -g github:QuentinCody/interlinked-cli   # one step: clone+build+link
+```
+
+Prefer a working checkout you can read and update in place? The long form is
+equivalent (`prepare` builds `dist/` during `npm ci` automatically):
+
+```bash
 git clone https://github.com/QuentinCody/interlinked-cli.git
 cd interlinked-cli
-npm ci
-npm run build          # produces dist/index.js + dist/hook-entry.js
+npm ci                 # builds dist/index.js + dist/hook-entry.js via prepare
 npm link               # exposes `interlinked` and `interlinked-hook` on PATH
 ```
 

@@ -32,7 +32,22 @@ hooks, guard, and activity capture work with zero network.
 
 | Command | What it does | When to use |
 |---|---|---|
-| bare `interlinked` (unconfigured repo) | **The harness-first setup wizard** (2026-08-16): five one-line decisions — runners to hook, enforcement mode (`balanced`/`strict`/`lenient`), review scope (`diff`/`whole-file` → `guard-rules.json` `diff_aware.enabled`), cap overrides, and brownfield `adopt` — each Enter-accepts a recommended default, shows the plan, then composes `enable` + `mode` + `caps set` + `adopt`. Local-first: never asks about a server. Non-TTY: env-driven (`INTERLINKED_MODE` / `INTERLINKED_SCOPE` / `INTERLINKED_ADOPT` / `INTERLINKED_CLIENTS`). A failed step reports and continues — every step is individually re-runnable via the owning command. | A new user's first touch; the fastest correct install. |
+| bare `interlinked` (unconfigured repo) | **The harness-first setup wizard** (2026-08-16): five one-line decisions — runners to hook, enforcement mode (`strict` — the recommended default — /`lenient`/`balanced`), review scope (`diff`/`whole-file` → `guard-rules.json` `diff_aware.enabled`), cap overrides, and brownfield `adopt` — each Enter-accepts a recommended default, shows the plan, then composes `enable` + `mode` + `caps set` + `adopt`. Local-first: never asks about a server. Non-TTY: env-driven (`INTERLINKED_MODE` / `INTERLINKED_SCOPE` / `INTERLINKED_ADOPT` / `INTERLINKED_CLIENTS`). A failed step reports and continues — every step is individually re-runnable via the owning command. Ends with a **posture receipt** (2026-08-17): one line per thing now enforced, each naming the command that changes it. | A new user's first touch; the fastest correct install. |
+
+**A mode is a posture, not just check severities (2026-08-17).** `interlinked mode
+strict|balanced|lenient` also ladders the philosophy-dependent gates into
+`guard-rules.json` (merge-preserving; later hand edits win until the mode is
+re-applied): the new-file TDD gate (`strict`=block, `balanced`=warn,
+`lenient`=off), per-edit coverage (`strict`=no-debt blocking, `balanced`=debt
+mode, `lenient`=off), and the session-end verification/commit-cadence nudges
+(`lenient` turns them off). Security rails and tighten-only ratchets never
+ladder. `custom` applies nothing.
+
+**Folded into onboarding (2026-08-17), no longer separate steps:** `enable`
+builds the trigram index when absent (grep acceleration works from session
+one), and `adopt` step 6 snapshots existing manifests/lockfiles into the
+install allowlist (`approved_by: "adopt"`) so the fail-closed install gate only
+prompts on genuinely NEW packages.
 | `interlinked enable` | Full setup: writes `.interlinked/` config, installs per-client hooks, updates `.gitignore`, installs statusline (Claude/Copilot), installs every bundled Interlinked skill, **auto-starts the daemon**. Idempotent; re-running **clears any stand-down**. | The normal way to turn Interlinked on. |
 | `interlinked setup` | Runs `enable`, then `login` if no token (skips login on localhost / when a token is present). | You also want server auth right away. |
 | `interlinked init` | Interactive/auto onboarding wizard (`--yes` for non-interactive): installs hooks on its own path, logs in, attaches a workspace — and installs **no skills**. | Guided team/workspace setup only. |
