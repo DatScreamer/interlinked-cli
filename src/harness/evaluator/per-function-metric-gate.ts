@@ -1,0 +1,440 @@
+// ===========================================
+// Generic PreToolUse gate — per-function metric cap (strict, no override)
+// ===========================================
+// The shared engine behind the two per-function metric gates:
+// `checkFunctionComplexityWrite` (cyclomatic, complexity-write-guard.ts) and
+// `checkCognitiveComplexityWrite` (cognitive, cognitive-write-guard.ts). Both
+// were hand-mirrored copies of the same seven helpers differing only in which
+// metric field they read; this module is that mirror collapsed into one
+// parameterized implementation so the two gates can no longer drift.
+//
+// DELTA semantics, mirroring the line-cap gate: an edit that holds or reduces an
+// already-over-cap function is always allowed — the refactor-down path — so the
+// on-disk before-state is the implicit ratchet baseline. Only a NEW over-cap
+// function, RAISING an existing function past the cap, or a sub-cap rise larger
+// than the metric's per-edit slew tolerance is blocked.
+//
+// There is deliberately NO escape hatch / suppression: an agent-writable
+// override gets gamed, which defeats the gate. The only way past is to
+// decompose (or, for cognitive, to flatten).
+//
+// Everything a metric may differ in is a field on `MetricGateSpec`: the entry
+// type and its value accessor, the analyzer dispatch (cyclomatic dispatches
+// Python to radon; cognitive is JS/TS only), the loud-degrade callback, the cap
+// resolver, the per-edit slew tolerance (cyclomatic 2, cognitive 4), and every
+// word of the block message including the metric-specific advice.
+
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import type { JsonObject } from "../../lib/json-types.js";
+import { nonNull } from "../../lib/non-null.js";
+import {
+	extractApplyPatchRaw,
+	looksLikeApplyPatch,
+	parseApplyPatchSections,
+	reconstructAfterContent,
+} from "../apply-patch-content.js";
+import { isCappableFile } from "../large-file-policy.js";
+
+/** The only structural requirement on a metric's per-function entry: a name.
+ *  The numeric value is read through the spec's `metricOf`, so an entry may
+ *  carry the metric under any field name. */
+export interface NamedMetricEntry {
+	name: string;
+}
+
+/** A per-function metric counter for ONE language. Returns `null` — the loud
+ *  "analyzer unavailable" signal — when the backing parser is absent, which the
+ *  caller fails open on. `language` only tags the degrade callback. */
+export interface MetricAnalyzer<E extends NamedMetricEntry> {
+	compute: (content: string, filePath: string) => E[] | null;
+	language: string;
+}
+
+/**
+ * Telemetry observer — receives the before/after entries the gate already
+ * parsed for every analyzed file, plus the projected after-content (for
+ * content-hash matching at PostToolUse). Observation only: it never affects the
+ * block decision. Used by the cyclomatic pulse (complexity-pulse.ts); the
+ * cognitive gate passes no observer.
+ */
+export type MetricObserver<E extends NamedMetricEntry> = (
+	filePath: string,
+	beforeFns: E[],
+	afterFns: E[],
+	afterContent: string,
+) => void;
+
+/** Everything one per-function metric gate differs in. */
+export interface MetricGateSpec<E extends NamedMetricEntry> {
+	/** Metric id — the `[interlinked:<label>]` tag, the `caps set <label>`
+	 *  subject, and the word inside each violation string. */
+	label: string;
+	/** Entry name used by the analyzer for anonymous units (no cross-edit identity). */
+	anonName: string;
+	/** Max per-edit rise allowed for a uniquely-named function at/under the cap. */
+	slewTolerance: number;
+	/** Read the metric value off one entry. */
+	metricOf: (entry: E) => number;
+	/** Pick the analyzer for a path, or null to skip the file entirely. */
+	selectAnalyzer: (filePath: string) => MetricAnalyzer<E> | null;
+	/** Resolve the hard cap for this repo (`.interlinked/metric-caps.json`). */
+	capFor: (cwd: string) => number;
+	/** Called (fail-open) when the analyzer for `language` is unavailable. */
+	onAnalyzerUnavailable?: (language: string) => void;
+	/** Message: the noun phrase after "past a" (e.g. "cyclomatic limit"). */
+	limitPhrase: string;
+	/** Message: plural unit for the slew allowance (e.g. "branch(es)"). */
+	unitPlural: string;
+	/** Message: adjectival unit for the cap (e.g. "branch" → "25-branch cap"). */
+	unitAdj: string;
+	/** Message: the metric-specific remediation sentence(s). */
+	advice: string;
+}
+
+export interface MetricWriteBlock {
+	block: string;
+}
+
+/** One file-path resolution rule for every per-function metric gate — no drift
+ *  between them about which key carries the target path. */
+export function resolveFilePath(toolInput: JsonObject): string {
+	return (
+		(typeof toolInput.file_path === "string" && toolInput.file_path) ||
+		(typeof toolInput.path === "string" && toolInput.path) ||
+		""
+	);
+}
+
+function safeRead(abs: string): string | null {
+	try {
+		return readFileSync(abs, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+/** Apply one old→new replacement (first occurrence, or all when replace_all). */
+function applyEdit(text: string, oldStr: string, newStr: string, all: boolean): string {
+	if (all) return text.split(oldStr).join(newStr);
+	const idx = text.indexOf(oldStr);
+	return idx === -1 ? text : text.slice(0, idx) + newStr + text.slice(idx + oldStr.length);
+}
+
+/** Materialize before/after content for a Write/Edit/MultiEdit, else null. One
+ *  edit-application rule for every per-function metric gate. */
+export function projectContent(
+	toolInput: JsonObject,
+	abs: string,
+): { before: string; after: string } | null {
+	const before = existsSync(abs) ? safeRead(abs) : "";
+	if (before === null) return null;
+
+	if (typeof toolInput.content === "string") {
+		return { before, after: toolInput.content };
+	}
+	if (typeof toolInput.old_string === "string" && typeof toolInput.new_string === "string") {
+		if (before === "") return null; // Edit needs an existing file
+		const all = toolInput.replace_all === true;
+		return { before, after: applyEdit(before, toolInput.old_string, toolInput.new_string, all) };
+	}
+	if (Array.isArray(toolInput.edits)) {
+		if (before === "") return null;
+		let after = before;
+		for (const raw of toolInput.edits) {
+			if (typeof raw !== "object" || raw === null) continue;
+			const e = raw as JsonObject;
+			if (typeof e.old_string !== "string" || typeof e.new_string !== "string") continue;
+			after = applyEdit(after, e.old_string, e.new_string, e.replace_all === true);
+		}
+		return { before, after };
+	}
+	return null; // unknown shape — fail open (apply_patch is handled separately)
+}
+
+/** Count of entries per name within ONE state, used to tell a uniquely-named
+ *  function from a same-file name collision. */
+function countByName<E extends NamedMetricEntry>(entries: readonly E[]): Map<string, number> {
+	const m = new Map<string, number>();
+	for (const e of entries) m.set(e.name, (m.get(e.name) ?? 0) + 1);
+	return m;
+}
+
+/** True when `name` has no reliable cross-edit identity in that state:
+ *  anonymous, or colliding with another same-named function. */
+function isAmbiguousName(anonName: string, name: string, counts: Map<string, number>): boolean {
+	return name === anonName || (counts.get(name) ?? 0) > 1;
+}
+
+/** name → max metric value among same-named entries (anonymous skipped). */
+function maxByName<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	entries: readonly E[],
+): Map<string, number> {
+	const m = new Map<string, number>();
+	for (const e of entries) {
+		if (e.name === spec.anonName) continue;
+		m.set(e.name, Math.max(m.get(e.name) ?? 0, spec.metricOf(e)));
+	}
+	return m;
+}
+
+/** Map of UNIQUELY-named entries (name appears exactly once) → metric value.
+ *  Collisions and anonymous entries are excluded — no cross-edit identity. */
+function uniqueByName<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	entries: readonly E[],
+): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const e of entries) {
+		if (e.name === spec.anonName) continue;
+		counts.set(e.name, (counts.get(e.name) ?? 0) + 1);
+	}
+	const out = new Map<string, number>();
+	for (const e of entries) {
+		if (e.name !== spec.anonName && counts.get(e.name) === 1) out.set(e.name, spec.metricOf(e));
+	}
+	return out;
+}
+
+/** (1a) Identity-based over-cap violations: a uniquely-named over-cap entry is
+ *  compared against ITS OWN prior value, or against the cap when the name is
+ *  brand new. Never against another entry's rank. This is what catches a
+ *  decomposition that RELOCATES the excess into a new, still-over-cap helper. */
+function identityOverCapViolations<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	afterOver: readonly E[],
+	afterNameCounts: Map<string, number>,
+	beforeByName: Map<string, number>,
+): string[] {
+	const out: string[] = [];
+	for (const e of afterOver) {
+		if (isAmbiguousName(spec.anonName, e.name, afterNameCounts)) continue;
+		const prior = beforeByName.get(e.name);
+		const value = spec.metricOf(e);
+		if (prior !== undefined && value <= prior) continue; // held or reduced
+		const how = prior !== undefined ? `raised from ${prior}` : "new over-cap function";
+		out.push(`${e.name} (${spec.label} ${value}, ${how})`);
+	}
+	return out;
+}
+
+/** (1b) Pooled sorted-multiset comparison, scoped to AMBIGUOUS (anonymous /
+ *  collision-named) entries only — names genuinely cannot be trusted there, so
+ *  the identity-free rank comparison still owns that subset. */
+function pooledAmbiguousOverCapViolations<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	afterOver: readonly E[],
+	beforeEntries: readonly E[],
+	afterNameCounts: Map<string, number>,
+	beforeNameCounts: Map<string, number>,
+	cap: number,
+): string[] {
+	const afterAmbiguous = afterOver
+		.filter((e) => isAmbiguousName(spec.anonName, e.name, afterNameCounts))
+		.sort((a, b) => spec.metricOf(b) - spec.metricOf(a));
+	if (afterAmbiguous.length === 0) return [];
+
+	const beforeVals = beforeEntries
+		.filter(
+			(e) =>
+				spec.metricOf(e) > cap && isAmbiguousName(spec.anonName, e.name, beforeNameCounts),
+		)
+		.map((e) => spec.metricOf(e))
+		.sort((a, b) => b - a);
+
+	const out: string[] = [];
+	for (let i = 0; i < afterAmbiguous.length; i++) {
+		const post = nonNull(afterAmbiguous[i]);
+		const baseline = beforeVals[i] ?? cap;
+		const value = spec.metricOf(post);
+		if (value <= baseline) continue; // this rank held or reduced
+		const how =
+			post.name === spec.anonName ? "new anonymous function over cap" : "new over-cap function";
+		out.push(`${post.name} (${spec.label} ${value}, ${how})`);
+	}
+	return out;
+}
+
+/** (2) Over-tolerance sub-cap rises of uniquely-named entries vs the
+ *  before-state. `<= cap` band only — a rise that lands over the cap is owned
+ *  by the over-cap path, not double-reported. */
+function subCapSlewViolations<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	beforeEntries: readonly E[],
+	afterEntries: readonly E[],
+	cap: number,
+): string[] {
+	const before = uniqueByName(spec, beforeEntries);
+	const out: string[] = [];
+	for (const [name, post] of uniqueByName(spec, afterEntries)) {
+		const pre = before.get(name);
+		if (pre !== undefined && post <= cap && post - pre > spec.slewTolerance) {
+			out.push(
+				`${name} (${spec.label} ${pre} -> ${post} — rose ${post - pre} in one edit, ` +
+					`over the +${spec.slewTolerance}/edit sub-cap limit)`,
+			);
+		}
+	}
+	return out.sort();
+}
+
+/**
+ * Metric violations for ONE file's before→after content. Returns an array of
+ * human-readable violation strings (empty = no violation), or `null` when the
+ * analyzer is unavailable → caller fails open.
+ *
+ * The over-cap band is a HYBRID of identity-based and identity-free comparison.
+ * Pure rank comparison misses relocation (shrink the target, spawn an over-cap
+ * helper: the sorted profile improves at every rank). Pure name comparison
+ * misses shuffles between same-named functions and new anonymous callbacks. So
+ * uniquely-named entries compare by identity (1a) and ambiguous ones pool by
+ * rank (1b).
+ */
+export function metricViolations<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	before: string,
+	after: string,
+	filePath: string,
+	analyzer: MetricAnalyzer<E>,
+	cap: number,
+	observe?: MetricObserver<E>,
+): string[] | null {
+	const afterEntries = analyzer.compute(after, filePath);
+	if (!afterEntries) {
+		// Analyzer unavailable → fail open (no FP-blocking), but let the spec
+		// surface the degrade so it is never silent.
+		spec.onAnalyzerUnavailable?.(analyzer.language);
+		return null;
+	}
+	const beforeEntries = analyzer.compute(before, filePath) ?? [];
+	// Hand the already-paid parses to the telemetry observer (decision unaffected).
+	observe?.(filePath, beforeEntries, afterEntries, after);
+
+	const violations: string[] = [];
+	const afterOver = afterEntries.filter((e) => spec.metricOf(e) > cap);
+	if (afterOver.length > 0) {
+		const afterNameCounts = countByName(afterEntries);
+		violations.push(
+			...identityOverCapViolations(
+				spec,
+				afterOver,
+				afterNameCounts,
+				maxByName(spec, beforeEntries),
+			),
+		);
+		violations.push(
+			...pooledAmbiguousOverCapViolations(
+				spec,
+				afterOver,
+				beforeEntries,
+				afterNameCounts,
+				countByName(beforeEntries),
+				cap,
+			),
+		);
+	}
+	violations.push(...subCapSlewViolations(spec, beforeEntries, afterEntries, cap));
+	return violations;
+}
+
+/** The shared block payload for a set of violation strings. */
+export function buildMetricBlock<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	violations: string[],
+	cap: number,
+): string {
+	return (
+		`[interlinked:${spec.label}] BLOCKED: this edit pushes ${violations.length} function(s) past a ` +
+		`${spec.limitPhrase} — a function may rise by at most ${spec.slewTolerance} ${spec.unitPlural} ` +
+		`per edit, and no function may exceed the ${cap}-${spec.unitAdj} cap:\n` +
+		`${violations.map((v) => `  • ${v}`).join("\n")}\n` +
+		`${spec.advice} Holding or reducing an existing function is always allowed; ` +
+		"there is no suppression.\n" +
+		`This ${cap}-${spec.unitAdj} cap is per-repo configurable: \`interlinked caps set ${spec.label} <n>\` ` +
+		`(run \`interlinked caps explain ${spec.label}\` for what ${spec.label} complexity measures).`
+	);
+}
+
+/**
+ * apply_patch path: reconstruct each section's post-edit content and run the
+ * same comparison per file. Fails open per-file when the applier can't
+ * confidently reconstruct (so a misparse never false-blocks), and entirely when
+ * the analyzer is unavailable.
+ */
+function checkApplyPatch<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	toolInput: JsonObject,
+	cwd: string,
+	observe?: MetricObserver<E>,
+): MetricWriteBlock | null {
+	const raw = extractApplyPatchRaw(toolInput);
+	if (!raw || !looksLikeApplyPatch(raw)) return null;
+
+	const violations: string[] = [];
+	const cap = spec.capFor(cwd);
+	for (const section of parseApplyPatchSections(raw)) {
+		const analyzer = spec.selectAnalyzer(section.path);
+		if (!analyzer) continue; // extension the metric can't analyze → skip
+		// Read before-content from the SOURCE path for a moved section — the
+		// destination doesn't exist yet, so reading it yields "" and the update
+		// hunks fail to reconstruct → the gate would silently fail open on a move
+		// that introduced an over-cap function (finding 2026-06).
+		const readPath = section.fromPath ?? section.path;
+		const abs = isAbsolute(readPath) ? readPath : resolve(cwd, readPath);
+		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
+		const after = reconstructAfterContent(section, before);
+		if (after === null) continue; // can't reconstruct confidently → fail open for this file
+		if (!isCappableFile({ filePath: section.path, content: after, root: cwd })) continue;
+		const fileViolations = metricViolations(
+			spec,
+			before,
+			after,
+			section.path,
+			analyzer,
+			cap,
+			observe,
+		);
+		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
+		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
+	}
+	if (violations.length === 0) return null;
+	return { block: buildMetricBlock(spec, violations, cap) };
+}
+
+/**
+ * Block a Write/Edit/MultiEdit/apply_patch that introduces or worsens an
+ * over-cap function under `spec`'s metric. Returns null (allow) for unanalyzable
+ * extensions, exempt files, missing analyzer support, or when the edit only
+ * holds/reduces the metric.
+ */
+export function checkPerFunctionMetricWrite<E extends NamedMetricEntry>(
+	spec: MetricGateSpec<E>,
+	toolInput: JsonObject,
+	cwd: string,
+	observe?: MetricObserver<E>,
+): MetricWriteBlock | null {
+	const filePath = resolveFilePath(toolInput);
+	if (filePath) {
+		const analyzer = spec.selectAnalyzer(filePath);
+		if (!analyzer) return null; // extension the metric can't analyze → skip
+		const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+		const projected = projectContent(toolInput, abs);
+		if (!projected) return null;
+		if (!isCappableFile({ filePath, content: projected.after, root: cwd })) return null;
+		const cap = spec.capFor(cwd);
+		const violations = metricViolations(
+			spec,
+			projected.before,
+			projected.after,
+			filePath,
+			analyzer,
+			cap,
+			observe,
+		);
+		if (violations === null || violations.length === 0) return null;
+		return { block: buildMetricBlock(spec, violations, cap) };
+	}
+	// No explicit file_path → may be an apply_patch payload (multi-file).
+	return checkApplyPatch(spec, toolInput, cwd, observe);
+}

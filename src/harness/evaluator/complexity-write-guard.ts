@@ -2,17 +2,24 @@
 // PreToolUse gate — per-function cyclomatic cap (strict, no override)
 // ===========================================
 // Blocks a Write/Edit/MultiEdit/apply_patch that would push a function's
-// cyclomatic complexity past the cap. DELTA semantics, mirroring the line-cap
-// gate (`checkLargeFileLineCountWrite`): an edit that holds or reduces an
-// already-complex function is always allowed — the refactor-down path — so the
-// on-disk before-state is the implicit ratchet baseline. Only a NEW over-cap
-// function, or RAISING an existing function past the cap, is blocked.
+// cyclomatic complexity past the cap. This module is now just the CYCLOMATIC
+// SPEC — the decision engine (over-cap hybrid comparison, sub-cap slew ratchet,
+// content projection, apply_patch reconstruction, block rendering) lives in
+// `per-function-metric-gate.ts` and is shared with the cognitive gate, which
+// used to be a hand-mirrored copy of it.
+//
+// DELTA semantics, mirroring the line-cap gate (`checkLargeFileLineCountWrite`):
+// an edit that holds or reduces an already-complex function is always allowed —
+// the refactor-down path — so the on-disk before-state is the implicit ratchet
+// baseline. Only a NEW over-cap function, RAISING an existing function past the
+// cap, or a sub-cap rise over `SUB_CAP_RATCHET_TOLERANCE` is blocked.
 //
 // Dispatch is per-language: `.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts` parse with
 // the TS AST (`computeCyclomaticAst`); `.py` parses with radon
 // (`computeCyclomaticPython`); every other extension is skipped. The block
-// contract (`DEFAULT_MAX_CYCLOMATIC`, delta semantics, no override) is identical
-// across languages — only the per-function counter differs.
+// contract (cap, delta semantics, no override) is identical across languages —
+// only the per-function counter differs. Python dispatch is unique to this
+// metric; the cognitive analyzer is JS/TS only.
 //
 // There is deliberately NO escape hatch / suppression: an agent-writable
 // override gets gamed (the agent would suppress every file it wants to grow),
@@ -30,21 +37,18 @@
 // via the conservative V4A applier (fail-open on any uncertainty), so they no
 // longer bypass the gate by carrying their edit in the patch body.
 
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
 import type { JsonObject } from "../../lib/json-types.js";
-import { nonNull } from "../../lib/non-null.js";
-import {
-	extractApplyPatchRaw,
-	looksLikeApplyPatch,
-	parseApplyPatchSections,
-	reconstructAfterContent,
-} from "../apply-patch-content.js";
 import type { FunctionComplexityEntry } from "../checks/cyclomatic.js";
 import { computeCyclomaticAst } from "../checks/cyclomatic-ast.js";
 import { computeCyclomaticPython } from "../checks/cyclomatic-python.js";
-import { isCappableFile } from "../large-file-policy.js";
 import { maxCyclomaticFor } from "../metric-caps.js";
+import {
+	checkPerFunctionMetricWrite,
+	type MetricGateSpec,
+	type MetricObserver,
+} from "./per-function-metric-gate.js";
+
+export { projectContent, resolveFilePath } from "./per-function-metric-gate.js";
 
 /**
  * Per-function cyclomatic cap — the agreed hard "bad" line. One number for now;
@@ -75,7 +79,9 @@ export const DEFAULT_MAX_CYCLOMATIC = 25;
  * only at/over 30 — so nothing on the CRAP side needs loosening.
  *
  * Set to 1 for a tighter "+1 per edit" policy. A future per-repo override can
- * live alongside `maxCyclomaticFor` in `.interlinked/metric-caps.json`.
+ * live alongside `maxCyclomaticFor` in `.interlinked/metric-caps.json`. The
+ * cognitive analog is `SUB_CAP_COGNITIVE_RATCHET_TOLERANCE` (= 4, deliberately
+ * looser — see cognitive-write-guard.ts).
  */
 export const SUB_CAP_RATCHET_TOLERANCE = 2;
 
@@ -92,14 +98,10 @@ export interface ComplexityWriteBlock {
  * Telemetry observer — receives the before/after entries the gate already
  * parsed for every analyzed file, plus the projected after-content (for
  * content-hash matching at PostToolUse). Observation only: it never affects
- * the block decision. Wired to the cyclomatic pulse (complexity-pulse.ts).
+ * the block decision. Wired to the cyclomatic pulse (complexity-pulse.ts);
+ * the cognitive gate deliberately has no equivalent.
  */
-export type ComplexityObserver = (
-	filePath: string,
-	beforeFns: FunctionComplexityEntry[],
-	afterFns: FunctionComplexityEntry[],
-	afterContent: string,
-) => void;
+export type ComplexityObserver = MetricObserver<FunctionComplexityEntry>;
 
 /** A per-function cyclomatic counter for one language. Returns `null` (the loud
  *  "analyzer unavailable" signal — see cyclomatic-ast/cyclomatic-python) when the
@@ -136,7 +138,7 @@ export function __resetPythonDegradeWarningForTesting(): void {
 	pythonDegradeWarned = false;
 }
 
-function warnAnalyzerUnavailable(language: "js_ts" | "python"): void {
+function warnAnalyzerUnavailable(language: string): void {
 	// JS/TS degrade is already announced at daemon startup (astComplexityAvailable
 	// in server.ts); only Python needs a per-edit surface.
 	if (language !== "python" || pythonDegradeWarned) return;
@@ -149,304 +151,20 @@ function warnAnalyzerUnavailable(language: "js_ts" | "python"): void {
 	);
 }
 
-/** Exported so the cognitive block guard (cognitive-write-guard.ts) can share
- *  the exact same file-path resolution — one path-resolution rule for both
- *  per-function metric gates, no drift between them. */
-export function resolveFilePath(toolInput: JsonObject): string {
-	return (
-		(typeof toolInput.file_path === "string" && toolInput.file_path) ||
-		(typeof toolInput.path === "string" && toolInput.path) ||
-		""
-	);
-}
-
-function safeRead(abs: string): string | null {
-	try {
-		return readFileSync(abs, "utf-8");
-	} catch {
-		return null;
-	}
-}
-
-/** Apply one old→new replacement (first occurrence, or all when replace_all). */
-function applyEdit(text: string, oldStr: string, newStr: string, all: boolean): string {
-	if (all) return text.split(oldStr).join(newStr);
-	const idx = text.indexOf(oldStr);
-	return idx === -1 ? text : text.slice(0, idx) + newStr + text.slice(idx + oldStr.length);
-}
-
-/** Materialize before/after content for a Write/Edit/MultiEdit, else null.
- *  Exported so the cognitive block guard can project the SAME before/after
- *  pair the cyclomatic gate does — one edit-application rule for both gates. */
-export function projectContent(
-	toolInput: JsonObject,
-	abs: string,
-): { before: string; after: string } | null {
-	const before = existsSync(abs) ? safeRead(abs) : "";
-	if (before === null) return null;
-
-	if (typeof toolInput.content === "string") {
-		return { before, after: toolInput.content };
-	}
-	if (typeof toolInput.old_string === "string" && typeof toolInput.new_string === "string") {
-		if (before === "") return null; // Edit needs an existing file
-		const all = toolInput.replace_all === true;
-		return { before, after: applyEdit(before, toolInput.old_string, toolInput.new_string, all) };
-	}
-	if (Array.isArray(toolInput.edits)) {
-		if (before === "") return null;
-		let after = before;
-		for (const raw of toolInput.edits) {
-			if (typeof raw !== "object" || raw === null) continue;
-			const e = raw as JsonObject;
-			if (typeof e.old_string !== "string" || typeof e.new_string !== "string") continue;
-			after = applyEdit(after, e.old_string, e.new_string, e.replace_all === true);
-		}
-		return { before, after };
-	}
-	return null; // unknown shape — fail open (apply_patch is handled separately)
-}
-
-/**
- * Over-cap complexity violations for ONE file's before→after content. Returns an
- * array of human-readable violation strings (empty = no violation), or `null`
- * when the AST pass is unavailable (typescript missing) → caller fails open.
- *
- * The decision is IDENTITY-FREE. Function names are unreliable as comparison
- * keys: anonymous callbacks all share "(callback)", same-named methods /
- * overloads / nested defs collide, and renames or moves break name matching.
- * (Name-keyed-max comparison let a new 40-branch anonymous callback through, and
- * let one `run()` go 6→27 as long as another `run()` dropped 31→30.) Instead we
- * compare the sorted-descending MULTISET of OVER-CAP complexities before vs
- * after: the post-edit profile may not be worse than the pre-edit profile at any
- * rank — `post[i] > (pre[i] ?? cap)` is a violation. This blocks (a) a new
- * over-cap function (named OR anonymous), (b) raising any function past the cap,
- * and (c) shuffling complexity between same-named functions, while still
- * allowing a decompose that splits one over-cap function into several under-cap
- * ones. Names feed the message only, never the decision.
- */
-function complexityViolations(
-	before: string,
-	after: string,
-	filePath: string,
-	analyzer: { compute: CyclomaticAnalyzer; language: "js_ts" | "python" },
-	observe?: ComplexityObserver,
-	cap: number = DEFAULT_MAX_CYCLOMATIC,
-): string[] | null {
-	const afterFns = analyzer.compute(after, filePath);
-	if (!afterFns) {
-		// Analyzer unavailable → fail open (no FP-blocking), but surface it loudly
-		// so the degrade is never silent (the TS path warns at startup; Python here).
-		warnAnalyzerUnavailable(analyzer.language);
-		return null;
-	}
-	const beforeFns = analyzer.compute(before, filePath) ?? [];
-	// Hand the already-paid parses to the telemetry observer (decision unaffected).
-	observe?.(filePath, beforeFns, afterFns, after);
-
-	const violations: string[] = [];
-
-	// (1) Over-cap band — a HYBRID of identity-based and identity-free comparison,
-	// ported from cognitive-write-guard.ts (2026-08-04). A pure rank comparison
-	// MISSES the relocation case: shrink an over-cap function's body but move the
-	// excess into a newly-named, still-over-cap helper, and the sorted profile's
-	// top entry strictly IMPROVES, so every rank holds and the edit is allowed.
-	// Complexity relocated is not complexity removed. Measured before the port:
-	// of three over-cap positives, only relocation escaped — the pooled path
-	// already caught a new over-cap fn alongside a worse existing one, and a
-	// same-rank raise. Uniquely-named entries now compare against their own prior
-	// value (a brand-new name's baseline is the cap, so it always violates);
-	// ambiguous entries keep the pooled comparison, since the shuffle-test
-	// rationale for distrusting names still holds for them.
-	const afterOver = afterFns.filter((f) => f.cyclomatic > cap);
-	if (afterOver.length > 0) {
-		const afterNameCounts = countByName(afterFns);
-		const beforeByName = new Map<string, number>();
-		for (const f of beforeFns) {
-			if (f.name === ANON_FN) continue;
-			beforeByName.set(f.name, Math.max(beforeByName.get(f.name) ?? 0, f.cyclomatic));
-		}
-		violations.push(...identityOverCapViolations(afterOver, afterNameCounts, beforeByName));
-		violations.push(
-			...pooledAmbiguousOverCapViolations(
-				afterOver,
-				beforeFns,
-				afterNameCounts,
-				countByName(beforeFns),
-				cap,
-			),
-		);
-	}
-
-	// (2) Sub-cap per-edit SLEW ratchet (identity-based) — an UNIQUELY-named
-	// function present before AND after may rise by at most SUB_CAP_RATCHET_TOLERANCE
-	// branches in a single edit while at/under the cap. Small incremental growth
-	// toward the cap is allowed; a big one-edit leap blocks (decompose). The on-disk
-	// before-state is the baseline, so this is trajectory-aware (each edit ratchets
-	// against the cumulative on-disk state); many small rises can still walk a
-	// function toward the cap over several edits, but never past it — the over-cap
-	// path is the hard backstop. Covers the `<= cap` band only (the over-cap path
-	// owns the rest, no double-report). Ambiguous/anonymous names have no reliable
-	// cross-edit identity — left to the cap path; documented limitation.
-	violations.push(...subCapRatchetViolations(beforeFns, afterFns, cap));
-	return violations;
-}
-
-/** Count of entries per name within ONE state, used to tell a uniquely-named
- *  function from a same-file name collision. Mirrors `countByName` in
- *  cognitive-write-guard.ts. */
-function countByName(fns: readonly FunctionComplexityEntry[]): Map<string, number> {
-	const m = new Map<string, number>();
-	for (const f of fns) m.set(f.name, (m.get(f.name) ?? 0) + 1);
-	return m;
-}
-
-/** True when `name` has no reliable cross-edit identity in that state:
- *  anonymous, or colliding with another same-named function. */
-function isAmbiguousName(name: string, counts: Map<string, number>): boolean {
-	return name === ANON_FN || (counts.get(name) ?? 0) > 1;
-}
-
-/** (1a) Identity-based over-cap violations: a uniquely-named over-cap function
- *  is compared against ITS OWN prior value, or against the cap when the name is
- *  brand new. Never against another function's rank. */
-function identityOverCapViolations(
-	afterOver: readonly FunctionComplexityEntry[],
-	afterNameCounts: Map<string, number>,
-	beforeByName: Map<string, number>,
-): string[] {
-	const out: string[] = [];
-	for (const f of afterOver) {
-		if (isAmbiguousName(f.name, afterNameCounts)) continue;
-		const prior = beforeByName.get(f.name);
-		if (prior !== undefined && f.cyclomatic <= prior) continue; // held or reduced
-		const how = prior !== undefined ? `raised from ${prior}` : "new over-cap function";
-		out.push(`${f.name} (cyclomatic ${f.cyclomatic}, ${how})`);
-	}
-	return out;
-}
-
-/** (1b) Pooled sorted-multiset comparison, scoped to AMBIGUOUS (anonymous /
- *  collision-named) entries only — names genuinely cannot be trusted there, so
- *  the original identity-free rank comparison still owns that subset. */
-function pooledAmbiguousOverCapViolations(
-	afterOver: readonly FunctionComplexityEntry[],
-	beforeFns: readonly FunctionComplexityEntry[],
-	afterNameCounts: Map<string, number>,
-	beforeNameCounts: Map<string, number>,
-	cap: number,
-): string[] {
-	const afterAmbiguous = afterOver
-		.filter((f) => isAmbiguousName(f.name, afterNameCounts))
-		.sort((a, b) => b.cyclomatic - a.cyclomatic);
-	if (afterAmbiguous.length === 0) return [];
-
-	const beforeVals = beforeFns
-		.filter((f) => f.cyclomatic > cap && isAmbiguousName(f.name, beforeNameCounts))
-		.map((f) => f.cyclomatic)
-		.sort((a, b) => b - a);
-
-	const out: string[] = [];
-	for (let i = 0; i < afterAmbiguous.length; i++) {
-		const post = nonNull(afterAmbiguous[i]);
-		const baseline = beforeVals[i] ?? cap;
-		if (post.cyclomatic <= baseline) continue; // this rank held or reduced
-		const how = post.name === ANON_FN ? "new anonymous function over cap" : "new over-cap function";
-		out.push(`${post.name} (cyclomatic ${post.cyclomatic}, ${how})`);
-	}
-	return out;
-}
-
-/** Map of UNIQUELY-named functions (name appears exactly once) -> cyclomatic.
- *  Collisions and anonymous fns are excluded — no reliable cross-edit identity. */
-function uniqueByName(fns: FunctionComplexityEntry[]): Map<string, number> {
-	const counts = new Map<string, number>();
-	for (const f of fns) {
-		if (f.name === ANON_FN) continue;
-		counts.set(f.name, (counts.get(f.name) ?? 0) + 1);
-	}
-	const out = new Map<string, number>();
-	for (const f of fns) {
-		if (f.name !== ANON_FN && counts.get(f.name) === 1) out.set(f.name, f.cyclomatic);
-	}
-	return out;
-}
-
-/** Over-tolerance sub-cap rises of uniquely-named functions vs the before-state.
- *  A rise of up to SUB_CAP_RATCHET_TOLERANCE branches per edit is allowed; only a
- *  larger one-edit jump is a violation. Each entry reads "name (cyclomatic A -> B
- *  — rose N in one edit, over the +T/edit limit)". `<= cap` band only — a rise
- *  that lands over the cap is owned by the over-cap path, not double-reported. */
-function subCapRatchetViolations(
-	beforeFns: FunctionComplexityEntry[],
-	afterFns: FunctionComplexityEntry[],
-	cap: number,
-): string[] {
-	const before = uniqueByName(beforeFns);
-	const out: string[] = [];
-	for (const [name, post] of uniqueByName(afterFns)) {
-		const pre = before.get(name);
-		if (pre !== undefined && post <= cap && post - pre > SUB_CAP_RATCHET_TOLERANCE) {
-			out.push(
-				`${name} (cyclomatic ${pre} -> ${post} — rose ${post - pre} in one edit, ` +
-					`over the +${SUB_CAP_RATCHET_TOLERANCE}/edit sub-cap limit)`,
-			);
-		}
-	}
-	return out.sort();
-}
-
-/** The shared block payload for a set of violation strings. */
-function buildBlock(violations: string[], cap: number = DEFAULT_MAX_CYCLOMATIC): ComplexityWriteBlock {
-	return {
-		block:
-			`[interlinked:cyclomatic] BLOCKED: this edit pushes ${violations.length} function(s) past a ` +
-			`cyclomatic limit — a function may rise by at most ${SUB_CAP_RATCHET_TOLERANCE} branch(es) ` +
-			`per edit, and no function may exceed the ${cap}-branch cap:\n` +
-			`${violations.map((v) => `  • ${v}`).join("\n")}\n` +
-			"Decompose: extract cohesive branches into smaller named functions, then retry. " +
-			"Holding or reducing an existing function is always allowed; there is no suppression.\n" +
-			`This ${cap}-branch cap is per-repo configurable: \`interlinked caps set cyclomatic <n>\` ` +
-			"(run `interlinked caps explain cyclomatic` for what cyclomatic complexity measures).",
-	};
-}
-
-/**
- * apply_patch path: reconstruct each section's post-edit content and run the
- * same over-cap comparison per file. Fails open per-file when the applier can't
- * confidently reconstruct (so a misparse never false-blocks), and entirely when
- * the AST pass is unavailable.
- */
-function checkApplyPatchComplexity(
-	toolInput: JsonObject,
-	cwd: string,
-	observe?: ComplexityObserver,
-): ComplexityWriteBlock | null {
-	const raw = extractApplyPatchRaw(toolInput);
-	if (!raw || !looksLikeApplyPatch(raw)) return null;
-
-	const violations: string[] = [];
-	const cap = maxCyclomaticFor(cwd);
-	for (const section of parseApplyPatchSections(raw)) {
-		const analyzer = selectAnalyzer(section.path);
-		if (!analyzer) continue; // non-code extension → skip
-		// Read before-content from the SOURCE path for a moved section — the
-		// destination (`section.path`) doesn't exist yet, so reading it yields ""
-		// and the update hunks fail to reconstruct → the gate silently failed open
-		// on a move that introduced an over-cap function (finding 2026-06).
-		const readPath = section.fromPath ?? section.path;
-		const abs = isAbsolute(readPath) ? readPath : resolve(cwd, readPath);
-		const before = existsSync(abs) ? (safeRead(abs) ?? "") : "";
-		const after = reconstructAfterContent(section, before);
-		if (after === null) continue; // can't reconstruct confidently → fail open for this file
-		if (!isCappableFile({ filePath: section.path, content: after, root: cwd })) continue;
-		const fileViolations = complexityViolations(before, after, section.path, analyzer, observe, cap);
-		if (fileViolations === null) return null; // analyzer unavailable → fail open entirely
-		for (const item of fileViolations) violations.push(`${section.path}: ${item}`);
-	}
-	if (violations.length === 0) return null;
-	return buildBlock(violations, cap);
-}
+/** The cyclomatic instantiation of the shared per-function metric gate. */
+const CYCLOMATIC_SPEC: MetricGateSpec<FunctionComplexityEntry> = {
+	label: "cyclomatic",
+	anonName: ANON_FN,
+	slewTolerance: SUB_CAP_RATCHET_TOLERANCE,
+	metricOf: (entry) => entry.cyclomatic,
+	selectAnalyzer,
+	capFor: maxCyclomaticFor,
+	onAnalyzerUnavailable: warnAnalyzerUnavailable,
+	limitPhrase: "cyclomatic limit",
+	unitPlural: "branch(es)",
+	unitAdj: "branch",
+	advice: "Decompose: extract cohesive branches into smaller named functions, then retry.",
+};
 
 /**
  * Block a Write/Edit/MultiEdit/apply_patch that introduces or worsens an
@@ -458,26 +176,5 @@ export function checkFunctionComplexityWrite(
 	cwd: string,
 	observe?: ComplexityObserver,
 ): ComplexityWriteBlock | null {
-	const filePath = resolveFilePath(toolInput);
-	if (filePath) {
-		const analyzer = selectAnalyzer(filePath);
-		if (!analyzer) return null; // non-code extension → skip
-		const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-		const projected = projectContent(toolInput, abs);
-		if (!projected) return null;
-		if (!isCappableFile({ filePath, content: projected.after, root: cwd })) return null;
-		const cap = maxCyclomaticFor(cwd);
-		const violations = complexityViolations(
-			projected.before,
-			projected.after,
-			filePath,
-			analyzer,
-			observe,
-			cap,
-		);
-		if (violations === null || violations.length === 0) return null;
-		return buildBlock(violations, cap);
-	}
-	// No explicit file_path → may be an apply_patch payload (multi-file).
-	return checkApplyPatchComplexity(toolInput, cwd, observe);
+	return checkPerFunctionMetricWrite(CYCLOMATIC_SPEC, toolInput, cwd, observe);
 }
