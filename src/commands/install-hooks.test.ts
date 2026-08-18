@@ -230,9 +230,9 @@ describe("parseModeChoice", () => {
 		expect(parseModeChoice("  ")).toBe("balanced");
 	});
 	it("accepts numeric index (1-based)", () => {
-		expect(parseModeChoice("1")).toBe("balanced");
-		expect(parseModeChoice("2")).toBe("strict");
-		expect(parseModeChoice("3")).toBe("lenient");
+		expect(parseModeChoice("1")).toBe("strict");
+		expect(parseModeChoice("2")).toBe("lenient");
+		expect(parseModeChoice("3")).toBe("balanced");
 	});
 	it("accepts the mode name directly", () => {
 		expect(parseModeChoice("strict")).toBe("strict");
@@ -247,7 +247,7 @@ describe("parseModeChoice", () => {
 describe("install-hooks — interactive mode prompt", () => {
 	it("prompts for mode in a TTY when no --mode flag, reads numeric choice", async () => {
 		setStdinTTY(true);
-		// "2" → second preset (strict) per the ALL_PRESETS ordering.
+		// "2" → second preset (lenient) per the ALL_PRESETS ordering.
 		mockReadSync.mockImplementation((_fd: number, buf: Buffer): number => {
 			const s = "2\n";
 			buf.write(s, 0, "utf-8");
@@ -264,8 +264,8 @@ describe("install-hooks — interactive mode prompt", () => {
 		const policy = JSON.parse(
 			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
 		) as { mode: string };
-		expect(policy.mode).toBe("strict");
-		expect(out).toContain("mode: strict");
+		expect(policy.mode).toBe("lenient");
+		expect(out).toContain("mode: lenient");
 	});
 
 	it("prompts and accepts a mode name typed at the prompt", async () => {

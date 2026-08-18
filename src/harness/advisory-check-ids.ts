@@ -159,6 +159,14 @@ export const ADVISORY_CHECK_IDS: ReadonlySet<string> = new Set<string>([
 	// Type-discipline wave (2026-08-14) — see advisory.ts for rationale.
 	"conditional_empty_object_spread",
 	"unknown_type_alias",
+	// Plan 25 lanes 6-8 (2026-08-17) — portability lint + boundary/contract
+	// wave. See advisory.ts for per-id rationale.
+	"dynamic_code_execution",
+	"builtin_prototype_mutation",
+	"float_equality_comparison",
+	"python_portability_trap",
+	"test_contract_annotation",
+	"unvalidated_input_boundary",
 ]);
 
 /** True when `checkId` is advisory-tier (deep-audit only, not default-gate). */
