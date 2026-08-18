@@ -118,10 +118,50 @@ function diedBySignal(result: { status: number | null; signal: NodeJS.Signals | 
 	return result.signal !== null || result.status === null || result.status >= SIGNAL_EXIT_BASE;
 }
 
-/** Human-readable cause for the timed-out/terminated finding message. */
+/** Name for the common signals a typecheck/test child realistically dies
+ *  from (explicit kill, timeout, OOM), keyed by the POSIX `128 + signum`
+ *  exit code. Not exhaustive — an unmapped code falls back to the raw
+ *  exit code in `describeDeath`. */
+const SIGNAL_NAME_BY_EXIT_CODE: Partial<Record<number, string>> = {
+	129: "SIGHUP",
+	130: "SIGINT",
+	131: "SIGQUIT",
+	132: "SIGILL",
+	133: "SIGTRAP",
+	134: "SIGABRT",
+	135: "SIGBUS",
+	136: "SIGFPE",
+	137: "SIGKILL",
+	138: "SIGUSR1",
+	139: "SIGSEGV",
+	140: "SIGUSR2",
+	141: "SIGPIPE",
+	142: "SIGALRM",
+	143: "SIGTERM",
+};
+
+/** Signal name for a POSIX 128+n exit code, when recognized. Returns null
+ *  for anything outside that map (including the bare base code 128, which
+ *  has no valid signum) so the caller falls back to a plain exit-code
+ *  message. */
+function describeSignalFromExitCode(status: number): string | null {
+	if (status <= SIGNAL_EXIT_BASE) return null;
+	const name = SIGNAL_NAME_BY_EXIT_CODE[status];
+	if (!name) return null;
+	return `signal ${name} (exit ${status})`;
+}
+
+/** Human-readable cause for the timed-out/terminated finding message.
+ *  Prefers the direct `signal` field (set on macOS/most POSIX spawnSync
+ *  deaths); on Linux npm often re-encodes a grandchild's signal death as
+ *  `status = 128 + signum` with `signal: null` (see diedBySignal's doc
+ *  above), so this falls back to deriving the name from the exit code —
+ *  the message names the same cause on both platforms. */
 function describeDeath(result: { status: number | null; signal: NodeJS.Signals | null }): string {
 	if (result.signal) return `signal ${result.signal}`;
 	if (result.status === null) return "no exit status";
+	const bySignalCode = describeSignalFromExitCode(result.status);
+	if (bySignalCode) return bySignalCode;
 	return `exit ${result.status}`;
 }
 

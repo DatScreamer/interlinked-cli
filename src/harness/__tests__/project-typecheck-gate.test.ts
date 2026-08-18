@@ -434,6 +434,12 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
+	// `process.exit(143)` reproduces the exit-code-only signal-death shape
+	// (status: 143, signal: null) deterministically on every platform — no
+	// dependence on how any given OS/wrapper combination relays a real
+	// self-inflicted kill signal (see CI run 31517477152 for the report).
+	// Asserting the derived "signal SIGTERM" text pins the fix: the message
+	// must name the same cause from the exit code alone, everywhere.
 	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
 		writeFileSync(
 			join(tmp, "package.json"),
@@ -446,6 +452,7 @@ describe("checkProjectTypecheckClean", () => {
 		expect(nonNull(results[0]).name).toBe("project_typecheck_timed_out");
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exit 143");
+		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
 	it("classifies the signal base exit code itself as terminated", () => {
@@ -767,6 +774,10 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
+	// See the matching typecheck-gate test above for why `process.exit(143)`
+	// pins this cross-platform: it reproduces the exit-code-only signal-death
+	// shape deterministically everywhere, so asserting "signal SIGTERM" here
+	// proves the derivation without depending on any OS/wrapper relay quirk.
 	it("P: classifies the POSIX 128+n signal-exit encoding as terminated (Linux npm re-encodes SIGTERM as exit 143 with signal null — CI run 31517477152)", () => {
 		writeFileSync(
 			join(tmp, "package.json"),
@@ -777,6 +788,7 @@ describe("checkProjectTestsClean", () => {
 		expect(nonNull(results[0]).name).toBe("project_tests_timed_out");
 		expect(nonNull(results[0]).severity).toBe("warning");
 		expect(nonNull(results[0]).message).toContain("exit 143");
+		expect(nonNull(results[0]).message).toContain("signal SIGTERM");
 	});
 
 	it("classifies the signal base exit code itself as terminated", () => {
