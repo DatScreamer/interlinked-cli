@@ -333,3 +333,262 @@ describe("taskVerdict", () => {
 		expect(v.reasons.length).toBeGreaterThanOrEqual(2);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Mutation-kill additions (Stryker manifest, src/harness/eval-metrics.ts).
+// Each case names the mutant id(s) it targets directly above the it(). A
+// handful of survivors in the manifest (parseEventLine's type/null guard and
+// empty-string checks, recordBlock's/recordCompletedTool's null-tool guards,
+// extractEvalMetrics' initial `retries` array literal) are true equivalent
+// mutants given the current call graph — see the campaign receipt for the
+// structural argument for each; no test is added for those.
+// ---------------------------------------------------------------------------
+
+describe("parseEventLine (via extractEvalMetrics) — mutation kill", () => {
+	// test-contract: mutation-kill — 3393776f83163e96 (parseEventLine: line.trim() replaced with line)
+	it("trims JS-whitespace that JSON.parse itself would reject, e.g. a leading/trailing NBSP (positive)", () => {
+		// U+00A0 (NBSP): String.prototype.trim() strips it, but it is not
+		// valid JSON insignificant whitespace, so JSON.parse rejects it if
+		// left in place. Written via fromCharCode to keep the source file
+		// free of invisible non-ASCII characters.
+		const nbsp = String.fromCharCode(0xa0);
+		const payload = JSON.stringify({ type: "tool_use_start", tool: "Write" });
+		const m = extractEvalMetrics([`${nbsp}${payload}${nbsp}`]);
+		expect(m.turns).toBe(1);
+	});
+});
+
+describe("str (via ruleKeyOf) — mutation kill", () => {
+	// test-contract: mutation-kill — df51abe4b46d09c0 (str: typeof value === "string" forced true)
+	it("does not treat a non-string guard_rule_id as a valid rule key (positive)", () => {
+		const m = extractEvalMetrics([
+			ev({ type: "guard_block", tool: "Bash", guard_rule_id: 42, guard_reason: "some reason" }),
+		]);
+		expect(m.blocks["unattributed:some reason"]).toBe(1);
+		expect(Object.keys(m.blocks)).toEqual(["unattributed:some reason"]);
+	});
+});
+
+describe("ruleKeyOf — mutation kill", () => {
+	// test-contract: mutation-kill — fe3c9ef3735c8b6f, 1322ec6d3fbd5367 (ruleKeyOf: reason===null||reason==="" forced true, and === flipped to !==, for a non-empty reason)
+	it("builds the unattributed key from the real reason text when one is present (positive)", () => {
+		const m = extractEvalMetrics([block({ tool: "Bash", reason: "totally custom reason text" })]);
+		expect(m.blocks["unattributed:totally custom reason text"]).toBe(1);
+	});
+
+	// test-contract: mutation-kill — 0a5c083f1857b0d6, c6f8b3e44af4f9a1 (ruleKeyOf: reason==="" forced false, and the "" literal retargeted)
+	it("falls back to <no-reason> for an explicitly empty reason string (negative)", () => {
+		const m = extractEvalMetrics([block({ tool: "Bash", reason: "" })]);
+		expect(m.blocks["unattributed:<no-reason>"]).toBe(1);
+	});
+
+	// test-contract: mutation-kill — 0ddff029bd7e7388 (ruleKeyOf: .slice(0, 40) truncation dropped)
+	it("truncates a long reason to 40 characters in the unattributed key (positive)", () => {
+		const longReason = "a".repeat(60);
+		const m = extractEvalMetrics([block({ tool: "Bash", reason: longReason })]);
+		const truncatedKey = `unattributed:${"a".repeat(40)}`;
+		expect(m.blocks[truncatedKey]).toBe(1);
+		expect(Object.keys(m.blocks)).toEqual([truncatedKey]);
+	});
+
+	// test-contract: mutation-kill — 8510543264ba745c, 93dda6781bd8b640, 91399d1b7f24bf4f (ruleKeyOf: whitespace-collapse regex narrowed/inverted, or the " " replacement blanked)
+	it("collapses a run of tabs into a single space in the unattributed key (positive)", () => {
+		const m = extractEvalMetrics([block({ tool: "Bash", reason: "a\t\tb" })]);
+		expect(m.blocks["unattributed:a b"]).toBe(1);
+		expect(Object.keys(m.blocks)).toEqual(["unattributed:a b"]);
+	});
+});
+
+describe("warningCountOf — mutation kill", () => {
+	// test-contract: mutation-kill — fc7770f8c7e83d15 (warningCountOf: evt.type === "guard_warn" flipped to !==)
+	it("counts exactly one warning for a bare guard_warn event and zero for a bare guard_allow event (positive/negative)", () => {
+		const warnOnly = extractEvalMetrics([warn()]);
+		expect(warnOnly.warnings).toBe(1);
+		const allowOnly = extractEvalMetrics([
+			ev({ type: "guard_allow", hook: "PostToolUse", tool: "Edit", guard_warnings: null }),
+		]);
+		expect(allowOnly.warnings).toBe(0);
+	});
+});
+
+describe("commandOf — mutation kill", () => {
+	// test-contract: mutation-kill — 221b702d736f6802 (commandOf: input === null check disabled — would read .command off null and throw)
+	it("treats an explicit null tool_input as no command, without throwing (negative)", () => {
+		const m = extractEvalMetrics([ev({ type: "tool_use", hook: "PostToolUse", tool: "Bash", tool_input: null })]);
+		expect(m.verifier_runs).toBe(0);
+		expect(m.edits).toBe(0);
+	});
+});
+
+describe("recordCompletedTool — mutation kill", () => {
+	// test-contract: mutation-kill — f85c6f5bb9a156b7 (recordCompletedTool: tool === "Bash" forced true)
+	it("only checks tool_input.command for Bash calls, not other tools (negative)", () => {
+		const m = extractEvalMetrics([
+			ev({ type: "tool_use", hook: "PostToolUse", tool: "Read", tool_input: { command: "npm test" } }),
+		]);
+		expect(m.verifier_runs).toBe(0);
+	});
+});
+
+describe("extractEvalMetrics — additional mutation-kill cases", () => {
+	// test-contract: mutation-kill — c01c9b78716b11e5 (extractEvalMetrics: warning-type guard forced true)
+	it("does not count warnings for a tool_use_start event even if it carries a guard_warnings array (negative)", () => {
+		const m = extractEvalMetrics([ev({ type: "tool_use_start", hook: "PreToolUse", tool: "Write", guard_warnings: ["x", "y"] })]);
+		expect(m.warnings).toBe(0);
+		expect(m.turns).toBe(1);
+	});
+
+	// test-contract: mutation-kill — 8eec441c0cbadcf0 (module: "NotebookEdit" literal in EDIT_TOOLS blanked)
+	it("counts a completed NotebookEdit call as an edit (positive)", () => {
+		const m = extractEvalMetrics([done("NotebookEdit")]);
+		expect(m.edits).toBe(1);
+	});
+});
+
+describe("aggregateMetrics — additional mutation-kill cases", () => {
+	// test-contract: mutation-kill — cb17f2837f4fc061, b160e4e9e2763cc8 (aggregateMetrics: += flipped to -= for block_retry_success and block_loops)
+	it("sums block_retry_success and block_loops across the list (positive)", () => {
+		const a = zeroMetrics({ block_retry_success: 3, block_loops: 2 });
+		const b = zeroMetrics({ block_retry_success: 2, block_loops: 1 });
+		const sum = aggregateMetrics([a, b]);
+		expect(sum.block_retry_success).toBe(5);
+		expect(sum.block_loops).toBe(3);
+	});
+});
+
+describe("successFlag (via compareArms) — mutation kill", () => {
+	// test-contract: mutation-kill — 71b29d43aab89ba5 (successFlag: !offSuccess && !onSuccess flipped to ||)
+	it("does not flag both_arms_failed when the on arm succeeds even though the off arm fails (negative)", () => {
+		const rows = compareArms(zeroMetrics(), zeroMetrics(), true, false);
+		expect(rows.find((r) => r.metric === "success")?.flag).toBeNull();
+	});
+});
+
+describe("compareArms — additional mutation-kill cases", () => {
+	// test-contract: mutation-kill — 8f99f720118274c4 (compareArms: onNoise > threshold flipped to >=)
+	it("does not flag noisy when the on-arm noise ratio equals the threshold exactly (boundary, negative)", () => {
+		const on = zeroMetrics({ warnings: 5, turns: 10 });
+		const rows = compareArms(on, zeroMetrics(), true, true);
+		expect(rows.find((r) => r.metric === "noise_ratio")?.flag).toBeNull();
+	});
+});
+
+describe("regressionReasons (via taskVerdict) — mutation kill", () => {
+	// test-contract: mutation-kill — c73e775b60f48d3d, 3305e202e2aba07f, f12c786d141e7e73 (regressionReasons: the off-failed early-return object literal corrupted)
+	it("suppresses regression reasons entirely when the off arm itself failed (negative)", () => {
+		const v = taskVerdict([cell({ arm: "off", rep: 1, success: false }), cell({ arm: "on", rep: 1, success: true })]);
+		expect(v).toEqual({ verdict: "PASS", reasons: [] });
+	});
+
+	// test-contract: mutation-kill — cbe893828c573d21 (regressionReasons: the !offSucceeded early-return guard forced false)
+	it("still suppresses regression reasons when the off arm failed, even with two consecutive on-arm failures (negative)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: false }),
+			cell({ arm: "on", rep: 1, success: false }),
+			cell({ arm: "on", rep: 2, success: false }),
+		]);
+		expect(v).toEqual({ verdict: "PASS", reasons: [] });
+	});
+});
+
+describe("taskVerdict — additional mutation-kill cases", () => {
+	// test-contract: mutation-kill — 4e590e6518874d5b, f6a74fd0bfd50947, 526d8c650251922b (taskVerdict: on-cell .sort(by rep) dropped, or its comparator broken/gutted — verified empirically that all three variants leave onCells in supplied order for this array size)
+	it("sorts on-cells by rep before checking consecutive failures, so a passing rep between two failing reps breaks the streak (positive)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "on", rep: 1, success: false }),
+			cell({ arm: "on", rep: 3, success: false }),
+			cell({ arm: "on", rep: 2, success: true }),
+		]);
+		expect(v.verdict).toBe("WARN");
+		expect(v.reasons.join(" ")).toContain("candidate");
+		expect(v.reasons.join(" ")).not.toContain("twice in a row");
+	});
+
+	// test-contract: mutation-kill — 14589191f0dbdb89, cd4f015e0dce1070 (taskVerdict: SKIP reason template blanked, or its array literal emptied)
+	it("names both arm counts precisely in the SKIP reason (positive)", () => {
+		const v = taskVerdict([cell({ arm: "on", rep: 1, success: true })]);
+		expect(v.verdict).toBe("SKIP");
+		expect(v.reasons).toEqual(["need both arms to compare (have on=1, off=0)"]);
+	});
+
+	// test-contract: mutation-kill — 9ab60083c7f13749 (taskVerdict: offCells.some flipped to .every)
+	it("treats the off arm as succeeded if ANY rep succeeded, not requiring every rep to succeed (positive)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "off", rep: 2, success: false }),
+			cell({ arm: "on", rep: 1, success: false }),
+		]);
+		expect(v.verdict).toBe("WARN");
+		expect(v.reasons.join(" ")).toContain("candidate");
+	});
+
+	// test-contract: mutation-kill — 4daa33c3e9ff5555 (taskVerdict: block-loop reason string blanked)
+	it("names the block-loop reason text precisely (positive)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "on", rep: 1, success: true, over: { block_loops: 1 } }),
+		]);
+		expect(v.reasons).toContain("block loop on harness-on arm (same rule blocked >=3x consecutively)");
+	});
+
+	// test-contract: mutation-kill — 4d4a6cbc18a8bb89 (taskVerdict: onCells.some flipped to .every for the noise check)
+	it("flags on-arm noise if ANY rep exceeds the threshold, not requiring every rep to (positive)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "on", rep: 1, success: true, over: { warnings: 8, turns: 10 } }),
+			cell({ arm: "on", rep: 2, success: true, over: { warnings: 0, turns: 10 } }),
+		]);
+		expect(v.reasons.join(" ")).toContain("noise ratio above");
+	});
+
+	// test-contract: mutation-kill — facdf2f1b56ee318 (taskVerdict: noise-ratio reason string blanked)
+	it("names the noise-ratio reason text precisely, including the threshold value (positive)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "on", rep: 1, success: true, over: { warnings: 8, turns: 10 } }),
+		]);
+		expect(v.reasons).toContain("harness-on noise ratio above 0.5 (warnings per tool call)");
+	});
+
+	// test-contract: mutation-kill — 89b5f305dc107264 (taskVerdict: on-cell noiseRatio > threshold flipped to >=)
+	it("does not flag on-arm noise at exactly the threshold, only strictly above it (boundary, negative)", () => {
+		const v = taskVerdict([
+			cell({ arm: "off", rep: 1, success: true }),
+			cell({ arm: "on", rep: 1, success: true, over: { warnings: 5, turns: 10 } }),
+		]);
+		expect(v).toEqual({ verdict: "PASS", reasons: [] });
+	});
+});
+
+describe("isVerifierCommand — additional mutation-kill cases", () => {
+	// test-contract: mutation-kill — 1e805ca87e9a7af5 (module: npm regex's first \s+ narrowed to \s)
+	it("matches npm test commands with extra internal spacing (positive)", () => {
+		expect(isVerifierCommand("npm  test")).toBe(true);
+	});
+
+	// test-contract: mutation-kill — c90837d5fc4dad81 (module: npm regex's run-group \s+ narrowed to \s)
+	it("matches npm run test commands with extra spacing after run (positive)", () => {
+		expect(isVerifierCommand("npm run  test")).toBe(true);
+	});
+
+	// test-contract: mutation-kill — 741c0589a08aa6fd (module: node --test regex \s+ narrowed to \s)
+	it("matches node --test with extra internal spacing (positive)", () => {
+		expect(isVerifierCommand("node  --test")).toBe(true);
+	});
+
+	// test-contract: mutation-kill — c7993d5f0c4a5a6e, e8048028550aac54 (module: cargo regex \s+ narrowed to \s, or inverted to \S+)
+	it("matches cargo test with extra internal spacing (positive)", () => {
+		expect(isVerifierCommand("cargo  test")).toBe(true);
+	});
+
+	// test-contract: mutation-kill — d7e9dd675fd29d2d, d048f2c5fa418fc5 (module: go regex \s+ narrowed to \s, or inverted to \S+)
+	it("matches go test with extra internal spacing (positive)", () => {
+		expect(isVerifierCommand("go  test")).toBe(true);
+	});
+
+	// test-contract: mutation-kill — 1e1bd156bc40d4a0, be4f4d2b9d68164b (module: biome regex \s+ narrowed to \s, or inverted to \S+)
+	it("matches biome check with extra internal spacing (positive)", () => {
+		expect(isVerifierCommand("biome  check")).toBe(true);
+	});
+});
