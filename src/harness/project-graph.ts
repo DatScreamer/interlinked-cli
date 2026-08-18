@@ -39,7 +39,7 @@ export { REACHABILITY_DEPTH_CAP } from "./project-graph-reachability.js";
 // Skip Directories
 // ===========================================
 
-const SKIP_DIRS = new Set([
+export const SKIP_DIRS = new Set([
 	"node_modules",
 	".git",
 	"dist",
@@ -85,7 +85,7 @@ const SKIP_DIRS = new Set([
 	".astro",
 ]);
 
-const TS_JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+export const TS_JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 
 // ===========================================
 // Project Graph

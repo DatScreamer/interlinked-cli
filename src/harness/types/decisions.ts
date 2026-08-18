@@ -139,7 +139,14 @@ export interface ResolvedTarget {
 /** Structured result from a single check (quality, structural, suggestion, impact, or structure) */
 export interface CheckResultEntry {
 	/** Which subsystem produced this result */
-	source: "quality" | "structural" | "suggestion" | "impact" | "structure" | "spec";
+	source:
+		| "quality"
+		| "structural"
+		| "suggestion"
+		| "impact"
+		| "structure"
+		| "spec"
+		| "registry_parity";
 	/** Check name (e.g., "typescript", "export_surface", "sql-injection", "public_symbol_companions") */
 	name: string;
 	/** Severity of the finding */

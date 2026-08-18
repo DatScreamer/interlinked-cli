@@ -132,6 +132,52 @@ export function extractKeys(content: string, pattern: string): Set<string> {
 	return out;
 }
 
+/**
+ * Compare already-read LEFT/RIGHT content for one pair and return its drift
+ * findings — the reusable core of {@link checkRegistryParity}. Takes plain
+ * strings (not paths) so a caller with a non-working-tree source of content
+ * (a `git show :<path>` staged blob, for the commit-time backstop in
+ * `evaluator/commit-registry-parity-gate.ts`) can reuse the exact same
+ * comparison rather than re-deriving it.
+ */
+export function diffPairContent(
+	pair: RegistryPair,
+	leftContent: string,
+	rightContent: string,
+): RegistryDriftFinding[] {
+	const findings: RegistryDriftFinding[] = [];
+	const leftKeys = extractKeys(leftContent, pair.left.key_re);
+	const rightKeys = extractKeys(rightContent, pair.right.key_re);
+	const leftOnlyAllowed = new Set(pair.left_only_allowed ?? []);
+	const rightOnlyAllowed = new Set(pair.right_only_allowed ?? []);
+
+	for (const id of leftKeys) {
+		if (rightKeys.has(id)) continue;
+		if (leftOnlyAllowed.has(id)) continue;
+		findings.push({
+			pair: pair.name,
+			kind: "missing-from-right",
+			id,
+			source_file: pair.left.file,
+			target_file: pair.right.file,
+			message: `[${pair.name}] "${id}" is in ${pair.left.file} but not ${pair.right.file}`,
+		});
+	}
+	for (const id of rightKeys) {
+		if (leftKeys.has(id)) continue;
+		if (rightOnlyAllowed.has(id)) continue;
+		findings.push({
+			pair: pair.name,
+			kind: "missing-from-left",
+			id,
+			source_file: pair.right.file,
+			target_file: pair.left.file,
+			message: `[${pair.name}] "${id}" is in ${pair.right.file} but not ${pair.left.file}`,
+		});
+	}
+	return findings;
+}
+
 /** Run drift detection across all configured pairs. */
 export function checkRegistryParity(
 	config: RegistryParityConfig,
@@ -165,35 +211,13 @@ export function checkRegistryParity(
 			continue;
 		}
 
-		const leftKeys = extractKeys(readFileSync(leftAbs, "utf-8"), pair.left.key_re);
-		const rightKeys = extractKeys(readFileSync(rightAbs, "utf-8"), pair.right.key_re);
-		const leftOnlyAllowed = new Set(pair.left_only_allowed ?? []);
-		const rightOnlyAllowed = new Set(pair.right_only_allowed ?? []);
-
-		for (const id of leftKeys) {
-			if (rightKeys.has(id)) continue;
-			if (leftOnlyAllowed.has(id)) continue;
-			findings.push({
-				pair: pair.name,
-				kind: "missing-from-right",
-				id,
-				source_file: pair.left.file,
-				target_file: pair.right.file,
-				message: `[${pair.name}] "${id}" is in ${pair.left.file} but not ${pair.right.file}`,
-			});
-		}
-		for (const id of rightKeys) {
-			if (leftKeys.has(id)) continue;
-			if (rightOnlyAllowed.has(id)) continue;
-			findings.push({
-				pair: pair.name,
-				kind: "missing-from-left",
-				id,
-				source_file: pair.right.file,
-				target_file: pair.left.file,
-				message: `[${pair.name}] "${id}" is in ${pair.right.file} but not ${pair.left.file}`,
-			});
-		}
+		findings.push(
+			...diffPairContent(
+				pair,
+				readFileSync(leftAbs, "utf-8"),
+				readFileSync(rightAbs, "utf-8"),
+			),
+		);
 	}
 	return findings;
 }

@@ -278,6 +278,9 @@ function runAffectedTests(
 		timeoutMs: check.timeout_ms,
 		severity: check.severity,
 		checkName: name,
+		...(check.max_dependent_tests !== undefined
+			? { maxDependentTests: check.max_dependent_tests }
+			: {}),
 	});
 	return dispatched.map((r) => ({
 		name: r.name,

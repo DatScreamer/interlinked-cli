@@ -615,3 +615,229 @@ describe("detectImplicitSwitchFallthrough — optional 'typescript' dep unavaila
 		expect(mod.detectImplicitSwitchFallthrough(content, TS_FILE)).toEqual([]);
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mutation-kill: W6 pass-1 residue (2026-08-17)
+// Exact message text pinned once here and reused so every excerpt test is a
+// precise toEqual, per the excerpt contract in rawExcerpt/pushMatch.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const NUMERIC_SORT_MSG =
+	"numeric_sort_without_comparator: numeric array sorted with no comparator — default sort is lexicographic ([10,9,1] → [1,10,9]); use .sort((a, b) => a - b)";
+
+const FALLTHROUGH_TEXT =
+	'implicit_switch_fallthrough: non-empty case falls through to the next clause — end it with break/return/throw, or mark intent with a "// falls through" comment';
+
+const NULLNESS_MSG =
+	'contradictory_nullness_chain: "?." (may be absent) immediately followed by "!" (cannot be absent) on the same chain — pick one: keep the optional chain, or prove non-null and drop the "?."';
+
+describe("detectNumericSortWithoutComparator — rawExcerpt correctness (undefined-return, ?? vs &&, split(\"\\n\") vs split(\"\"))", () => {
+	// test-contract: invariant — a finding's text is exactly "<message> — <excerpt>"
+	// where excerpt is the real trimmed source line. A broken excerpt helper
+	// (returns undefined, or drops "" through a truthy-check instead of a
+	// null-check, or splits the file by CHARACTER instead of by line) must not
+	// slip past — pin the full text, not just a substring match.
+	it("finding text is exactly the message plus the trimmed source line", () => {
+		const content = "[10, 9, 1].sort();";
+		const findings = detectNumericSortWithoutComparator(content, TS_FILE);
+		expect(findings).toEqual([{ line: 1, text: `${NUMERIC_SORT_MSG} — [10, 9, 1].sort();` }]);
+	});
+
+	// test-contract: invariant — the excerpt is drawn from the SAME line the
+	// finding is reported on; an off-by-one/two index must not silently grab a
+	// neighboring (or out-of-range, empty-excerpt) line instead.
+	it("finding text quotes the sort line itself, not a neighboring line", () => {
+		const content = ["// before", "[10, 9, 1].sort();", "// after"].join("\n");
+		const findings = detectNumericSortWithoutComparator(content, TS_FILE);
+		expect(findings).toEqual([{ line: 2, text: `${NUMERIC_SORT_MSG} — [10, 9, 1].sort();` }]);
+	});
+
+	// test-contract: invariant — the excerpt is capped at REPORT_LINE_TRUNC (120)
+	// chars so one pathological line can't blow up the finding text.
+	it("truncates a long source line's excerpt to 120 characters", () => {
+		const content = `[10, 9, 1].sort(); // ${"x".repeat(150)}`;
+		const findings = detectNumericSortWithoutComparator(content, TS_FILE);
+		expect(findings).toHaveLength(1);
+		const expectedExcerpt = content.slice(0, 120);
+		expect(expectedExcerpt).toHaveLength(120);
+		expect(nonNull(findings[0]).text).toBe(`${NUMERIC_SORT_MSG} — ${expectedExcerpt}`);
+	});
+
+	// test-contract: invariant — the excerpt is trimmed, so indentation before
+	// the flagged call must never leak into the finding text.
+	it("trims leading indentation out of the excerpt", () => {
+		const content = ["function f() {", "  [10, 9, 1].sort();", "}"].join("\n");
+		const findings = detectNumericSortWithoutComparator(content, TS_FILE);
+		expect(findings).toEqual([{ line: 2, text: `${NUMERIC_SORT_MSG} — [10, 9, 1].sort();` }]);
+	});
+});
+
+describe("detectNumericSortWithoutComparator — collectNumberArrayNames never synthesizes a phantom identifier", () => {
+	// test-contract: invariant — with zero number[]/Array<number> declarations
+	// in the file, the annotated-identifier scan contributes NOTHING; the
+	// accumulator must start genuinely empty, never pre-seeded with a name that
+	// could coincidentally match unrelated text later in the file.
+	it("does not fire on text shaped like a seeded placeholder name followed by .sort()", () => {
+		const content = "Stryker was here.sort();";
+		expect(detectNumericSortWithoutComparator(content, TS_FILE)).toEqual([]);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — switchTerminates requires ALL clauses to terminate", () => {
+	// test-contract: invariant — a nested, defaulted switch terminates only when
+	// EVERY clause's last statement terminates (Array.every), not merely SOME
+	// of them (Array.some); one non-terminating clause means the whole switch —
+	// and the outer case containing it — still falls through.
+	it("still flags the outer case when only SOME nested clauses terminate", () => {
+		const content = `
+switch (mode) {
+  case "a":
+    switch (y) {
+      case "p":
+        doStuff();
+      default:
+        return 2;
+    }
+  case "b":
+    doB();
+    break;
+}
+`.trim();
+		const findings = detectImplicitSwitchFallthrough(content, TS_FILE);
+		expect(findings).toEqual([
+			{ line: 2, text: FALLTHROUGH_TEXT },
+			{ line: 4, text: FALLTHROUGH_TEXT },
+		]);
+	});
+
+	// test-contract: invariant — an empty (grouped) clause vacuously terminates
+	// on its own; switchTerminates must not force it through statementTerminates
+	// with an undefined "last statement" (which the TS AST guard functions
+	// reject outright — verified: ts.isBreakStatement(undefined) throws).
+	it("treats an empty grouped clause as vacuously terminating, not as a false fallthrough", () => {
+		const content = `
+switch (mode) {
+  case "a":
+    switch (y) {
+      case "p":
+      case "q":
+        return 1;
+      default:
+        return 2;
+    }
+  case "b":
+    doB();
+    break;
+}
+`.trim();
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toEqual([]);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — isNeverReturningCall only trusts the curated process.exit(...) shape", () => {
+	// test-contract: invariant — an ELEMENT-access callee (process["exit"]) is
+	// not the curated dotted process.exit(...) shape and must not be treated as
+	// never-returning.
+	it('does not treat process["exit"]() as the curated process.exit(...) call', () => {
+		const content = [
+			"switch (kind) {",
+			'case "a":',
+			'process["exit"]();',
+			'case "b":',
+			"doB();",
+			"break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+
+	// test-contract: invariant — a dotted call is never-returning only when BOTH
+	// the object is literally "process" AND the method is literally "exit";
+	// getting the OBJECT wrong (foo.exit()) must still be flagged as fallthrough.
+	it("does not treat foo.exit() as process.exit (wrong object)", () => {
+		const content = [
+			"switch (kind) {",
+			'case "a":',
+			"foo.exit();",
+			'case "b":',
+			"doB();",
+			"break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+
+	// test-contract: invariant — getting the METHOD wrong (process.abort()) must
+	// still be flagged; only the literal .exit(...) method is curated.
+	it("does not treat process.abort() as process.exit (wrong method)", () => {
+		const content = [
+			"switch (kind) {",
+			'case "a":',
+			"process.abort();",
+			'case "b":',
+			"doB();",
+			"break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — statementTerminates on an empty block", () => {
+	// test-contract: invariant — an EMPTY block `{}` as a case's last statement
+	// does not terminate (nothing inside it returns/breaks/throws); it must not
+	// be forced into recursing statementTerminates on an undefined statement.
+	it("treats an empty block {} as non-terminating (falls through)", () => {
+		const content = ["switch (kind) {", 'case "a": {}', 'case "b":', "doB();", "break;", "}"].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+});
+
+describe("detectImplicitSwitchFallthrough — the fallthrough-comment scan is scoped to THIS clause's own gap", () => {
+	// test-contract: invariant — a "falls through" comment ANYWHERE else in the
+	// file (not in the trivia gap between the flagged clause and its successor)
+	// must not suppress this finding.
+	it("still fires when a fallthrough comment exists elsewhere in the file but not in this clause's gap", () => {
+		const content = [
+			"// unrelated note: falls through is mentioned here, far from any case",
+			"switch (kind) {",
+			'case "a":',
+			"doA();",
+			'case "b":',
+			"doB();",
+			"break;",
+			"}",
+		].join("\n");
+		expect(detectImplicitSwitchFallthrough(content, TS_FILE)).toHaveLength(1);
+	});
+});
+
+describe("detectContradictoryNullnessChain — rawExcerpt, extension recognition, and bracket-content matching", () => {
+	// test-contract: invariant — same excerpt contract as the sort checker: the
+	// excerpt is the real source line, never a single split-by-character artifact.
+	it("finding text is exactly the message plus the full source line", () => {
+		const content = "const name = user?.profile!.name;";
+		const findings = detectContradictoryNullnessChain(content, TS_FILE);
+		expect(findings).toEqual([{ line: 1, text: `${NULLNESS_MSG} — const name = user?.profile!.name;` }]);
+	});
+
+	// test-contract: public-api — the module docstring documents .tsx as a
+	// covered TS extension; a .tsx file must still be scanned.
+	it("still fires on a .tsx file", () => {
+		const content = "const name = user?.profile!.name;";
+		expect(detectContradictoryNullnessChain(content, "src/ui/widget.tsx")).toHaveLength(1);
+	});
+
+	// test-contract: public-api — same contract for .mts.
+	it("still fires on a .mts file", () => {
+		const content = "const name = user?.profile!.name;";
+		expect(detectContradictoryNullnessChain(content, "src/lib/data.mts")).toHaveLength(1);
+	});
+
+	// test-contract: invariant — an optional index access's bracket content can
+	// be more than one character (rows?.[i + 1]!), not just exactly one.
+	it("still fires when the optional index expression is more than one character", () => {
+		const content = "const first = rows?.[i + 1]!.id;";
+		expect(detectContradictoryNullnessChain(content, TS_FILE)).toHaveLength(1);
+	});
+});

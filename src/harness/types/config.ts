@@ -69,11 +69,7 @@ export interface QualityCheckConfig {
 	description?: string;
 	/** Skip this check for test files (e.g., semgrep/gitleaks on test fixtures) */
 	skip_test_files?: boolean;
-	/**
-	 * `dependency_audit` only: prefer osv-scanner over per-ecosystem tools
-	 * (npm audit / pip-audit / cargo audit / govulncheck) when it's on PATH.
-	 * Default: true. Set false to force the legacy per-ecosystem commands.
-	 */
+	/** `dependency_audit` only: prefer osv-scanner over per-ecosystem tools (npm audit / pip-audit / cargo audit / govulncheck) when it's on PATH. Default: true. Set false to force the legacy per-ecosystem commands. */
 	use_osv_scanner?: boolean;
 	/**
 	 * `transient_debt` only: enforcement strength for the deferred-finding
@@ -89,12 +85,10 @@ export interface QualityCheckConfig {
 	 * `DEFAULT_TRANSIENT_SLACK` for why zero is wrong.
 	 */
 	slack?: number;
-	/**
-	 * `dependency_audit` only: when osv-scanner is used, pass `--offline`
-	 * (requires `osv-scanner scan --download-offline-databases` to have run
-	 * at least once). Avoids osv.dev network round-trips on every edit.
-	 */
+	/** `dependency_audit` only: when osv-scanner is used, pass `--offline` (requires `osv-scanner scan --download-offline-databases` to have run at least once). Avoids osv.dev network round-trips on every edit. */
 	offline?: boolean;
+	/** `affected_tests` only: direct-importer companion-test cap (default DEFAULT_MAX_DEPENDENT_TESTS in quality-checks/test-dispatchers.ts). */
+	max_dependent_tests?: number;
 }
 
 // ===========================================

@@ -49,6 +49,7 @@ import {
 	runDeletionHygiene,
 	runImpactOrFallback,
 } from "./post-tool-file-checks-structural.js";
+import { runRegistryParityPhase } from "./registry-parity-phase.js";
 import { runReviewReconcilePhase } from "./review-reconcile-phase.js";
 import { getGraphForFile, type ServerRuntime } from "./runtime-context.js";
 import { runSpecLedgerPhase } from "./spec-ledger-phase.js";
@@ -192,6 +193,9 @@ export async function runPerFileChecks(
 	// `scored_suggestions` phase mark).
 	runStructureChecksPhase(ctx, editedFilePath, editedFileInRepo, session, decision, acc);
 	runSpecLedgerPhase(ctx, editedFilePath, editedFileInRepo, session, decision, acc);
+	// Registry-parity: this edit's file scoped against any configured pair it
+	// is the LEFT or RIGHT side of (.interlinked/registry-parity.json).
+	runRegistryParityPhase(ctx, editedFilePath, editedFileInRepo, decision, acc);
 	// Review-finding reconciliation: touch txns + disputed-ground warning
 	// (spec-audit memo §4/§6.3).
 	runReviewReconcilePhase(

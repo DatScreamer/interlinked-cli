@@ -6,10 +6,16 @@
 // `DEFAULT_ADVISORY_SKIPS` until advisory.ts re-exports from this module.
 // A drifted pair would let `persistent_warning_escalation` amplify a
 // check that verify itself treats as advisory-tier noise.
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_ADVISORY_SKIPS } from "../commands/verify/advisory.js";
 import { ADVISORY_CHECK_IDS, isAdvisoryCheckId } from "./advisory-check-ids.js";
+import { checkRegistryParity, loadRegistryParityConfig } from "./registry-parity.js";
+
+// Repo root, resolved the same way as check-evidence/contract.test.ts's
+// self-check tests — robust to how vitest is invoked, unlike process.cwd().
+const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
 describe("ADVISORY_CHECK_IDS", () => {
 	it("is set-equal to DEFAULT_ADVISORY_SKIPS (no drift while both definitions exist)", () => {
@@ -35,5 +41,29 @@ describe("isAdvisoryCheckId", () => {
 		expect(isAdvisoryCheckId("write_without_mkdir")).toBe(true);
 		expect(isAdvisoryCheckId("typescript")).toBe(false);
 		expect(isAdvisoryCheckId("")).toBe(false);
+	});
+});
+
+describe("registry-parity config declares the ADVISORY_CHECK_IDS <-> DEFAULT_ADVISORY_SKIPS pair", () => {
+	// Belt-and-suspenders on top of the set-equality test above: that test
+	// breaks only if BOTH modules are imported into the same test process.
+	// The generic .interlinked/registry-parity.json mechanism instead
+	// extracts each side straight from source text, so it also runs
+	// per-edit (registry-parity-phase.ts) and at `interlinked verify` —
+	// surfaces drift even when nothing imports the other side's module.
+	it("registers a pair for the two files and reports no drift against the real repo", () => {
+		const config = loadRegistryParityConfig(REPO_ROOT);
+		expect(config).not.toBeNull();
+		const pair = config?.pairs.find(
+			(p) =>
+				p.left.file === "src/harness/advisory-check-ids.ts" &&
+				p.right.file === "src/commands/verify/advisory.ts",
+		);
+		expect(pair).toBeDefined();
+		if (!pair) return;
+		const findings = checkRegistryParity({ pairs: [pair] }, REPO_ROOT);
+		// A non-empty result names the exact drifted ids + both files —
+		// more useful in a failure message than a bare boolean.
+		expect(findings).toEqual([]);
 	});
 });

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
 import {
 	checkRegistryParity,
+	diffPairContent,
 	extractKeys,
 	loadRegistryParityConfig,
 	REGISTRY_PARITY_CONFIG_PATH,
@@ -55,6 +56,71 @@ describe("extractKeys", () => {
 		// Pattern with two alternatives; one branch has no capture group filled.
 		const out = extractKeys('id: "x"; id: "y"', 'id:\\s*"([a-z]+)"');
 		expect(out).toEqual(new Set(["x", "y"]));
+	});
+});
+
+describe("diffPairContent", () => {
+	function pair(extra: Record<string, unknown> = {}) {
+		return {
+			name: "test-pair",
+			left: { file: "left.ts", key_re: 'check:\\s*"([a-z]+)"' },
+			right: { file: "right.ts", key_re: 'check:\\s*"([a-z]+)"' },
+			...extra,
+		};
+	}
+
+	it("returns nothing for identical content on both sides", () => {
+		expect(diffPairContent(pair(), 'check: "alpha"', 'check: "alpha"')).toEqual([]);
+	});
+
+	it("finds a missing-from-right id, message names both files + the id", () => {
+		const findings = diffPairContent(pair(), 'check: "alpha"\ncheck: "beta"', 'check: "alpha"');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toEqual(
+			expect.objectContaining({
+				pair: "test-pair",
+				kind: "missing-from-right",
+				id: "beta",
+				source_file: "left.ts",
+				target_file: "right.ts",
+			}),
+		);
+		expect(findings[0]?.message).toContain("left.ts");
+		expect(findings[0]?.message).toContain("right.ts");
+		expect(findings[0]?.message).toContain("beta");
+	});
+
+	it("finds a missing-from-left id symmetrically", () => {
+		const findings = diffPairContent(pair(), 'check: "alpha"', 'check: "alpha"\ncheck: "gamma"');
+		expect(findings).toHaveLength(1);
+		expect(findings[0]).toEqual(
+			expect.objectContaining({ kind: "missing-from-left", id: "gamma" }),
+		);
+	});
+
+	it("respects left_only_allowed / right_only_allowed", () => {
+		expect(
+			diffPairContent(
+				pair({ left_only_allowed: ["beta"] }),
+				'check: "alpha"\ncheck: "beta"',
+				'check: "alpha"',
+			),
+		).toEqual([]);
+		expect(
+			diffPairContent(
+				pair({ right_only_allowed: ["gamma"] }),
+				'check: "alpha"',
+				'check: "alpha"\ncheck: "gamma"',
+			),
+		).toEqual([]);
+	});
+
+	it("matches checkRegistryParity's own file-based findings for equivalent content (same core)", () => {
+		writeFile("left.ts", 'check: "alpha"\ncheck: "beta"');
+		writeFile("right.ts", 'check: "alpha"');
+		const viaFile = checkRegistryParity({ pairs: [pair()] }, dir);
+		const viaContent = diffPairContent(pair(), 'check: "alpha"\ncheck: "beta"', 'check: "alpha"');
+		expect(viaContent).toEqual(viaFile);
 	});
 });
 

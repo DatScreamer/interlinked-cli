@@ -126,6 +126,11 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 	affected_tests: {
 		// Off by default: paired-test execution is high-friction noise on most edits.
 		// Re-enable per repo via .interlinked/guard-rules.local.json when you want it.
+		// TypeScript/JS also runs the edited file's DIRECT importers' companion
+		// tests (one hop, no project-graph build — quality-checks/direct-importers.ts),
+		// bounded by `max_dependent_tests` (default DEFAULT_MAX_DEPENDENT_TESTS in
+		// quality-checks/test-dispatchers.ts); over cap, that phase skips with a
+		// "N dependent test files not run (over cap)" warning instead of running.
 		enabled: false,
 		file_types: [".ts", ".tsx", ".js", ".jsx"],
 		timeout_ms: 15_000,

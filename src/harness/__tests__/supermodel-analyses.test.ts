@@ -101,6 +101,51 @@ describe("parseDeadCodeJson", () => {
 		const json = JSON.stringify({ deadCodeCandidates: [] });
 		expect(parseDeadCodeJson(json)!.totalDeclarations).toBe(0);
 	});
+
+	// test-contract: boundary — the JSON literal `null` must return null cleanly, not throw.
+	// Several OR/AND permutations of the object/null guard only diverge from the original on
+	// this exact input (raw === null): skip the guard and `obj.deadCodeCandidates` throws on
+	// null instead of returning null.
+	it("returns null (without throwing) when the parsed JSON is the literal null", () => {
+		expect(() => parseDeadCodeJson("null")).not.toThrow();
+		expect(parseDeadCodeJson("null")).toBeNull();
+	});
+
+	// test-contract: public-api — "medium" is a real confidence value, not just an alias for
+	// the high/low ends of the ternary.
+	it("keeps a medium-confidence candidate's confidence as medium, not the low default", () => {
+		const json = JSON.stringify({
+			deadCodeCandidates: [{ file: "a.ts", name: "x", confidence: "medium" }],
+		});
+		expect(nonNull(parseDeadCodeJson(json)!.candidates[0]).confidence).toBe("medium");
+	});
+
+	// test-contract: boundary — an empty-string confidence is invalid input and must fall back
+	// to "low", not be accepted as its own value.
+	it("defaults an empty-string confidence to low, not to the empty string itself", () => {
+		const json = JSON.stringify({
+			deadCodeCandidates: [{ file: "a.ts", name: "x", confidence: "" }],
+		});
+		expect(nonNull(parseDeadCodeJson(json)!.candidates[0]).confidence).toBe("low");
+	});
+
+	// test-contract: boundary — a null metadata block must not crash the parse; totalDeclarations
+	// stays at its 0 default (typeof null === "object" in JS, so the null check is load-bearing).
+	it("returns totalDeclarations 0 (without throwing) when metadata is null", () => {
+		const json = JSON.stringify({ deadCodeCandidates: [], metadata: null });
+		expect(() => parseDeadCodeJson(json)).not.toThrow();
+		expect(parseDeadCodeJson(json)!.totalDeclarations).toBe(0);
+	});
+
+	// test-contract: boundary — a non-number totalDeclarations must be rejected, not assigned
+	// straight through into a field callers treat as a number.
+	it("leaves totalDeclarations at 0 when metadata.totalDeclarations is not a number", () => {
+		const json = JSON.stringify({
+			deadCodeCandidates: [],
+			metadata: { totalDeclarations: "412" },
+		});
+		expect(parseDeadCodeJson(json)!.totalDeclarations).toBe(0);
+	});
 });
 
 describe("formatDeadCodeFindings", () => {
@@ -135,6 +180,71 @@ describe("formatDeadCodeFindings", () => {
 		const lines = formatDeadCodeFindings({ candidates, totalDeclarations: 100 }, { max: 20 });
 		expect(lines).toHaveLength(21); // 20 shown + 1 overflow line
 		expect(lines[20]).toContain("5 more");
+	});
+
+	// test-contract: boundary — the overflow count must be an exact subtraction. "25 more"
+	// contains the substring "5 more" too, so a loose toContain assertion can't tell
+	// `ranked.length - max` apart from `ranked.length + max`; this pins the full line.
+	it("computes the overflow count as an exact subtraction, not a loose substring match", () => {
+		const candidates: DeadCodeCandidate[] = Array.from({ length: 25 }, (_, i) => ({
+			file: `f${i}.ts`,
+			name: `fn${i}`,
+			line: i,
+			confidence: "medium",
+			reason: "unreferenced",
+		}));
+		const lines = formatDeadCodeFindings({ candidates, totalDeclarations: 100 }, { max: 20 });
+		expect(lines[20]).toBe("[interlinked:supermodel-dead-code] …and 5 more candidate(s).");
+	});
+
+	// test-contract: boundary — exactly `max` candidates must NOT trigger the overflow line
+	// (ranked.length > max, not >=).
+	it("does not add an overflow line when the candidate count exactly equals max", () => {
+		const candidates: DeadCodeCandidate[] = Array.from({ length: 5 }, (_, i) => ({
+			file: `f${i}.ts`,
+			name: `fn${i}`,
+			line: i,
+			confidence: "low",
+			reason: "r",
+		}));
+		const lines = formatDeadCodeFindings({ candidates, totalDeclarations: 5 }, { max: 5 });
+		expect(lines).toHaveLength(5);
+	});
+
+	// test-contract: public-api — omitting opts.max entirely must apply the real default cap
+	// (20), not silently show every candidate (opts.max ?? DEFAULT vs opts.max && DEFAULT only
+	// diverge when opts.max is omitted).
+	it("applies the default cap of 20 when no max option is given", () => {
+		const candidates: DeadCodeCandidate[] = Array.from({ length: 25 }, (_, i) => ({
+			file: `f${i}.ts`,
+			name: `fn${i}`,
+			line: i,
+			confidence: "medium",
+			reason: "unreferenced",
+		}));
+		const lines = formatDeadCodeFindings({ candidates, totalDeclarations: 100 });
+		expect(lines).toHaveLength(21);
+		expect(lines[20]).toBe("[interlinked:supermodel-dead-code] …and 5 more candidate(s).");
+	});
+
+	// test-contract: public-api — sorting must actually reorder out-of-order input by
+	// confidence. SAMPLE_JSON's fixture is already pre-sorted (high, low), so a gutted
+	// comparator, an emptied rank table, or a removed .sort() call all pass silently through
+	// the other tests; this fixture is deliberately scrambled to force a real reorder.
+	it("reorders out-of-order candidates by confidence (high, medium, low)", () => {
+		const analysis = {
+			candidates: [
+				{ file: "l.ts", name: "L", line: 1, confidence: "low" as const, reason: "r" },
+				{ file: "h.ts", name: "H", line: 2, confidence: "high" as const, reason: "r" },
+				{ file: "m.ts", name: "M", line: 3, confidence: "medium" as const, reason: "r" },
+			],
+			totalDeclarations: 3,
+		};
+		expect(formatDeadCodeFindings(analysis)).toEqual([
+			"[interlinked:supermodel-dead-code] h.ts:2 H (high confidence) — r",
+			"[interlinked:supermodel-dead-code] m.ts:3 M (medium confidence) — r",
+			"[interlinked:supermodel-dead-code] l.ts:1 L (low confidence) — r",
+		]);
 	});
 });
 

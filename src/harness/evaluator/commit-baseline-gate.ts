@@ -16,10 +16,10 @@
 // edit-time gate — only the INTERLINKED_DISABLE_BASELINE_GUARD=1 env bypass). Cheap
 // (two `git show` reads per baseline, no suite). FAIL-OPEN on every uncertainty.
 
-import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 import { detectBaselineGaming } from "./baseline-integrity-gate.js";
+import { gitShow, resolveRepoRoot } from "./commit-git-io.js";
 import { parseGitCommit } from "./commit-parse.js";
 
 /** Baselines carved out of the `.interlinked/*` gitignore — the only ones that can
@@ -33,37 +33,6 @@ const TRACKED_BASELINES = [
 	// detector lives in disposition-ledger-gate.ts and reaches here via detectBaselineGaming.
 	".interlinked/mutation-dispositions.json",
 ] as const;
-
-const GIT_TIMEOUT_MS = 1_500;
-
-/** `git show <ref>` content, or null when it doesn't resolve (no HEAD, path not in
- *  that tree, git missing). Fail-open by design. */
-function gitShow(repoRoot: string, ref: string): string | null {
-	try {
-		return execFileSync("git", ["-C", repoRoot, "show", ref], {
-			encoding: "utf-8",
-			timeout: GIT_TIMEOUT_MS,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-	} catch {
-		return null;
-	}
-}
-
-/** Resolve the git toplevel for a directory, or null. */
-function resolveRepoRoot(dir: string): string | null {
-	try {
-		const out = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
-			encoding: "utf-8",
-			timeout: GIT_TIMEOUT_MS,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-		const top = out.split("\n")[0]?.trim();
-		return top && top.length > 0 ? top : null;
-	} catch {
-		return null;
-	}
-}
 
 /**
  * Returns a `block` decision when the command is a real `git commit` AND a tracked
