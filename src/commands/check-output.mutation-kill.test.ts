@@ -233,7 +233,7 @@ describe("emitFullSummary (mutation-kill)", () => {
 			{ name: "cycles", files: new Set(["c1.ts"]) },
 			{ name: "dead-imports", files: new Set(["d1.ts", "d2.ts"]) },
 			{ name: "secrets", files: new Set(["s1.ts"]) },
-			{ name: "orphan-exports", files: new Set(["o1.ts", "o2.ts", "o3.ts"]) },
+			{ name: "orphan-exports", files: new Set(["x1.ts", "x2.ts", "x3.ts"]) },
 			{ name: "clean-check", files: new Set() },
 		];
 		const io = captureIO();
