@@ -42,18 +42,34 @@ REPO_REF="${INTERLINKED_REPO_REF:-main}"
 # way; using `/tmp` keeps the script identical across platforms.
 SMOKE_DIR="$(mktemp -d /tmp/interlinked-smoke.XXXXXX)"
 
-# We `npm link` globally for an authentic "binary on PATH" test. If the
-# script crashes mid-way, leftover global state confuses the next run.
-# Trap unconditionally cleans up, even on failure.
+# `npm link` (below) mutates GLOBAL npm state: a symlink under npm's global
+# node_modules keyed by package NAME, plus bin shims in npm's global bin
+# dir. This repo's own package.json is ALSO named "interlinked-cli", and a
+# dev machine commonly has a permanently-installed `interlinked` elsewhere
+# on PATH (e.g. ~/.local/bin) ahead of npm's global bin dir — so an
+# unscoped `npm link` here can silently make every bare `interlinked` call
+# below resolve to THAT other install instead of the one this script just
+# built, and can make `npm link`/`npm unlink -g` operate on global npm
+# state this script doesn't own. Point npm's global prefix at a directory
+# inside our own disposable tmpdir so `npm link`'s entire footprint —
+# global symlink, global bin shims, everything — lives under $SMOKE_DIR and
+# is gone the moment `rm -rf "$SMOKE_DIR"` runs; every invocation below
+# resolves the binary by explicit path, never by PATH search, so no other
+# `interlinked` install on this machine can ever be reached by accident.
+NPM_GLOBAL_PREFIX="$SMOKE_DIR/npm-global"
+mkdir -p "$NPM_GLOBAL_PREFIX"
+export npm_config_prefix="$NPM_GLOBAL_PREFIX"
+
+# For an authentic "binary on PATH" test via `npm link`, with every side
+# effect sandboxed inside $SMOKE_DIR (see above). If the script crashes
+# mid-way, leftover state confuses the next run — trap unconditionally
+# cleans up, even on failure.
 cleanup() {
   local exit_code=$?
   set +e
   echo "==> cleanup"
-  if command -v interlinked >/dev/null 2>&1; then
-    interlinked harness stop 2>/dev/null || true
-  fi
-  if [ -d "${CLONE_DIR:-/nonexistent}" ]; then
-    (cd "$CLONE_DIR" && npm unlink -g 2>/dev/null) || true
+  if [ -n "${INTERLINKED_BIN:-}" ] && [ -x "$INTERLINKED_BIN" ] && [ -d "${TARGET_DIR:-/nonexistent}" ]; then
+    (cd "$TARGET_DIR" && "$INTERLINKED_BIN" harness stop 2>/dev/null) || true
   fi
   rm -rf "$SMOKE_DIR" 2>/dev/null || true
   if [ "$exit_code" -ne 0 ]; then
@@ -76,7 +92,21 @@ step "source:       $REPO_URL @ $REPO_REF"
 step "clone"
 # `INTERLINKED_REPO_URL` may be a local path for uncommitted-change testing.
 if [ -d "$REPO_URL/.git" ] || [ -d "$REPO_URL" ]; then
-  cp -R "$REPO_URL" "$CLONE_DIR"
+  # Exclude build/vcs/harness-data dirs: `npm ci` + `npm run build` below
+  # regenerate node_modules/dist from scratch regardless, nothing in the
+  # build/pack/link pipeline reads .git (scripts/setup-git-hooks.mjs
+  # explicitly tolerates a missing .git), and .interlinked/ is this repo's
+  # own local harness data dir (can be multiple GB) — copying it wastes
+  # minutes per run and risks leaking this machine's local harness config
+  # into the clone for no benefit ($TARGET_DIR gets its own fresh
+  # .interlinked/ further down).
+  mkdir -p "$CLONE_DIR"
+  rsync -a \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='dist' \
+    --exclude='.interlinked' \
+    "$REPO_URL/" "$CLONE_DIR/"
   ok "copied local clone (uncommitted changes preserved)"
 else
   git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$CLONE_DIR"
@@ -96,19 +126,22 @@ ok "dist/index.js and dist/hook-entry.js present"
 
 step "npm link"
 npm link
-INTERLINKED_BIN="$(command -v interlinked || true)"
-HOOK_BIN="$(command -v interlinked-hook || true)"
-[ -n "$INTERLINKED_BIN" ] || fail "interlinked not on PATH after npm link"
-[ -n "$HOOK_BIN" ] || fail "interlinked-hook not on PATH after npm link"
+# Resolve by explicit path inside our sandboxed prefix (see top of file) —
+# never via PATH search, so an unrelated `interlinked` elsewhere on this
+# machine's PATH can never be the one this script ends up exercising.
+INTERLINKED_BIN="$NPM_GLOBAL_PREFIX/bin/interlinked"
+HOOK_BIN="$NPM_GLOBAL_PREFIX/bin/interlinked-hook"
+[ -x "$INTERLINKED_BIN" ] || fail "interlinked not present in sandboxed prefix after npm link ($INTERLINKED_BIN)"
+[ -x "$HOOK_BIN" ] || fail "interlinked-hook not present in sandboxed prefix after npm link ($HOOK_BIN)"
 ok "interlinked      -> $INTERLINKED_BIN"
 ok "interlinked-hook -> $HOOK_BIN"
 
 step "interlinked --version"
-interlinked --version
+"$INTERLINKED_BIN" --version
 ok "version reported"
 
 step "interlinked --help (first 5 lines)"
-interlinked --help | head -5
+"$INTERLINKED_BIN" --help | head -5
 ok "help renders"
 
 step "fresh sample project: $TARGET_DIR"
@@ -119,7 +152,7 @@ printf '{"name":"smoke-target","version":"0.0.0","private":true}\n' > package.js
 ok "fresh sample project ready"
 
 step "install-hooks --runner claude-code"
-interlinked install-hooks --runner claude-code --mode balanced --json | head -20
+"$INTERLINKED_BIN" install-hooks --runner claude-code --mode balanced --json | head -20
 test -f .claude/settings.json || fail ".claude/settings.json not written"
 grep -q -- "--runner 'claude-code'" .claude/settings.json \
   || fail "settings.json missing the --runner 'claude-code' tag"
@@ -132,24 +165,24 @@ echo "  hook output: $HOOK_OUT"
 ok "hook accepted PreToolUse event"
 
 step "harness daemon: start"
-interlinked harness start
+"$INTERLINKED_BIN" harness start
 sleep 1
 test -S .interlinked/harness.sock || fail "harness socket not created"
 ok "harness socket present"
 
 step "harness daemon: status"
-interlinked harness status | head -5
+"$INTERLINKED_BIN" harness status | head -5
 ok "harness reported status"
 
 step "harness daemon: block decision on rm -rf /"
-BLOCK_OUT="$(interlinked harness test "rm -rf /" 2>&1 || true)"
+BLOCK_OUT="$("$INTERLINKED_BIN" harness test "rm -rf /" 2>&1 || true)"
 echo "$BLOCK_OUT" | head -5
 echo "$BLOCK_OUT" | grep -qi "block" \
   || fail "harness did not block rm -rf / (output above)"
 ok "harness blocked the destructive command"
 
 step "harness daemon: stop"
-interlinked harness stop
+"$INTERLINKED_BIN" harness stop
 ok "harness stopped"
 
 echo
