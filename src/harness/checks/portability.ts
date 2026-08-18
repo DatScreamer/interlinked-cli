@@ -24,18 +24,17 @@ import {
 	JS_TS_ALL_EXTS,
 	stripCommentsAndStrings,
 } from "./shared.js";
+// `offsetToLine` (1-based, valid across strip-with-blanking because the
+// stripper preserves line count) is shared — see shared-text-utils.ts. Direct
+// in-package import: shared.ts sits at its line cap and cannot carry another
+// re-export line.
+import { offsetToLine } from "./shared-text-utils.js";
 
 const MAX_MATCHES_PER_FILE = 10;
 const REPORT_LINE_TRUNC = 150;
 const PAREN_SEARCH_CAP = 4000;
 
 // ─── Shared scan helpers ────────────────────────────────────────────────────
-
-/** Convert a char offset in `stripped` to a 1-based line number. Valid across
- *  strip-with-blanking (line count preserved even when per-line length isn't). */
-function offsetToLine(stripped: string, offset: number): number {
-	return stripped.slice(0, offset).split("\n").length;
-}
 
 /** Record one match at `offset`, deduped per line, bounded by the caller. */
 function pushMatch(
@@ -294,5 +293,68 @@ export function detectFloatEqualityComparison(content: string, filePath: string)
 		scanSimpleTrigger(stripped, rawLines, FLOAT_LEFT_RE, message, matches, seen);
 	}
 
+	return matches;
+}
+
+// ─── Python parity (plan 25) ────────────────────────────────────────────────
+// The same portability class in Python idiom. One combined detector: each
+// trap kind labels its own match, so the finding names the specific problem
+// without three more registry ids.
+
+const PY_EVAL_EXEC_RE = /\b(?:eval|exec)\s*\(/g;
+const PY_MUTABLE_DEFAULT_RE = /\bdef\s+\w+\s*\([^)]*=\s*(?:\[\]|\{\}|set\(\)|dict\(\)|list\(\))/g;
+const PY_STAR_IMPORT_RE = /^[ \t]*from\s+[\w.]+\s+import\s+\*/gm;
+const PY_TEST_PATH_RE = /(^|\/)test_[^/]+\.py$|_test\.py$|(^|\/)tests\//;
+
+/** Strip strings via the shared helper, then blank `#` comments (the shared
+ *  stripper only knows JS comment syntax). Line count is preserved. */
+function stripPySyntax(content: string): string {
+	return stripCommentsAndStrings(content).replace(/#[^\n]*/g, "");
+}
+
+/**
+ * Python portability traps: eval()/exec() (dynamic code, invisible to every
+ * static tool), mutable default arguments (shared-state bug class with no
+ * cross-language equivalent), and `from x import *` (defeats import
+ * resolution for analyzers and porting agents alike).
+ */
+export function detectPythonPortabilityTraps(content: string, filePath: string): InlineMatch[] {
+	if (getExtension(filePath) !== ".py") return [];
+	if (content.length === 0) return [];
+	if (PY_TEST_PATH_RE.test(filePath.replace(/\\/g, "/"))) return [];
+
+	const stripped = stripPySyntax(content);
+	const rawLines = content.split("\n");
+	const matches: InlineMatch[] = [];
+	const seen = new Set<number>();
+
+	scanSimpleTrigger(
+		stripped,
+		rawLines,
+		PY_EVAL_EXEC_RE,
+		"python_portability_trap: eval()/exec() executes invisible code",
+		matches,
+		seen,
+	);
+	if (matches.length < MAX_MATCHES_PER_FILE) {
+		scanSimpleTrigger(
+			stripped,
+			rawLines,
+			PY_MUTABLE_DEFAULT_RE,
+			"python_portability_trap: mutable default argument is shared across calls",
+			matches,
+			seen,
+		);
+	}
+	if (matches.length < MAX_MATCHES_PER_FILE) {
+		scanSimpleTrigger(
+			stripped,
+			rawLines,
+			PY_STAR_IMPORT_RE,
+			"python_portability_trap: `from x import *` defeats static import resolution",
+			matches,
+			seen,
+		);
+	}
 	return matches;
 }

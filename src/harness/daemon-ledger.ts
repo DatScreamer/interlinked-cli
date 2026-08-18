@@ -24,7 +24,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "n
 import { join } from "node:path";
 
 /** Known reasons; readers must handle unknown strings (forward compatibility). */
-export type DaemonEventKind = "start" | "listening" | "handover" | "exit" | "spike";
+export type DaemonEventKind = "start" | "listening" | "handover" | "exit" | "spike" | "emergency-gc";
 
 export interface DaemonLedgerEvent {
 	/** Epoch ms. */
@@ -100,6 +100,25 @@ export function recordDaemonEvent(projectRoot: string, evt: DaemonLedgerEvent): 
 		// becomes agent-visible noise, and there is no safer channel left.
 		void err;
 	}
+}
+
+/** Ledger callback for the daemon-timers emergency heap-pressure shrink
+ *  (storm postmortem 2026-08-17): a row per firing so the next postmortem
+ *  reads the defense acting, not just the deaths. Factory lives HERE because
+ *  server.ts is over the line cap and may only shrink. */
+export function makeHeapPressureLedger(
+	projectRoot: string,
+	log: (message: string) => void,
+): (usedMb: number, limitMb: number) => void {
+	return (usedMb, limitMb) => {
+		recordDaemonEvent(projectRoot, {
+			at: Date.now(),
+			pid: process.pid,
+			event: "emergency-gc",
+			detail: `heap ${usedMb}MB of ${limitMb}MB limit — shrank caches + forced GC`,
+		});
+		log(`Emergency GC: heap ${usedMb}MB of ${limitMb}MB limit — shrank caches`);
+	};
 }
 
 /** Bytes per megabyte, for the memory fields on an exit row. */

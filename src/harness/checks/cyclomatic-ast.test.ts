@@ -3,6 +3,7 @@ import {
 	__resetTsCacheForTesting,
 	astComplexityAvailable,
 	computeCyclomaticAst,
+	type ParsedTsSource,
 	parseTsSource,
 } from "./cyclomatic-ast.js";
 
@@ -133,5 +134,89 @@ describe("cyclomatic-ast — parse memo", () => {
 		const before = parseTsSource(src, "src/cleared.ts");
 		__resetTsCacheForTesting();
 		expect(parseTsSource(src, "src/cleared.ts")?.sf).not.toBe(before?.sf);
+	});
+});
+
+function scriptKindOf(parsed: ParsedTsSource): number {
+	// SAFETY: `scriptKind` is written by ts.createSourceFile's 5th argument and
+	// read throughout the TS compiler at runtime (verified empirically: parsing
+	// each extension below and reading back `.scriptKind` returns the exact
+	// enum value that extension's branch passed in). It is simply narrower than
+	// this TS toolchain's bundled public `SourceFile` .d.ts surface.
+	return (parsed.sf as unknown as { scriptKind: number }).scriptKind;
+}
+
+describe("cyclomatic-ast — scriptKindFor (extension → ScriptKind exact table)", () => {
+	// test-contract: invariant — scriptKindFor's own doc comment: "the ONLY copy
+	// of this table: a .tsx file parsed as plain TS mis-reads JSX as type
+	// assertions". One exact-value assertion per branch (plus the unmatched
+	// default) pins the whole switch: case-fold, every string label, and the
+	// removed-return default all show up as a wrong ScriptKind here.
+	it("maps every extension branch (and the unmatched default) to its exact ScriptKind", () => {
+		const at = (path: string) => {
+			const parsed = parseTsSource("export const v = 1;", path);
+			if (!parsed) throw new Error(`parseTsSource unexpectedly returned null for ${path}`);
+			return parsed;
+		};
+		const tsx = at("f.tsx");
+		const jsx = at("f.jsx");
+		const js = at("f.js");
+		const mjs = at("f.mjs");
+		const cjs = at("f.cjs");
+		const fallback = at("f.ts"); // hits the `default:` branch — no case matches ".ts"
+		expect(scriptKindOf(tsx)).toBe(tsx.ts.ScriptKind.TSX);
+		expect(scriptKindOf(jsx)).toBe(jsx.ts.ScriptKind.JSX);
+		expect(scriptKindOf(js)).toBe(js.ts.ScriptKind.JS);
+		expect(scriptKindOf(mjs)).toBe(mjs.ts.ScriptKind.JS);
+		expect(scriptKindOf(cjs)).toBe(cjs.ts.ScriptKind.JS);
+		expect(scriptKindOf(fallback)).toBe(fallback.ts.ScriptKind.TS);
+	});
+});
+
+describe("cyclomatic-ast — functionName resolves through each parent-shape branch", () => {
+	// test-contract: invariant — a const-assigned arrow has no own `.name`; the
+	// VariableDeclaration-parent branch (`parent && ts.isVariableDeclaration(parent)
+	// && ts.isIdentifier(parent.name)`) is the ONLY source of its reported name.
+	it("names a const-assigned arrow via its VariableDeclaration parent", () => {
+		expect(byName("export const namedArrow = () => 1;", "namedArrow")?.cyclomatic).toBe(1);
+	});
+
+	// test-contract: invariant — an anonymous function value in an object literal
+	// has no own `.name`; the PropertyAssignment-parent branch is the only source.
+	it("names an object-literal property function via its PropertyAssignment parent", () => {
+		expect(byName("const o = { fn: function () { return 1; } };", "fn")?.cyclomatic).toBe(1);
+	});
+
+	// test-contract: invariant — an anonymous function value on a class field has
+	// no own `.name`; the PropertyDeclaration-parent branch is the only source.
+	it("names a class-field function via its PropertyDeclaration parent", () => {
+		expect(byName("class C { fn = function () { return 1; }; }", "fn")?.cyclomatic).toBe(1);
+	});
+
+	// test-contract: boundary — a computed method name is an Expression, not an
+	// Identifier/PrivateIdentifier, so the `named.name` fast path must NOT claim
+	// it; it falls through every parent check (the parent is the class, not a
+	// declaration/assignment/property) to the documented "(callback)" fallback.
+	it("does NOT resolve a computed method name as an identifier — falls back to (callback)", () => {
+		const entries = run("class C { [computeKey()]() { return 1; } }");
+		expect(entries.map((e) => e.name)).toEqual(["(callback)"]);
+	});
+});
+
+describe("cyclomatic-ast — per-entry field exactness", () => {
+	// test-contract: invariant — endLine is `getLineAndCharacterOfPosition(node.getEnd()).line + 1`;
+	// a multi-line function makes start/end genuinely differ so an off-by-one
+	// (or sign-flip) in that +1 is directly observable, not masked by a same-line fixture.
+	it("reports the exact 1-based endLine for a multi-line function", () => {
+		const src = "function f() {\n  return 1;\n}\n";
+		expect(byName(src, "f")?.endLine).toBe(3);
+	});
+
+	// test-contract: invariant — every AST-derived entry is tagged with the exact
+	// "js_ts" language discriminator (distinguishing this engine's output from the
+	// Python/other-language cyclomatic walkers that share the same result shape).
+	it('tags every entry with the exact "js_ts" language discriminator', () => {
+		const entries = run("function f() { return 1; }");
+		expect(entries[0]?.language).toBe("js_ts");
 	});
 });

@@ -8,6 +8,7 @@ import {
 	detectBuiltinPrototypeMutation,
 	detectDynamicCodeExecution,
 	detectFloatEqualityComparison,
+	detectPythonPortabilityTraps,
 } from "../../checks/portability.js";
 import type { CheckRegistration } from "../types.js";
 
@@ -59,5 +60,21 @@ export const PORTABILITY_ENTRIES: CheckRegistration[] = [
 		fn: detectFloatEqualityComparison,
 		resultsPropName: "floatEqualityComparison",
 		content_keywords: ["===", "!=="],
+	},
+	{
+		id: "python_portability_trap",
+		phase: "post",
+		name: "Python Portability Trap",
+		description:
+			"Python parity for the portability family (plan 25): eval()/exec() (invisible dynamic code), mutable default arguments (state shared across calls), and `from x import *` (defeats static import resolution)",
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			"Replace eval/exec with an explicit dispatch table or parser; use `def f(x=None): x = [] if x is None else x` instead of a mutable default; import the names you use (`from x import a, b`) so every reference stays statically resolvable.",
+		fn: detectPythonPortabilityTraps,
+		resultsPropName: "pythonPortabilityTrap",
+		content_keywords: ["eval", "exec", "def", "import"],
 	},
 ];

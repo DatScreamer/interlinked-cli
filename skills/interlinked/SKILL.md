@@ -65,7 +65,7 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 | Installing / enabling Interlinked, connecting a coding client/hook, daemon down or **zombie**, `doctor` fails, config/mode | **interlinked-setup** |
 | A Bash command or edit was **BLOCKED**; a sandbox/effect-residue warning; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
 | Running `interlinked verify`; a `pre_block` check blocked an edit; landing a cross-file refactor; scratch scripts | **interlinked-verify** |
-| Blocked by a **line-cap / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; debt | **interlinked-quality-gates** |
+| Blocked by a **line-cap / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; debt; **dead code** (`deadcode` scan + `--categorize` deletion-safety buckets, per-edit `dead_code_action`) | **interlinked-quality-gates** |
 | An `npm/pip/cargo/…` install or manifest edit was blocked; the package **allowlist** | **interlinked-supply-chain** |
 | Spec/doc facts, drift, invariants, review **findings**, `doctest`; `[interlinked:spec-*]` | **interlinked-spec-audit** |
 | Inspect activity/logs, tail live, guard-block history, **recurrence**, `viz`, `audit`, `sync` | **interlinked-observability** |

@@ -58,6 +58,8 @@ export interface DeadCodeReport {
 	deadImportBindings: DeadImportBinding[];
 	/** Exported symbols the cross-file detector finds no consumer for. */
 	deadExports: DeadExportFinding[];
+	/** Files alive ONLY because test files import them (categorizer signal). */
+	testOnlyImporterFiles?: string[];
 	/** How many files the scan covered. */
 	scannedFiles: number;
 }
@@ -89,10 +91,26 @@ function entryPoints(cwd: string): Set<string> {
 }
 
 const REEXPORT_FROM_RE = /export\s+(?:\*|\{[^}]*\}|type\s+\{[^}]*\})\s+from\s+["']([^"']+)["']/g;
+const DYNAMIC_IMPORT_RE = /import\s*\(\s*["']([^"']+)["']/g;
 
-/** Files consumed through `export … from` barrels: the project graph tracks
- *  import statements only, so re-export edges need their own pass (the
- *  checks/<family> barrel made every family file look importerless). */
+/** Mark every relative specifier the pattern captures as a reached file,
+ *  under each resolvable extension. */
+function markSpecTargets(reached: Set<string>, dir: string, content: string, re: RegExp): void {
+	for (const m of content.matchAll(re)) {
+		const spec = m[1];
+		if (!spec || !spec.startsWith(".")) continue;
+		const base = join(dir, spec).split(sep).join("/").replace(/\.js$/, "");
+		for (const ext of [".ts", ".tsx", ".js", ".jsx", "/index.ts"]) {
+			reached.add(`${base}${ext}`);
+		}
+	}
+}
+
+/** Files consumed through `export … from` barrels or dynamic `import()`:
+ *  the project graph tracks static import statements only, so both edge
+ *  kinds need their own pass (the checks/<family> barrel made every family
+ *  file look importerless; the lazily-loaded categorizer module repeated the
+ *  class for dynamic imports). */
 function reExportTargets(cwd: string, files: string[]): Set<string> {
 	const reached = new Set<string>();
 	for (const rel of files) {
@@ -104,14 +122,8 @@ function reExportTargets(cwd: string, files: string[]): Set<string> {
 			continue;
 		}
 		const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : ".";
-		for (const m of content.matchAll(REEXPORT_FROM_RE)) {
-			const spec = m[1];
-			if (!spec || !spec.startsWith(".")) continue;
-			const base = join(dir, spec).split(sep).join("/").replace(/\.js$/, "");
-			for (const ext of [".ts", ".tsx", ".js", ".jsx", "/index.ts"]) {
-				reached.add(`${base}${ext}`);
-			}
-		}
+		markSpecTargets(reached, dir, content, REEXPORT_FROM_RE);
+		markSpecTargets(reached, dir, content, DYNAMIC_IMPORT_RE);
 	}
 	return reached;
 }
@@ -127,6 +139,7 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 	const unreachableFiles: string[] = [];
 	const deadImportBindings: DeadImportBinding[] = [];
 	const deadExports: DeadExportFinding[] = [];
+	const testOnlyImporterFiles: string[] = [];
 
 	for (const relRaw of files) {
 		const rel = relRaw.split(sep).join("/");
@@ -135,8 +148,15 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 		if (!existsSync(abs)) continue;
 		const content = readFileSync(abs, "utf-8");
 
-		if (!entries.has(rel) && !reExported.has(rel) && graph.getImporters(abs).length === 0) {
+		const importers = graph.getImporters(abs);
+		if (!entries.has(rel) && !reExported.has(rel) && importers.length === 0) {
 			unreachableFiles.push(rel);
+		}
+		if (
+			importers.length > 0 &&
+			importers.every((e) => TEST_OR_FIXTURE_RE.test(e.fromFile.split(sep).join("/")))
+		) {
+			testOnlyImporterFiles.push(rel);
 		}
 		for (const binding of findDeadImports(content)) {
 			deadImportBindings.push({ file: rel, binding });
@@ -147,13 +167,55 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 	}
 
 	unreachableFiles.sort((a, b) => a.localeCompare(b));
-	return { unreachableFiles, deadImportBindings, deadExports, scannedFiles: files.length };
+	return {
+		unreachableFiles,
+		deadImportBindings,
+		deadExports,
+		testOnlyImporterFiles,
+		scannedFiles: files.length,
+	};
+}
+
+/** The `--categorize` path (operator decision 2026-08-17): every candidate
+ *  buckets by mechanical signals; only the compiler/mutation-guarded buckets
+ *  are recommended for deletion. */
+async function printCategorized(
+	cwd: string,
+	report: DeadCodeReport,
+	json: boolean,
+): Promise<number> {
+	const { categorizeDeadCode, formatCategorizeReport } = await import("./deadcode-categorize.js");
+	const testOnly = new Set(report.testOnlyImporterFiles ?? []);
+	const categories = categorizeDeadCode(cwd, {
+		unreachableFiles: report.unreachableFiles,
+		deadExports: report.deadExports,
+		testOnlyImportersFor: (rel) => testOnly.has(rel),
+	});
+	if (json) {
+		console.log(JSON.stringify({ ...report, categories }, null, 2));
+		return 0;
+	}
+	console.log(
+		`Dead-code categorization — ${categories.items.length} candidate(s) bucketed by deletion safety`,
+	);
+	for (const line of formatCategorizeReport(categories)) console.log(line);
+	console.log(
+		"\nSafe-to-act buckets: reexport-residue, orphaned-type, superseded, inert branches. keep/annotate buckets are deliberate or planned code.",
+	);
+	return 0;
 }
 
 /** CLI action: print the report, grouped, with the candidate caveat. */
-export async function deadcodeCommand(opts: { json?: boolean; cwd?: string }): Promise<number> {
+export async function deadcodeCommand(opts: {
+	json?: boolean;
+	categorize?: boolean;
+	cwd?: string;
+}): Promise<number> {
 	const cwd = opts.cwd ?? process.cwd();
 	const report = scanDeadCode(cwd);
+	if (opts.categorize) {
+		return printCategorized(cwd, report, opts.json === true);
+	}
 	if (opts.json) {
 		console.log(JSON.stringify(report, null, 2));
 		return 0;

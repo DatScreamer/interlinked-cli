@@ -460,6 +460,8 @@ export const DEFAULT_ADVISORY_SKIPS = new Set<string>([
 	"builtin_prototype_mutation",
 	// float_equality_comparison: === / !== against a float literal; real bug class but a taste call at low magnitudes, advisory pending dogfood FP calibration.
 	"float_equality_comparison",
+	// python_portability_trap: Python parity for the portability family (eval/exec, mutable defaults, import *); advisory like its JS siblings pending calibration on a real Python tree.
+	"python_portability_trap",
 	// test_contract_annotation: adoption-triggered (silent until a file already uses test-contract:), so zero-FP by construction — advisory because it's a convention nudge, not a defect.
 	"test_contract_annotation",
 	// unvalidated_input_boundary: .json()/process.argv boundary heuristic sibling of unvalidated_json_boundary; advisory pending dogfood FP calibration.

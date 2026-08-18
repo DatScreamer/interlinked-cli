@@ -420,6 +420,36 @@ public `interlinked mutation adopt` command.
   `--omit=optional` makes the cyclomatic gate fail open (silent enforcement gap) — keep
   `typescript` installed. Python needs `radon` on PATH.
 
+## Dead code: two controls, four evidence layers, buckets before deletion
+
+Per-edit detection and repo scanning are SEPARATE controls (operator decision
+2026-08-17). The config keys `structural_checks.dead_imports` /
+`dead_exports` run on every edit (with `dead_code_action: "flag" | "delete"`
+deciding whether the warning reports candidates or instructs the agent to
+remove them in the same edit — the harness never deletes code itself). The
+verb `interlinked deadcode` sweeps the whole repo on demand, in its own
+process, and works with or without any of the per-edit checks enabled.
+
+Four evidence layers, weakest claim first: unreachable files (nothing imports
+them — the scan resolves `export … from` barrels and dynamic `import()` edges,
+but runtime path-loading stays invisible, so every row is a CANDIDATE), unused
+import bindings (same-file evidence, near-zero FP), unused exports (cross-file
+inference, type-surface FPs are common), and behaviorally inert branches —
+which only the MUTATION lane can prove (`interlinked mutation disposition
+--list dead_code`; reachable code whose mutants change nothing observable).
+
+**Never hand a raw candidate list to a deletion agent.** Run
+`interlinked deadcode --categorize` first: every candidate buckets by
+mechanical signals (git first-import probe, docs/plans references, seam-shaped
+names, package.json published surface, test-only importers, re-export shape,
+type-only shape). `future-scaffolding` (never imported + doc-referenced —
+planned design) and `deliberate-seam` (test seams, published API) are KEEP
+buckets; `reexport-residue` and `orphaned-type` are compiler-guarded
+deletions; `superseded` carries git evidence of a successor; `ambiguous`
+means review, not delete. The buckets exist because the costly error is
+deleting planned or deliberate code — a candidate is a lead, a bucket is a
+policy.
+
 ## Quick reference
 ```bash
 interlinked caps                       # current caps + provenance

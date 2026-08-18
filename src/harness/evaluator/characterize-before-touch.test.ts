@@ -167,3 +167,48 @@ describe("characterize-before-touch — negative (must not fire)", () => {
 		expect(d).toBeNull();
 	});
 });
+
+describe("characterize-before-touch — Python parity (plan 25)", () => {
+	// test-contract: behavior — a listed .py file gates exactly like a .ts one,
+	// naming the pytest companion convention in the message
+	it("P3: block mode blocks a listed .py file with no companion test", () => {
+		seedBaseline(["pkg/legacy.py"]);
+		const abs = seedSource("pkg/legacy.py", "def f():\n    return 1\n");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toContain("test_legacy.py");
+	});
+
+	it("N8: a pytest companion beside the file satisfies the gate", () => {
+		seedBaseline(["pkg/legacy.py"]);
+		const abs = seedSource("pkg/legacy.py", "def f():\n    return 1\n");
+		seedSource("pkg/test_legacy.py", "from .legacy import f\n");
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+
+	it("N9: the Python exempt directive (# comment syntax) stands the gate down", () => {
+		seedBaseline(["pkg/legacy.py"]);
+		const abs = seedSource(
+			"pkg/legacy.py",
+			"# interlinked-tdd: exempt — thin __main__ wiring\nprint('x')\n",
+		);
+		const d = evaluateCharacterizeBeforeTouch({
+			filePath: abs,
+			cwd: tmp,
+			session: makeSession(),
+			mode: "block",
+		});
+		expect(d).toBeNull();
+	});
+});

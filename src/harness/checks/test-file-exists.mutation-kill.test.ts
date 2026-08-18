@@ -7,6 +7,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isMainThread } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkTestFileExists } from "./test-file-exists.js";
 
@@ -175,7 +176,14 @@ describe("checkTestFileExists — internal gate corruption (mutation-kill)", () 
 	// test-contract: boundary — a bare relative filename (no directory
 	// separator at all) must resolve its search directory to CWD; a real
 	// sibling sitting in CWD must still be found.
-	it("a bare relative filename resolves siblings against CWD", () => {
+	// Real chdir is the only way to exercise the "." branch — the check ends
+	// in existsSync("./…"), which libuv resolves against the REAL cwd, so a
+	// process.cwd() spy never reaches it. chdir throws only inside worker
+	// threads (Stryker), where these two auto-skip (dry-run abort class,
+	// 2026-08-17); the ordinary forks-pool suite still runs them.
+	// test-contract: boundary — a bare filename (no separator) must resolve its
+	// sibling search directory to CWD and find a real sibling there
+	it.skipIf(!isMainThread)("a bare relative filename resolves siblings against CWD", () => {
 		writeFileSync(join(dir, "solo.test.ts"), "// test\n");
 		const prevCwd = process.cwd();
 		try {
@@ -190,7 +198,7 @@ describe("checkTestFileExists — internal gate corruption (mutation-kill)", () 
 	// test-contract: boundary — a backslash path separator must be converted
 	// to a forward slash, not stripped outright, or the directory and base
 	// name fuse into garbage and a real sibling is missed.
-	it("a backslash path separator is converted, not dropped", () => {
+	it.skipIf(!isMainThread)("a backslash path separator is converted, not dropped", () => {
 		const sub = join(dir, "sub");
 		mkdirSync(sub);
 		writeFileSync(join(sub, "win.test.ts"), "// test\n");

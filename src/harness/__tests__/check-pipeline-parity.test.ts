@@ -401,6 +401,7 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"builtin_prototype_mutation",
 	"detectFloatEqualityComparison",
 	"float_equality_comparison",
+	"python_portability_trap",
 	"detectTestContractAnnotation",
 	"test_contract_annotation",
 	"detectUnvalidatedInputBoundary",

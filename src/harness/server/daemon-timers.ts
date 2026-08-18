@@ -10,7 +10,7 @@
 // than growth on a file that may only shrink.
 
 import { join } from "node:path";
-import { writeHeapSnapshot } from "node:v8";
+import { getHeapStatistics, writeHeapSnapshot } from "node:v8";
 import { configuredCeilingBytes, shouldRecycle } from "../memory-ceiling.js";
 
 const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
@@ -53,9 +53,23 @@ export interface DaemonTimerHooks {
 	/** Drop shrinkable caches (parsed manifest, forced GC). Called once per
 	 *  idle period, re-armed by new activity: an idle daemon on a swap-pinned
 	 *  box is a jetsam target for memory it doesn't need until the next event
-	 *  — measured 2026-07-28, row-less SIGKILLs during a 2h idle gap. */
+	 *  — measured 2026-07-28, row-less SIGKILLs during a 2h idle gap.
+	 *  ALSO the emergency valve under heap pressure (storm postmortem
+	 *  2026-08-17): the heap cap sits below the RSS recycle ceiling, so a
+	 *  transient spike aborts V8 before the graceful recycle can fire —
+	 *  shrinking at the pressure fraction keeps headroom for the spike. */
 	shrinkIdleMemory?: () => void;
+	/** Injected for tests; defaults to v8.getHeapStatistics. */
+	heapStats?: () => { usedBytes: number; limitBytes: number };
+	/** Ledger callback when the emergency heap-pressure shrink fires. */
+	onHeapPressure?: (usedMb: number, limitMb: number) => void;
 }
+
+/** Heap-use fraction of the V8 limit that triggers the emergency shrink. */
+const EMERGENCY_HEAP_FRACTION = 0.75;
+/** Emergency shrinks are rate-limited — GC under sustained pressure every
+ *  tick would trade the OOM for a CPU stall. */
+const EMERGENCY_SHRINK_COOLDOWN_MS = 120_000;
 
 /** Idle time after which the shrink fires (once per idle period). */
 const IDLE_SHRINK_AFTER_MS = 5 * 60_000;
@@ -79,6 +93,13 @@ const IDLE_SHRINK_AFTER_MS = 5 * 60_000;
 export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 	const ceiling = hooks.ceilingBytes ?? configuredCeilingBytes();
 	const readRss = hooks.rssBytes ?? (() => process.memoryUsage().rss);
+	const readHeap =
+		hooks.heapStats ??
+		((): { usedBytes: number; limitBytes: number } => {
+			const s = getHeapStatistics();
+			return { usedBytes: s.used_heap_size, limitBytes: s.heap_size_limit };
+		});
+	let lastEmergencyShrinkAt = 0;
 
 	const statusline = setInterval(hooks.refreshStatuslineSnapshot, STATUSLINE_REFRESH_INTERVAL_MS);
 	// Ticks to wait for a spawned successor's SIGTERM before concluding the
@@ -118,6 +139,22 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 			if (Date.now() - lastEvent >= IDLE_SHRINK_AFTER_MS && lastShrinkAt < lastEvent) {
 				lastShrinkAt = Date.now();
 				hooks.shrinkIdleMemory();
+			}
+		}
+		// Emergency valve: shrink the moment heap use crosses the pressure
+		// fraction — waiting for idleness or the RSS ceiling is what let spikes
+		// abort V8 (heap cap < RSS ceiling, storm postmortem 2026-08-17).
+		if (hooks.shrinkIdleMemory) {
+			const heap = readHeap();
+			const pressured =
+				heap.limitBytes > 0 && heap.usedBytes / heap.limitBytes > EMERGENCY_HEAP_FRACTION;
+			if (pressured && Date.now() - lastEmergencyShrinkAt >= EMERGENCY_SHRINK_COOLDOWN_MS) {
+				lastEmergencyShrinkAt = Date.now();
+				hooks.shrinkIdleMemory();
+				hooks.onHeapPressure?.(
+					Math.round(heap.usedBytes / BYTES_PER_MB),
+					Math.round(heap.limitBytes / BYTES_PER_MB),
+				);
 			}
 		}
 		if (!shouldRecycle(rss, ceiling)) return;

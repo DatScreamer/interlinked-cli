@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
 import {
+	__setPackageRootForTesting,
 	collectFunctionSignature,
 	countTopLevelCommas,
 	isCliFile,
@@ -9,6 +10,7 @@ import {
 	isScriptOrCliPath,
 	isStrictTestFile,
 	isTestSourcePath,
+	isVendoredOrFixturePath,
 	JS_TS_ALL_EXTS,
 	JS_TS_EXTS,
 	lineHasNoqaSuppression,
@@ -224,4 +226,128 @@ describe("shared mutation boundaries", () => {
 		expect(lineHasNoqaSuppression("eval(x) # nope: S307", "ubs_eval_input_tainted")).toBe(false);
 	});
 
+});
+
+describe("shared mutation boundaries — pass1 W17 residue", () => {
+	afterEach(() => {
+		__setPackageRootForTesting(undefined);
+	});
+
+	// test-contract: security — a Bandit code with no mapped check (S311, random-for-security) must suppress nothing, not even a check id equal to the mutator's own injected placeholder text
+	it("never lets an unmapped Bandit code suppress any check, including a Stryker-shaped placeholder id", () => {
+		expect(lineHasNoqaSuppression("# noqa: S311", "Stryker was here")).toBe(false);
+		expect(lineHasNoqaSuppression("# noqa: S311", "ubs_eval_input_tainted")).toBe(false);
+	});
+
+	// test-contract: security — bare `# noqa` with zero spaces before the keyword still suppresses every finding on the line, per documented flake8 convention
+	it("treats a zero-space bare noqa as suppress-everything", () => {
+		expect(lineHasNoqaSuppression("#noqa", "ubs_eval_input_tainted")).toBe(true);
+	});
+
+	// test-contract: security — a single mapped code with zero spaces after the colon still resolves to that code, not to bare-suppress-everything
+	it("parses a single code with no space after the colon as that code, not as bare noqa", () => {
+		expect(lineHasNoqaSuppression("# noqa:S102", "totally_unrelated_check")).toBe(false);
+		expect(lineHasNoqaSuppression("# noqa:S102", "ubs_eval_input_tainted")).toBe(true);
+	});
+
+	// test-contract: security — a comma-separated code list tolerates a space before the comma, and every listed code resolves independently
+	it("resolves every code in a comma list even when a space precedes the comma", () => {
+		expect(lineHasNoqaSuppression("# noqa: S102 , S608", "ubs_sql_string_concat")).toBe(true);
+	});
+
+	// test-contract: public-api — isCliFile only treats main/cli/index basenames as entry points; requiring the outer regex match is not a redundant guard
+	it("does not treat a non-entry-point basename inside a /cli/ directory as a CLI file", () => {
+		expect(isCliFile("/project/cli/foo.ts")).toBe(false);
+	});
+
+	// test-contract: public-api — the entry-point basename regex is anchored at the start; a name merely ending in main.ts must not qualify
+	it("does not treat a basename that merely ends with main.ts as a CLI entry point", () => {
+		expect(isCliFile("/src/mymain.ts")).toBe(false);
+	});
+
+	// test-contract: public-api — the entry-point basename regex is anchored at the end; an extra suffix after the extension must not qualify
+	it("does not treat a basename with a trailing suffix after the extension as a CLI entry point", () => {
+		expect(isCliFile("/src/main.tsx")).toBe(false);
+	});
+
+	// test-contract: public-api — the top-level-src-entry check requires the file to sit directly under /src/, not nested arbitrarily deep
+	it("does not treat a main/cli/index file nested deep under /src/ as a top-level entry point", () => {
+		expect(isCliFile("/project/src/deep/nested/main.ts")).toBe(false);
+	});
+
+	// test-contract: boundary — the twenty-line scan window is re-joined with real newlines; two lines must never accidentally fuse into a marker phrase
+	it("does not fuse two header lines into a generator marker when re-joining the scan window", () => {
+		expect(isGeneratedFile("this file was generat\ned by tool")).toBe(false);
+	});
+
+	// test-contract: security — the harness-internal-data exemption's package-root prefix must use the SAME backslash-to-slash conversion as every other path in this module, or the prefix silently narrows
+	it("still recognizes the harness-internal exemption when the resolved package root itself contains a raw backslash", () => {
+		__setPackageRootForTesting("/fake\\root");
+		expect(isPatternDataFile("/fake/root/harness/checks/foo.ts")).toBe(true);
+	});
+
+	// test-contract: public-api — isScriptOrCliPath requires the backslash-to-slash normalization to run before matching directory-segment patterns
+	it("still recognizes a script directory addressed with backslash separators", () => {
+		expect(isScriptOrCliPath("some\\scripts\\foo.py")).toBe(true);
+	});
+
+	// test-contract: boundary — the Python test_-prefix branch requires the prefix; ending in .py alone is not sufficient
+	it("does not treat a plain .py file lacking the test_ prefix as a strict test file", () => {
+		expect(isStrictTestFile("foo.py")).toBe(false);
+	});
+
+	// test-contract: boundary — the Java Test/Tests suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a Java test-looking name with a trailing suffix as a strict test file", () => {
+		expect(isStrictTestFile("MyTests.java.bak")).toBe(false);
+	});
+
+	// test-contract: boundary — the Swift Test/Tests suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a Swift test-looking name with a trailing suffix as a strict test file", () => {
+		expect(isStrictTestFile("MyTests.swift.orig")).toBe(false);
+	});
+
+	// test-contract: boundary — the backslash-to-slash normalization must run before the directory-segment test-source regex is applied
+	it("still recognizes a broad test-source directory addressed with backslash separators", () => {
+		expect(isTestSourcePath("foo\\tests\\bar.txt")).toBe(true);
+	});
+
+	// test-contract: invariant — a bare .py or .swift extension is not itself a broad test-source signal; the test_ prefix is required
+	it("does not treat a plain .py file lacking the test_ prefix as a broad test-source path", () => {
+		expect(isTestSourcePath("foo.py")).toBe(false);
+	});
+
+	// test-contract: invariant — the test_ prefix alone is not a broad test-source signal without a matching .py/.swift extension
+	it("does not treat a test_-prefixed file with an unrelated extension as a broad test-source path", () => {
+		expect(isTestSourcePath("test_foo.txt")).toBe(false);
+	});
+
+	// test-contract: boundary — the Go/Python _test suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a _test.py-looking name with a trailing suffix as a broad test-source path", () => {
+		expect(isTestSourcePath("foo_test.py.bak")).toBe(false);
+	});
+
+	// test-contract: boundary — the Java/Swift Test(s) suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a Java test-looking name with a trailing suffix as a broad test-source path", () => {
+		expect(isTestSourcePath("FooTests.java.orig")).toBe(false);
+	});
+
+	// test-contract: invariant — the singular Test form (no trailing s) must still qualify under the Java/Swift suffix pattern
+	it("still recognizes the singular Test form for the Java suffix pattern", () => {
+		expect(isTestSourcePath("FooTest.java")).toBe(true);
+	});
+
+	// test-contract: boundary — backslash-to-slash normalization must run before the vendored/fixture directory-segment regex is applied
+	it("still recognizes a vendored directory addressed with backslash separators", () => {
+		expect(isVendoredOrFixturePath("foo\\vendor\\bar.js")).toBe(true);
+	});
+
+	// test-contract: boundary — the minified-asset suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a .min.js-looking name with a trailing suffix as a minified asset", () => {
+		expect(isVendoredOrFixturePath("foo.min.js.bak")).toBe(false);
+	});
+
+	// test-contract: boundary — the bundled-asset suffix pattern is anchored at the end; extra trailing content must not qualify
+	it("does not treat a .bundle.js-looking name with a trailing suffix as a bundled asset", () => {
+		expect(isVendoredOrFixturePath("foo.bundle.js.bak")).toBe(false);
+	});
 });

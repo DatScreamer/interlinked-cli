@@ -862,13 +862,13 @@ Worker live in the private `interlinked-cloud` repo; operator notes in
 Before "what can we do with X?" on a tool, paper, or repo found on the
 internet, fill in the rubric at `docs/external-pulse/INTAKE.md` (six lanes
 + determinism filter + smallest-spike + which surface ships it). Output
-goes to `docs/external-pulse/<slug>.md`, one page per project, committed in
-the PRIVATE operator repo (2026-08-17: `docs/design`, `docs/plans`,
-`docs/external-pulse`, reviews, marketing, and upstream-bug notes moved to
-`../interlinked-cloud/docs-cli/`, symlinked back locally and gitignored here
-— competitive intake, strategy, and unfixed-gap analyses do not belong in
-the public tree; in-source `docs/design/...` citations resolve on operator
-machines via the symlinks).
+goes to `docs/external-pulse/<slug>.md`, one page per project — PRIVATE
+(2026-08-17: `docs/design`, `docs/plans`, `docs/external-pulse`, reviews,
+marketing, and upstream-bug notes are real files here but gitignored from
+this public repo and versioned by the operator overlay repo instead;
+`.ignore` negations keep them searchable and @-mentionable. Competitive
+intake, strategy, and unfixed-gap analyses do not belong in the public
+tree. Overlay mechanics live in CLAUDE.local.md).
 Skip the rubric for drive-by curiosity — it's specifically for the things
 that would otherwise become a paste-and-ask. See `docs/external-pulse/codewiki.md`
 for a worked example, including the "marketing-vs-reality" failure mode

@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { PORTABILITY_ENTRIES } from "./portability.js";
 
 describe("PORTABILITY_ENTRIES", () => {
-	it("registers the three portability checks with unique ids and prop names", () => {
+	it("registers the four portability checks with unique ids and prop names", () => {
 		expect(PORTABILITY_ENTRIES.map((e) => e.id)).toEqual([
 			"dynamic_code_execution",
 			"builtin_prototype_mutation",
 			"float_equality_comparison",
+			"python_portability_trap",
 		]);
 		const props = PORTABILITY_ENTRIES.map((e) => e.resultsPropName);
 		expect(new Set(props).size).toBe(props.length);

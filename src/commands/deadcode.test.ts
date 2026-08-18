@@ -81,6 +81,20 @@ describe("scanDeadCode — negative (must not report)", () => {
 		expect(report.scannedFiles).toBeGreaterThan(0);
 	});
 
+	// test-contract: bug-class — a file consumed ONLY via dynamic import()
+	// looked unreachable (calibration run 2026-08-17: deadcode-categorize.ts
+	// itself, loaded lazily by the CLI action, was the live FP)
+	it("N4: a file reached only via dynamic import() is not unreachable", () => {
+		seed(
+			"src/lazy-host.ts",
+			'export async function load(): Promise<unknown> {\n\treturn import("./lazy-leaf.js");\n}\n',
+		);
+		seed("src/lazy-leaf.ts", "export const lazily = 1;\n");
+		seed("src/index3.ts", 'import { load } from "./lazy-host.js";\nvoid load();\n');
+		const r = scanDeadCode(tmp);
+		expect(r.unreachableFiles).not.toContain("src/lazy-leaf.ts");
+	});
+
 	// test-contract: bug-class — files consumed ONLY through `export … from`
 	// barrels looked importerless on first landing (the graph tracks import
 	// statements, not re-export edges); checks/pii.ts was the live FP

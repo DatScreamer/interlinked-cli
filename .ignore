@@ -5,3 +5,20 @@
 # includes scratch/ explicitly (trigram-git.ts) for the same reason.
 !scratch/
 !scratch/**
+# Operator docs: gitignored (private) but must stay searchable + @-mentionable,
+# same mechanism as scratch/ above.
+!docs/design
+!docs/design/**
+!docs/plans
+!docs/plans/**
+!docs/external-pulse
+!docs/external-pulse/**
+!docs/codex-reviews
+!docs/codex-reviews/**
+!docs/marketing
+!docs/marketing/**
+!docs/upstream-bugs
+!docs/upstream-bugs/**
+!docs/integrations
+!docs/integrations/**
+!docs/*.md

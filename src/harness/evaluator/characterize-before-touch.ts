@@ -24,8 +24,9 @@ import { loadUntestedFilesBaseline } from "../tested-file-policy.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import { companionTestCandidates } from "./companion-test.js";
 
-const SOURCE_EXT_RE = /\.(ts|tsx)$/;
-const TEST_PATH_RE = /(\.test\.tsx?|\.spec\.tsx?)$|(^|\/)__tests__\//;
+const SOURCE_EXT_RE = /\.(ts|tsx|py)$/;
+const TEST_PATH_RE =
+	/(\.test\.tsx?|\.spec\.tsx?)$|(^|\/)__tests__\/|(^|\/)test_[^/]+\.py$|_test\.py$|(^|\/)tests\//;
 /** Bytes of the on-disk head scanned for the exempt directive (matches the
  *  new-file gate's convention of a first-lines marker). */
 const EXEMPT_SCAN_BYTES = 400;
@@ -55,12 +56,28 @@ function onDiskHeadHasExempt(abs: string): boolean {
 	}
 }
 
+/** Python companion conventions (plan 25 parity): pytest's `test_<base>.py`
+ *  beside the file, `<base>_test.py`, and a sibling or parent `tests/` dir. */
+function pyCompanionCandidates(abs: string): string[] {
+	const dir = abs.slice(0, abs.lastIndexOf(sep));
+	const base = abs.slice(abs.lastIndexOf(sep) + 1).replace(/\.py$/i, "");
+	const parent = dir.slice(0, dir.lastIndexOf(sep));
+	return [
+		resolve(dir, `test_${base}.py`),
+		resolve(dir, `${base}_test.py`),
+		resolve(dir, "tests", `test_${base}.py`),
+		resolve(parent, "tests", `test_${base}.py`),
+	];
+}
+
 function companionSatisfied(
 	abs: string,
 	projectRoot: string,
 	session: SessionTrajectory | undefined,
 ): { satisfied: boolean; candidates: string[] } {
-	const candidates = companionTestCandidates(abs, projectRoot);
+	const candidates = /\.py$/i.test(abs)
+		? pyCompanionCandidates(abs)
+		: companionTestCandidates(abs, projectRoot);
 	for (const candidate of candidates) {
 		if (existsSync(candidate)) return { satisfied: true, candidates };
 	}

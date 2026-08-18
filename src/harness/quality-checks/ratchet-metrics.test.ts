@@ -164,6 +164,54 @@ describe("countAmbientSeams (plan 25 lane 2)", () => {
 			'// call Date.now() sparingly\nconst s = "Math.random()";\nconst d = new Date(1700000000000);\n';
 		expect(countAmbientSeams(src, "src/service.ts")).toEqual({ clock: 0, random: 0, env: 0 });
 	});
+
+	// test-contract: behavior — Python parity (plan 25): .py files count their
+	// own ambient idioms — time/datetime clocks, random.*, os.environ/getenv
+	it("P2: counts Python clock, random, and env reads in a .py file", () => {
+		const src =
+			"t = time.time()\nd = datetime.now()\nr = random.random()\nk = random.randint(1, 5)\ne = os.environ['MODE']\ng = os.getenv('API_KEY')\n";
+		expect(countAmbientSeams(src, "pkg/service.py")).toEqual({ clock: 2, random: 2, env: 2 });
+	});
+
+	// test-contract: boundary — Python config-boundary files keep their env reads
+	it("N3: settings.py / conftest.py env reads do not count", () => {
+		const src = "MODE = os.environ.get('MODE')\n";
+		expect(countAmbientSeams(src, "pkg/settings.py").env).toBe(0);
+		expect(countAmbientSeams(src, "tests/conftest.py").env).toBe(0);
+	});
+
+	// test-contract: boundary — JS patterns must not fire inside .py content
+	it("N4: a .py file never counts JS idioms and vice versa", () => {
+		expect(countAmbientSeams("t = Date.now()\n", "pkg/x.py")).toEqual({
+			clock: 0,
+			random: 0,
+			env: 0,
+		});
+		expect(countAmbientSeams("const t = time.time();\n", "src/x.ts").clock).toBe(0);
+	});
+});
+
+describe("countAssertionStrength — Python parity (plan 25)", () => {
+	// test-contract: behavior — pytest/unittest forms map onto weak vs exact:
+	// bare truthy asserts and membership are weak; == and the *Equal family pin
+	it("P: counts weak (assertTrue/bare/in) and exact (==/assertEqual) forms in .py", () => {
+		const src =
+			"assert result\nassert item in bag\nself.assertTrue(ok)\nassert total == 41\nself.assertEqual(name, 'x')\n";
+		expect(countAssertionStrength(src, "tests/test_service.py")).toEqual({ weak: 3, exact: 2 });
+	});
+
+	// test-contract: boundary — vitest matcher names inside .py never count,
+	// and .py idioms never count for a TS path
+	it("N: idiom sets never cross the language boundary", () => {
+		expect(countAssertionStrength("expect(x).toContain('y')\n", "tests/test_a.py")).toEqual({
+			weak: 0,
+			exact: 0,
+		});
+		expect(countAssertionStrength("assert a == b\n", "src/a.test.ts")).toEqual({
+			weak: 0,
+			exact: 0,
+		});
+	});
 });
 
 describe("countAssertionStrength (plan 25 lane 4)", () => {

@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installStatusLine } from "./hook-installers-statusline.js";
+import { installStatusLine, writeStatuslineScript } from "./hook-installers-statusline.js";
 
 vi.mock("node:fs");
 
@@ -141,6 +141,21 @@ describe("installStatusLine — script generation", () => {
 		expect(script).toContain("statusline.snapshot");
 		expect(script).toContain("read_snap");
 		expect(chmods.get(SCRIPT_PATH)).toBe(0o755);
+	});
+
+	// test-contract: public-api — writeStatuslineScript is the direct writer
+	// (consumed by reload.ts and statusline-snapshot.ts, not only via
+	// installStatusLine); the script it emits must carry the extracted row-3
+	// chain, mutation-loop row included, and be executable
+	it("writeStatuslineScript emits the row-3 chain to the given path", () => {
+		writeStatuslineScript("/anywhere/status.sh");
+		// SAFETY: the mocked writeFileSync stored a string one line above; a
+		// miss would fail the toContain assertions immediately.
+		const script = files.get("/anywhere/status.sh") as string;
+		expect(script).toContain("⟳ mut");
+		expect(script).toContain("mutation-24x7.status");
+		expect(script).toContain("hardened");
+		expect(mockFs.chmodSync).toHaveBeenCalledWith("/anywhere/status.sh", 0o755);
 	});
 
 	it("renders the opt-in sponsor row from sponsor.status with a freshness gate", () => {

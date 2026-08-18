@@ -79,6 +79,19 @@ export default defineConfig({
 			// only this file kills read as survivors — revisit by making the
 			// fixture own the artifact paths it hashes.
 			"src/commands/reload.integration.test.ts",
+			// Mutation-context quarantine (2026-08-17, 24x7-loop diagnosis): spawns
+			// dist/hook-entry.js as a REAL subprocess and asserts its exit code — a
+			// Stryker sandbox has no dist/, so the child exits nonzero and the dry
+			// run aborts report-less for every scope pulling this file in (the
+			// hook-entry-daemon-gate poison-file class). Ordinary suite still runs
+			// it. Kill-power cost: hook-entry mutants only this file kills read as
+			// survivors — revisit by skipping its cases when dist/ is absent.
+			"src/hook-entry.coverage.integration.test.ts",
+			// TEMPORARY (2026-08-17): the committed version of this file still
+			// carries two process.chdir() cases (worker-pool dry-run abort). The
+			// isMainThread-skip fix exists in the working tree — REMOVE this entry
+			// in the same change that lands that fix on main.
+			"src/harness/checks/test-file-exists.mutation-kill.test.ts",
 		],
 		// NO `pool` override here — deliberately. A `pool: "forks"` was added on
 		// 2026-08-04 to dodge `process.chdir()` throwing under worker threads, but

@@ -30,6 +30,7 @@ Commands:
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
   daemons [options]                          List active harness daemons, PID liveness, socket paths, and health
+  deadcode [options]                         Scan the whole repo for dead-code candidates: unreachable files, unused import bindings, unused exports
   debt                                       Inspect pair-scoped TDD debts (coverage / red_suite) from the obligation ledger
   design [options] [path]                    Run Impeccable's deterministic design-slop detector (overused fonts, accent stripes, gradient text, AI palettes, bounce easing, broken images, copy tells) on frontend files. Requires the optional `impeccable` CLI on PATH; degrades gracefully when absent. The built-in `design_slop` check covers a regex subset natively.
   disable [options]                          Stand the harness down for this project (recorded); --uninstall to remove hooks + config

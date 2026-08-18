@@ -28,7 +28,11 @@ export function resolveImportPath(
 			for (const [alias, targets] of Object.entries(tsconfigPaths)) {
 				const pattern = alias.replace("/*", "");
 				if (specifier.startsWith(pattern)) {
-					const rest = specifier.slice(pattern.length);
+					// Strip the leading "/" from the remainder: path.resolve treats an
+					// absolute segment as a restart, so "@lib/util" → rest "/util"
+					// discarded everything before it and every suffixed alias
+					// specifier resolved to null (wave-9 find, 2026-08-17).
+					const rest = specifier.slice(pattern.length).replace(/^\//, "");
 					for (const target of targets) {
 						const base = target.replace("/*", "");
 						const candidate = resolve(dirname(fromFile), "..", base, rest);

@@ -8,6 +8,7 @@ import {
 	detectBuiltinPrototypeMutation,
 	detectDynamicCodeExecution,
 	detectFloatEqualityComparison,
+	detectPythonPortabilityTraps,
 } from "./portability.js";
 
 // A path outside harness/checks|rules|check-registry so isTestFile's
@@ -200,5 +201,31 @@ describe("detectFloatEqualityComparison", () => {
 			SRC,
 		);
 		expect(matches).toEqual([]);
+	});
+});
+
+describe("detectPythonPortabilityTraps — positive (must fire)", () => {
+	// test-contract: behavior — all three Python trap kinds fire with their own labels
+	it("P1: eval/exec, a mutable default argument, and a star import each fire", () => {
+		const src =
+			"from os import *\n\ndef handler(payload, cache=[]):\n    return eval(payload)\n";
+		const matches = detectPythonPortabilityTraps(src, "pkg/service.py");
+		const text = matches.map((m) => m.text).join("\n");
+		expect(text).toContain("eval()/exec()");
+		expect(text).toContain("mutable default argument");
+		expect(text).toContain("import *");
+	});
+});
+
+describe("detectPythonPortabilityTraps — negative (must not fire)", () => {
+	// test-contract: boundary — non-.py files, test files, comments, and the
+	// None-default idiom stay silent
+	it("N1: never fires outside .py, in Python test files, or on safe idioms", () => {
+		const safe =
+			"# eval() is banned here\nfrom os import path\n\ndef handler(payload, cache=None):\n    return json.loads(payload)\n";
+		expect(detectPythonPortabilityTraps(safe, "pkg/service.py")).toEqual([]);
+		const trap = "def f(x=[]):\n    return eval(x)\n";
+		expect(detectPythonPortabilityTraps(trap, "src/service.ts")).toEqual([]);
+		expect(detectPythonPortabilityTraps(trap, "tests/test_service.py")).toEqual([]);
 	});
 });

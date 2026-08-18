@@ -331,11 +331,11 @@ function checkSeamRatchet(
 }
 
 /** Test-file scope for the assertion-strength ratchet (plan 25 lane 4):
- *  `.test.ts(x)` / `.spec.ts(x)` filenames, or anywhere under `__tests__/`.
- *  Deliberately narrower than the shared `isStrictTestFile` predicate — no
- *  `/tests/` directory match, no non-TS extensions — since the matcher
- *  vocabulary this ratchet counts is meaningless outside a TS test file. */
-const ASSERTION_STRENGTH_TEST_PATH_RE = /\.(?:test|spec)\.tsx?$|(?:^|\/)__tests__\//;
+ *  `.test.ts(x)` / `.spec.ts(x)` filenames, anywhere under `__tests__/`, or
+ *  Python test shapes (`test_*.py`, `*_test.py`, `tests/*.py`) — the counter
+ *  dispatches the matcher vocabulary by extension (plan 25 Python parity). */
+const ASSERTION_STRENGTH_TEST_PATH_RE =
+	/\.(?:test|spec)\.tsx?$|(?:^|\/)__tests__\/|(?:^|\/)test_[^/]+\.py$|_test\.py$|(?:^|\/)tests\/[^/]+\.py$/;
 
 /** Assertion-strength ratchet (plan 25 lane 4): fires only on PURE weakening
  *  — the edit adds a weak matcher (toContain/toMatch/toBeTruthy/toBeDefined)
@@ -349,7 +349,7 @@ function checkAssertionStrengthRatchet(
 	if (!pre.assertionStrength) return [];
 	const posix = absPath.replace(/\\/g, "/");
 	if (!ASSERTION_STRENGTH_TEST_PATH_RE.test(posix)) return [];
-	const post = countAssertionStrength(postContent);
+	const post = countAssertionStrength(postContent, posix);
 	const weakGrew = post.weak > pre.assertionStrength.weak;
 	const exactGrew = post.exact > pre.assertionStrength.exact;
 	if (!weakGrew || exactGrew) return [];

@@ -36,7 +36,7 @@ import { CohortManager, setActiveCohort } from "./cohort.js";
 import { compileAllowlist } from "./content-scanner/allowlist.js";
 import { createScanner } from "./content-scanner/registry.js";
 import type { ContentScanner } from "./content-scanner/types.js";
-import { recordDaemonEvent, recordDaemonExit } from "./daemon-ledger.js";
+import { makeHeapPressureLedger, recordDaemonEvent, recordDaemonExit } from "./daemon-ledger.js";
 import { ErrorHistory } from "./error-history.js";
 import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
 import { type FilePriority } from "./file-priority.js";
@@ -673,10 +673,10 @@ installDaemonTimers({
 		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "handover", reason: "rss-ceiling" });
 		return spawnRestartViaCli(import.meta.url, CWD);
 	},
-	// Passive spike attribution: a ledger row per >150MB/tick RSS jump, joinable
-	// against activity.jsonl by timestamp. SIGUSR2 writes a heap snapshot here.
+	// Spike attribution: ledger row per >150MB/tick RSS jump (activity-joinable; SIGUSR2 = heap snapshot).
 	onSpike: (rssMb, deltaMb) =>
 		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick` }),
+	onHeapPressure: makeHeapPressureLedger(CWD, logAlways),
 	snapshotDir: INTERLINKED_DIR,
 	// Idle shrink (~5min no events): drop manifest + force GC — not a jetsam target.
 	lastEventAtMs: () => lastHookEventAtMs,

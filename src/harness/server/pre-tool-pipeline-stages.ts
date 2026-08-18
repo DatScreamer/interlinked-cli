@@ -365,7 +365,7 @@ export function captureDiffAwareBaseline(
 						preContent,
 					),
 					ambientSeams: countAmbientSeams(preContent, baselineFilePath),
-					assertionStrength: countAssertionStrength(preContent),
+					assertionStrength: countAssertionStrength(preContent, baselineFilePath),
 				});
 			} catch (e) {
 				void e;

@@ -7,9 +7,16 @@
 // and must fall back (return null) for anything the graph can't answer
 // completely — never a partial/guessed set masquerading as complete.
 
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BlastRadius, CallerSite, DependencyView } from "../dependency-view.js";
-import { computeMutationTestScope, MAX_MUTATION_TEST_SCOPE } from "./test-scope.js";
+import {
+	computeMutationTestScope,
+	computeMutationTestScopeForRepo,
+	MAX_MUTATION_TEST_SCOPE,
+} from "./test-scope.js";
 
 const ROOT = "/repo";
 const abs = (rel: string): string => `${ROOT}/${rel}`;
@@ -171,6 +178,60 @@ describe("computeMutationTestScope — negative (must not fire / must decline ho
 		expect(result.tests).toBeNull();
 		expect(result.reason).toBe("over_cap");
 		expect(result.uncappedCount).toBe(3);
+	});
+});
+
+describe("computeMutationTestScope — unknown-file companion fallback (disk)", () => {
+	// Wave-20 re-measure falsification (2026-08-18): checks/shared.ts and
+	// shared-text-utils-brace-scan.ts came back "unknown_file" from a stale
+	// graph, the scope declined to NOTHING, the runner's four-stem glob never
+	// found their `.mutation-kill` companions, and 37 verified kills measured
+	// as zero effect. An unknown file must still ship its on-disk co-located
+	// companions — same principle as the over-cap decline.
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "scope-unknown-"));
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		writeFileSync(join(tmp, "src", "util.ts"), "export const x = 1;\n");
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	// test-contract: bug — unknown_file previously returned a bare decline; the
+	// on-disk companion + kill tests must ship so their kills still count
+	it("P: unknown file ships its on-disk companion and mutation-kill tests", () => {
+		writeFileSync(join(tmp, "src", "util.test.ts"), "// t\n");
+		writeFileSync(join(tmp, "src", "util.mutation-kill.test.ts"), "// t\n");
+		writeFileSync(join(tmp, "src", "unrelated.test.ts"), "// t\n");
+		const result = computeMutationTestScope({
+			editedRelPath: "src/util.ts",
+			projectRoot: tmp,
+			depView: stubView({}),
+		});
+		expect(result.tests).toBeNull();
+		expect(result.reason).toBe("unknown_file");
+		expect(result.companionScope).toContain("src/util.test.ts");
+		expect(result.companionScope).toContain("src/util.mutation-kill.test.ts");
+		expect(result.companionScope).not.toContain("src/unrelated.test.ts");
+	});
+
+	it("N: unknown file with no on-disk companions declines bare (no companionScope key)", () => {
+		const result = computeMutationTestScope({
+			editedRelPath: "src/util.ts",
+			projectRoot: tmp,
+			depView: stubView({}),
+		});
+		expect(result).toEqual({ tests: null, reason: "unknown_file" });
+	});
+
+	// test-contract: public-api — the CLI-facing wrapper builds a fresh graph
+	// and returns the graph-selected scope (consumed via dynamic import by
+	// `mutation measure`, invisible to static reference checks)
+	it("P: computeMutationTestScopeForRepo selects a real repo's importer test", () => {
+		writeFileSync(join(tmp, "src", "util.test.ts"), 'import { x } from "./util.js";\nvoid x;\n');
+		const result = computeMutationTestScopeForRepo({ editedRelPath: "src/util.ts", projectRoot: tmp });
+		expect(result.tests).toEqual(["src/util.test.ts"]);
 	});
 });
 

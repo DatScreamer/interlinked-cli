@@ -32,6 +32,7 @@
 // exactly the runner's own prior behavior. Baking selection into
 // `runner.mjs` instead would only ever help the one personal prototype.
 
+import { readdirSync } from "node:fs";
 import { selectAffectedTests } from "../coverage-test-selector.js";
 import type { DependencyView } from "../dependency-view.js";
 import { InternalDependencyView } from "../dependency-view.js";
@@ -150,6 +151,40 @@ function resolveAbs(editedRelPath: string, projectRoot: string): string {
  * kills — vanishes when the graph scope is declined to nothing. Order-preserving
  * over `candidates`, which the caller already sorted + deduped.
  */
+/** The unknown-file decline, carrying the target's ON-DISK co-located
+ *  companions. A stale/incomplete graph made checks/shared.ts and the
+ *  brace-scan module "unknown" (wave-20 falsification, 2026-08-18): the bare
+ *  decline dropped their `.mutation-kill` companions, the runner's four-stem
+ *  glob never found them, and 37 verified kills measured as zero effect. The
+ *  same reduced-companion principle as the over-cap decline applies — the
+ *  graph can't answer, but the co-location convention still can. */
+function unknownFileDecline(editedRelPath: string, projectRoot: string): MutationTestScopeResult {
+	const sut = editedRelPath.replace(/\\/g, "/");
+	const slash = sut.lastIndexOf("/");
+	const sutDir = slash >= 0 ? sut.slice(0, slash) : "";
+	const candidates: string[] = [];
+	for (const dir of [sutDir, sutDir ? `${sutDir}/__tests__` : "__tests__"]) {
+		let names: string[] = [];
+		try {
+			names = readdirSync(resolveAbs(dir || ".", projectRoot));
+		} catch (err) {
+			void err; // absent dir — no candidates from it
+			continue;
+		}
+		for (const name of names) {
+			if (/\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(name)) {
+				candidates.push(dir ? `${dir}/${name}` : name);
+			}
+		}
+	}
+	const companionScope = companionKillTests(sut, candidates);
+	return {
+		tests: null,
+		reason: "unknown_file",
+		...(companionScope.length > 0 ? { companionScope } : {}),
+	};
+}
+
 function companionKillTests(sutRel: string, candidates: readonly string[]): string[] {
 	const sut = sutRel.replace(/\\/g, "/");
 	const slash = sut.lastIndexOf("/");
@@ -190,10 +225,10 @@ export function computeMutationTestScope(args: {
 	const { editedRelPath, projectRoot, depView } = args;
 	const scopeCap = args.maxScope ?? MAX_MUTATION_TEST_SCOPE;
 	if (depView.answerScope !== "repo" || !depView.hasFile(resolveAbs(editedRelPath, projectRoot))) {
-		return { tests: null, reason: "unknown_file" };
+		return unknownFileDecline(editedRelPath, projectRoot);
 	}
 	const selected = selectAffectedTests({ editedRelPath, projectRoot, depView });
-	if (selected === null) return { tests: null, reason: "unknown_file" };
+	if (selected === null) return unknownFileDecline(editedRelPath, projectRoot);
 	const runnable = selected.filter(isRunnableTestEntry);
 	const excludedNonRunnable = selected.filter((t) => !isRunnableTestEntry(t));
 	const extra = excludedNonRunnable.length > 0 ? { excludedNonRunnable } : {};

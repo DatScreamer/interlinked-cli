@@ -249,7 +249,11 @@ export function registerQualityCommands(program: Command): void {
 		)
 		.option("--cwd <path>", "Project root (default: current directory)")
 		.option("--json", "Machine-readable output (full, uncapped)")
-		.action(async (opts: { json?: boolean; cwd?: string }) => {
+		.option(
+			"--categorize",
+			"Bucket every candidate by deletion safety (future-scaffolding/deliberate-seam are keep; reexport-residue/orphaned-type/superseded are safe; + mutation-adjudicated inert branches)",
+		)
+		.action(async (opts: { json?: boolean; categorize?: boolean; cwd?: string }) => {
 			const { deadcodeCommand } = await import("../commands/deadcode.js");
 			process.exitCode = await deadcodeCommand(opts);
 		});

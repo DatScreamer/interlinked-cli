@@ -216,12 +216,18 @@ export { countUnjustifiedCasts } from "../checks/cast-justification.js";
 const CLOCK_SEAM_PATTERN = /\bDate\s*\.\s*now\s*\(|\bnew\s+Date\s*\(\s*\)/g;
 const RANDOM_SEAM_PATTERN = /\bMath\s*\.\s*random\s*\(/g;
 const ENV_SEAM_PATTERN = /\bprocess\s*\.\s*env\s*[.[]/g;
+// Python parity (plan 25): the same three seam classes in Python idiom.
+const PY_CLOCK_SEAM_PATTERN =
+	/\btime\s*\.\s*time\s*\(|\bdatetime\s*\.\s*(?:now|utcnow|today)\s*\(/g;
+const PY_RANDOM_SEAM_PATTERN =
+	/\brandom\s*\.\s*(?:random|randint|randrange|choice|choices|shuffle|uniform|sample)\s*\(/g;
+const PY_ENV_SEAM_PATTERN = /\bos\s*\.\s*environ\b|\bos\s*\.\s*getenv\s*\(/g;
 /** Files whose JOB is the config boundary — env reads belong there. Mirrors
  *  the `process_env_outside_config` check's boundary wording: a config
- *  module, a `.config.*` file, a `/config/` directory, or a setup/bootstrap
- *  file. */
+ *  module, a `.config.*` file, a `/config/` directory, a setup/bootstrap
+ *  file — plus Python's settings.py / conftest.py conventions. */
 const CONFIG_BOUNDARY_PATH_RE =
-	/\.config\.[a-z]+$|(^|\/)config[^/]*\.[a-z]+$|(^|\/)config\/|(^|\/)(?:test-)?setup(\/|[^/]*\.[a-z]+$)|(^|\/)bootstrap[^/]*\.[a-z]+$/i;
+	/\.config\.[a-z]+$|(^|\/)config[^/]*\.[a-z]+$|(^|\/)config\/|(^|\/)(?:test-)?setup(\/|[^/]*\.[a-z]+$)|(^|\/)bootstrap[^/]*\.[a-z]+$|(^|\/)(?:settings|conftest)[^/]*\.py$/i;
 
 export interface AmbientSeamCounts {
 	clock: number;
@@ -229,17 +235,26 @@ export interface AmbientSeamCounts {
 	env: number;
 }
 
-/** Count ambient-seam reads in `content`. `filePath` decides the env
- *  exemption: config-boundary files legitimately read `process.env`. */
+/** The seam idiom set for a path: `.py` gets the Python patterns, everything
+ *  else the JS/TS patterns — so neither language false-counts in the other. */
+function seamPatternsFor(posix: string): { clock: RegExp; random: RegExp; env: RegExp } {
+	if (/\.py$/i.test(posix)) {
+		return { clock: PY_CLOCK_SEAM_PATTERN, random: PY_RANDOM_SEAM_PATTERN, env: PY_ENV_SEAM_PATTERN };
+	}
+	return { clock: CLOCK_SEAM_PATTERN, random: RANDOM_SEAM_PATTERN, env: ENV_SEAM_PATTERN };
+}
+
+/** Count ambient-seam reads in `content`. The extension picks the language's
+ *  idiom set via {@link seamPatternsFor}; `filePath` also decides the env
+ *  exemption: config-boundary files legitimately read the environment. */
 export function countAmbientSeams(content: string, filePath: string): AmbientSeamCounts {
 	const stripped = stripAllLiterals(content);
 	const posix = filePath.replace(/\\/g, "/");
+	const p = seamPatternsFor(posix);
 	return {
-		clock: (stripped.match(CLOCK_SEAM_PATTERN) || []).length,
-		random: (stripped.match(RANDOM_SEAM_PATTERN) || []).length,
-		env: CONFIG_BOUNDARY_PATH_RE.test(posix)
-			? 0
-			: (stripped.match(ENV_SEAM_PATTERN) || []).length,
+		clock: (stripped.match(p.clock) || []).length,
+		random: (stripped.match(p.random) || []).length,
+		env: CONFIG_BOUNDARY_PATH_RE.test(posix) ? 0 : (stripped.match(p.env) || []).length,
 	};
 }
 
@@ -256,17 +271,34 @@ export function countAmbientSeams(content: string, filePath: string): AmbientSea
 
 const WEAK_MATCHER_PATTERN = /\b(?:toContain|toMatch|toBeTruthy|toBeDefined)\s*\(/g;
 const EXACT_MATCHER_PATTERN = /\b(?:toBe|toEqual|toStrictEqual)\s*\(/g;
+// Python parity (plan 25): unittest matchers plus pytest's plain asserts —
+// a bare truthy `assert x` and membership `assert a in b` are the weak forms;
+// `assert a == b` and the *Equal family pin exact observables.
+const PY_WEAK_MATCHER_PATTERN =
+	/\bassert(?:True|False|In|NotIn)\s*\(|^\s*assert\s+[A-Za-z_][\w.]*(?:\(\))?\s*$|\bassert\s+\S+\s+(?:not\s+)?in\s+/gm;
+const PY_EXACT_MATCHER_PATTERN =
+	/\bassert(?:Equal|NotEqual|Is|IsNot|DictEqual|ListEqual|SetEqual|TupleEqual)\s*\(|^\s*assert\s+[^\n#]*[=!]=/gm;
 
 export interface AssertionStrengthCounts {
 	weak: number;
 	exact: number;
 }
 
-/** Count weak (toContain/toMatch/toBeTruthy/toBeDefined) and exact
- *  (toBe/toEqual/toStrictEqual) matcher calls in `content`. Strings/comments
- *  are stripped first so a matcher name mentioned in prose doesn't count. */
-export function countAssertionStrength(content: string): AssertionStrengthCounts {
+/** Count weak and exact assertion forms in `content`. Strings/comments are
+ *  stripped first so a matcher name mentioned in prose doesn't count. The
+ *  optional `filePath` picks the idiom set: `.py` counts unittest/pytest
+ *  forms; everything else counts the vitest/jest matchers. */
+export function countAssertionStrength(
+	content: string,
+	filePath = "",
+): AssertionStrengthCounts {
 	const stripped = stripAllLiterals(content);
+	if (/\.py$/i.test(filePath)) {
+		return {
+			weak: countMatches(stripped, PY_WEAK_MATCHER_PATTERN),
+			exact: countMatches(stripped, PY_EXACT_MATCHER_PATTERN),
+		};
+	}
 	return {
 		weak: countMatches(stripped, WEAK_MATCHER_PATTERN),
 		exact: countMatches(stripped, EXACT_MATCHER_PATTERN),

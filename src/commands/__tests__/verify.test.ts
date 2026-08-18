@@ -339,6 +339,7 @@ describe("DEFAULT_ADVISORY_SKIPS", () => {
 				"dynamic_code_execution",
 				"builtin_prototype_mutation",
 				"float_equality_comparison",
+				"python_portability_trap",
 				"test_contract_annotation",
 				"unvalidated_input_boundary",
 				// Quality-frontier wave (2026-07-06): verify-only doc-drift sibling +

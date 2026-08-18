@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const writeHeapSnapshotMock = vi.fn<(path?: string) => string>();
 vi.mock("node:v8", () => ({
 	writeHeapSnapshot: (path?: string) => writeHeapSnapshotMock(path),
+	// Default heap stats read: comfortable (no pressure) so tests that don't
+	// inject heapStats never trip the emergency shrink.
+	getHeapStatistics: () => ({ used_heap_size: 1, heap_size_limit: 1024 * 1024 * 1024 }),
 }));
 
 import { installDaemonTimers } from "./daemon-timers.js";
@@ -143,6 +146,63 @@ describe("installDaemonTimers — spike attribution", () => {
 		vi.advanceTimersByTime(30_000); // flat since — must not re-report
 		expect(onSpike).toHaveBeenCalledTimes(1);
 		stop();
+	});
+});
+
+describe("installDaemonTimers — emergency heap-pressure shrink", () => {
+	// Storm postmortem 2026-08-17: the heap cap (2560MB) sits BELOW the RSS
+	// recycle ceiling (3584MB), so a transient allocation spike aborts V8
+	// before the graceful recycle can ever fire. The defense is an emergency
+	// shrink (cache drop + forced GC) the moment heap use crosses the
+	// pressure fraction — not only when idle.
+	function pressureHarness(usedBytes: number, limitBytes: number) {
+		const shrinkIdleMemory = vi.fn();
+		const onHeapPressure = vi.fn();
+		const stop = installDaemonTimers({
+			refreshStatuslineSnapshot: vi.fn(),
+			shutdown: vi.fn(),
+			log: vi.fn(),
+			rssBytes: () => 100 * MB,
+			ceilingBytes: 0,
+			heapStats: () => ({ usedBytes, limitBytes }),
+			shrinkIdleMemory,
+			onHeapPressure,
+		});
+		return { shrinkIdleMemory, onHeapPressure, stop };
+	}
+
+	it("P: shrinks and reports with used/limit MB when heap use crosses the fraction", () => {
+		const h = pressureHarness(2000 * MB, 2560 * MB); // 78% > 75%
+		vi.advanceTimersByTime(30_000);
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
+		expect(h.onHeapPressure).toHaveBeenCalledWith(2000, 2560);
+		h.stop();
+	});
+
+	it("N: stays quiet under the pressure fraction", () => {
+		const h = pressureHarness(1800 * MB, 2560 * MB); // 70% < 75%
+		vi.advanceTimersByTime(30_000);
+		expect(h.shrinkIdleMemory).not.toHaveBeenCalled();
+		expect(h.onHeapPressure).not.toHaveBeenCalled();
+		h.stop();
+	});
+
+	it("N: fires at most once per cooldown window under sustained pressure", () => {
+		const h = pressureHarness(2400 * MB, 2560 * MB);
+		vi.advanceTimersByTime(30_000);
+		vi.advanceTimersByTime(30_000);
+		vi.advanceTimersByTime(30_000); // 90s elapsed — still inside the 120s cooldown
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(60_000); // 150s — cooldown passed, still pressured
+		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(2);
+		h.stop();
+	});
+
+	it("N: a zero heap limit never divides its way into a shrink", () => {
+		const h = pressureHarness(2000 * MB, 0);
+		vi.advanceTimersByTime(30_000);
+		expect(h.shrinkIdleMemory).not.toHaveBeenCalled();
+		h.stop();
 	});
 });
 

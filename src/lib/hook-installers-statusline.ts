@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { isNonEmptyString, isPlainObject } from "./hook-installers-shared.js";
 import { CLIENT_CLAUDE, CLIENT_COPILOT } from "./hook-types.js";
+import { STATUSLINE_ROW3_BASH } from "./statusline-row3-chunk.js";
 import type { JsonObject } from "./json-types.js";
 import { STATUSLINE_SHELL_HELPERS } from "./statusline-shell-helpers.js";
 import type { ClientName } from "./settings.js";
@@ -346,49 +347,7 @@ else
     LINE2="\${DIM}ready · waiting for first edit to verify\${RESET}"
 fi
 
-# --- Row 3 (priority): live visualizer link ---
-# \`interlinked viz serve\` writes .interlinked/viz.status while it is listening
-# (url= + pid=). The link is rendered ONLY when that pid is still alive, so the
-# row never offers a dead link after the server exits. A live dashboard outranks
-# the sponsor slot for row 3 — it is the operator's own running process.
-VIZ_FILE="$ROOT/.interlinked/viz.status"
-VIZ_SEG=""
-if [ -f "$VIZ_FILE" ]; then
-    VZ_PID=$(grep -E '^pid=' "$VIZ_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
-    VZ_URL=$(grep -E '^url=' "$VIZ_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
-    if [ -n "\$VZ_PID" ] && [ -n "\$VZ_URL" ] && ps -p "\$VZ_PID" > /dev/null 2>&1; then
-        VIZ_SEG="\${DIM}◈ viz\${RESET}\${SEP}$(osc8 "\$VZ_URL" "\$VZ_URL") \${DIM}↗\${RESET}"
-    fi
-fi
-
-# --- Row 3: sponsor slot (opt-in; docs/design/sponsor-slots.md) ---
-# Reads the daemon-sanitized kv file. Rendered only when enabled=1 AND the
-# file is fresh (<30 min) — a dead daemon ages the sponsor out instead of
-# pinning a stale creative on screen. The daemon stripped control bytes
-# before writing, so these fields are safe to interpolate.
-SPONSOR_FILE="$ID/sponsor.status"
-LINE3=""
-if [ -f "$SPONSOR_FILE" ]; then
-    SP_EN=$(grep -E '^enabled=' "$SPONSOR_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
-    if [ "\$SP_EN" = "1" ]; then
-        SP_NOW=$(date +%s)
-        SP_MT=$(stat -f %m "$SPONSOR_FILE" 2>/dev/null || stat -c %Y "$SPONSOR_FILE" 2>/dev/null || echo 0)
-        if [ $((SP_NOW - SP_MT)) -lt 1800 ]; then
-            SP_TEXT=$(grep -E '^text=' "$SPONSOR_FILE" | head -1 | cut -d= -f2-)
-            SP_URL=$(grep -E '^url=' "$SPONSOR_FILE" | head -1 | cut -d= -f2-)
-            if [ -n "$SP_TEXT" ]; then
-                if [ -n "$SP_URL" ]; then
-                    LINE3="\${DIM}♥ sponsor\${RESET}\${SEP}$(osc8 "$SP_URL" "$SP_TEXT") \${DIM}↗\${RESET}"
-                else
-                    LINE3="\${DIM}♥ sponsor\${RESET}\${SEP}\${DIM}\${SP_TEXT}\${RESET}"
-                fi
-            fi
-        fi
-    fi
-fi
-
-# A live dashboard takes row 3; the sponsor slot keeps it otherwise.
-[ -n "\$VIZ_SEG" ] && LINE3="\$VIZ_SEG"
+${STATUSLINE_ROW3_BASH}
 
 if [ -n "$LINE2" ] && [ -n "$LINE3" ]; then
     printf '%s\\n%s\\n%s' "$LINE1" "$LINE2" "$LINE3"

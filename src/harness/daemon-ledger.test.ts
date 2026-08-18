@@ -6,6 +6,7 @@ import {
 	classifyExitReason,
 	describeLastExit,
 	describeLastLedgerEvent,
+	makeHeapPressureLedger,
 	readRecentDaemonEvents,
 	recordDaemonEvent,
 	recordDaemonExit,
@@ -33,6 +34,18 @@ afterEach(() => {
 });
 
 describe("recordDaemonEvent / readRecentDaemonEvents", () => {
+	// test-contract: behavior — the emergency-GC ledger callback (storm
+	// postmortem 2026-08-17) writes a joinable row AND a log line with both
+	// heap numbers, so a postmortem reads the defense firing
+	it("P: makeHeapPressureLedger records an emergency-gc row and logs both numbers", () => {
+		const logged: string[] = [];
+		makeHeapPressureLedger(dir, (m) => logged.push(m))(2000, 2560);
+		const row = readRecentDaemonEvents(dir)[0];
+		expect(row).toMatchObject({ event: "emergency-gc", pid: process.pid });
+		expect(row?.detail).toBe("heap 2000MB of 2560MB limit — shrank caches + forced GC");
+		expect(logged[0]).toBe("Emergency GC: heap 2000MB of 2560MB limit — shrank caches");
+	});
+
 	it("round-trips an exit event with its reason", () => {
 		recordDaemonEvent(dir, { at: NOW, pid: 42, event: "exit", reason: "build-refresh", rss_mb: 180 });
 		const events = readRecentDaemonEvents(dir);
