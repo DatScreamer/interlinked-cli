@@ -6,11 +6,11 @@ Subprocess-based checks run external tools (tsc, biome, etc.); inline checks sca
 
 | Check | Severity | File Types | Description |
 |-------|----------|------------|-------------|
-| `typescript` (subprocess) | error | .ts, .tsx | TypeScript type checking after file edits |
-| `biome_lint` (subprocess) | warning | .ts, .tsx, .js, .jsx, .json | Biome lint check after file edits |
-| `eslint` (subprocess) | warning | .ts, .tsx, .js, .jsx | ESLint check (used when project has eslint, not biome) |
-| `secrets_in_source` (inline) | error | .ts, .js, .py, .go, .rs ... | Detect secrets written into source files |
-| `strong_typing` (inline) | warning | .ts, .tsx | Detect explicit `any` and `unknown` types — encourage stronger typing (interfaces, generics, branded types) |
+| `typescript` (subprocess) | error | .ts, .tsx, .mts, .cts | TypeScript type checking after file edits |
+| `biome_lint` (subprocess) | warning | .ts, .tsx, .mts, .cts, .js ... | Biome lint check after file edits |
+| `eslint` (subprocess) | warning | .ts, .tsx, .mts, .cts, .js ... | ESLint check (used when project has eslint, not biome) |
+| `secrets_in_source` (inline) | error | .ts, .tsx, .mts, .cts, .js ... | Detect secrets written into source files |
+| `strong_typing` (inline) | warning | .ts, .tsx, .mts, .cts | Detect explicit `any` and `unknown` types — encourage stronger typing (interfaces, generics, branded types) |
 | `software_version_regression` (inline) | error | package.json, requirements.txt, go.mod, Cargo.toml, Dockerfile ... | PostToolUse attention block for possible stale-memory software downgrades: package versions, model IDs, Docker tags, GitHub Action versions, API dates, and common runtime/config version assignments |
 | `freshness_sensitive_reference` (inline) | warning | package.json, requirements.txt, go.mod, Cargo.toml, Dockerfile ... | PostToolUse advisory when newly introduced software/model/API references require verification against official current sources |
 | `strict_typing_block` (inline) | error | .ts, .tsx, .mts, .cts | PreToolUse hard-block when an edit introduces new type-erasure patterns: `as any`, `as unknown as` chains, unjustified `@ts-ignore`/`@ts-expect-error`, bare `: any` annotations. Off by default — opt in via `.interlinked/guard-rules.local.json` once the team is ready to enforce. |

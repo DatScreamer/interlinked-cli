@@ -43,6 +43,15 @@ describe("checkTestLegitimacy — file eligibility and contract grounding", () =
         expect(found[0]?.text).toContain("contract");
     });
 
+    it("P1b: keeps model-qualified mutation filenames inside the strict file class", () => {
+        const found = check(
+            "it(\"covers a Luna-targeted survivor\", () => expect(render()).toEqual(\"Ready\"));",
+            "src/lib/widget.mutation-kill-luna.test.ts",
+        );
+        expect(found).toHaveLength(1);
+        expect(found[0]?.text).toContain("missing test-contract");
+    });
+
     it.each([
         "// test-contract: public-api",
         "// test-contract: performance — test public API",

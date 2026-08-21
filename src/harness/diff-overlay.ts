@@ -74,9 +74,8 @@ function diagKey(r: CheckResult): string {
  *
  * - If biome isn't configured for this project → returns empty (no gate).
  * - If extension isn't JS/TS family → returns empty.
- * - If file doesn't yet exist on disk (new-file Write) → returns empty;
- *   there's no "before" state to diff against, so we can't call any
- *   finding "new".
+ * - If the file doesn't yet exist, the baseline is empty: every proposed
+ *   diagnostic is introduced by the write and is therefore new.
  */
 export function evaluateBiomeDiffOverlay(
 	filePath: string,
@@ -90,21 +89,25 @@ export function evaluateBiomeDiffOverlay(
 	};
 
 	if (!JS_TS_EXT.test(filePath)) return empty;
-	if (!existsSync(filePath)) return empty;
 
 	const engine = getOrCreateEngine(projectRoot);
 
-	// Pre-edit diagnostics: use the cached getDiagnostics and filter to biome.
-	const preEdit = engine.getDiagnostics(filePath).filter((r) => r.tool === "biome");
+	// A new file has an empty baseline, so every proposed diagnostic is new.
+	const existsOnDisk = existsSync(filePath);
+	const preEdit = existsOnDisk
+		? engine.getDiagnostics(filePath).filter((r) => r.tool === "biome")
+		: [];
 
 	// Short-circuit: content identical to disk (no-op edit) — nothing to diff.
-	let onDisk = "";
-	try {
-		onDisk = readFileSync(filePath, "utf-8");
-	} catch {
-		return empty;
+	if (existsOnDisk) {
+		let onDisk = "";
+		try {
+			onDisk = readFileSync(filePath, "utf-8");
+		} catch {
+			return empty;
+		}
+		if (onDisk === proposedContent) return empty;
 	}
-	if (onDisk === proposedContent) return empty;
 
 	const start = Date.now();
 	const overlay = engine.getBiomeDiagnosticsForOverlay(
@@ -211,7 +214,7 @@ export function _isRelativeModuleNotFound(f: CheckResult): boolean {
  *   semantics on both sides of the diff.
  * - Caches the pre-edit result by `(filePath, mtime)` so unchanged files
  *   don't re-run semantic analysis on every overlay call.
- * - New-file Writes (no disk state) return empty — nothing to diff against.
+ * - New-file Writes use an empty baseline, so proposed diagnostics are new.
  */
 export function evaluateTscDiffOverlay(
 	filePath: string,
@@ -227,25 +230,32 @@ export function evaluateTscDiffOverlay(
 	};
 
 	if (!TS_OVERLAY_EXT.test(filePath)) return empty;
-	if (!existsSync(filePath)) return empty;
 
 	let onDisk = "";
-	try {
-		onDisk = readFileSync(filePath, "utf-8");
-	} catch {
-		return empty;
+	const existsOnDisk = existsSync(filePath);
+	if (existsOnDisk) {
+		try {
+			onDisk = readFileSync(filePath, "utf-8");
+		} catch {
+			return empty;
+		}
+		if (onDisk === proposedContent) return empty;
 	}
-	if (onDisk === proposedContent) return empty;
 
 	const engine = getOrCreateEngine(projectRoot);
 
 	// Pre-edit snapshot via LS overlay against disk content. Cached so we
 	// don't re-run for every edit to the same file.
 	const cacheKey = tscCacheKey(filePath);
-	let preEdit = preEditTscCache.get(cacheKey);
-	if (!preEdit) {
-		preEdit = engine.getTscDiagnosticsForOverlay(filePath, onDisk);
-		preEditTscCache.set(cacheKey, preEdit);
+	let preEdit: CheckResult[] = [];
+	if (existsOnDisk) {
+		const cached = preEditTscCache.get(cacheKey);
+		if (cached) {
+			preEdit = cached;
+		} else {
+			preEdit = engine.getTscDiagnosticsForOverlay(filePath, onDisk);
+			preEditTscCache.set(cacheKey, preEdit);
+		}
 	}
 
 	const start = Date.now();

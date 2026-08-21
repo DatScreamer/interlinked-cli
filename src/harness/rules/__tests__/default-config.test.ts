@@ -31,6 +31,13 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.quality_checks.gitleaks).toBeDefined();
 	});
 
+	it("TypeScript checks cover ESM and CommonJS TypeScript extensions", () => {
+		for (const name of ["typescript", "strong_typing"] as const) {
+			const fileTypes = nonNull(DEFAULT_CONFIG.quality_checks[name]).file_types;
+			expect(fileTypes).toEqual(expect.arrayContaining([".ts", ".tsx", ".mts", ".cts"]));
+		}
+	});
+
 	it("ships the four advisory checks off-by-default", () => {
 		// These four cost more than they pay off in the median repo.
 		// Repos can re-enable per-project via .interlinked/guard-rules.local.json.

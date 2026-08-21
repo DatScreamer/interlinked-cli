@@ -248,6 +248,16 @@ receipt immediately before every new case in a mutation-directed JS/TS test:
 // test-contract: <public-api|invariant|bug|security|boundary> — <specific reference or rationale>
 ```
 
+Mutation-directed filenames are dotted policy segments. Canonical forms are
+`foo.mutation-kill.test.ts`, `foo.mutation-hardening.test.ts`, and `foo.survivors.test.ts`.
+Model/wave qualifiers are allowed directly on the semantic token — for example
+`foo.mutation-kill-luna.test.ts` — and remain inside the same strict class. A repo opts into the
+blocking profile with `{"mutation_directed_strict_profile":{"enabled":true}}` in
+`.interlinked/guard-rules.json` (team policy) or the local rules file. Under that profile,
+introduced missing receipts, broad truthiness, missing SUT grounding, and assertion removal are
+pre-execution blocks; pre-existing findings remain warnings. Do not rename a file to evade this
+classification.
+
 The write hook now surfaces `test_legitimacy` before a mutation-directed test edit lands; then run
 `interlinked verify --all-checks --details` for the full audit. The advisory check reviews
 missing/generic receipts, broad truthiness, incidental call order, and explicitly private/internal

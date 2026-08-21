@@ -24,7 +24,12 @@ import { stripComments } from "../strip-helpers.js";
 // suffix form — before it existed, checkTestMissingSutImport stripped only
 // `.test.ts` and looked for a phantom `./foo.mutation-kill` companion, which
 // false-fired on every mutation-directed suite in the tree (followup #24).
-const MUTATION_DIRECTED_TOKEN = "mutation-(?:kill|hardening)|survivors?";
+// A model/wave qualifier may follow the semantic token. This keeps names such
+// as `.mutation-kill-luna.test.ts` inside the same policy class instead of
+// silently downgrading them to ordinary tests. The dotted boundary remains
+// mandatory, so an unrelated basename containing "mutation-kill" is not swept
+// in accidentally.
+const MUTATION_DIRECTED_TOKEN = "(?:mutation-(?:kill|hardening)|survivors?)(?:-[a-z0-9]+)*";
 export const MUTATION_DIRECTED_PATH = new RegExp(`\\.(?:${MUTATION_DIRECTED_TOKEN})\\.`, "i");
 export const MUTATION_DIRECTED_SUFFIX = new RegExp(`\\.(?:${MUTATION_DIRECTED_TOKEN})$`, "i");
 export const TEST_CASE_LINE =

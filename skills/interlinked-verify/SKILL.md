@@ -143,6 +143,9 @@ interlinked verify-changeset --file <cs.json>    # preview the gate, write nothi
   uses per-file atomic renames, preserves existing target modes, and performs best-effort rollback
   if a later rename fails; POSIX provides no literal multi-file atomic rename, and an incomplete
   rollback is reported explicitly.
+  New files use an empty biome/TypeScript baseline, so diagnostics introduced by a fresh `.ts`,
+  `.tsx`, `.mts`, or `.cts` file block just like diagnostics introduced while editing an existing
+  file; `scratch/` is not an escape lane.
 - **`multi-edit` manifest:** `{ "version": 1, "edits": [ { "old_string", "new_string" }, … ] }`
   (path = positional arg), or `{ "version": 1, "batches": [ { "path", "edits": […] } ] }`.
   Edits apply in order to an in-memory buffer; the gate runs once on the final content.

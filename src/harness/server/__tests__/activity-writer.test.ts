@@ -109,6 +109,26 @@ describe("mapEventToActivityRecord — v5 mapping", () => {
 		);
 		expect(mapEventToActivityRecord(harnessEvent({}), "/r")?.agent).toBe("claude");
 	});
+
+	it("carries subagent, parent, and model attribution without replacing the parent session", () => {
+		const rec = mapEventToActivityRecord(
+			harnessEvent({
+				session_id: "parent-session",
+				agent_name: "/root/kill_a_survivors",
+				subagent_id: "sub-thread",
+				parent_agent: "parent-thread",
+				model: "gpt-5.6-luna",
+			}),
+			"/r",
+		);
+		expect(rec).toMatchObject({
+			session: "parent-session",
+			agent: "/root/kill_a_survivors",
+			subagent_id: "sub-thread",
+			parent_agent: "parent-thread",
+			model: "gpt-5.6-luna",
+		});
+	});
 });
 
 describe("writeActivityRecord — round-trips through readLocalActivity", () => {

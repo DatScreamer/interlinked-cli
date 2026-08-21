@@ -65,6 +65,17 @@ Data dir: `INTERLINKED_DATA_DIR` → `config.local.json.data_dir` → `INTERLINK
 event identity (`tool_use_id` + projected type), not by type — no double-counting, no lost
 history. Don't "clean up" by deleting collection rows or dropping tool types from activity.jsonl.
 
+**Codex collaboration attribution:** Codex currently emits a spawned agent's live hooks with the
+parent thread as `session_id` and no actor/model fields. Interlinked correlates the hook's local
+`exec-*` tool id (or its just-written pending call at PreToolUse) with the spawned rollout under
+`~/.codex/sessions/`, then stamps `agent`/`agent_name` with the canonical task path plus
+`subagent_id`, `parent_agent`, and `model`. The parent `session` stays unchanged so one delegated
+turn remains a coherent trajectory. `interlinked collect --provider codex` also understands the
+current `session_meta.payload.id` + `source.subagent.thread_spawn` shape and writes
+`agent_id`/`attribution_agent`/`is_sidechain` into `timeline.jsonl`. Correlation is fail-open: if
+the rollout is missing, stale, outside the repo cwd, or unmatched, the event remains provider-only
+rather than receiving a guessed identity.
+
 **`logs --type <t>`** filters the raw `event.type` exactly (not the uppercase display labels).
 Values: `session_start`, `session_end`, `tool_use_start`, `tool_use`, `tool_use_error`,
 `permission_request`, `user_prompt`, `subagent_start`, `subagent_stop`, `notification`,
@@ -152,7 +163,7 @@ Six lenses, each fed by its own SSE route:
 | MUTANTS | `/api/mutants` | `mutation-manifest.json` | every mutant, survivors first; live kill-rate; a tile flashes when its status flips |
 | DRIFT | — | — | not built yet (standby pane) |
 
-The AGENTS lens needs no producer: every activity row already carries `agent`, `session`,
+The AGENTS lens needs no producer: attributed activity rows carry `agent`, `session`,
 `subagent_id`, and `model`, so presence is a fold over the stream the dashboard already tails
 (`src/lib/viz/agent-roster.ts`, hosted at `/api/agents`). Each actor gets a stable hue from its
 id, and that hue is reused for its ticker rows and its file pulses — with two sessions running,

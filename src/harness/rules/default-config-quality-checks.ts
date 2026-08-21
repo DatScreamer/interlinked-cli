@@ -45,7 +45,7 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 		enabled: true,
 		command:
 			"npx tsgo --noEmit --pretty false 2>/dev/null || npx tsc --noEmit --pretty false",
-		file_types: [".ts", ".tsx"],
+		file_types: [".ts", ".tsx", ".mts", ".cts"],
 		timeout_ms: 10_000,
 		severity: "error",
 		description: "TypeScript type checking after file edits",
@@ -53,7 +53,7 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 	biome_lint: {
 		enabled: true,
 		command: "npx --yes --package @biomejs/biome biome check --no-errors-on-unmatched",
-		file_types: [".ts", ".tsx", ".js", ".jsx", ".json"],
+		file_types: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"],
 		timeout_ms: 5_000,
 		severity: "warning",
 		description: "Biome lint check after file edits",
@@ -67,21 +67,21 @@ export const DEFAULT_QUALITY_CHECKS: Record<string, QualityCheckConfig> = {
 		// genuinely use ESLint instead of (or alongside) biome.
 		enabled: false,
 		command: "npx eslint --no-error-on-unmatched-pattern",
-		file_types: [".ts", ".tsx", ".js", ".jsx"],
+		file_types: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
 		timeout_ms: 10_000,
 		severity: "warning",
 		description: "ESLint check (used when project has eslint, not biome)",
 	},
 	secrets_in_source: {
 		enabled: true,
-		file_types: [".ts", ".js", ".py", ".go", ".rs", ".java", ".env"],
+		file_types: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".env"],
 		timeout_ms: 1_000,
 		severity: "error",
 		description: "Detect secrets written into source files",
 	},
 	strong_typing: {
 		enabled: true,
-		file_types: [".ts", ".tsx"],
+		file_types: [".ts", ".tsx", ".mts", ".cts"],
 		timeout_ms: 2_000,
 		severity: "warning",
 		description:

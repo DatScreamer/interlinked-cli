@@ -336,6 +336,10 @@ export interface CollectionRecord {
 	 *  registration). Null when only the provider is known — e.g. a historical
 	 *  record written before this field existed. */
 	agent_name: string | null;
+	/** Acting subagent when provider hooks remain grouped under a parent session. */
+	subagent_id?: string | null;
+	parent_agent?: string | null;
+	model?: string | null;
 	turn_id: string | null;
 	tool_use_id: string | null;
 	/** Per-session monotonic event ordinal (G3,

@@ -43,6 +43,7 @@ interface CodexPayload {
 	call_id?: string;
 	id?: string;
 	output?: unknown;
+	source?: unknown;
 	message?: string;
 	model?: string;
 	session_id?: string;
@@ -54,6 +55,9 @@ interface CodexContext {
 	session: string;
 	model: string | undefined;
 	cwd: string | undefined;
+	agentId: string | undefined;
+	attributionAgent: string | undefined;
+	isSidechain: boolean | undefined;
 }
 
 /** Flatten a Codex content array (`[{type:"input_text"|"output_text", text}]`)
@@ -99,6 +103,7 @@ function parseCodexPayload(value: unknown): CodexPayload | undefined {
 	if (value.content !== undefined) out.content = value.content;
 	if (value.input !== undefined) out.input = value.input;
 	if (value.output !== undefined) out.output = value.output;
+	if (value.source !== undefined) out.source = value.source;
 	return out;
 }
 
@@ -131,14 +136,46 @@ function parseLine(line: string): CodexEntry | null {
 
 /** Scan for the session id / cwd (`session_meta`) and the model slug (recorded on
  *  a later entry, not on `session_meta`). One linear pass, no records emitted. */
+function codexThreadSpawn(
+	source: unknown,
+): { agentPath: string | undefined; nickname: string | undefined } | null {
+	if (!isJsonObject(source)) return null;
+	const subagent = source.subagent;
+	if (!isJsonObject(subagent)) return null;
+	const threadSpawn = subagent.thread_spawn;
+	if (!isJsonObject(threadSpawn)) return null;
+	const agentPath = typeof threadSpawn.agent_path === "string" ? threadSpawn.agent_path : undefined;
+	const nickname = typeof threadSpawn.agent_nickname === "string"
+		? threadSpawn.agent_nickname
+		: undefined;
+	return agentPath || nickname ? { agentPath, nickname } : null;
+}
+
+function consumeSessionMeta(payload: CodexPayload, ctx: CodexContext): void {
+	if (typeof payload.session_id === "string") ctx.session = payload.session_id;
+	else if (typeof payload.id === "string") ctx.session = payload.id;
+	if (typeof payload.cwd === "string") ctx.cwd = payload.cwd;
+	const spawn = codexThreadSpawn(payload.source);
+	if (!spawn) return;
+	ctx.agentId = ctx.session || undefined;
+	ctx.attributionAgent = spawn.agentPath ?? spawn.nickname;
+	ctx.isSidechain = true;
+}
+
 function scanContext(entries: (CodexEntry | null)[]): CodexContext {
-	const ctx: CodexContext = { session: "", model: undefined, cwd: undefined };
+	const ctx: CodexContext = {
+		session: "",
+		model: undefined,
+		cwd: undefined,
+		agentId: undefined,
+		attributionAgent: undefined,
+		isSidechain: undefined,
+	};
 	for (const e of entries) {
 		const p = e?.payload;
 		if (!p) continue;
 		if (e?.type === "session_meta") {
-			if (typeof p.session_id === "string") ctx.session = p.session_id;
-			if (typeof p.cwd === "string") ctx.cwd = p.cwd;
+			consumeSessionMeta(p, ctx);
 		}
 		if (ctx.model === undefined && typeof p.model === "string" && p.model) {
 			ctx.model = p.model;
@@ -149,7 +186,15 @@ function scanContext(entries: (CodexEntry | null)[]): CodexContext {
 
 type RecordBase = Pick<
 	TimelineRecord,
-	"schema" | "ts" | "session" | "uuid" | "provider" | "cwd"
+	| "schema"
+	| "ts"
+	| "session"
+	| "uuid"
+	| "provider"
+	| "cwd"
+	| "agent_id"
+	| "is_sidechain"
+	| "attribution_agent"
 >;
 
 /** Build one record with the shared base + category-specific fields. */
@@ -211,6 +256,9 @@ function entryRecords(e: CodexEntry, ctx: CodexContext, lineIndex: number): Time
 		uuid: `codex:${ctx.session}:${lineIndex}`,
 		provider: "codex",
 		cwd: ctx.cwd,
+		agent_id: ctx.agentId,
+		is_sidechain: ctx.isSidechain,
+		attribution_agent: ctx.attributionAgent,
 	};
 	if (e.type === "response_item") {
 		if (p.type === "message") return messageRecords(base, p, ctx.model);

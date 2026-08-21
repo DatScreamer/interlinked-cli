@@ -217,10 +217,8 @@ describe("gateProposedContent", () => {
 		expect(pathsWithFailures.has(MIXED_FIXTURE_OK)).toBe(false);
 	});
 
-	it("new-file write (no disk snapshot): skips biome/tsc diff, pre_block still runs", () => {
-		// A path that doesn't exist on disk. New-file writes can't be diffed,
-		// so biome/tsc should produce 0 findings, but the result should still
-		// be ok because no pre_block violation fires on this content.
+	it("clean new-file write uses an empty biome/tsc baseline", () => {
+		// A clean new file has no proposed diagnostics even though both overlays run.
 		const nonExistent = resolve(FIXTURE_DIR, "_gate_does_not_exist.ts");
 		const result = gateProposedContent([{ path: nonExistent, content: CLEAN_CONTENT }], {
 			projectRoot: CLI_ROOT,
@@ -228,6 +226,20 @@ describe("gateProposedContent", () => {
 		expect(result.ok).toBe(true);
 		expect(result.failures.filter((f) => f.tool === "biome")).toEqual([]);
 		expect(result.failures.filter((f) => f.tool === "tsc")).toEqual([]);
+	});
+
+	it("blocks an implicit-any parameter in a new .mts scratch-style file", () => {
+		const nonExistent = resolve(FIXTURE_DIR, "_gate_implicit_any.mts");
+		const proposed = "export const lengthOf = (line) => line.length;\n";
+		const result = gateProposedContent([{ path: nonExistent, content: proposed }], {
+			projectRoot: CLI_ROOT,
+		});
+		expect(result.ok).toBe(false);
+		expect(result.failures).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ tool: "tsc", code: "TS7006", severity: "error" }),
+			]),
+		);
 	});
 
 	it("empty batch: trivially ok", () => {

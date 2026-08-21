@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { resolveConfig } from "../../lib/config.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { appendActivityRecordOnly, type LocalActivityEvent } from "../../lib/local-activity.js";
+import { eventAttributionFields } from "../event-attribution-fields.js";
 import { extractNewThinking, latestTranscriptModel, resolveTranscriptPath } from "../thinking-capture.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
 
@@ -83,6 +84,7 @@ export function mapEventToActivityRecord(
 		cwd,
 	};
 	if (event.tool_use_id) rec.tool_use_id = event.tool_use_id;
+	Object.assign(rec, eventAttributionFields(event));
 	// The owning Task call, when the runner sends it: the one field that says
 	// a SUBAGENT made this call rather than the parent session.
 	if (event.parent_tool_use_id) rec.parent_tool_use_id = event.parent_tool_use_id;
@@ -157,6 +159,7 @@ export function mapDecisionToGuardRecord(
 		guard_warnings: decision.warnings ?? null,
 	};
 	if (event.tool_use_id) rec.tool_use_id = event.tool_use_id;
+	Object.assign(rec, eventAttributionFields(event));
 	if (event.seq !== undefined) rec.seq = event.seq;
 	if (typeof decision.checks_timing_ms === "number") rec.guard_harness_ms = decision.checks_timing_ms;
 	return rec;

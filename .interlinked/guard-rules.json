@@ -19,5 +19,8 @@
   ],
   "diff_aware": {
     "enabled": true
+  },
+  "mutation_directed_strict_profile": {
+    "enabled": true
   }
 }

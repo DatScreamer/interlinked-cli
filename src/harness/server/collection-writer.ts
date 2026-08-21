@@ -13,6 +13,7 @@
 import { buildCollectionRecord } from "../../lib/collection/builder.js";
 import { appendCollection } from "../../lib/collection/writer.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import { eventAttributionFields } from "../event-attribution-fields.js";
 import type { HarnessEvent } from "../types.js";
 
 /** Map a `HarnessEvent` to the `JsonObject` the collection builder consumes.
@@ -57,6 +58,7 @@ export function mapEventToCollectionInput(
 		...(clientRunner ? { client_runner: clientRunner } : {}),
 		...(cursorVersion ? { cursor_version: cursorVersion } : {}),
 		...(event.agent_name ? { agent_name: event.agent_name } : {}),
+		...eventAttributionFields(event),
 	};
 }
 

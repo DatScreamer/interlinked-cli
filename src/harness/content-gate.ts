@@ -161,10 +161,9 @@ function applyPreBlockPhase(ctx: GatePhaseContext): void {
 	}
 }
 
-/** Phase 2: biome diff-overlay. No-op for new-file writes (nothing to diff). */
+/** Phase 2: biome diff-overlay. New files use an empty diagnostic baseline. */
 function applyBiomeOverlayPhase(ctx: GatePhaseContext): void {
 	const { path, content, projectRoot, failures } = ctx;
-	if (!existsSync(path)) return;
 	const biomeOverlay = evaluateBiomeDiffOverlay(path, content, projectRoot);
 	for (const f of biomeOverlay.newFindings) {
 		failures.push({
@@ -179,10 +178,9 @@ function applyBiomeOverlayPhase(ctx: GatePhaseContext): void {
 	}
 }
 
-/** Phase 3: tsc diff-overlay. No-op for new-file writes (nothing to diff). */
+/** Phase 3: tsc diff-overlay. New files use an empty diagnostic baseline. */
 function applyTscOverlayPhase(ctx: GatePhaseContext): void {
 	const { path, content, projectRoot, failures } = ctx;
-	if (!existsSync(path)) return;
 	const tscOverlay = evaluateTscDiffOverlay(path, content, projectRoot);
 	for (const f of tscOverlay.newFindings) {
 		const blocking = isTscFindingBlocking(f);
@@ -235,9 +233,8 @@ function applyPreWarnPhase(
  *   3. tsc diff-overlay (new-findings-only vs disk snapshot).
  *   4. (optional) pre_warn registry checks — surfaced as warnings.
  *
- * New-file writes (target path does not exist on disk) skip steps 2-3
- * intentionally — there's no "before" state to diff against, and calling the
- * proposed content "new" in that sense is meaningless. Pre_block still runs.
+ * New-file writes use an empty baseline in steps 2-3, so every diagnostic
+ * introduced by the proposed file is eligible to block the transaction.
  */
 export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions = {}): GateResult {
 	const start = Date.now();

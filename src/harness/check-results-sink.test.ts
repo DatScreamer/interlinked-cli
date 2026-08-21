@@ -61,6 +61,24 @@ describe("buildCheckRow", () => {
 		expect(row?.file).toBe("src/clean.ts");
 	});
 
+	it("records per-subagent identity and model while retaining the parent session", () => {
+		const ev = postEvent({
+			tool_use_id: "t-sub",
+			agent_name: "/root/kill_a_survivors",
+			subagent_id: "sub-thread",
+			parent_agent: "parent-thread",
+			model: "gpt-5.6-luna",
+		});
+		const row = buildCheckRow(ev, decisionWith({ checks_ran: ["typescript"] }));
+		expect(row).toMatchObject({
+			session: "s",
+			agent_name: "/root/kill_a_survivors",
+			subagent_id: "sub-thread",
+			parent_agent: "parent-thread",
+			model: "gpt-5.6-luna",
+		});
+	});
+
 	it("maps an 'ask' decision to a deviation (block)", () => {
 		const ev = postEvent({ tool_use_id: "t3", tool_input: {} });
 		const row = buildCheckRow(ev, decisionWith({ decision: "ask", check_results: [magicFinding] }));

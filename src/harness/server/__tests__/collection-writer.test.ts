@@ -116,6 +116,25 @@ describe("mapEventToCollectionInput — field carryover and cwd fallback", () =>
 		).toBe("alice");
 		expect("agent_name" in mapEventToCollectionInput(harnessEvent({}), "/repo")).toBe(false);
 	});
+
+	it("carries the acting subagent and model alongside the parent session", () => {
+		expect(
+			mapEventToCollectionInput(
+				harnessEvent({
+					session_id: "parent-session",
+					subagent_id: "sub-thread",
+					parent_agent: "parent-thread",
+					model: "gpt-5.6-luna",
+				}),
+				"/repo",
+			),
+		).toMatchObject({
+			session: "parent-session",
+			subagent_id: "sub-thread",
+			parent_agent: "parent-thread",
+			model: "gpt-5.6-luna",
+		});
+	});
 });
 
 describe("writeCollectionRecord — end-to-end append", () => {

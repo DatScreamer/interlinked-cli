@@ -12,6 +12,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { eventAttributionFields } from "./event-attribution-fields.js";
 import type { HarnessDecision } from "./types/decisions.js";
 import type { HarnessEvent } from "./types/events.js";
 
@@ -28,6 +29,10 @@ export interface CheckRow {
 	/** Session the call belonged to — lets consumers slice check noise per
 	 *  session/agent (absent on legacy rows written before 2026-07-24). */
 	session?: string;
+	agent_name?: string;
+	subagent_id?: string;
+	model?: string;
+	parent_agent?: string;
 	tool?: string;
 	file?: string;
 	decision: "allow" | "block";
@@ -81,6 +86,8 @@ export function buildCheckRow(event: HarnessEvent, decision: HarnessDecision): C
 		checks,
 	};
 	if (event.session_id) row.session = event.session_id;
+	if (event.agent_name) row.agent_name = event.agent_name;
+	Object.assign(row, eventAttributionFields(event));
 	if (event.tool_name) row.tool = event.tool_name;
 	const file = extractFile(event, decision.check_results);
 	if (file) row.file = file;

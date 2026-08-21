@@ -28,6 +28,51 @@ describe("parseCodexRolloutText", () => {
 		expect(recs.every((r) => r.schema === "timeline.v1")).toBe(true);
 	});
 
+	it("reads current Codex subagent session metadata into timeline attribution", () => {
+		const current = [
+			{
+				timestamp: "2026-08-20T15:48:40Z",
+				type: "session_meta",
+				payload: {
+					id: "sub-thread",
+					cwd: "/repo",
+					source: {
+						subagent: {
+							thread_spawn: {
+								parent_thread_id: "parent-thread",
+								agent_path: "/root/kill_a_survivors",
+								agent_nickname: "Curie",
+							},
+						},
+					},
+				},
+			},
+			{
+				timestamp: "2026-08-20T15:48:41Z",
+				type: "turn_context",
+				payload: { model: "gpt-5.6-luna" },
+			},
+			{
+				timestamp: "2026-08-20T15:48:42Z",
+				type: "response_item",
+				payload: {
+					type: "message",
+					role: "assistant",
+					content: [{ type: "output_text", text: "Done." }],
+				},
+			},
+		].map((entry) => JSON.stringify(entry)).join("\n");
+		const records = parseCodexRolloutText(current);
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({
+			session: "sub-thread",
+			agent_id: "sub-thread",
+			attribution_agent: "/root/kill_a_survivors",
+			is_sidechain: true,
+			model: "gpt-5.6-luna",
+		});
+	});
+
 	it("maps developer/user messages to user_prompt and assistant to agent_message", () => {
 		expect(byCat("user_prompt").map((r) => r.text)).toEqual(["Review these files."]);
 		expect(byCat("agent_message")[0]?.text).toContain("a bug");
