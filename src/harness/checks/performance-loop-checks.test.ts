@@ -743,3 +743,145 @@ describe("mutation-hardening round 2 — closing remaining survivors", () => {
 		expect(out[0]?.text).toBe(`s := fmt.Sprintf(${longtext});`.slice(0, 150));
 	});
 });
+
+// ---------------------------------------------------------------------------
+// mutation-kill-w27: closing the manifest-listed survivor set (regex \s*/\S*
+// spacing mutants on the Python/Swift branches of checkQueryInLoop and
+// checkJsonInLoop, the Swift checkSortInLoop alternation, the Python
+// checkRegexInLoop branch, and the Go checkStringConcatInLoop clause).
+// ---------------------------------------------------------------------------
+
+describe("checkQueryInLoop — w27 spacing survivors", () => {
+	// test-contract: regex-branch — kills all three \s* positions in the
+	// Python cursor/session/db pattern (before-dot, after-dot, before-paren)
+	// by requiring each to accept a literal space that \S* cannot.
+	it("kills the Python cursor pattern's three \\s* positions: a spaced-out call must still match", () => {
+		const code = `for user_id in user_ids:\n    cursor . execute (id)\n`;
+		expect(checkQueryInLoop(code, "users.py")).toEqual([{ line: 2, text: "cursor . execute (id)" }]);
+	});
+
+	// test-contract: regex-branch — kills the three \s* positions in the
+	// Swift context/viewContext/managedObjectContext alternative.
+	it("kills the Swift context-branch's three \\s* positions: a spaced-out fetch() must still match", () => {
+		const code = `for item in items {\n    viewContext . fetch (item)\n}`;
+		expect(checkQueryInLoop(code, "Sync.swift")).toEqual([{ line: 2, text: "viewContext . fetch (item)" }]);
+	});
+
+	// test-contract: regex-branch — kills the three \S* (spacing-tolerant)
+	// mutants in the Swift db/dbQueue/dbPool alternative.
+	it("kills the Swift db-branch's three \\S* positions: a spaced-out read() must still match", () => {
+		const code = `for item in items {\n    dbQueue . read (x)\n}`;
+		expect(checkQueryInLoop(code, "Sync.swift")).toEqual([{ line: 2, text: "dbQueue . read (x)" }]);
+	});
+
+	// test-contract: regex-branch — kills the three mandatory-\s (one-or-
+	// exactly-one) mutants in the same Swift db-branch by using zero spacing,
+	// which \s* accepts but a mandatory \s does not.
+	it("kills the Swift db-branch's three mandatory-\\s positions: a tight read() must still match", () => {
+		const code = `for item in items {\n    dbQueue.read(x)\n}`;
+		expect(checkQueryInLoop(code, "Sync.swift")).toEqual([{ line: 2, text: "dbQueue.read(x)" }]);
+	});
+});
+
+describe("checkStringConcatInLoop — w27 Go clause spacing survivors", () => {
+	// test-contract: regex-branch — a fully tight Go concatenation (zero
+	// spaces anywhere, quote immediately after "+=") simultaneously kills:
+	// \w+→\W+ (word char before += must still match), the two mandatory-\s
+	// substitutions (before and after +=), and the negated-class substitution
+	// (quote char right after += must still match the positive class).
+	it("kills the Go clause's \\W+/mandatory-\\s/negated-class mutants: a fully tight concatenation must still match", () => {
+		const code = `for _, item := range items {\n    result+="x"\n}`;
+		expect(checkStringConcatInLoop(code, "builder.go")).toEqual([{ line: 2, text: 'result+="x"' }]);
+	});
+});
+
+describe("checkRegexInLoop — w27 Python spacing survivor", () => {
+	// test-contract: regex-branch — kills the \s*→\S* mutant on the Python
+	// re.compile pattern by requiring a literal space before the paren.
+	it("kills the Python re.compile \\s*→\\S* mutant: a spaced-out call must still match", () => {
+		const code = `for line in lines:\n    re.compile (r"\\d+")\n`;
+		expect(checkRegexInLoop(code, "parser.py")).toEqual([{ line: 2, text: 're.compile (r"\\d+")' }]);
+	});
+});
+
+describe("checkSortInLoop — w27 Swift alternation survivors", () => {
+	// test-contract: regex-branch — kills the first alt's \s*→\S* mutant: a
+	// spaced ".sorted (" must still match via the first alternative (the
+	// second alternative can't rescue it — "sorted" isn't "sort" followed
+	// directly by whitespace/paren).
+	it("kills the Swift .sorted() first-alt \\S* mutant: a spaced-out .sorted call must still match", () => {
+		const code = `for item in items {\n    arr.sorted (x)\n}`;
+		expect(checkSortInLoop(code, "Sorter.swift")).toEqual([{ line: 2, text: "arr.sorted (x)" }]);
+	});
+
+	// test-contract: regex-branch — kills the second alt's mandatory-\s
+	// mutant: a tight ".sort()" (zero spaces) doesn't satisfy a mandatory
+	// single whitespace but does satisfy \s*.
+	it("kills the Swift .sort() second-alt mandatory-\\s mutant: a tight .sort() must still match", () => {
+		const code = `for (let i = 0; i < n; i++) {\n    arr.sort()\n}`;
+		expect(checkSortInLoop(code, "Sorter.swift")).toEqual([{ line: 2, text: "arr.sort()" }]);
+	});
+
+	// test-contract: regex-branch — kills the second alt's \s*→\S* mutant: a
+	// spaced ".sort (" (not "sorted") must still match via the second
+	// alternative.
+	it("kills the Swift .sort() second-alt \\S* mutant: a spaced-out .sort call must still match", () => {
+		const code = `for (let i = 0; i < n; i++) {\n    arr.sort (x)\n}`;
+		expect(checkSortInLoop(code, "Sorter.swift")).toEqual([{ line: 2, text: "arr.sort (x)" }]);
+	});
+});
+
+describe("checkJsonInLoop — w27 Python and Swift spacing survivors", () => {
+	// test-contract: regex-branch — kills the Python json.loads \s*→\S*
+	// mutant by requiring a literal space before the paren.
+	it("kills the Python json.loads \\s*→\\S* mutant: a spaced-out call must still match", () => {
+		const code = `for line in lines:\n    json.loads (line)\n`;
+		expect(checkJsonInLoop(code, "parser.py")).toEqual([{ line: 2, text: "json.loads (line)" }]);
+	});
+
+	// test-contract: regex-branch — kills the three \S* mutants in the
+	// JSONDecoder alternative (before-paren, inside-parens, before-.decode)
+	// with one spaced-out fixture.
+	it("kills the Swift JSONDecoder alt's three \\S* positions: a spaced-out decode() must still match", () => {
+		const code = `for line in lines {\n    JSONDecoder ( ) .decode(line)\n}`;
+		expect(checkJsonInLoop(code, "Parser.swift")).toEqual([
+			{ line: 2, text: "JSONDecoder ( ) .decode(line)" },
+		]);
+	});
+
+	// test-contract: regex-branch — kills the three \S* mutants in the
+	// JSONEncoder alternative (mandatory-\s siblings still pass since one
+	// space also satisfies "exactly one").
+	it("kills the Swift JSONEncoder alt's three \\S* positions: a spaced-out encode() must still match", () => {
+		const code = `for line in lines {\n    JSONEncoder ( ) .encode(x)\n}`;
+		expect(checkJsonInLoop(code, "Parser.swift")).toEqual([
+			{ line: 2, text: "JSONEncoder ( ) .encode(x)" },
+		]);
+	});
+
+	// test-contract: regex-branch — kills the three mandatory-\s mutants in
+	// the JSONEncoder alternative: zero spacing satisfies \s* but not a
+	// mandatory single whitespace.
+	it("kills the Swift JSONEncoder alt's three mandatory-\\s positions: a tight encode() must still match", () => {
+		const code = `for line in lines {\n    JSONEncoder().encode(x)\n}`;
+		expect(checkJsonInLoop(code, "Parser.swift")).toEqual([{ line: 2, text: "JSONEncoder().encode(x)" }]);
+	});
+
+	// test-contract: regex-branch — kills the three \S* mutants in the
+	// JSONSerialization alternative (before-dot, after-dot, before-paren).
+	it("kills the Swift JSONSerialization alt's three \\S* positions: a spaced-out jsonObject() must still match", () => {
+		const code = `for line in lines {\n    JSONSerialization . jsonObject (x)\n}`;
+		expect(checkJsonInLoop(code, "Parser.swift")).toEqual([
+			{ line: 2, text: "JSONSerialization . jsonObject (x)" },
+		]);
+	});
+
+	// test-contract: regex-branch — kills the three mandatory-\s mutants in
+	// the JSONSerialization alternative with a fully tight fixture.
+	it("kills the Swift JSONSerialization alt's three mandatory-\\s positions: a tight jsonObject() must still match", () => {
+		const code = `for line in lines {\n    JSONSerialization.jsonObject(x)\n}`;
+		expect(checkJsonInLoop(code, "Parser.swift")).toEqual([
+			{ line: 2, text: "JSONSerialization.jsonObject(x)" },
+		]);
+	});
+});
