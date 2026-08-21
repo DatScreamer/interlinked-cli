@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CohortManager } from "../cohort.js";
 import { evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
@@ -11,6 +11,32 @@ describe("evaluatePreToolUse — file & network guards", () => {
 	let cohort: CohortManager;
 	let reservations: ReservationManager;
 	let session: SessionTrajectory;
+
+	// This suite exercises real repo-relative and `/tmp`-style file paths
+	// with no per-test cwd isolation, so `findProjectRoot` falls back to this
+	// repo's own cwd and every write lands in the REAL (gitignored)
+	// `.interlinked/obligations.jsonl` ledger — shared across every local
+	// test run. Accumulated debt/wander state from prior runs (this file's
+	// own repeated local runs, or sibling evaluator suites) leaks into
+	// unrelated cases here as spurious `transient_debt` blocks (reproduced:
+	// "allows writing to normal code files" and "allows writing to .env
+	// without secrets" start failing after a few repeated local runs).
+	// Transient-debt behavior has its own dedicated coverage in
+	// `evaluator/transient-debt-guard.test.ts` (nothing in this file
+	// exercises it); bypass it here so this suite stays isolated from that
+	// shared local state.
+	const TRANSIENT_DEBT_BYPASS_ENV = "INTERLINKED_DISABLE_TRANSIENT_DEBT";
+	let prevTransientDebtBypass: string | undefined;
+
+	beforeAll(() => {
+		prevTransientDebtBypass = process.env[TRANSIENT_DEBT_BYPASS_ENV];
+		process.env[TRANSIENT_DEBT_BYPASS_ENV] = "1";
+	});
+
+	afterAll(() => {
+		if (prevTransientDebtBypass === undefined) delete process.env[TRANSIENT_DEBT_BYPASS_ENV];
+		else process.env[TRANSIENT_DEBT_BYPASS_ENV] = prevTransientDebtBypass;
+	});
 
 	beforeEach(() => {
 		rules = getDefaultConfig();

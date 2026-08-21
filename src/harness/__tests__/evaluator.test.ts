@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CohortManager } from "../cohort.js";
 import { evaluatePostToolUse, evaluatePreToolUse } from "../evaluator.js";
 import { ReservationManager } from "../reservations.js";
@@ -72,6 +72,29 @@ describe("evaluatePreToolUse", () => {
 	let cohort: CohortManager;
 	let reservations: ReservationManager;
 	let session: SessionTrajectory;
+
+	// This suite exercises content checks against real `/tmp/*.ts` file paths
+	// with no per-test cwd isolation, so `findProjectRoot` falls back to this
+	// repo's own cwd and every write lands in the REAL (gitignored)
+	// `.interlinked/obligations.jsonl` ledger — shared across every local test
+	// run. Accumulated debt/wander state from prior runs then leaks into
+	// unrelated cases here as spurious `transient_debt` blocks. Transient-debt
+	// behavior has its own dedicated coverage in
+	// `evaluator/transient-debt-guard.test.ts` (nothing in this file exercises
+	// it); bypass it here so this suite stays isolated from that shared local
+	// state.
+	const TRANSIENT_DEBT_BYPASS_ENV = "INTERLINKED_DISABLE_TRANSIENT_DEBT";
+	let prevTransientDebtBypass: string | undefined;
+
+	beforeAll(() => {
+		prevTransientDebtBypass = process.env[TRANSIENT_DEBT_BYPASS_ENV];
+		process.env[TRANSIENT_DEBT_BYPASS_ENV] = "1";
+	});
+
+	afterAll(() => {
+		if (prevTransientDebtBypass === undefined) delete process.env[TRANSIENT_DEBT_BYPASS_ENV];
+		else process.env[TRANSIENT_DEBT_BYPASS_ENV] = prevTransientDebtBypass;
+	});
 
 	beforeEach(() => {
 		rules = getDefaultConfig();
@@ -1149,8 +1172,18 @@ describe("evaluatePreToolUse", () => {
 			const event = makeEvent({
 				tool_name: "Write",
 				tool_input: {
-					file_path: "/tmp/types.ts",
-					content: '/** Glob pattern (uses "dir/**", "**/*.ext") */\nglob: string;',
+					// A premature `**/` JSDoc close always orphans the rest of the
+					// line as invalid syntax (that's the defect A11 exists to
+					// catch), so on a `.ts` path this also trips a REAL
+					// tsc-diff-overlay syntax-error block (2e7ec85 made the tsc
+					// overlay run for new files instead of short-circuiting to
+					// empty). Use `.js`: content-quality's A11 regex still scans
+					// it (JS_TS_EXTENSIONS includes `.js`), but tsc-diff-overlay's
+					// narrower TS_OVERLAY_EXT (ts/tsx/mts/cts only) skips it, so
+					// the case isolates the A11 warning path as originally
+					// intended.
+					file_path: "/tmp/types.js",
+					content: '/** Glob pattern (uses "dir/**", "**/*.ext") */\nglob: 1;',
 				},
 			});
 			const result = evaluatePreToolUse(event, rules, session, reservations, cohort);
