@@ -419,4 +419,212 @@ describe("interlinked adopt — a failed step sets a non-zero exit code", () => 
 			process.exitCode = prevExitCode;
 		}
 	});
+
+	// test-contract: behavior — a clean run (no failed step) must NOT touch
+	// process.exitCode; `.some((s) => s.action === "failed")` (and its inner
+	// equality) must stay false-by-default, not vacuously/inverted-true.
+	it("does not set a failing exit code on a clean run", async () => {
+		const prevExitCode = process.exitCode;
+		try {
+			await runAdopt();
+			expect(process.exitCode).not.toBe(1);
+		} finally {
+			process.exitCode = prevExitCode;
+		}
+	});
+});
+
+describe("interlinked adopt — mutation-kill additions (wave 28)", () => {
+	// test-contract: behavior — the dry-run prefix ternary's false branch is a
+	// real empty string, not junk text, when dryRun is false.
+	it("prints the adopting line with no prefix when not in dry-run", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: false });
+			expect(spy.mock.calls[0]?.[0]).toBe(
+				`Adopting interlinked ratchets from the current state of ${cwd}`,
+			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	// test-contract: behavior — `say()`'s `!json` guard must actually gate
+	// console.log; in --json mode only the final JSON.stringify call fires.
+	it("logs exactly once when --json is requested", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await adoptCommand({ cwd, json: true, dryRun: true });
+			expect(spy).toHaveBeenCalledTimes(1);
+			// SAFETY: adoptCommand's json branch always logs a JSON.stringify
+			// of {cwd, dry_run, steps} — parsing the sole call's argument here.
+			const parsed = JSON.parse(spy.mock.calls[0]?.[0] as string) as { dry_run: boolean };
+			expect(parsed.dry_run).toBe(true);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	// test-contract: behavior — the opt-in 7th step must be labeled against
+	// the real step count (STEP_COUNT + 1 = 7), not STEP_COUNT - 1.
+	it("labels the 7th progress line with the correct step count when suiteBaseline is enabled", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: true, suiteBaseline: true });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(joined).toMatch(/\[7\/7\]/);
+	});
+
+	// test-contract: behavior — actionWord's four case clauses each return
+	// their own real-content string; a deleted case body (fallthrough) or an
+	// emptied string literal both change the printed word.
+	it("prints the correct human action word per case (written / FAILED / unchanged)", async () => {
+		put("coverage/coverage-summary.json", "{ not valid json");
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: false });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+		} finally {
+			spy.mockRestore();
+		}
+		// step 1 (index) always performs a real write.
+		expect(joined).toMatch(/\[1\/6\] Trigram index:[^\n]*written/);
+		expect(joined).not.toMatch(/\[1\/6\] Trigram index:[^\n]*would write/);
+		// step 4 (coverage) fails to parse the malformed report.
+		expect(joined).toMatch(/\[4\/6\] Coverage baseline:[^\n]*FAILED/);
+		// step 6 (allowlist snapshot) is unchanged — no manifest in the fixture.
+		expect(joined).toMatch(/\[6\/6\] Install allowlist:[^\n]*unchanged/);
+	});
+
+	it("prints 'would write' for every step in dry-run mode", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: true });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(joined).toMatch(/\[1\/6\] Trigram index:[^\n]*would write/);
+	});
+
+	// test-contract: behavior — renderSummary prints exactly 3 blank lines on
+	// a run with exactly 1 note (before the header, before the note, before
+	// the footer); each is a real "" literal, not "Stryker was here!" junk.
+	// Also pins the label-column width (Math.max, not Math.min/undefined) and
+	// that the note text itself gets printed (not skipped).
+	it("renders exactly 3 blank separator lines, the longest-label column width, and the note text", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let joined: string;
+		let blankCount: number;
+		try {
+			await adoptCommand({ cwd, json: false, dryRun: false });
+			joined = spy.mock.calls.map((c) => String(c[0])).join("\n");
+			blankCount = spy.mock.calls.filter((call) => call[0] === "").length;
+		} finally {
+			spy.mockRestore();
+		}
+		expect(blankCount).toBe(3);
+		// "Metric caps" (11 chars) is the shortest label; the longest is
+		// "Untested-files exemption list" (29 chars) — under Math.max the
+		// shortest label is padded out to 29 + 2 trailing spaces.
+		expect(joined).toContain(`  ${"Metric caps".padEnd(29)}  `);
+		// The coverage-report-missing note is real, printed content.
+		expect(joined).toContain("Generate a coverage report");
+		// The notes loop's `s.note === undefined` guard must behave correctly
+		// in both directions — no step's (missing) note prints as "undefined".
+		expect(joined).not.toContain("undefined");
+	});
+
+	// test-contract: behavior — the untested-files array starts genuinely
+	// empty; a seeded junk entry would leak into the written baseline.
+	it("does not leak a seeded junk entry into the untested-files list", async () => {
+		const steps = await runAdopt();
+		const untested = JSON.parse(
+			readFileSync(join(cwd, ".interlinked/untested-files-baseline.json"), "utf-8"),
+		) as { files: string[] };
+		expect(untested.files).not.toContain("Stryker was here");
+		expect(untested.files).toHaveLength(2);
+		void steps;
+	});
+
+	// test-contract: behavior — a file at exactly the cap is NOT over it
+	// (`lines > maxLines`, not `>=`).
+	it("does not grandfather a file at exactly the line cap (boundary is exclusive)", async () => {
+		put("src/exact.ts", bigFileContent(DEFAULT_MAX_LINES));
+		const steps = await runAdopt();
+		const large = JSON.parse(
+			readFileSync(join(cwd, ".interlinked/large-files-baseline.json"), "utf-8"),
+		) as { files: Record<string, number> };
+		expect(Object.keys(large.files)).not.toContain("src/exact.ts");
+		void steps;
+	});
+
+	// test-contract: behavior — scanRepo's `.replace(/\\/g, "/")` must
+	// actually substitute a forward slash, not delete the backslash outright.
+	it("normalizes a literal backslash in a file name to a forward slash", async () => {
+		put("src/odd\\name.ts", "export function w(x: number): number { return x; }\n");
+		await runAdopt();
+		const untested = JSON.parse(
+			readFileSync(join(cwd, ".interlinked/untested-files-baseline.json"), "utf-8"),
+		) as { files: string[] };
+		expect(untested.files).toContain("src/odd/name.ts");
+		expect(untested.files).not.toContain("src/odd\\name.ts");
+	});
+
+	// test-contract: behavior — a recorded custom min_coverage_pct threshold
+	// must be honored (`??`), not discarded in favor of the hardcoded default
+	// whenever it happens to be truthy (`&&`).
+	it("honors a recorded custom min_coverage_pct threshold rather than the hardcoded default", async () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".interlinked/untested-files-baseline.json"),
+			JSON.stringify({ version: 1, min_coverage_pct: 85, files: [] }),
+		);
+		put(
+			"coverage/coverage-summary.json",
+			JSON.stringify({
+				"src/untested.ts": { lines: { pct: 70 }, branches: { pct: 70 } },
+			}),
+		);
+		const steps = await runAdopt();
+		// At threshold 85, both big.ts (no coverage entry) and untested.ts
+		// (70% < 85%) are untested and, since the baseline pre-exists empty,
+		// both are new offenders REFUSED. At the wrongly-discarded default
+		// (60%), untested.ts's 70% would read as "covered enough" and only
+		// big.ts would be refused — the count would read 1, not 2.
+		expect(steps[2]?.detail).toContain("2 new offender(s) REFUSED");
+	});
+
+	// test-contract: behavior — each DOCTOR_ARTIFACTS label string, the
+	// join separator, and the `present()` predicates must all be real.
+	it("reports every real artifact label, comma-separated, when nothing exists yet", () => {
+		const rows = adoptionArtifactChecks(cwd);
+		expect(rows[0]?.name).toBe("Adoption baselines");
+		expect(rows[0]?.message).toContain(
+			"trigram index, large-files-baseline.json, untested-files-baseline.json, coverage-baseline.json, metric-caps.json",
+		);
+	});
+
+	it("names the row 'Adoption baselines' on the empty-coverage-baseline warning too", async () => {
+		await runAdopt();
+		const rows = adoptionArtifactChecks(cwd);
+		expect(rows[0]?.name).toBe("Adoption baselines");
+	});
+
+	it("names the row and states the exact pass message once every artifact is real", async () => {
+		put(
+			"coverage/coverage-summary.json",
+			JSON.stringify({ "src/tested.ts": { lines: { pct: 80 }, branches: { pct: 70 } } }),
+		);
+		await runAdopt();
+		const rows = adoptionArtifactChecks(cwd);
+		expect(rows[0]?.name).toBe("Adoption baselines");
+		expect(rows[0]?.message).toBe("All ratchet baselines + trigram index present");
+	});
 });
