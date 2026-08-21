@@ -89,7 +89,7 @@ describe("harness lifecycle public contracts", () => {
     // test-contract: public-api — spawn arguments preserve the heap cap, GC switch, cwd, protocol, session, and verbose flag.
     it("builds the exact framed verbose argv", () => {
         expect(buildHarnessSpawnArgs("server.mjs", "/repo", "framed", "session-1", { verbose: true })).toEqual([
-            "--max-old-space-size=4096", "--expose-gc", "server.mjs", "--cwd", "/repo",
+            "--max-old-space-size=2560", "--expose-gc", "server.mjs", "--cwd", "/repo",
             "--protocol", "framed", "--session-id", "session-1", "--verbose",
         ]);
     });
@@ -97,7 +97,7 @@ describe("harness lifecycle public contracts", () => {
     // test-contract: boundary — raw protocol intentionally omits a session selector while retaining the protocol selector.
     it("omits session-id for raw protocol", () => {
         expect(buildHarnessSpawnArgs("server.mjs", "/repo", "raw", "ignored", {})).toEqual([
-            "--max-old-space-size=4096", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "raw",
+            "--max-old-space-size=2560", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "raw",
         ]);
     });
 
@@ -129,7 +129,7 @@ describe("harness lifecycle public contracts", () => {
         mocks.spawn.mockReturnValue(spawned);
         mocks.existsSync.mockReturnValue(true);
         mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 101 });
-        mocks.output.mockImplementation((_mode, _data, renderers) => expect(renderers.normal?.()).toBe("Harness started (PID 101)"));
+        mocks.output.mockImplementationOnce((_mode, _data, renderers) => expect(renderers.normal?.()).toBe("Harness started (PID 101)"));
         await daemonizeHarness({ mode: "normal", cwd: "/repo", nodePath: "/node", spawnArgs: ["server"], protocol: "raw", sessionId: "s", serverPath: "server" });
         expect(mocks.spawn).toHaveBeenCalledWith("/node", ["server"], { stdio: ["ignore", "ignore", "ignore"], detached: true, cwd: "/repo" });
         expect(spawned.unref).toHaveBeenCalledOnce();

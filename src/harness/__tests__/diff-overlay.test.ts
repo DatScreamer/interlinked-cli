@@ -105,12 +105,14 @@ describe("evaluateBiomeDiffOverlay", () => {
 		expect(ruleIds).toMatch(/noSelfCompare|noDoubleEquals/);
 	});
 
-	it("returns empty when the target file doesn't exist on disk (new file)", () => {
+	it("returns empty findings when the target file doesn't exist on disk (new file)", () => {
 		const nonExistent = resolve(FIXTURE_DIR, "_does_not_exist_overlay.ts");
 		const result = evaluateBiomeDiffOverlay(nonExistent, "export const x = 1;\n", CLI_ROOT);
-		// No "before" state → can't call any finding "new".
+		// No "before" state → an empty baseline. Clean proposed content still
+		// yields zero findings, but the overlay engine genuinely runs (no
+		// early-return for missing files as of 2e7ec85), so elapsedMs is real.
 		expect(result.newFindings).toEqual([]);
-		expect(result.elapsedMs).toBe(0);
+		expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
 	});
 
 	it("returns empty for files with non-JS/TS extensions", () => {
