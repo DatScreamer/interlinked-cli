@@ -473,6 +473,238 @@ describe("modeCommand — show current with a local override present", () => {
 	});
 });
 
+describe("modeCommand — unknown mode message lists known modes comma-separated", () => {
+	// test-contract: behavior — the join(", ") must keep both the comma AND the
+	// space, or the listed names run together illegibly.
+	it("P: joins known mode names with ', '", async () => {
+		const cap = captureStdout();
+		await modeCommand("super-strict", { json: true });
+		cap.restore();
+		const payload = JSON.parse(cap.text()) as { reason: string };
+		expect(payload.reason).toContain("strict, lenient, balanced");
+	});
+});
+
+describe("modeCommand — force-only apply skips the diff preview", () => {
+	// test-contract: behavior — `--force` alone (no --diff, no --json) must take
+	// the direct-write path; the AND in the guard condition is load-bearing.
+	it("P: --force without --json does not render a diff preview first", async () => {
+		const cap = captureStdout();
+		await modeCommand("strict", { force: true });
+		cap.restore();
+		expect(cap.text()).not.toContain("Switching to strict would change");
+		expect(cap.text()).not.toContain("would not change");
+		expect(cap.text()).toContain("Mode set to strict");
+	});
+});
+
+describe("modeCommand — non-JSON apply scope wording", () => {
+	// test-contract: behavior — the shared-config wording is a distinct literal
+	// from "personal override"; either could silently go missing.
+	it("P: apply without --local reports '(shared config)'", async () => {
+		const cap = captureStdout();
+		await modeCommand("strict", { force: true });
+		cap.restore();
+		expect(cap.text()).toContain("Mode set to strict (shared config).");
+	});
+});
+
+describe("modeCommand — show current, literal text fixtures", () => {
+	// test-contract: behavior — each of these literals is independently
+	// deletable by a StringLiteral mutator; pin them all explicitly.
+	it("P: prints the 'Source : ' label before the source line", async () => {
+		const cap = captureStdout();
+		await modeCommand(undefined, {});
+		cap.restore();
+		expect(cap.text()).toContain("Source : built-in default");
+	});
+
+	it("P: prints the 'Available modes:' heading", async () => {
+		const cap = captureStdout();
+		await modeCommand(undefined, {});
+		cap.restore();
+		expect(cap.text()).toContain("\nAvailable modes:\n");
+	});
+
+	it("P: lists every preset name + description under 'Available modes'", async () => {
+		const cap = captureStdout();
+		await modeCommand(undefined, {});
+		cap.restore();
+		const text = cap.text();
+		// Each preset row is "  <name padded to 10> <description>\n" — assert the
+		// loop body actually ran (not silenced to a no-op) for a known preset.
+		expect(text).toMatch(/strict {4,}.+\n/);
+		expect(text).toMatch(/lenient {3,}.+\n/);
+		expect(text).toMatch(/balanced {2,}.+\n/);
+	});
+
+	it("P: prints the 'Switch:' usage hint line", async () => {
+		const cap = captureStdout();
+		await modeCommand(undefined, {});
+		cap.restore();
+		expect(cap.text()).toContain("\nSwitch: interlinked mode <name> [--diff] [--local]\n");
+	});
+
+	it("P: JSON available_modes entries carry real name/description fields", async () => {
+		const cap = captureStdout();
+		await modeCommand(undefined, { json: true });
+		cap.restore();
+		const payload = JSON.parse(cap.text()) as {
+			available_modes: Array<{ name: string; description: string }>;
+		};
+		for (const m of payload.available_modes) {
+			expect(typeof m.name).toBe("string");
+			expect(m.name.length).toBeGreaterThan(0);
+			expect(typeof m.description).toBe("string");
+			expect(m.description.length).toBeGreaterThan(0);
+		}
+		const names = payload.available_modes.map((m) => m.name).sort();
+		expect(names).toEqual(["balanced", "lenient", "strict"]);
+	});
+});
+
+describe("modeCommand — renderEffectiveActions omits zero-count buckets", () => {
+	// test-contract: behavior — only actions with count > 0 print; a policy that
+	// funnels every check into a single action must show exactly that one line.
+	it("P: a policy with every check mapped to 'ask' prints only the 'ask' row", async () => {
+		writeFileSync(
+			join(tmp, ".interlinked", "check-policy.json"),
+			JSON.stringify({ version: 1, mode: "custom", defaults: { action: "ask" }, checks: {} }),
+		);
+		const cap = captureStdout();
+		await modeCommand(undefined, {});
+		cap.restore();
+		const text = cap.text();
+		expect(text).toMatch(/ {2}ask {12}\d+\n/);
+		expect(text).not.toMatch(/ {2}silent {10}\d+\n/);
+		expect(text).not.toMatch(/ {2}info {13}\d+\n/);
+		expect(text).not.toMatch(/ {2}ratchet {8}\d+\n/);
+	});
+});
+
+describe("modeCommand — describeCheck label resolution (diff output)", () => {
+	// test-contract: behavior — the label column must be the REGISTRY entry's
+	// human name for the exact check_id on that row, not empty/undefined/wrong.
+	it("P: the focused_tests diff row carries its real registered label", async () => {
+		const cap = captureStdout();
+		await modeCommand("strict", { diff: true });
+		cap.restore();
+		const text = cap.text();
+		expect(text).not.toContain("undefined");
+		const row = text.split("\n").find((line) => line.includes("focused_tests"));
+		expect(row).toBeDefined();
+		expect(row).toMatch(/Focused Tests\s*$/);
+	});
+});
+
+describe("writeMode — recursive directory creation", () => {
+	// test-contract: behavior — mkdirSync must be called with { recursive: true }
+	// so multiple missing ancestor directories are created in one call.
+	it("P: creates every missing ancestor directory under a deeply nested cwd", () => {
+		const fresh = mkdtempSync(join(tmpdir(), "interlinked-mode-deep-"));
+		try {
+			const deepCwd = join(fresh, "a", "b");
+			expect(existsSync(deepCwd)).toBe(false);
+			writeMode(deepCwd, "strict", false);
+			const path = join(deepCwd, ".interlinked", "check-policy.json");
+			expect(existsSync(path)).toBe(true);
+			expect(JSON.parse(readFileSync(path, "utf-8")).mode).toBe("strict");
+		} finally {
+			rmSync(fresh, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("writeMode — mkdirSync is skipped when the directory already exists", () => {
+	// test-contract: behavior — the `!existsSync(dir)` guard in writeMode must
+	// actually gate ITS mkdirSync call. `mergeIntoGuardRules` (called later in
+	// the same writeMode) always calls mkdirSync unconditionally for the same
+	// directory, so the baseline is 1 call, not 0 — a mutant that drops the
+	// guard adds a SECOND call for the identical already-existing directory.
+	it("P: writeMode's own guard contributes no extra mkdirSync call when the dir exists", async () => {
+		const fsMod = await import("node:fs");
+		const spy = vi.spyOn(fsMod, "mkdirSync");
+		try {
+			// beforeEach already created `${tmp}/.interlinked`.
+			writeMode(tmp, "strict", false);
+			const dirCalls = spy.mock.calls.filter(
+				(c) => c[0] === join(tmp, ".interlinked"),
+			);
+			expect(dirCalls.length).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+describe("writeMode — applyModeGuardOverrides stderr reporting", () => {
+	// test-contract: behavior — the `!r.ok` guard must fire ONLY on a failed
+	// merge, in both directions (never-fires and always-fires are both wrong).
+	it("P: warns to stderr when the guard-rules merge fails", () => {
+		writeFileSync(join(tmp, ".interlinked", "guard-rules.json"), "{ not valid json");
+		const spy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		try {
+			writeMode(tmp, "strict", false);
+			expect(spy).toHaveBeenCalled();
+			const text = spy.mock.calls.map((c) => String(c[0])).join("");
+			expect(text).toContain(
+				"[interlinked] mode strict: gate overrides NOT applied",
+			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("N: does not warn to stderr when the guard-rules merge succeeds", () => {
+		const spy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		try {
+			writeMode(tmp, "strict", false);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+describe("modeCommand — fail() writes exactly to stderr in non-JSON mode", () => {
+	// test-contract: behavior — pins the branch, the message content, AND that
+	// nothing leaks to stdout for a non-JSON failure.
+	it("P: non-JSON failure writes the '[interlinked] <message>' line to stderr only", async () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		const cap = captureStdout();
+		await modeCommand("super-strict", { force: true });
+		cap.restore();
+		const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+		stderrSpy.mockRestore();
+		expect(stderrText).toContain("[interlinked] unknown mode: super-strict");
+		expect(cap.text()).toBe("");
+	});
+});
+
+describe("modeCommand — confirm() regex anchoring", () => {
+	// test-contract: behavior — the yes/no regex must require a FULL match
+	// (both ^ and $), not merely "contains yes somewhere".
+	it("N: does not confirm when trailing garbage follows 'yes' (end anchor)", async () => {
+		(process.stdin as { isTTY: boolean | undefined }).isTTY = true;
+		primeConfirm("yesplease\n");
+		const cap = captureStdout();
+		await modeCommand("strict", {});
+		cap.restore();
+		expect(cap.text()).toContain("Aborted.");
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+	});
+
+	it("N: does not confirm when 'yes' only appears as a suffix (start anchor)", async () => {
+		(process.stdin as { isTTY: boolean | undefined }).isTTY = true;
+		primeConfirm("xyz-yes\n");
+		const cap = captureStdout();
+		await modeCommand("strict", {});
+		cap.restore();
+		expect(cap.text()).toContain("Aborted.");
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+	});
+});
+
 describe("writeMode — edge cases", () => {
 	it("creates the .interlinked directory when it is absent", () => {
 		// Fresh sub-dir with NO .interlinked yet — exercises the mkdirSync branch.
