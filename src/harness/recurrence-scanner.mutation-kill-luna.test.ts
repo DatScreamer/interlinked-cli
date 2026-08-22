@@ -66,8 +66,11 @@ describe("recurrence scanner mutation contracts", () => {
 			["builtin-git-clean-f", commands[7]],
 			["builtin-kill-signal", commands[8]],
 			["builtin-kill-multi-pid", commands[9]],
-			["builtin-kill-substitution", commands[10]],
-			["builtin-pkill-signal", commands[11]],
+			// `kill $(pgrep node)` matches both builtin-pgrep-xargs-kill and
+			// builtin-kill-substitution; first-match order selects the more
+			// specific pgrep rule (rules/builtin-rules-processes.ts array order).
+			["builtin-pgrep-xargs-kill", commands[10]],
+			["builtin-pkill-node", commands[11]],
 			["builtin-kill-port", commands[12]],
 			["builtin-git-checkout-dot", commands[13]],
 			["builtin-git-restore-worktree", commands[14]],
