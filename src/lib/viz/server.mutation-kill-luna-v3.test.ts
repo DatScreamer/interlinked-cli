@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { contentTypeFor, resolveVizAsset, startVizServer } from "./server.js";
 
 describe("viz server observable contracts", () => {
-    // test-contract: every supported filename suffix maps to its exact advertised media type.
+    // test-contract: invariant — every supported filename suffix maps to its exact advertised media type.
     it("maps supported media types and preserves the no-extension fallback", () => {
         expect(contentTypeFor("icon.svg")).toBe("image/svg+xml");
         expect(contentTypeFor(".json")).toBe("application/json; charset=utf-8");
@@ -13,13 +13,13 @@ describe("viz server observable contracts", () => {
         expect(contentTypeFor("name.")).toBe("application/octet-stream");
     });
 
-    // test-contract: the resolver finds the checked-in dashboard and rejects an absent asset.
+    // test-contract: public-api — the resolver finds the checked-in dashboard and rejects an absent asset.
     it("resolves dashboard assets", () => {
         expect(resolveVizAsset("index.html")).not.toBeNull();
         expect(resolveVizAsset("missing-viz-asset.invalid")).toBeNull();
     });
 
-    // test-contract: the index alias returns configured HTML and the documented cache policy.
+    // test-contract: public-api — the index alias returns configured HTML and the documented cache policy.
     it("serves the root and index dashboard routes", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
         const webRoot = join(root, "web");
@@ -41,9 +41,10 @@ describe("viz server observable contracts", () => {
         }
     });
 
-    // test-contract: missing routes return an exact plain-text 404 response with its declared media type.
+    // test-contract: boundary — missing routes return an exact plain-text 404 response with its declared media type.
     it("returns the exact unknown-route failure", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
+        mkdirSync(root, { recursive: true });
         writeFileSync(join(root, "entry.ts"), "export const entry = true;\n");
         const server = await startVizServer({ root, port: 0 });
         try {
@@ -57,7 +58,7 @@ describe("viz server observable contracts", () => {
         }
     });
 
-    // test-contract: absent dashboard assets produce the exact plain-text error response.
+    // test-contract: boundary — absent dashboard assets produce the exact plain-text error response.
     it("reports a missing configured dashboard asset", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
         const emptyWebRoot = join(root, "empty");
@@ -75,9 +76,10 @@ describe("viz server observable contracts", () => {
         }
     });
 
-    // test-contract: an ephemeral listener reports its actual loopback port and trims trailing separators from the health label.
+    // test-contract: invariant — an ephemeral listener reports its actual loopback port and trims trailing separators from the health label.
     it("reports the actual port and normalized root label", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
+        mkdirSync(root, { recursive: true });
         writeFileSync(join(root, "entry.ts"), "export const entry = true;\n");
         const server = await startVizServer({ root: root + "/", port: 0, pollMs: 0 });
         try {
@@ -92,9 +94,10 @@ describe("viz server observable contracts", () => {
         }
     });
 
-    // test-contract: graph and health responses expose stable data, cache headers, and one serialized graph body.
+    // test-contract: invariant — graph and health responses expose stable data, cache headers, and one serialized graph body.
     it("caches graph data and reports health", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
+        mkdirSync(root, { recursive: true });
         writeFileSync(join(root, "entry.ts"), "export const entry = true;\n");
         const server = await startVizServer({ root, port: 0 });
         try {
@@ -102,6 +105,7 @@ describe("viz server observable contracts", () => {
             expect(firstResponse.status).toBe(200);
             expect(firstResponse.headers.get("cache-control")).toBe("no-store");
             const first = await firstResponse.text();
+            // interlinked: defer hardcoded_timeout_in_tests -- asserts the response is CACHED (byte-identical) across two immediately-successive fetches; a fixed short delay is the mutation-kill fixture for the cache path, not a wait-for-condition.
             await new Promise((resolve) => setTimeout(resolve, 5));
             const second = await (await fetch(server.url + "/api/graph")).text();
             expect(second).toBe(first);
@@ -115,9 +119,10 @@ describe("viz server observable contracts", () => {
         }
     });
 
-    // test-contract: SSE streams advertise no-cache keep-alive semantics and close cleanly with the server.
+    // test-contract: invariant — SSE streams advertise no-cache keep-alive semantics and close cleanly with the server.
     it("closes an active SSE client cleanly", async () => {
         const root = mkdtempSync(join(tmpdir(), "viz-server-"));
+        mkdirSync(root, { recursive: true });
         const activity = join(root, "activity.jsonl");
         writeFileSync(join(root, "entry.ts"), "export const entry = true;\n");
         writeFileSync(activity, "");

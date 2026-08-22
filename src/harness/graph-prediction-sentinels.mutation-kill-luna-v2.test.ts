@@ -9,7 +9,7 @@ import {
 const CWD = "/repo";
 
 describe("graph-prediction sentinel mutation boundaries", () => {
-    // test-contract: the sentinel path must be exactly one session directory plus one YAML file.
+    // test-contract: boundary — the sentinel path must be exactly one session directory plus one YAML file.
     it("rejects prefix lookalikes, nested paths, and suffixes after YAML", () => {
         for (const path of [
             ".interlinked/predictions/incoming-other/s/p.yaml",
@@ -24,7 +24,7 @@ describe("graph-prediction sentinel mutation boundaries", () => {
         });
     });
 
-    // test-contract: ack paths have the same strict shape but a distinct, exact base directory.
+    // test-contract: boundary — ack paths have the same strict shape but a distinct, exact base directory.
     it("applies the strict shape to ack paths and absolute inputs", () => {
         const abs = resolve(CWD, ".interlinked/predictions/ack/session/a.yaml");
         expect(parseSentinelAckPath(abs, CWD)).toEqual({ sessionId: "session", absPath: abs });
@@ -38,7 +38,7 @@ describe("graph-prediction sentinel mutation boundaries", () => {
         ]) expect(parseSentinelAckPath(path, CWD)).toBeNull();
     });
 
-    // test-contract: only an exact top-level key and indented fields constitute an acknowledgement document.
+    // test-contract: boundary — only an exact top-level key and indented fields constitute an acknowledgement document.
     it("distinguishes exact ack headers and rejects lookalike headers", () => {
         expect(parseAckSubmission("graph_prediction_ack: extra\n  file: src/a.ts\n").parse_error)
             .toBe("missing `file:` field");
@@ -48,7 +48,7 @@ describe("graph-prediction sentinel mutation boundaries", () => {
             .toBe("missing `file:` field");
     });
 
-    // test-contract: YAML field and list markers require their documented whitespace boundaries.
+    // test-contract: boundary — YAML field and list markers require their documented whitespace boundaries.
     it("requires whitespace after field and list markers", () => {
         const noFileSpace = parseAckSubmission("graph_prediction_ack:\n  file:src/a.ts\n");
         expect(noFileSpace.file).toBe("src/a.ts");
@@ -58,7 +58,7 @@ describe("graph-prediction sentinel mutation boundaries", () => {
         expect(noDashSpace.acknowledged_triggers).toEqual([]);
     });
 
-    // test-contract: quotes are removed only when they wrap the complete scalar, preserving interior quotes.
+    // test-contract: boundary — quotes are removed only when they wrap the complete scalar, preserving interior quotes.
     it("strips matching edge quotes without stripping a trailing quote alone", () => {
         expect(parseAckSubmission([
             "graph_prediction_ack:", "  file: 'src/a.ts'", "  acknowledged_triggers:",
@@ -66,7 +66,7 @@ describe("graph-prediction sentinel mutation boundaries", () => {
         ].join("\n"))).toEqual({ file: "src/a.ts", acknowledged_triggers: ["one", "two"] });
     });
 
-    // test-contract: comments may be indented and CRLF normalization must preserve parsing.
+    // test-contract: boundary — comments may be indented and CRLF normalization must preserve parsing.
     it("ignores indented comments and strips carriage returns only at line ends", () => {
         expect(parseAckSubmission("graph_prediction_ack:\r\n  # comment\r\n  file: src/a.ts\r\n")).toEqual({
             file: "src/a.ts", acknowledged_triggers: [],

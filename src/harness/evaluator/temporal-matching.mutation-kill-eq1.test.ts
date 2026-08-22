@@ -58,6 +58,7 @@ describe("getCachedRegex() cache reuse — mutation kill (eq1 falsification)", (
 	// call instead of reusing the cached RegExp. Observable via the
 	// global `RegExp` constructor's call count: a correct implementation
 	// never grows the count on a second call with the same pattern.
+	// test-contract: invariant — a second call with the same pattern reuses the cached RegExp.
 	it("compiles the bash_match regex once and reuses it across repeated calls with the same pattern", () => {
 		// mockImplementation reconstructs via Reflect.construct(RegExp, args)
 		// rather than letting spyOn's default call-through run the mock
@@ -80,6 +81,8 @@ describe("getCachedRegex() cache reuse — mutation kill (eq1 falsification)", (
 				// would recurse infinitely.
 				return Reflect.construct(
 					OriginalRegExp,
+					// SAFETY: test fixture — the spy is only ever invoked as `new RegExp(pattern, flags)`
+					// by production code, so `args` is structurally a RegExp constructor argument tuple.
 					args as ConstructorParameters<typeof RegExp>,
 				);
 			});
@@ -93,11 +96,12 @@ describe("getCachedRegex() cache reuse — mutation kill (eq1 falsification)", (
 });
 
 describe("tail() early-return vs slice — mutation kill (eq1 falsification)", () => {
-	// test-contract: mutation-directed — 876fa14abfdc5149: narrowing the
+	// test-contract: boundary — 876fa14abfdc5149: narrowing the
 	// boundary guard from `>=` to `>` skips the early return exactly when
 	// within_last_n equals arr.length, falling through to `arr.slice(...)`
 	// instead. Content is identical either way (slice clamps), but the
 	// EXTRA slice() call is observable via a spy on Array.prototype.slice.
+	// test-contract: boundary — within_last_n === arr.length takes the early-return, no slice call.
 	it("does not slice the tool_sequence when within_last_n exactly equals its length", () => {
 		const arr = ["Edit:a", "Read:b"];
 		const sliceSpy = vi.spyOn(Array.prototype, "slice");
@@ -109,11 +113,12 @@ describe("tail() early-return vs slice — mutation kill (eq1 falsification)", (
 		expect(result.satisfied).toBe(true);
 	});
 
-	// test-contract: mutation-directed — ba7ec18015ec30a9: forcing the
+	// test-contract: boundary — ba7ec18015ec30a9: forcing the
 	// `within_last_n >= arr.length` guard to `false` removes the early
 	// return unconditionally, so even a window far larger than the array
 	// falls through to an unnecessary `arr.slice(...)` call — observable
 	// the same way as the boundary case above.
+	// test-contract: boundary — within_last_n beyond arr.length also takes the early-return.
 	it("does not slice the tool_sequence when within_last_n exceeds its length", () => {
 		const arr = ["Edit:a", "Read:b"];
 		const sliceSpy = vi.spyOn(Array.prototype, "slice");
@@ -127,11 +132,12 @@ describe("tail() early-return vs slice — mutation kill (eq1 falsification)", (
 });
 
 describe("fileReadFieldSatisfied() fast-path — mutation kill (eq1 falsification)", () => {
-	// test-contract: mutation-directed — 618579f71ba1412a: forcing
+	// test-contract: boundary — 618579f71ba1412a: forcing
 	// `!wanted.includes("*")` to `false` always routes a wildcard-free
 	// file_read through globToRegex() instead of the Set.has() fast
 	// path. Return-value content is equivalent (anchored escape ==
 	// exact match), but the EXTRA `new RegExp(...)` call is observable.
+	// test-contract: invariant — an exact non-wildcard match takes the Set.has() fast path, no regex compile.
 	it("does not compile a regex for an exact, non-wildcard file_read match", () => {
 		const ctorSpy = vi.spyOn(globalThis, "RegExp");
 		const result = evaluateRequiresPrior(
@@ -142,11 +148,12 @@ describe("fileReadFieldSatisfied() fast-path — mutation kill (eq1 falsificatio
 		expect(result.satisfied).toBe(true);
 	});
 
-	// test-contract: mutation-directed — 606c34c4d539b83e: narrowing the
+	// test-contract: boundary — 606c34c4d539b83e: narrowing the
 	// literal `"*"` to `""` in the same `includes()` check has the same
 	// always-true-negated effect (every string includes ""), so it also
 	// always routes through globToRegex() for a wildcard-free, non-match
 	// case — same regex-construction-count observable, distinct scenario.
+	// test-contract: invariant — a non-wildcard, never-read file also takes the fast path, no regex compile.
 	it("does not compile a regex when checking a non-wildcard file_read that was never read", () => {
 		const ctorSpy = vi.spyOn(globalThis, "RegExp");
 		const result = evaluateRequiresPrior(
@@ -159,12 +166,13 @@ describe("fileReadFieldSatisfied() fast-path — mutation kill (eq1 falsificatio
 });
 
 describe("verificationFieldSatisfied() empty-set guard — mutation kill (eq1 falsification)", () => {
-	// test-contract: mutation-directed — e5ef5d4419ca7de5: forcing
+	// test-contract: boundary — e5ef5d4419ca7de5: forcing
 	// `observed.size === 0` to `false` removes the early return for an
 	// empty (but defined) Set, falling through to `observed.has(...)`.
 	// The return value is unchanged (empty Set always answers `has`
 	// false), but the EXTRA `.has()` call on the injected Set instance
 	// is observable via a spy on that instance.
+	// test-contract: boundary — an empty verification_observed set takes the early-return, no .has() call.
 	it("never calls .has on an empty verification_observed set", () => {
 		const observed = new Set<string>();
 		const hasSpy = vi.spyOn(observed, "has");
@@ -187,6 +195,7 @@ describe("tail() falsy/non-positive short-circuit — confirmed equivalent", () 
 	// unreachable here because 0 is falsy and already short-circuits on
 	// the first operand). No input can distinguish the two branches
 	// through the public API — sanity-pinned below.
+	// test-contract: boundary — within_last_n<=0 and within_last_n<0 are observably identical.
 	it("sanity: within_last_n=0 and within_last_n=-1 both take the full-array path identically", () => {
 		const zero = evaluateRequiresPrior(session({ tool_sequence: ["Read:x"] }), {
 			tool: "Read",
@@ -218,6 +227,7 @@ describe("describeUnsatisfied() sub-condition undefined-guards — confirmed equ
 	// (return value, thrown error, dependency call count, argument
 	// mutation) can distinguish them. Sanity-pinned below for all four
 	// fields at once.
+	// test-contract: invariant — an all-undefined predicate is vacuously satisfied.
 	it("sanity: an all-undefined predicate produces satisfied:true with describeUnsatisfied unreachable", () => {
 		const result = evaluateRequiresPrior(session({ tool_sequence: [] }), {});
 		// Vacuous predicate is fully satisfied — this exercises predicateSatisfied's
@@ -243,6 +253,7 @@ describe("describeUnsatisfied() missing.length fallback — confirmed equivalent
 	// defined, so `missing.push` fires for it — missing.length is
 	// provably >= 1 on every reachable call. The `=== 0` branch is dead
 	// on the public API; forcing it to `false` cannot be observed.
+	// test-contract: public-api — an unsatisfied predicate always yields the field-specific reason string.
 	it("sanity: an unsatisfied predicate always yields a non-generic reason, never the empty-missing fallback", () => {
 		const result = evaluateRequiresPrior(session(), { file_read: "nope.ts" });
 		expect(result.satisfied).toBe(false);
@@ -259,6 +270,7 @@ describe("describeUnsatisfied() within_last_n suffix short-circuit — confirmed
 	// and for every truthy number the two comparisons agree (diverge
 	// only at 0, which the first operand already excludes) — the same
 	// unreachable-boundary shape as 6f4bc2ba486ee4ad above.
+	// test-contract: boundary — within_last_n=0 omits the window suffix identically under both readings.
 	it("sanity: within_last_n=0 omits the window suffix identically under both readings", () => {
 		const result = evaluateRequiresPrior(session({ tool_sequence: [] }), {
 			tool: "Read",
@@ -269,6 +281,7 @@ describe("describeUnsatisfied() within_last_n suffix short-circuit — confirmed
 });
 
 describe("evaluateForbidsAfter() — sanity companion", () => {
+	// test-contract: public-api — evaluateForbidsAfter is a stub that always reports unsatisfied while dormant.
 	it("stays dormant (satisfied:false) when the forbidden predicate is absent", () => {
 		const result = evaluateForbidsAfter(session(), { tool: "Bash" });
 		expect(result).toEqual({ satisfied: false });

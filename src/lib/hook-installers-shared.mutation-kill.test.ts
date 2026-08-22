@@ -66,11 +66,12 @@ describe("isNonEmptyString", () => {
 	// >-to->= flip: an empty string is the ONE input where "v === String(v)" is true
 	// but "length > 0" is false, so every one of those mutations flips this specific
 	// result from false to true.
+	// test-contract: boundary — empty string is the exact false/true pivot point above.
 	it("returns false for an empty string", () => {
 		expect(isNonEmptyString("")).toBe(false);
 	});
 
-	// test-contract: kills the "v === String(v) forced true" mutant — an array's
+	// test-contract: invariant — kills the "v === String(v) forced true" mutant — an array's
 	// String() coercion has a non-zero .length property, so "v === String(v)"
 	// being wrongly forced true (dropping the real type check) flips this result.
 	it("returns false for an array (String() coercion has a non-zero .length)", () => {
@@ -84,7 +85,7 @@ describe("isNonEmptyString", () => {
 });
 
 describe("installHookEntry", () => {
-	// test-contract: kills "!hooks[eventName] forced true" — a pre-existing,
+	// test-contract: invariant — kills "!hooks[eventName] forced true" — a pre-existing,
 	// non-interlinked entry array must survive an install call, not be wiped
 	// back to [] before the new entry is appended.
 	it("does not clobber a pre-existing entry array when installing into an existing event", () => {
@@ -97,7 +98,7 @@ describe("installHookEntry", () => {
 		expect(entries).toHaveLength(2);
 	});
 
-	// test-contract: kills the '"command"' -> '""' string-literal mutant on the
+	// test-contract: invariant — kills the '"command"' -> '""' string-literal mutant on the
 	// newly-pushed hook object's `type` field.
 	it("pushes a new entry whose hook object has type 'command'", () => {
 		const hooks: JsonObject = {};
@@ -107,7 +108,7 @@ describe("installHookEntry", () => {
 		expect(entries[0]!.hooks[0]!.type).toBe("command");
 	});
 
-	// test-contract: kills "timeout !== undefined forced true" on the push path —
+	// test-contract: invariant — kills "timeout !== undefined forced true" on the push path —
 	// an event with no configured timeout policy must NOT gain an own "timeout"
 	// key (even one whose value is undefined; the ternary spread is what decides
 	// whether the key exists at all).
@@ -128,7 +129,7 @@ describe("installHookEntry", () => {
 		expect(entries[0]!.hooks[0]!.timeout).toBe(240);
 	});
 
-	// test-contract: kills the ".some" -> ".every" mutant — only one of two
+	// test-contract: invariant — kills the ".some" -> ".every" mutant — only one of two
 	// nested hooks carries the interlinked marker, so .some must match (and
 	// reconcile in place) while .every would not (and would wrongly push a
 	// second top-level entry).
@@ -150,7 +151,7 @@ describe("installHookEntry", () => {
 		expect(entries).toHaveLength(1);
 	});
 
-	// test-contract: kills "entry.hooks?.some" -> "entry.hooks.some" — an entry
+	// test-contract: invariant — kills "entry.hooks?.some" -> "entry.hooks.some" — an entry
 	// with no `hooks` field at all must be skipped via the optional chain, not
 	// throw.
 	it("does not throw when an earlier entry has no hooks field at all", () => {
@@ -160,7 +161,7 @@ describe("installHookEntry", () => {
 		).not.toThrow();
 	});
 
-	// test-contract: kills "h.command?.includes" -> "h.command.includes" inside
+	// test-contract: invariant — kills "h.command?.includes" -> "h.command.includes" inside
 	// the .some callback — a nested hook object with no `command` field must be
 	// skipped via the optional chain, not throw.
 	it("does not throw when a nested hook object has no command field", () => {
@@ -172,7 +173,7 @@ describe("installHookEntry", () => {
 });
 
 describe("installHookEntry — reconciliation (reconcileExistingEntry)", () => {
-	// test-contract: kills "hook && hook.command !== command -> false" and the
+	// test-contract: invariant — kills "hook && hook.command !== command -> false" and the
 	// emptied assignment block — a genuinely stale command path must actually
 	// get rewritten, and the entry must be reconciled in place (length stays 1).
 	it("updates a stale command and adds the timeout on an existing reconciled entry", () => {
@@ -192,12 +193,13 @@ describe("installHookEntry — reconciliation (reconcileExistingEntry)", () => {
 		expect(entries[0]!.hooks[0]!.timeout).toBe(240);
 	});
 
-	// test-contract: kills every "always attempt the reconcile assignment"
+	// test-contract: invariant — kills every "always attempt the reconcile assignment"
 	// mutant (command/timeout/matcher, both the &&-forced-true and the
 	// &&-to-|| flips) that a plain value assertion cannot catch, because
 	// reassigning an already-correct value is a no-op on the final state —
 	// only the assignment ATTEMPT itself (observed via an accessor-property
 	// setter counter) tells the mutant apart from the real, guarded code.
+	// test-contract: invariant — no reassignment when reconciled values already match.
 	it("does not reassign command, timeout, or matcher when they already match on reconcile", () => {
 		const setCounts = { command: 0, timeout: 0, matcher: 0 };
 		let commandVal = "node .interlinked/hooks/interlinked-activity.mjs";
@@ -241,12 +243,13 @@ describe("installHookEntry — reconciliation (reconcileExistingEntry)", () => {
 		expect(setCounts).toEqual({ command: 0, timeout: 0, matcher: 0 });
 	});
 
-	// test-contract: kills the three "drop the timeout !== undefined guard"
+	// test-contract: invariant — kills the three "drop the timeout !== undefined guard"
 	// mutants (forced-true whole-prefix, ||-flip, and the standalone middle
 	// clause forced true) — an event with NO configured timeout policy, whose
 	// existing hook already carries a stale numeric timeout, must leave that
 	// stale timeout untouched (the guard's whole job is to refuse to overwrite
 	// it with `undefined`).
+	// test-contract: invariant — an unconfigured timeout policy never overwrites an existing timeout.
 	it("leaves an existing timeout untouched for an event with no configured timeout policy", () => {
 		const setCounts = { timeout: 0 };
 		let timeoutVal: number | undefined = 99;
@@ -271,12 +274,13 @@ describe("installHookEntry — reconciliation (reconcileExistingEntry)", () => {
 		expect(timeoutVal).toBe(99);
 	});
 
-	// test-contract: kills "existing.hooks?.find" -> "existing.hooks.find". The
+	// test-contract: invariant — kills "existing.hooks?.find" -> "existing.hooks.find". The
 	// preceding entries.find(...).some(...) check already proves `hooks` is
 	// non-nullish for any single, non-instrumented read, so the only way to
 	// observe the missing `?.` is a getter whose return value legitimately
 	// changes between the two reads — a call-count-gated getter reproduces
 	// that without mutating any real caller behavior.
+	// test-contract: boundary — existing.hooks becoming undefined between reads must not throw.
 	it("does not throw when existing.hooks becomes undefined between the match check and the reconcile lookup", () => {
 		let accessCount = 0;
 		const entry = {
@@ -292,11 +296,12 @@ describe("installHookEntry — reconciliation (reconcileExistingEntry)", () => {
 		expect(() => installHookEntry(hooks, "PreToolUse", "node NEW.mjs")).not.toThrow();
 	});
 
-	// test-contract: kills "h.command?.includes" -> "h.command.includes" inside
+	// test-contract: invariant — kills "h.command?.includes" -> "h.command.includes" inside
 	// reconcileExistingEntry's own .find lookup — a hook missing `command`
 	// earlier in the SAME existing.hooks array (that also contains the real
 	// marker match) must be skipped via the optional chain, not throw, and
 	// the genuine match must still get reconciled.
+	// test-contract: boundary — an earlier hook missing `command` is skipped, not thrown on.
 	it("does not throw and still reconciles when an earlier hook in the array lacks a command field", () => {
 		const hooks: JsonObject = {
 			PreToolUse: [
@@ -333,7 +338,7 @@ describe("writeJsonFile", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	// test-contract: kills "!existsSync(dir) forced true" — the common
+	// test-contract: invariant — kills "!existsSync(dir) forced true" — the common
 	// warm-directory path must not call mkdirSync at all.
 	it("does not call mkdirSync when the target directory already exists", () => {
 		const path = join(tmp, "settings.json");
@@ -341,7 +346,7 @@ describe("writeJsonFile", () => {
 		expect(fs.mkdirSync).not.toHaveBeenCalled();
 	});
 
-	// test-contract: kills "{ recursive: true }" -> "{}" and "true" -> "false" on
+	// test-contract: invariant — kills "{ recursive: true }" -> "{}" and "true" -> "false" on
 	// the mkdirSync options — a missing MULTI-LEVEL directory only succeeds when
 	// the recursive option is genuinely honored.
 	it("creates nested missing directories recursively without throwing", () => {
@@ -350,7 +355,7 @@ describe("writeJsonFile", () => {
 		expect(readFileSync(path, "utf-8")).toContain('"foo": "bar"');
 	});
 
-	// test-contract: kills "existsSync(path) forced true" — writing a brand new
+	// test-contract: invariant — kills "existsSync(path) forced true" — writing a brand new
 	// file must not attempt to read it first.
 	it("does not attempt to read the target file when it does not exist yet", () => {
 		const path = join(tmp, "new-settings.json");
@@ -360,7 +365,7 @@ describe("writeJsonFile", () => {
 });
 
 describe("buildHookCommand", () => {
-	// test-contract: kills "client === CLIENT_CURSOR forced true" — a call with
+	// test-contract: invariant — kills "client === CLIENT_CURSOR forced true" — a call with
 	// no client at all must return the fail-OPEN absolute-path form, not the
 	// fail-closed cursor form.
 	it("returns the fail-open form for an absolute path with no client", () => {
@@ -369,7 +374,7 @@ describe("buildHookCommand", () => {
 		);
 	});
 
-	// test-contract: kills the '"\\$1"' -> '""' replacement-string mutant — a
+	// test-contract: invariant — kills the '"\\$1"' -> '""' replacement-string mutant — a
 	// quote character in the path must be ESCAPED (backslash preserved), not
 	// silently stripped.
 	it("escapes a double quote in the script path rather than stripping it", () => {
@@ -377,12 +382,13 @@ describe("buildHookCommand", () => {
 		expect(cmd).toContain('\\"quote\\"');
 	});
 
-	// test-contract: kills the runner-default '""' -> '"Stryker was here!"'
+	// test-contract: invariant — kills the runner-default '""' -> '"Stryker was here!"'
 	// mutant and the "client && runner" -> "client || runner" operator flip.
 	// `client` is cast past the ClientName union on purpose: it is the one
 	// input that reaches the fallback ("" runner) branch of the ternary chain
 	// while still being truthy, which is required to observe either mutation
 	// (both hinge on `runner`/`client`'s truthiness feeding envPrefix).
+	// test-contract: boundary — an unknown client value falls through to no INTERLINKED_ prefix.
 	it("adds no INTERLINKED_ prefix for a client value outside the known runner set", () => {
 		// SAFETY: this deliberately exercises the runtime fallback for an unknown client.
 		const cmd = buildHookCommand("/abs/path.mjs", "bogus" as ClientName);
@@ -401,7 +407,7 @@ describe("cleanJsonHookFile", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	// test-contract: kills "!existsSync(settingsPath) forced false" — readJsonFile
+	// test-contract: invariant — kills "!existsSync(settingsPath) forced false" — readJsonFile
 	// gracefully returns null for a missing file, so the return-value alone
 	// can't tell the mutant apart; the read attempt itself must not happen.
 	it("does not attempt to read the settings file when it does not exist", () => {
@@ -410,7 +416,7 @@ describe("cleanJsonHookFile", () => {
 		expect(fs.readFileSync).not.toHaveBeenCalled();
 	});
 
-	// test-contract: kills "!settings?.hooks || !isPlainObject(...)" -> "&&" —
+	// test-contract: invariant — kills "!settings?.hooks || !isPlainObject(...)" -> "&&" —
 	// hooks as a nested array (truthy, but not a plain object) must be
 	// rejected and the file left untouched.
 	it("returns false and leaves the file untouched when hooks is an array, not a plain object", () => {
@@ -423,7 +429,7 @@ describe("cleanJsonHookFile", () => {
 		expect(readFileSync(path, "utf-8")).toBe(original);
 	});
 
-	// test-contract: kills "settings?.hooks" -> "settings.hooks" — malformed
+	// test-contract: invariant — kills "settings?.hooks" -> "settings.hooks" — malformed
 	// JSON makes readJsonFile return null, and the optional chain must guard
 	// against reading `.hooks` off that null.
 	it("does not throw when the settings file contains malformed JSON", () => {
@@ -433,7 +439,7 @@ describe("cleanJsonHookFile", () => {
 		expect(cleanJsonHookFile(path)).toBe(false);
 	});
 
-	// test-contract: kills "filtered.length !== entries.length" forced true —
+	// test-contract: invariant — kills "filtered.length !== entries.length" forced true —
 	// when nothing actually needs removing, the function must report no
 	// change and leave the file untouched.
 	it("returns false and leaves the file untouched when nothing needs filtering", () => {
@@ -446,7 +452,7 @@ describe("cleanJsonHookFile", () => {
 		expect(readFileSync(path, "utf-8")).toBe(original);
 	});
 
-	// test-contract: kills "filtered.length > 0" forced false — a mixed array
+	// test-contract: invariant — kills "filtered.length > 0" forced false — a mixed array
 	// with both an interlinked entry (to remove) and a user entry (to keep)
 	// must retain the surviving user entry, not wipe the whole event to
 	// undefined.
@@ -485,7 +491,7 @@ describe("findParentWithHooks", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	// test-contract: kills "gitRoot || parse(cwd).root" -> "&&" — with a real
+	// test-contract: invariant — kills "gitRoot || parse(cwd).root" -> "&&" — with a real
 	// git root found, the walk must stop AT the git root, not fall through to
 	// the filesystem root and pick up a settings file one level above it.
 	it("stops walking at the git root and does not find a settings file placed above it", () => {
@@ -502,7 +508,7 @@ describe("findParentWithHooks", () => {
 		expect(findParentWithHooks(nested, ".claude/settings.json")).toBeNull();
 	});
 
-	// test-contract: kills "existsSync(settingsPath) forced true" — when no
+	// test-contract: invariant — kills "existsSync(settingsPath) forced true" — when no
 	// ancestor has the settings file, readFileSync must never even be
 	// attempted (existsSync is the gate).
 	it("never calls readFileSync while walking up when no ancestor has the settings file", () => {
@@ -513,7 +519,7 @@ describe("findParentWithHooks", () => {
 		expect(fs.readFileSync).not.toHaveBeenCalled();
 	});
 
-	// test-contract: kills "dir.length >= stopAt.length" -> ">" (the git root
+	// test-contract: invariant — kills "dir.length >= stopAt.length" -> ">" (the git root
 	// itself must still be checked) and the '"utf-8"' -> '""' encoding mutant
 	// (an invalid encoding throws inside the try/catch, silently swallowing a
 	// genuine match).
@@ -534,7 +540,7 @@ describe("findParentWithHooks", () => {
 		expect(fs.readFileSync).toHaveBeenCalledWith(join(settingsDir, "settings.json"), "utf-8");
 	});
 
-	// test-contract: kills "parent === dir" forced true (loop-terminates-early)
+	// test-contract: invariant — kills "parent === dir" forced true (loop-terminates-early)
 	// and the "parent === dir" -> "parent !== dir" equality flip (which also
 	// terminates after one iteration in every reachable case) — the walk must
 	// continue past the FIRST ancestor to find a match two levels up.
@@ -562,13 +568,15 @@ describe("findParentWithHooks", () => {
 	// a synchronous loop. Left uncovered rather than risking a hung verifier
 	// run; see the mutation-kill receipt for this file.
 
-	// test-contract: kills the '"utf-8"' -> '""' StringLiteral mutant
+	// test-contract: invariant — kills the '"utf-8"' -> '""' StringLiteral mutant
 	// (mutantId 48c7bfe3c7690ef0) in isolation from the broader git-root
 	// assertion above — `readFileSync(path, "")` returns a Buffer, not a
 	// string, so this pins the exact second argument passed at the call
 	// site rather than relying on the return value (Buffer#includes still
 	// matches an ASCII marker, so the return value alone can't tell the two
 	// apart).
+	// test-contract: boundary — the encoding argument itself, not just the returned content, is pinned.
+	// interlinked: defer mock_only_test -- the call-argument shape IS the mutation target here (StringLiteral mutant on the "utf-8" arg); the return value is identical either way, so the call assertion is the only observable.
 	it("reads the matched settings file with the utf-8 encoding argument", () => {
 		const gitRoot = join(tmp, "proj");
 		const sub = join(gitRoot, "sub");
