@@ -43,7 +43,7 @@ import { type FilePriority } from "./file-priority.js";
 import { FileContentCache } from "./grep-accelerator.js";
 import { createLearnedRulesStore } from "./learned-rules.js";
 import { sweepStaleLiveSnapshots } from "./live-snapshot.js";
-import { clearManifestCache } from "./mutation/manifest.js";
+import { clearManifestCache } from "./mutation/manifest.js"; import { clearTscOverlayCache } from "./check-engine/tool-runners/tsc-overlay.js";
 import {
 	type ClassifierSessionState,
 	resolveApiKey,
@@ -57,7 +57,7 @@ import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity
 import { antiStompDepsFor, settleIncumbentAtBind } from "./server/incumbent-check.js";
 import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
 import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
-import { installDaemonTimers } from "./server/daemon-timers.js";
+import { heapSpaceSummary, installDaemonTimers } from "./server/daemon-timers.js";
 import {
 	buildStartupMessage,
 	computeClassifierStatusLine,
@@ -675,15 +675,15 @@ installDaemonTimers({
 	},
 	// Spike attribution: ledger row per >150MB/tick RSS jump (activity-joinable; SIGUSR2 = heap snapshot).
 	onSpike: (rssMb, deltaMb) =>
-		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick` }),
+		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick [${heapSpaceSummary()}]` }),
 	onHeapPressure: makeHeapPressureLedger(CWD, logAlways),
 	snapshotDir: INTERLINKED_DIR,
 	// Idle shrink (~5min no events): drop manifest + force GC — not a jetsam target.
 	lastEventAtMs: () => lastHookEventAtMs,
 	shrinkIdleMemory: () => {
 		clearManifestCache();
-		// SAFETY: gc exists only under --expose-gc (every spawn path passes it).
-		(globalThis as { gc?: () => void }).gc?.();
+		clearTscOverlayCache(); // shed the ~2GB in-daemon LS — the dominant retained set (heap-attributed 2026-08-22); next overlay check pays a cold rebuild instead of the daemon dying
+		(globalThis as { gc?: () => void }).gc?.(); // SAFETY: gc exists only under --expose-gc (every spawn path passes it).
 	},
 	log: logAlways,
 });
