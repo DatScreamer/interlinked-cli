@@ -52,26 +52,31 @@ const DIFF = [
 ].join("\n");
 
 describe("parseUnifiedZeroHunks", () => {
+	// test-contract: invariant — extracts old-side ranges per OLD path, keyed for blame-at-parent
 	it("extracts old-side ranges per OLD path, keyed for blame-at-parent", () => {
 		const hunks = parseUnifiedZeroHunks(DIFF);
 		const a = hunks.find((h) => h.file === "src/a.ts");
 		expect(a?.ranges).toEqual([{ start: 3, lines: 2 }]);
 	});
 
+	// test-contract: invariant — skips pure additions (old-side length 0)
 	it("skips pure additions (old-side length 0)", () => {
 		const a = parseUnifiedZeroHunks(DIFF).find((h) => h.file === "src/a.ts");
 		expect(a?.ranges).toHaveLength(1);
 	});
 
+	// test-contract: invariant — counts deletions against the old path even when the file is removed
 	it("counts deletions against the old path even when the file is removed", () => {
 		const gone = parseUnifiedZeroHunks(DIFF).find((h) => h.file === "src/gone.ts");
 		expect(gone?.ranges).toEqual([{ start: 1, lines: 5 }]);
 	});
 
+	// test-contract: invariant — skips new files entirely (old side is /dev/null)
 	it("skips new files entirely (old side is /dev/null)", () => {
 		expect(parseUnifiedZeroHunks(DIFF).find((h) => h.file === "src/new.ts")).toBeUndefined();
 	});
 
+	// test-contract: invariant — defaults a bare @@ -N +M @@ header to 1 old line
 	it("defaults a bare @@ -N +M @@ header to 1 old line", () => {
 		const hunks = parseUnifiedZeroHunks(
 			"--- a/x.ts\n+++ b/x.ts\n@@ -7 +7 @@\n-a\n+b\n",
@@ -99,10 +104,12 @@ describe("parseBlamePorcelainTimes", () => {
 		"\tline five",
 	].join("\n");
 
+	// test-contract: invariant — emits one committer-time per content line, resolving repeated shas
 	it("emits one committer-time per content line, resolving repeated shas", () => {
 		expect(parseBlamePorcelainTimes(BLAME)).toEqual([1000, 1000, 2000]);
 	});
 
+	// test-contract: boundary — returns empty for empty input
 	it("returns empty for empty input", () => {
 		expect(parseBlamePorcelainTimes("")).toEqual([]);
 	});
@@ -111,6 +118,7 @@ describe("parseBlamePorcelainTimes", () => {
 	// committer-time was recorded for its sha. The line must be DROPPED, not
 	// emitted as NaN/0 — a 0 timestamp would read as "written in 1970" and quietly
 	// deflate the rework share. This is the `t !== undefined` guard.
+	// test-contract: invariant — drops content lines whose sha never carried a committer-time
 	it("drops content lines whose sha never carried a committer-time", () => {
 		const truncated = [
 			`${SHA_A} 1 1 1`,
@@ -126,12 +134,14 @@ describe("parseBlamePorcelainTimes", () => {
 
 describe("classifyRework", () => {
 	const DAY = 86_400;
+	// test-contract: invariant — counts lines younger than the window as rework
 	it("counts lines younger than the window as rework", () => {
 		const commitTs = 100 * DAY;
 		const times = [commitTs - 1 * DAY, commitTs - 13 * DAY, commitTs - 15 * DAY];
 		expect(classifyRework(commitTs, times, 14 * DAY)).toEqual({ rework: 2, total: 3 });
 	});
 
+	// test-contract: invariant — treats age exactly at the window as NOT rework (strict <)
 	it("treats age exactly at the window as NOT rework (strict <)", () => {
 		const commitTs = 100 * DAY;
 		expect(classifyRework(commitTs, [commitTs - 14 * DAY], 14 * DAY)).toEqual({
@@ -140,6 +150,7 @@ describe("classifyRework", () => {
 		});
 	});
 
+	// test-contract: invariant — clamps clock skew: a line 'from the future' is rework
 	it("clamps clock skew: a line 'from the future' is rework", () => {
 		const commitTs = 100 * DAY;
 		expect(classifyRework(commitTs, [commitTs + DAY], 14 * DAY)).toEqual({
@@ -349,6 +360,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 	// Commits are walked NEWEST FIRST, so src/b.ts (first seen in C5) is the
 	// first key in the per-file map and wins the rework=1 tie under the stable sort.
 
+	// test-contract: public-api — reports the rework share and per-file breakdown as JSON
 	it("reports the rework share and per-file breakdown as JSON", async () => {
 		const res = await runReworkJson({ cwd: repo });
 		expect(res).toMatchObject({
@@ -365,6 +377,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		]);
 	});
 
+	// test-contract: public-api — renders the human report with counts, skips and right-aligned rows
 	it("renders the human report with counts, skips and right-aligned rows", async () => {
 		const { out } = await runRework({ cwd: repo });
 		expect(out).toContain("Rework — 40.0% of 5 changed old-side lines were <14d old");
@@ -378,11 +391,13 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		expect(out).toContain("      1 rework lines ( 33%)  src/a.ts");
 	});
 
+	// test-contract: public-api — renders a one-line summary in --short mode
 	it("renders a one-line summary in --short mode", async () => {
 		const { out } = await runRework({ cwd: repo, short: true });
 		expect(out).toBe("rework 40.0% of 5 changed lines (30d, window 14d)");
 	});
 
+	// test-contract: invariant — excludes generated paths and greenfield files from the denominator
 	it("excludes generated paths and greenfield files from the denominator", async () => {
 		const res = await runReworkJson({ cwd: repo });
 		const files = (res.top_files as Array<{ file: string }>).map((f) => f.file);
@@ -392,6 +407,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		expect((res.overall as { total: number }).total).toBe(5);
 	});
 
+	// test-contract: invariant — widening --window reclassifies older ancestors as rework
 	it("widening --window reclassifies older ancestors as rework", async () => {
 		// window 60d pulls the 55d/57d ancestors in; days 90 also admits the root
 		// commit, whose parentless `git diff` is skipped rather than throwing.
@@ -408,6 +424,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		]);
 	});
 
+	// test-contract: invariant — caps the scan at --max-commits, newest first
 	it("caps the scan at --max-commits, newest first", async () => {
 		const res = await runReworkJson({ cwd: repo, maxCommits: "1" });
 		expect(res).toMatchObject({
@@ -417,6 +434,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		expect(res.top_files).toEqual([{ file: "src/b.ts", rework: 1, total: 1 }]);
 	});
 
+	// test-contract: invariant — skips commits touching more than --max-commit-files entirely
 	it("skips commits touching more than --max-commit-files entirely", async () => {
 		const res = await runReworkJson({ cwd: repo, maxCommitFiles: "1" });
 		// Only C2 spans two eligible files, so exactly one commit is dropped and
@@ -439,6 +457,7 @@ describe("metricsReworkCommand — measured against a real repo", () => {
 		["zero", { days: "0", window: "0", maxCommits: "0", maxCommitFiles: "0" }],
 	];
 
+	// test-contract: boundary — falls back to the day/window defaults for every non-positive-number option shape
 	it.each(optionDefaults)(
 		"falls back to days=30/window=14 when options are %s",
 		async (_label, opts) => {
@@ -464,6 +483,7 @@ describe("metricsReworkCommand — non-ASCII paths", () => {
 	// Real defect pin — see the test name. Reported, not fixed. This is the ONLY
 	// test in the file whose expectations encode the broken behaviour, so fixing
 	// the defect turns exactly this one red.
+	// test-contract: invariant — silently drops non-ASCII paths because git C-quotes the diff header
 	it("silently drops non-ASCII paths because git C-quotes the diff header", async () => {
 		const res = await runReworkJson({ cwd: unicodeRepo });
 		// The ASCII control changed in the SAME commit is counted, so the run
@@ -489,6 +509,7 @@ describe("metricsReworkCommand — non-ASCII paths", () => {
 	// here too). It also states the target behaviour: this test already expects
 	// what a fixed implementation must produce under the default config, so it
 	// keeps passing through the fix.
+	// test-contract: invariant — counts the same non-ASCII path when core.quotePath=false leaves it unquoted
 	it("counts the same non-ASCII path when core.quotePath=false leaves it unquoted", async () => {
 		const prior = process.env.GIT_CONFIG_GLOBAL;
 		process.env.GIT_CONFIG_GLOBAL = quotePathOffConfig;
@@ -508,6 +529,7 @@ describe("metricsReworkCommand — non-ASCII paths", () => {
 });
 
 describe("metricsReworkCommand — degenerate repositories", () => {
+	// test-contract: public-api — reports 0% with no rows when every commit is parentless
 	it("reports 0% with no rows when every commit is parentless", async () => {
 		const res = await runReworkJson({ cwd: rootOnlyRepo });
 		expect(res).toMatchObject({
@@ -519,6 +541,7 @@ describe("metricsReworkCommand — degenerate repositories", () => {
 		expect(res.top_files).toEqual([]);
 	});
 
+	// test-contract: public-api — renders the zero-denominator report without a per-file section
 	it("renders the zero-denominator report without a per-file section", async () => {
 		const { out } = await runRework({ cwd: rootOnlyRepo });
 		expect(out).toContain("Rework — 0.0% of 0 changed old-side lines were <14d old");
@@ -544,6 +567,7 @@ describe("metricsReworkCommand — git failure", () => {
 		else process.env.GIT_CEILING_DIRECTORIES = priorCeiling;
 	});
 
+	// test-contract: boundary — writes a single-line git error to stderr and exits 1
 	it("writes a single-line git error to stderr and exits 1", async () => {
 		const { err } = await runRework({ cwd: notARepo });
 		expect(process.exitCode).toBe(1);
@@ -554,6 +578,7 @@ describe("metricsReworkCommand — git failure", () => {
 		expect(own[0]).toMatch(/^git log failed: Command failed: git log .+\n$/);
 	});
 
+	// test-contract: boundary — prints nothing on stdout when git log fails
 	it("prints nothing on stdout when git log fails", async () => {
 		const { out } = await runRework({ cwd: notARepo });
 		expect(out).toBe("");
@@ -582,6 +607,7 @@ describe("metricsReworkCommand — git throws a non-Error", () => {
 		process.exitCode = priorExitCode;
 	});
 
+	// test-contract: boundary — stringifies the thrown value instead of reading .message off it
 	it("stringifies the thrown value instead of reading .message off it", async () => {
 		vi.resetModules();
 		vi.doMock("node:child_process", () => ({
@@ -596,5 +622,303 @@ describe("metricsReworkCommand — git throws a non-Error", () => {
 		expect(process.exitCode).toBe(1);
 		expect(err).toEqual(["git log failed: spawn EAGAIN (thrown non-Error)\n"]);
 		expect(out).toBe("");
+	});
+});
+
+// ===========================================
+// Mutation-kill wave — survivor-targeted cases (pass1_w30)
+// ===========================================
+// Pure-function boundary cases below need no repo; the synthetic-git block at
+// the end fully replaces `node:child_process` so the observable state (which
+// mutants alter) is under direct control without a real repository.
+
+describe("parseUnifiedZeroHunks — header parsing boundary", () => {
+	// test-contract: mutation-kill — MethodExpression `.trim()` drop leaves a
+	// trailing space baked into the parsed old-side path.
+	it("trims trailing whitespace off the old-side header path", () => {
+		const hunks = parseUnifiedZeroHunks(
+			"--- a/x.ts \n+++ b/x.ts\n@@ -1,2 +1,2 @@\n-old1\n-old2\n",
+		);
+		expect(hunks[0]?.file).toBe("x.ts");
+	});
+
+	// test-contract: mutation-kill — ConditionalExpression `=== "/dev/null"` -> `false`
+	// would keep a hunk whose old side is the /dev/null sentinel.
+	it("drops a hunk whose old side is /dev/null even when it carries old-side lines", () => {
+		const hunks = parseUnifiedZeroHunks("--- /dev/null\n+++ b/y.ts\n@@ -1,3 +0,0 @@\n-a\n-b\n-c\n");
+		expect(hunks).toEqual([]);
+	});
+
+	// test-contract: mutation-kill — StringLiteral `"/dev/null"` -> `""` changes
+	// which literal old-side value is treated as "no old side".
+	it("treats a genuinely empty old-side path as a real (if odd) file, not the /dev/null sentinel", () => {
+		const hunks = parseUnifiedZeroHunks("--- \n+++ b/z.ts\n@@ -1,2 +1,2 @@\n-a\n-b\n");
+		expect(hunks).toEqual([{ file: "", ranges: [{ start: 1, lines: 2 }] }]);
+	});
+
+	// test-contract: mutation-kill — Regex `/^a\//` -> `/a\//` (anchor dropped)
+	// would strip an embedded "a/" instead of only a leading one.
+	it("strips only a LEADING 'a/' prefix, never an embedded occurrence", () => {
+		const hunks = parseUnifiedZeroHunks(
+			"--- xa/deep/file.ts\n+++ b/xa/deep/file.ts\n@@ -1,2 +1,2 @@\n-old1\n-old2\n",
+		);
+		expect(hunks[0]?.file).toBe("xa/deep/file.ts");
+	});
+
+	// test-contract: mutation-kill — ConditionalExpression `!cur` -> `false`
+	// removes the guard against a hunk line arriving with no active file
+	// context; the mutant then dereferences a null `cur` and throws.
+	it("ignores a hunk line encountered before any --- header (no crash, no entry)", () => {
+		const hunks = parseUnifiedZeroHunks("@@ -1,2 +1,2 @@\n-a\n-b\n");
+		expect(hunks).toEqual([]);
+	});
+
+	// test-contract: mutation-kill — three mutants collapse to the same
+	// observable: MethodExpression drops `.filter(...)`, ConditionalExpression
+	// `f.ranges.length > 0` -> `true`, EqualityOperator `> 0` -> `>= 0`. A file
+	// header with a pure-addition hunk (old-side count 0) leaves `ranges: []`,
+	// which the correct filter must drop from the result entirely.
+	it("drops a file whose only hunk has zero old-side lines", () => {
+		const hunks = parseUnifiedZeroHunks(
+			"--- a/pure-add.ts\n+++ b/pure-add.ts\n@@ -5,0 +6,2 @@\n+new1\n+new2\n",
+		);
+		expect(hunks).toEqual([]);
+	});
+});
+
+describe("parseUnifiedZeroHunks — HUNK_RE regex boundary", () => {
+	// test-contract: mutation-kill — Regex `/^@@ .../` -> `@@ .../` (anchor
+	// dropped) would recognize a hunk header that does not start the line.
+	it("requires the hunk marker to START the line, not merely appear in it", () => {
+		const hunks = parseUnifiedZeroHunks(
+			"--- a/n.ts\n+++ b/n.ts\nnoise@@ -5,2 +5,2 @@\n-a\n-b\n",
+		);
+		expect(hunks).toEqual([]);
+	});
+
+	// test-contract: mutation-kill — four Regex mutants each restrict one of
+	// the header's four numeric fields to a single digit (`(\d+)` -> `(\d)`),
+	// which breaks the WHOLE anchored match once that field is 2+ digits. One
+	// header with every field multi-digit exercises all four simultaneously.
+	it("parses a hunk header whose every numeric field is multi-digit", () => {
+		const hunks = parseUnifiedZeroHunks("--- a/big.ts\n+++ b/big.ts\n@@ -123,45 +67,89 @@\n");
+		expect(hunks).toEqual([{ file: "big.ts", ranges: [{ start: 123, lines: 45 }] }]);
+	});
+});
+
+describe("parseBlamePorcelainTimes — sha/committer-time regex boundary", () => {
+	const SHA_X = "a".repeat(40);
+	const SHA_Y = "b".repeat(40);
+
+	// test-contract: mutation-kill — four mutants collapse to the same
+	// observable: `sha?.[1]` -> `false`, the sha-match BlockStatement -> `{}`,
+	// BLAME_SHA_RE's `{40}` dropped, and BLAME_SHA_RE's char class negated.
+	// Each stops the parser from ever binding `curSha` to a real value, so
+	// every committer-time collapses onto one shared "" key instead of being
+	// kept separate per sha. A bare-repeat of an EARLIER sha (whose
+	// committer-time was NOT just re-declared) exposes the collapse: the
+	// correct parser resolves it back to that sha's own stored time, while the
+	// collapsed parser resolves it to whichever time was stored LAST.
+	it("keeps a bare-repeated sha's committer-time bound to its own identity, not the most recent write", () => {
+		const blame = [
+			`${SHA_X} 3 3 2`,
+			"committer-time 1111",
+			"\tline one",
+			`${SHA_Y} 2 2`,
+			"committer-time 2222",
+			"\tline two",
+			`${SHA_X} 3 3`, // bare repeat — no committer-time re-declared
+			"\tline three",
+		].join("\n");
+		expect(parseBlamePorcelainTimes(blame)).toEqual([1111, 2222, 1111]);
+	});
+
+	// test-contract: mutation-kill — BLAME_SHA_RE's two trailing `\d+` fields
+	// (`(\d) `) restricted to a single digit only misbehave once the actual
+	// value is 2+ digits; single-digit fixtures elsewhere in this file cannot
+	// distinguish them.
+	it("matches a blame header whose trailing line numbers are multi-digit", () => {
+		const blame = [
+			`${SHA_X} 15 25`,
+			"committer-time 1111",
+			"\tline one",
+			`${SHA_Y} 2 2`,
+			"committer-time 2222",
+			"\tline two",
+			`${SHA_X} 30 40`, // bare repeat, still multi-digit
+			"\tline three",
+		].join("\n");
+		expect(parseBlamePorcelainTimes(blame)).toEqual([1111, 2222, 1111]);
+	});
+
+	// test-contract: mutation-kill — Regex `/^([0-9a-f]{40}) .../` -> unanchored
+	// would recognize a sha embedded mid-line, not only one that starts it.
+	it("requires the 40-hex sha to START the line, not merely appear in it", () => {
+		const blame = [
+			`X${SHA_X} 1 1`, // prefixed — must NOT be recognized as a sha line
+			"committer-time 1111",
+			"\tline one",
+			`${SHA_Y} 2 2`,
+			"committer-time 2222",
+			"\tline two",
+			`X${SHA_X} 3 3`, // prefixed bare repeat — still must not match
+			"\tline three",
+		].join("\n");
+		expect(parseBlamePorcelainTimes(blame)).toEqual([1111, 2222, 2222]);
+	});
+
+	// test-contract: mutation-kill — Regex `/^committer-time (\d+)$/` -> drops
+	// the leading `^` anchor, which would recognize the token mid-line.
+	it("requires 'committer-time' to START the line", () => {
+		const blame = [`${SHA_X} 1 1`, "Xcommitter-time 500", "\tline a"].join("\n");
+		expect(parseBlamePorcelainTimes(blame)).toEqual([]);
+	});
+
+	// test-contract: mutation-kill — Regex `/^committer-time (\d+)$/` -> drops
+	// the trailing `$` anchor, which would accept trailing garbage after the
+	// digits.
+	it("requires the committer-time digits to reach END of line", () => {
+		const blame = [`${SHA_X} 1 1`, "committer-time 500 author-tz +0000", "\tline a"].join("\n");
+		expect(parseBlamePorcelainTimes(blame)).toEqual([]);
+	});
+});
+
+// ===========================================
+// Synthetic git — fully mocked `node:child_process`, no real repository
+// ===========================================
+// These target mutants in the unexported `listCommits` helper and in
+// `metricsReworkCommand`'s file-ranking logic, none of which are reachable
+// through `parseUnifiedZeroHunks`/`parseBlamePorcelainTimes` directly. A real
+// repo can't easily produce a malformed `git log` line or 11+ distinct
+// touched files without heavy fixture cost, so git itself is replaced.
+describe("metricsReworkCommand — synthetic git, full mock", () => {
+	const priorExitCode = process.exitCode;
+
+	afterEach(() => {
+		vi.doUnmock("node:child_process");
+		vi.resetModules();
+		process.exitCode = priorExitCode;
+	});
+
+	function makeDiff(file: string): string {
+		return [
+			`diff --git a/${file} b/${file}`,
+			`--- a/${file}`,
+			`+++ b/${file}`,
+			"@@ -1,1 +1,1 @@",
+			"-old",
+			"+new",
+		].join("\n");
+	}
+
+	function makeBlame(committerTime: number): string {
+		return [`${"a".repeat(40)} 1 1 1`, "author X", `committer-time ${committerTime}`, "filename x", "\told"].join(
+			"\n",
+		);
+	}
+
+	/** Installs a mocked `node:child_process` and returns the freshly-imported command. */
+	async function importMockedCommand(
+		logText: string,
+		diffBySha: Record<string, string>,
+		blameHandler: (sha: string, file: string) => string,
+	) {
+		vi.resetModules();
+		vi.doMock("node:child_process", () => ({
+			execFileSync: (_cmd: string, args: string[]) => {
+				if (args[0] === "log") return logText;
+				if (args[0] === "diff") {
+					const shaCaret = args[3] ?? "";
+					const sha = shaCaret.endsWith("^") ? shaCaret.slice(0, -1) : shaCaret;
+					const diff = diffBySha[sha];
+					if (diff === undefined) throw new Error(`fatal: bad revision '${sha}'`);
+					return diff;
+				}
+				if (args[0] === "blame") {
+					const dashIdx = args.indexOf("--");
+					const file = args[dashIdx + 1] ?? "";
+					const shaCaret = args[dashIdx - 1] ?? "";
+					const sha = shaCaret.endsWith("^") ? shaCaret.slice(0, -1) : shaCaret;
+					return blameHandler(sha, file);
+				}
+				throw new Error(`unexpected git subcommand: ${args[0]}`);
+			},
+		}));
+		const mod = await import("./metrics-rework.js");
+		return mod.metricsReworkCommand;
+	}
+
+	const nowSec = Math.floor(Date.now() / 1000);
+	const recentTime = nowSec - 86_400; // 1 day old — rework at the default 14d window
+	const oldTime = nowSec - 86_400 * 100; // 100 days old — NOT rework
+
+	// test-contract: mutation-kill — three mutants collapse to the same
+	// observable: MethodExpression drops `.filter((c) => c.rework > 0)`,
+	// ConditionalExpression `c.rework > 0` -> `true`, EqualityOperator `> 0`
+	// -> `>= 0`. A zero-rework file must be excluded from `top_files`; with any
+	// of the three mutants applied it leaks through instead.
+	it("excludes a zero-rework file from top_files (filter, not just sort)", async () => {
+		const cmd = await importMockedCommand(
+			`sha0\t${nowSec}\nsha1\t${nowSec}\nsha2\t${nowSec}\n`,
+			{ sha0: makeDiff("file0.ts"), sha1: makeDiff("file1.ts"), sha2: makeDiff("file2.ts") },
+			(_sha, file) => makeBlame(file === "file2.ts" ? oldTime : recentTime),
+		);
+		const { out } = await runRework({ cwd: "/fake", json: true }, cmd);
+		const res = JSON.parse(out) as { top_files: Array<{ file: string }>; overall: { total: number } };
+		expect(res.top_files.map((f) => f.file)).toEqual(["file0.ts", "file1.ts"]);
+		expect(res.overall.total).toBe(3);
+	});
+
+	// test-contract: mutation-kill — MethodExpression drops the trailing
+	// `.slice(0, 10)` from the top_files chain, which would report all
+	// rework-carrying files instead of the top 10.
+	it("caps top_files at 10 even when more files carry rework", async () => {
+		const shas = Array.from({ length: 11 }, (_, i) => `sha${i}`);
+		const logText = shas.map((s) => `${s}\t${nowSec}`).join("\n");
+		const diffBySha = Object.fromEntries(shas.map((s, i) => [s, makeDiff(`file${i}.ts`)]));
+		const cmd = await importMockedCommand(logText, diffBySha, () => makeBlame(recentTime));
+		const { out } = await runRework({ cwd: "/fake", json: true }, cmd);
+		const res = JSON.parse(out) as { top_files: unknown[]; overall: { total: number } };
+		expect(res.top_files).toHaveLength(10);
+		expect(res.overall.total).toBe(11);
+	});
+
+	// test-contract: mutation-kill — Regex `EXCLUDE_RE` drops its `^` anchor,
+	// which would exclude any path with "dist/" (etc.) ANYWHERE in it instead
+	// of only at the start.
+	it("does not exclude a path that merely CONTAINS an excluded segment name", async () => {
+		const cmd = await importMockedCommand(
+			`sha0\t${nowSec}\n`,
+			{ sha0: makeDiff("srcdist/decoy.ts") },
+			() => makeBlame(recentTime),
+		);
+		const { out } = await runRework({ cwd: "/fake", json: true }, cmd);
+		const res = JSON.parse(out) as { top_files: Array<{ file: string }>; overall: { total: number } };
+		expect(res.top_files).toEqual([{ file: "srcdist/decoy.ts", rework: 1, total: 1 }]);
+		expect(res.overall.total).toBe(1);
+	});
+
+	// test-contract: mutation-kill — MethodExpression drops `.trim()` in
+	// `listCommits`, leaving stray whitespace baked into the parsed sha, which
+	// then fails to resolve as a git ref for the subsequent diff.
+	it("trims whitespace around a git-log line before splitting sha/timestamp", async () => {
+		const cmd = await importMockedCommand(
+			`  sha0\t${nowSec}  \n`,
+			{ sha0: makeDiff("file0.ts") },
+			() => makeBlame(recentTime),
+		);
+		const { out } = await runRework({ cwd: "/fake", json: true }, cmd);
+		const res = JSON.parse(out) as { overall: { total: number } };
+		expect(res.overall.total).toBe(1);
+	});
+
+	// test-contract: mutation-kill — LogicalOperator `sha && ts` -> `sha || ts`
+	// in `listCommits` would admit a log line with a sha but no parseable
+	// timestamp instead of requiring BOTH fields.
+	it("drops a git-log line that has a sha but no parseable timestamp", async () => {
+		const cmd = await importMockedCommand("onlysha\n", {}, () => makeBlame(recentTime));
+		const { out } = await runRework({ cwd: "/fake", json: true }, cmd);
+		const res = JSON.parse(out) as { commits_scanned: number };
+		expect(res.commits_scanned).toBe(0);
 	});
 });

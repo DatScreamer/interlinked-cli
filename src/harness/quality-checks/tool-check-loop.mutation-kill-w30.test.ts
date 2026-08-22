@@ -1,0 +1,484 @@
+// ===========================================
+// tool-check-loop.ts — mutation-kill wave 30
+// ===========================================
+// Targeted receipts for the 41 mutants the manifest reports as `survived`
+// for this file. Each case is annotated with the exact mutantId(s) it kills.
+// Mock boilerplate mirrors tool-check-loop.integration.test.ts (same SUT,
+// independent module registry per test file).
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HarnessEvent, QualityCheckConfig } from "../types.js";
+import { runToolCheckLoop, type ToolCheckLoopContext } from "./tool-check-loop.js";
+
+// --- module-boundary mocks ------------------------------------------------
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+
+vi.mock("../check-engine/index.js", () => ({
+	configNameToToolId: vi.fn(),
+	getOrCreateEngine: vi.fn(),
+}));
+
+vi.mock("../check-engine/output-parsers.js", () => ({
+	parseNpmAuditJson: vi.fn(),
+	parseOsvScannerJson: vi.fn(),
+}));
+
+vi.mock("../checks/shared.js", () => ({
+	isGeneratedFile: vi.fn(() => false),
+	isTestFile: vi.fn(() => false),
+}));
+
+vi.mock("../language-profiles.js", () => ({
+	getProfileForFile: vi.fn(),
+}));
+
+vi.mock("./dependency-audit.js", () => ({
+	resolveDependencyAuditCommand: vi.fn(),
+}));
+
+vi.mock("./inline-language-checks.js", () => ({
+	runInlineLanguageChecks: vi.fn(() => []),
+}));
+
+vi.mock("./lockfile-drift.js", () => ({
+	checkLockfileDrift: vi.fn(),
+	checkLockfileClassificationDrift: vi.fn(() => ({
+		drifted: false,
+		manifest: "package.json",
+		mismatches: [],
+	})),
+	LOCKFILE_MAP: { "package.json": ["package-lock.json", "yarn.lock"] },
+}));
+
+vi.mock("./package-json.js", () => ({
+	checkPackageJsonConsistency: vi.fn(() => []),
+}));
+
+vi.mock("./project-root.js", () => ({
+	findProjectRoot: vi.fn(() => "/proj"),
+}));
+
+vi.mock("./secret-detection.js", () => ({
+	containsSecrets: vi.fn(() => []),
+}));
+
+vi.mock("./software-version-regression.js", () => ({
+	collectSoftwareVersionReferences: vi.fn(() => []),
+	detectSoftwareVersionRegressions: vi.fn(() => []),
+	detectSoftwareVersionFreshnessConcerns: vi.fn(() => []),
+	formatSoftwareVersionRegressionDetail: vi.fn(() => "REG-DETAIL"),
+	formatSoftwareVersionFreshnessDetail: vi.fn(() => "FRESH-DETAIL"),
+}));
+
+vi.mock("./strong-typing.js", () => ({
+	findAnyTypes: vi.fn(() => []),
+}));
+
+vi.mock("./test-classifier.js", () => ({
+	isLikelyTestFile: vi.fn(() => false),
+}));
+
+vi.mock("./test-dispatchers.js", () => ({
+	TEST_DISPATCHERS: {},
+}));
+
+// --- typed handles to the mocks -------------------------------------------
+
+import { spawnSync } from "node:child_process";
+import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
+import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
+import { isTestFile } from "../checks/shared.js";
+import { getProfileForFile } from "../language-profiles.js";
+import { resolveDependencyAuditCommand } from "./dependency-audit.js";
+import { findAnyTypes } from "./strong-typing.js";
+import { isLikelyTestFile } from "./test-classifier.js";
+import { TEST_DISPATCHERS } from "./test-dispatchers.js";
+
+const mockSpawnSync = vi.mocked(spawnSync);
+const mockConfigNameToToolId = vi.mocked(configNameToToolId);
+const mockGetOrCreateEngine = vi.mocked(getOrCreateEngine);
+const mockParseNpmAuditJson = vi.mocked(parseNpmAuditJson);
+const mockParseOsvScannerJson = vi.mocked(parseOsvScannerJson);
+const mockIsTestFile = vi.mocked(isTestFile);
+const mockGetProfileForFile = vi.mocked(getProfileForFile);
+const mockResolveDependencyAuditCommand = vi.mocked(resolveDependencyAuditCommand);
+const mockFindAnyTypes = vi.mocked(findAnyTypes);
+const mockIsLikelyTestFile = vi.mocked(isLikelyTestFile);
+
+// --- shared fixtures --------------------------------------------------------
+
+const baseEvent: HarnessEvent = {
+	hook_event: "PostToolUse",
+	session_id: "s1",
+	agent_source: "claude",
+	tool_name: "Write",
+	timestamp: "2026-06-01T00:00:00Z",
+};
+
+function cfg(over: Partial<QualityCheckConfig> = {}): QualityCheckConfig {
+	return {
+		enabled: true,
+		file_types: [".ts"],
+		timeout_ms: 1000,
+		severity: "warning",
+		...over,
+	};
+}
+
+function makeCtx(over: Partial<ToolCheckLoopContext> = {}): ToolCheckLoopContext {
+	return {
+		event: { ...baseEvent, tool_input: { file_path: "src/x.ts", content: "ok" } },
+		checks: {},
+		cwd: "/cwd",
+		filePath: "src/x.ts",
+		absForTestCheck: "/cwd/src/x.ts",
+		testCheckBaseName: "x",
+		getSharedContent: () => "const ok = 1;",
+		getAfterRefs: () => [],
+		tscFilterFile: undefined,
+		baseline: undefined,
+		outToolMetrics: undefined,
+		editedFileInRepo: undefined,
+		onCheckBoundary: undefined,
+		...over,
+	};
+}
+
+function engineReturning(report: {
+	results: { file: string; line: number; message: string }[];
+	metrics?: { tool: string; elapsedMs: number; findingCount: number }[];
+}) {
+	const runChecksAsync = vi.fn().mockResolvedValue({
+		results: report.results,
+		metrics: report.metrics ?? [],
+	});
+	mockGetOrCreateEngine.mockReturnValue({ runChecksAsync } as unknown as ReturnType<
+		typeof getOrCreateEngine
+	>);
+	return runChecksAsync;
+}
+
+function spawnResult(over: Partial<ReturnType<typeof spawnSync>> = {}) {
+	return {
+		pid: 1,
+		output: [],
+		stdout: "",
+		stderr: "",
+		status: 0,
+		signal: null,
+		...over,
+	} as unknown as ReturnType<typeof spawnSync>;
+}
+
+const auditCtx = (over: Partial<ToolCheckLoopContext> = {}) =>
+	makeCtx({
+		filePath: "package.json",
+		absForTestCheck: "/cwd/package.json",
+		testCheckBaseName: "package",
+		checks: { dependency_audit: cfg({ file_types: [".json"] }) },
+		...over,
+	});
+
+beforeEach(() => {
+	mockSpawnSync.mockReset();
+	mockConfigNameToToolId.mockReset();
+	mockGetOrCreateEngine.mockReset();
+	mockParseNpmAuditJson.mockReset();
+	mockParseOsvScannerJson.mockReset();
+	mockIsTestFile.mockReset().mockReturnValue(false);
+	mockGetProfileForFile.mockReset().mockReturnValue(null);
+	mockResolveDependencyAuditCommand.mockReset();
+	mockFindAnyTypes.mockReset().mockReturnValue([]);
+	mockIsLikelyTestFile.mockReset().mockReturnValue(false);
+	for (const k of Object.keys(TEST_DISPATCHERS)) {
+		delete (TEST_DISPATCHERS as Record<string, unknown>)[k];
+	}
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("tool-check-loop — mutation-kill wave 30", () => {
+	// test-contract: kill fe82c2dc24cfe2b1 (ArrayDeclaration `parts: string[] = []` → ["Stryker was here"])
+	it("strong_typing: exact message for an any-only finding (no leaked prefix)", async () => {
+		mockFindAnyTypes.mockReturnValue([{ kind: "any", line: 3, text: "x: any" }] as never);
+		const out = await runToolCheckLoop(makeCtx({ checks: { strong_typing: cfg() } }));
+		expect(out[0]?.message).toBe(
+			"1 `any` type(s) in src/x.ts — prefer strong types (interfaces, generics, branded types)",
+		);
+	});
+
+	// test-contract: kill 38d43550a7e3fcf4 (`!resolved` → false) — real skip is a true
+	// loop `continue`, so the trailing inline_<name> boundary must NOT fire.
+	it("dependency_audit: resolver-null skip is a true continue (boundary not fired)", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			auditCtx({ onCheckBoundary: (n) => boundaries.push(n) }),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).not.toContain("inline_dependency_audit");
+	});
+
+	// test-contract: kill 1c0e9748af19f2dc ("utf-8"→""), 8307bd2fba0cff50
+	// (stdio array→[]), 5a6d0c2d698dbcf2 / 1d28918f67c45cd5 / 372b21cf1060c098
+	// ("pipe"→"" at each of the 3 array slots)
+	it("dependency_audit: spawnSync gets the exact utf-8/pipe subprocess options", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockSpawnSync.mockReturnValue(spawnResult({ status: 0 }));
+		await runToolCheckLoop(auditCtx());
+		expect(mockSpawnSync).toHaveBeenCalledWith(
+			"npm",
+			["audit", "--json"],
+			expect.objectContaining({
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			}),
+		);
+	});
+
+	// test-contract: kill ac38e45617518124 (`error && code===ENOENT` → false),
+	// 4d5923d2dfbed209 (===→!==), a0d5b65483d68606 ("ENOENT"→""), and
+	// 4a353f54fa84e3a7 (the `return null` block → {}) — all four make the
+	// ENOENT skip fail to fire, so a real skip case would wrongly produce a
+	// finding instead of [].
+	it("dependency_audit: ENOENT with a nonzero status still skips (no finding)", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockSpawnSync.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: "{}",
+				error: Object.assign(new Error("nope"), { code: "ENOENT" }),
+			}),
+		);
+		mockParseNpmAuditJson.mockReturnValue(null);
+		const out = await runToolCheckLoop(auditCtx());
+		expect(out).toEqual([]);
+	});
+
+	// test-contract: kill f693629f3ba68948 (`code === "ENOENT"` → true) — a
+	// non-ENOENT error with a real vulnerability result must NOT be skipped.
+	it("dependency_audit: non-ENOENT error with nonzero status still produces a finding", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockSpawnSync.mockReturnValue(
+			spawnResult({
+				status: 1,
+				stdout: "{}",
+				error: Object.assign(new Error("denied"), { code: "EACCES" }),
+			}),
+		);
+		mockParseNpmAuditJson.mockReturnValue({ detail: "3 high" } as never);
+		const out = await runToolCheckLoop(auditCtx());
+		expect(out).toHaveLength(1);
+		expect(out[0]?.detail).toBe("3 high");
+	});
+
+	// test-contract: kill 8afe3ca919d16b9f (`.trim()` dropped) and
+	// 6d1c07f8bf0f47b5 (`||` → `&&`) — both change what gets handed to the parser.
+	it("dependency_audit: stdout is trimmed before parsing", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "  hello  " }));
+		mockParseNpmAuditJson.mockReturnValue({ detail: "d" } as never);
+		await runToolCheckLoop(auditCtx());
+		expect(mockParseNpmAuditJson).toHaveBeenCalledWith("hello");
+	});
+
+	// test-contract: kill 257877b237b7ee7f (`summary?.detail ?? ""` → "Stryker was here!")
+	it("dependency_audit: npm-audit null summary falls back exactly to the run-command hint", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "{}" }));
+		mockParseNpmAuditJson.mockReturnValue(null);
+		const out = await runToolCheckLoop(auditCtx());
+		expect(out[0]?.detail).toBe("Run `npm` for details (parser: npm-audit)");
+	});
+
+	// test-contract: kill 0cf72450ae5d3b0e (`!summary` → false) — real osv-scanner
+	// null-summary skip is a true continue (boundary not fired).
+	it("dependency_audit: osv-scanner null-summary skip is a true continue", async () => {
+		mockResolveDependencyAuditCommand.mockReturnValue({
+			cmd: ["osv-scanner", "scan"],
+			parser: "osv-scanner",
+		});
+		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "garbage" }));
+		mockParseOsvScannerJson.mockReturnValue(null);
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			auditCtx({ onCheckBoundary: (n) => boundaries.push(n) }),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).not.toContain("inline_dependency_audit");
+	});
+
+	// test-contract: kill 61446d11322a3870 (+1→-1), 397d069ae4501984 (slice→absPath),
+	// a5a69b90d4636fc0 (end→true), 81eaff1e6aa2d666 (end→false),
+	// 2a40b4f80e20f2fb (unary -→+), b892a27d59ea5ab2 (||→&&) — all six change
+	// the basename passed to isLikelyTestFile away from the correct "feature".
+	it("affected_tests: baseForTests strips exactly the extension", async () => {
+		mockGetProfileForFile.mockReturnValue({ id: "typescript", inline_checks: [] } as never);
+		mockIsLikelyTestFile.mockReturnValue(false);
+		const dispatcher = vi.fn().mockReturnValue([]);
+		(TEST_DISPATCHERS as Record<string, unknown>).typescript = dispatcher;
+		await runToolCheckLoop(
+			makeCtx({ filePath: "src/feature.ts", cwd: "/cwd", checks: { affected_tests: cfg() } }),
+		);
+		expect(mockIsLikelyTestFile).toHaveBeenCalledWith("feature", "/cwd/src/feature.ts");
+	});
+
+	// test-contract: kill 30c8463e998b6529 (`!profile` → false) — real no-profile
+	// skip is a true continue (boundary not fired).
+	it("affected_tests: no-profile skip is a true continue", async () => {
+		mockGetProfileForFile.mockReturnValue(null);
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { affected_tests: cfg() }, onCheckBoundary: (n) => boundaries.push(n) }),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).not.toContain("inline_affected_tests");
+	});
+
+	// test-contract: kill 76953ebf1b8662bf (`!dispatcher` → false) — real
+	// no-dispatcher skip is a true continue (boundary not fired).
+	it("affected_tests: no-dispatcher skip is a true continue", async () => {
+		mockGetProfileForFile.mockReturnValue({ id: "ruby", inline_checks: [] } as never);
+		mockIsLikelyTestFile.mockReturnValue(false);
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { affected_tests: cfg() }, onCheckBoundary: (n) => boundaries.push(n) }),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).not.toContain("inline_affected_tests");
+	});
+
+	// test-contract: kill b978d218609438ce (`!== undefined` → false) and
+	// 645b8670d03c5793 (!==→===) — a defined max_dependent_tests must reach
+	// the dispatcher.
+	it("affected_tests: a defined max_dependent_tests is forwarded to the dispatcher", async () => {
+		mockGetProfileForFile.mockReturnValue({ id: "typescript", inline_checks: [] } as never);
+		mockIsLikelyTestFile.mockReturnValue(false);
+		const dispatcher = vi.fn().mockReturnValue([]);
+		(TEST_DISPATCHERS as Record<string, unknown>).typescript = dispatcher;
+		await runToolCheckLoop(makeCtx({ checks: { affected_tests: cfg({ max_dependent_tests: 5 }) } }));
+		const arg = dispatcher.mock.calls[0]?.[0];
+		expect(arg).toMatchObject({ maxDependentTests: 5 });
+	});
+
+	// test-contract: kill d1c8154f42f9d72f (`!== undefined` → true) — an
+	// undefined max_dependent_tests must NOT appear as a key at all.
+	it("affected_tests: an undefined max_dependent_tests is omitted from the dispatcher call", async () => {
+		mockGetProfileForFile.mockReturnValue({ id: "typescript", inline_checks: [] } as never);
+		mockIsLikelyTestFile.mockReturnValue(false);
+		const dispatcher = vi.fn().mockReturnValue([]);
+		(TEST_DISPATCHERS as Record<string, unknown>).typescript = dispatcher;
+		await runToolCheckLoop(makeCtx({ checks: { affected_tests: cfg() } }));
+		const arg = dispatcher.mock.calls[0]?.[0] as object;
+		expect("maxDependentTests" in arg).toBe(false);
+	});
+
+	// test-contract: kill 3e5bffbe17ebc817 (`name === "typescript"` → true) —
+	// a non-typescript command check must ignore tscFilterFile entirely.
+	it("command branch: a non-typescript check ignores tscFilterFile for targetFile", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		const run = engineReturning({ results: [] });
+		await runToolCheckLoop(
+			makeCtx({
+				checks: { biome: cfg({ command: "biome" }) },
+				editedFileInRepo: true,
+				tscFilterFile: "sub/only.ts",
+			}),
+		);
+		expect(run).toHaveBeenCalledWith(
+			expect.objectContaining({ targetFile: "src/x.ts" }),
+			expect.anything(),
+		);
+	});
+
+	// test-contract: kill 2b24fb4ad780801f (`ctx.outToolMetrics` → true) — when
+	// outToolMetrics is undefined the metrics loop must not run (it would throw
+	// on `.push` of undefined, swallowing the real finding).
+	it("command branch: engine findings survive when outToolMetrics is undefined", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		engineReturning({
+			results: [{ file: "src/x.ts", line: 1, message: "m" }],
+			metrics: [{ tool: "biome", elapsedMs: 5, findingCount: 1 }],
+		});
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { biome: cfg({ command: "biome" }) }, editedFileInRepo: true }),
+		);
+		expect(out).toHaveLength(1);
+	});
+
+	// test-contract: kill 1ab6c2b0e8c62540 (`> 15` → `>= 15`) — exactly 15
+	// results must not append an overflow suffix.
+	it("command branch: exactly 15 engine results has no overflow suffix", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		const results = Array.from({ length: 15 }, (_v, i) => ({
+			file: "src/x.ts",
+			line: i,
+			message: `m${i}`,
+		}));
+		engineReturning({ results });
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { biome: cfg({ command: "biome" }) }, editedFileInRepo: true }),
+		);
+		expect(out[0]?.detail).not.toContain("more)");
+	});
+
+	// test-contract: kill b4cfc1db92b1487c (`check.command` → true) — an
+	// unknown check with no handler and no command falls through to
+	// `outcome = []`, a true not-null branch, so the boundary DOES fire.
+	it("unknown check with no command falls through to outcome=[] (boundary fires)", async () => {
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({
+				checks: { some_unknown_inline_check: cfg() },
+				editedFileInRepo: true,
+				onCheckBoundary: (n) => boundaries.push(n),
+			}),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).toContain("inline_some_unknown_inline_check");
+	});
+
+	// test-contract: kill 0af89a8d11778d1d (`editedFileInRepo === false && check.command` → false)
+	it("an out-of-repo command check truly skips the engine", async () => {
+		mockConfigNameToToolId.mockReturnValue("tsc" as never);
+		const run = engineReturning({ results: [] });
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { typescript: cfg({ command: "tsc" }) }, editedFileInRepo: false }),
+		);
+		expect(out).toEqual([]);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	// test-contract: kill 7a707b609b6f3a5d (`outcome === null` → false) — a
+	// real handler-returned-null skip is a true continue (boundary not fired).
+	it("secrets_in_source test-file skip is a true continue", async () => {
+		mockIsTestFile.mockReturnValue(true);
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({
+				checks: { secrets_in_source: cfg() },
+				onCheckBoundary: (n) => boundaries.push(n),
+			}),
+		);
+		expect(out).toEqual([]);
+		expect(boundaries).not.toContain("inline_secrets_in_source");
+	});
+});
