@@ -4,14 +4,28 @@
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clearTscOverlayCache } from "../check-engine/tool-runners/tsc-overlay.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+	_setTscOverlayModeOverrideForTest,
+	clearTscOverlayCache,
+} from "../check-engine/tool-runners/tsc-overlay.js";
 import { sweepStaleFixtureDirs } from "./fixture-hygiene.js";
 import {
 	evaluateTscDiffOverlay,
 	isTscFindingBlocking,
 	isTscFindingDeferrable,
 } from "../diff-overlay.js";
+
+// This suite exercises LanguageService BEHAVIOR (diagnostics, warm-cache
+// reuse) against the real CLI project — pin "in-process" mode so it doesn't
+// route through the sidecar transport (a per-call cold spawn, covered
+// separately by tsc-overlay-sidecar-*.test.ts).
+beforeEach(() => {
+	_setTscOverlayModeOverrideForTest("in-process");
+});
+afterEach(() => {
+	_setTscOverlayModeOverrideForTest(null);
+});
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
 // `src/harness/__tests__`), and that is exactly the `projectRoot` the overlay is
@@ -133,7 +147,10 @@ describe("evaluateTscDiffOverlay", () => {
 			CLI_ROOT,
 		);
 		expect(result.newFindings).toEqual([]);
-		expect(result.elapsedMs).toBe(0);
+		// elapsedMs is real wall-clock time around a LanguageService call (this
+		// still adds the new file to the program), not a signal this function
+		// contracts to zero — pinning it to an exact 0 was flaky under load.
+		expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
 	});
 
 	it("returns empty for files with non-TS extensions", () => {

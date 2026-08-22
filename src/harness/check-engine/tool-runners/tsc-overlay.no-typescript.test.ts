@@ -21,7 +21,12 @@ vi.mock("node:module", () => ({
 
 async function loadFreshOverlay(): Promise<typeof import("./tsc-overlay.js")> {
 	vi.resetModules();
-	return import("./tsc-overlay.js");
+	const mod = await import("./tsc-overlay.js");
+	// This suite exercises loadTypeScript's in-process fallback chain — pin
+	// "in-process" mode so the call doesn't route through the sidecar
+	// transport (which would spawn a real child process instead).
+	mod._setTscOverlayModeOverrideForTest("in-process");
+	return mod;
 }
 
 afterEach(() => {

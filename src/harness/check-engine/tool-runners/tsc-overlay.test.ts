@@ -7,8 +7,23 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { clearTscOverlayCache, runTscOverlay } from "./tsc-overlay.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	_setTscOverlayModeOverrideForTest,
+	clearTscOverlayCache,
+	runTscOverlay,
+} from "./tsc-overlay.js";
+
+// This suite exercises the in-process LanguageService logic itself (sibling
+// overlays, cross-file resolution) — pin "in-process" mode so it doesn't
+// route through the sidecar transport (covered separately by
+// tsc-overlay-sidecar-main.test.ts and tsc-overlay-sidecar-client.test.ts).
+beforeEach(() => {
+	_setTscOverlayModeOverrideForTest("in-process");
+});
+afterEach(() => {
+	_setTscOverlayModeOverrideForTest(null);
+});
 
 const created: string[] = [];
 

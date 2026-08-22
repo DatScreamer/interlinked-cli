@@ -140,6 +140,7 @@ export function mergeLocalOverrides(
 	// Git session-scope gate (PB&J Free-CLI item #7) — local can flip the
 	// gate on/off and choose ask vs block mode.
 	mergeOptionalSection(config, local, "git_session_scope_gate");
+	mergeOptionalSection(config, local, "tsc_overlay");
 	// Linked workspace roots — sibling project dirs the agent may also write to
 	// (the multi-repo workspace model; see docs/design/linked-workspace.md).
 	// LOCAL-ONLY by design: this WIDENS write-confinement, so it must be the

@@ -255,10 +255,10 @@ export interface GuardRulesConfig {
 	/** Plan-capture (PB&J Free-CLI item #2) — detects TaskCreate / ExitPlanMode /
 	 *  structured `## Plan` user prompts. See PlanCaptureConfig. */
 	plan_capture?: PlanCaptureConfig;
-	/** Git session-scope gate (PB&J Free-CLI item #7) — PreToolUse Bash
-	 *  check that asks before git add/commit/push touches files outside
-	 *  session.files_written ∪ pre-session baseline. */
+	/** Git session-scope gate (PB&J Free-CLI item #7) — asks before git add/
+	 *  commit/push touches files outside session.files_written ∪ baseline. */
 	git_session_scope_gate?: GitSessionScopeGateConfig;
+	tsc_overlay?: { mode: "sidecar" | "in-process" | "off" }; // RSS-isolation fix; DEFAULT "sidecar"
 	/** Per-edit coverage enforcement (apply-before-disk overlay + budget-gate).
 	 *  DEFAULT ON — opt-OUT per repo (enabled:false). See PerEditCoverageConfig and
 	 *  `evaluator/coverage-write-guard.ts`. */

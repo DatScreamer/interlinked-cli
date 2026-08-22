@@ -83,6 +83,10 @@ const LOCAL_PROBES = {
 		override: { git_session_scope_gate: asCfg<"git_session_scope_gate">({ enabled: true, mode: "ask" }) },
 		changed: (c) => c.git_session_scope_gate?.enabled === true,
 	},
+	tsc_overlay: {
+		override: { tsc_overlay: asCfg<"tsc_overlay">({ mode: "in-process" }) },
+		changed: (c) => c.tsc_overlay?.mode === "in-process",
+	},
 	linked_projects: {
 		override: { linked_projects: ["../parity-probe"] },
 		changed: (c) => c.linked_projects?.includes("../parity-probe") === true,
