@@ -22,7 +22,8 @@ import { statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
-import { recordDaemonEvent } from "./daemon-ledger.js";
+import { recordDaemonEvent, readRecentDaemonEvents } from "./daemon-ledger.js";
+import { HANDOVER_CHURN_WINDOW_MS, churnBackstopEvent, handoverChurnExceeded } from "./handover-churn.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
 /** A fresher artifact must be at least this old — tsup may still be writing. */
@@ -151,12 +152,25 @@ function spawnHandOver(deps: BuildRefreshDeps, own: OwnArtifact, cwd: string): v
  * hole with no daemon, ending only when the user typed something. A planned
  * exit during activity must bring its own successor.
  *
- * Returns false when there is nothing to spawn (src-run daemon, no artifact) —
- * callers fall back to a bare exit + self-heal.
+ * Returns false when there is nothing to spawn (src-run daemon, no artifact),
+ * OR when the {@link HANDOVER_CHURN_MAX_ATTEMPTS}-per-window backstop has
+ * tripped — see ./handover-churn.ts. Either way callers fall back to a bare
+ * exit + self-heal, which is NOT gated by this backstop (recovery must stay
+ * reachable even while automatic handovers are suppressed).
  */
-export function spawnRestartViaCli(moduleUrl: string, cwd: string, spawn = nodeSpawn): boolean {
+export function spawnRestartViaCli(
+	moduleUrl: string,
+	cwd: string,
+	spawn = nodeSpawn,
+	readEvents = readRecentDaemonEvents,
+): boolean {
 	const own = resolveOwnArtifact(moduleUrl);
 	if (own === null) return false;
+	const nowMs = Date.now();
+	if (handoverChurnExceeded(readEvents(cwd), nowMs)) {
+		recordDaemonEvent(cwd, churnBackstopEvent(process.pid, nowMs, "rss-ceiling handover suppressed"));
+		return false;
+	}
 	try {
 		const child = spawn(process.execPath, [own.cliEntryPath, "harness", "restart"], {
 			cwd,
@@ -213,6 +227,21 @@ export function startBuildRefreshWatcher(opts: BuildRefreshOptions): () => void 
 		};
 		if (!shouldHandOver(decide)) return;
 		lastAttemptMs = nowMs;
+		// Backstop before committing to another handover: bound how many
+		// unresolved attempts (any reason) this repo can accumulate — see
+		// ./handover-churn.ts. Checked here, not just inside
+		// `spawnRestartViaCli`, so a tripped backstop skips even the intent
+		// row below; there is no successor coming, so there is nothing to
+		// explain as "pending".
+		if (handoverChurnExceeded(readRecentDaemonEvents(opts.cwd), nowMs)) {
+			opts.log(
+				"[build-refresh] handover churn backstop tripped — too many unresolved attempts in the last " +
+					`${Math.round(HANDOVER_CHURN_WINDOW_MS / 60_000)} minutes; refusing to spawn another successor ` +
+					"until one reaches listening or the window ages out. Run `interlinked harness restart` manually if needed.",
+			);
+			recordDaemonEvent(opts.cwd, churnBackstopEvent(process.pid, nowMs, "build-refresh handover suppressed"));
+			return;
+		}
 		opts.log(
 			`[build-refresh] newer build detected (artifact ${new Date(currentMtimeMs).toISOString()} > running ${new Date(startedMtimeMs).toISOString()}) — handing over via \`interlinked harness restart\``,
 		);

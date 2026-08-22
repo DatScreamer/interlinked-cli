@@ -61,6 +61,8 @@ const mocks = vi.hoisted(() => ({
 	// startup mutex + daemon control (2026-08-15 restart-storm fix)
 	acquireStartupLock: vi.fn(),
 	waitForDaemonSocket: vi.fn(),
+	startupInFlight: vi.fn(),
+	touchStartupLock: vi.fn(),
 	reapOrphanHarnessesVerified: vi.fn(),
 	stopAllDaemons: vi.fn(),
 	recordDaemonEvent: vi.fn(),
@@ -81,6 +83,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../harness/startup-lock.js", () => ({
 	acquireStartupLock: mocks.acquireStartupLock,
 	waitForDaemonSocket: mocks.waitForDaemonSocket,
+	startupInFlight: mocks.startupInFlight,
+	touchStartupLock: mocks.touchStartupLock,
 }));
 
 // Liveness-verified reaping + complete stop.
@@ -247,6 +251,10 @@ beforeEach(() => {
 		release: mocks.lockRelease,
 	});
 	mocks.waitForDaemonSocket.mockResolvedValue(false);
+	// Default: no OTHER start is in flight — `harnessRestartCommand`'s
+	// `resolveRestartAction` pre-flight takes the "proceed" branch, matching
+	// every existing restart test's expectations unchanged.
+	mocks.startupInFlight.mockReturnValue(false);
 	mocks.stopAllDaemons.mockResolvedValue({ stopped: [], survived: [] });
 	mocks.readRecentDaemonEvents.mockReturnValue([]);
 	mocks.openDaemonStderrLog.mockReturnValue({ fd: 7, path: "/repo/.interlinked/logs/daemon.log", startOffset: 0 });
@@ -649,6 +657,80 @@ describe("harnessStartCommand — startup mutex", () => {
 // ===========================================================================
 // harnessRestartCommand
 // ===========================================================================
+
+describe("harnessRestartCommand — restart-guard pre-flight (2026-08-22 postmortem)", () => {
+	it("defers to an in-flight start that comes up: no stop, no spawn, no throttle collapse", async () => {
+		mocks.startupInFlight.mockReturnValue(true);
+		mocks.waitForDaemonSocket.mockResolvedValue(true);
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).not.toHaveBeenCalled();
+		expect(mocks.stopAllDaemons).not.toHaveBeenCalled();
+		expect(mocks.spawn).not.toHaveBeenCalled();
+		expect(logText()).toContain("already in flight");
+		expect(mocks.recordDaemonEvent).toHaveBeenCalledWith(
+			"/repo",
+			expect.objectContaining({ event: "handover", reason: "deferred-to-inflight" }),
+		);
+	});
+
+	it("falls through to a real restart when the in-flight holder never answers (wedged)", async () => {
+		mocks.startupInFlight.mockReturnValue(true);
+		mocks.waitForDaemonSocket.mockResolvedValue(false);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false }) // restart guard
+			.mockReturnValueOnce({ running: false }) // socket cleanup
+			.mockReturnValueOnce({ running: false }) // pid cleanup
+			.mockReturnValueOnce({ running: false }) // start guard
+			.mockReturnValue({ running: true, pid: 777 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(777));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(mocks.recordDaemonEvent).toHaveBeenCalledWith(
+			"/repo",
+			expect.objectContaining({ event: "handover", reason: "deferred-timeout" }),
+		);
+		// Still reached the normal restart path afterward.
+		expect(logText()).toContain("Harness started (PID 777)");
+	});
+
+	it("backs off under the churn backstop instead of killing or spawning anything", async () => {
+		mocks.startupInFlight.mockReturnValue(false);
+		mocks.readRecentDaemonEvents.mockReturnValue(
+			Array.from({ length: 4 }, (_, i) => ({
+				at: Date.now() - 1_000 + i,
+				pid: 1,
+				event: "handover" as const,
+				reason: "build-refresh",
+			})),
+		);
+		const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+		await runWithTimers(harnessRestartCommand({}));
+		expect(killSpy).not.toHaveBeenCalled();
+		expect(mocks.stopAllDaemons).not.toHaveBeenCalled();
+		expect(mocks.spawn).not.toHaveBeenCalled();
+		expect(errText()).toContain("Too many restart attempts");
+		expect(mocks.recordDaemonEvent).toHaveBeenCalledWith(
+			"/repo",
+			expect.objectContaining({ event: "handover", reason: "churn-backstop" }),
+		);
+	});
+
+	it("proceeds normally when nothing is in flight and churn is under threshold (baseline unchanged)", async () => {
+		mocks.startupInFlight.mockReturnValue(false);
+		mocks.readRecentDaemonEvents.mockReturnValue([]);
+		mocks.isHarnessRunning
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValueOnce({ running: false })
+			.mockReturnValue({ running: true, pid: 999 });
+		mocks.existsSync.mockImplementation((p: unknown) => String(p) === SERVER || String(p) === SOCK);
+		mocks.spawn.mockReturnValue(createFakeChild(999));
+		await runWithTimers(harnessRestartCommand({}));
+		expect(logText()).toContain("Harness started (PID 999)");
+	});
+});
 
 describe("harnessRestartCommand", () => {
 	it("when nothing is running, skips the kill path and delegates to start (normal)", async () => {

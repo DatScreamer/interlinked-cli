@@ -14,6 +14,7 @@ import { DEFAULT_DAEMON_HEAP_MB } from "../harness/memory-ceiling.js";
 import {
 	acquireStartupLock,
 	type StartupLockResult,
+	touchStartupLock,
 	waitForDaemonSocket,
 } from "../harness/startup-lock.js";
 import { c, kvLine } from "../lib/formatter.js";
@@ -152,6 +153,12 @@ export async function daemonizeHarness(args: {
 			ready = true;
 			break;
 		}
+		// Heartbeat the startup lock every poll tick: this loop can legitimately
+		// run well past STARTUP_LOCK_TTL_MS (a cold compile, a loaded machine), and
+		// without a refresh a concurrent `harness start`/self-heal reads the fixed
+		// acquisition timestamp as stale and steals the lock mid-boot — see
+		// startup-lock.ts's `touchStartupLock` doc comment for the full race.
+		touchStartupLock(cwd);
 		await new Promise((resolve) => setTimeout(resolve, pollMs));
 	}
 	const newStatus = isHarnessRunning(cwd);

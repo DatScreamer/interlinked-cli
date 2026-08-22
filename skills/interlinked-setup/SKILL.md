@@ -94,7 +94,7 @@ for interpreting the warning.
 |---|---|
 | `interlinked harness start [--verbose] [--json]` | Start the daemon (background). Reaps orphans first and auto-rebuilds stale `dist/`, so a cold start can take a few seconds. |
 | `interlinked harness stop` | SIGTERM the daemon. |
-| `interlinked harness restart` | Stop + fresh start; **the only way to pick up config/mode changes**. Note: clears per-session trajectory state. |
+| `interlinked harness restart` | Stop + fresh start; **the only way to pick up config/mode changes**. Note: clears per-session trajectory state. Defers instead of killing when a start is already in flight, and backs off with "Too many restart attempts" if too many restarts (any trigger) went unresolved recently — see below. |
 | `interlinked harness status [--json]` | **Liveness** (three states, below) + socket, RSS, mode, orphan count, build staleness. `--json` adds `liveness` and `socket_answered`. |
 | `interlinked daemons [--cleanup]` | List **all** per-session daemons; `--cleanup` purges dead-PID records. |
 | `interlinked harness reap [--force] [--all]` | List (default) or kill orphan daemons. |
@@ -119,6 +119,23 @@ Only an answered probe prints `running (PID …)`, so that line can no longer ap
 `Socket: not found`. **Fix a zombie with `interlinked harness restart`** — both surfaces print
 that remedy inline. A pid-alive daemon gets one confirming re-probe, so a daemon still binding
 right after `restart` is not mislabelled.
+
+### Restart defers to an in-flight start, and backs off under churn (2026-08-22)
+
+`interlinked harness restart` used to stop-then-start unconditionally, so two overlapping
+restart triggers (a build-refresh handover, an rss-ceiling recycle, a second manual restart)
+could kill a successor the other had just spawned, before it finished binding. Now:
+
+- If a start is already in flight (the daemon is mid-boot), `restart` waits for its socket
+  instead of killing it — printing "already in flight" and doing nothing further once it
+  answers.
+- If too many restart attempts (any trigger) went unresolved in the last ~10 minutes, `restart`
+  refuses and prints "Too many restart attempts … backing off" instead of adding to the churn.
+  Check `.interlinked/daemon-events.jsonl` for the pattern before retrying by hand.
+
+Neither path is silent: every deferral or backoff writes a `handover` row to the daemon ledger
+(`daemon-ledger.ts` / `handover-churn.ts`), so `daemon-events.jsonl` always explains what
+`restart` actually did.
 
 ## Diagnosing problems
 

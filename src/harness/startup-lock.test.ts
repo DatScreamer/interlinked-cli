@@ -10,6 +10,7 @@ import {
 	STARTUP_LOCK_TTL_MS,
 	startupInFlight,
 	startupLockPath,
+	touchStartupLock,
 	waitForDaemonSocket,
 } from "./startup-lock.js";
 
@@ -95,6 +96,51 @@ describe("acquireStartupLock — negative (must not fire)", () => {
 		expect(startupInFlight(root)).toBe(false);
 		foreignLock(Date.now() - STARTUP_LOCK_TTL_MS - 1);
 		expect(startupInFlight(root)).toBe(false);
+	});
+});
+
+describe("touchStartupLock — positive (must refresh a held lock)", () => {
+	it("P1: refreshing an old-but-alive lock's own pid stops it reading stale", () => {
+		const lock = acquireStartupLock(root);
+		if (!lock.acquired) throw new Error("expected acquire");
+		const pastTtl = Date.now() - STARTUP_LOCK_TTL_MS - 1_000;
+		writeFileSync(startupLockPath(root), JSON.stringify({ pid: process.pid, at: pastTtl }));
+		expect(isStartupLockStale(readStartupLockHolder(root), Date.now())).toBe(true);
+
+		touchStartupLock(root);
+
+		expect(isStartupLockStale(readStartupLockHolder(root), Date.now())).toBe(false);
+	});
+
+	it("P2: closes the race — a slow-but-alive holder is never stolen mid-poll", () => {
+		// Simulates `daemonizeHarness`'s up-to-60s poll loop outliving the 15s
+		// TTL: without a heartbeat, a concurrent `acquireStartupLock` call past
+		// the TTL steals the lock out from under a holder that is still working.
+		const lock = acquireStartupLock(root);
+		if (!lock.acquired) throw new Error("expected acquire");
+		writeFileSync(
+			startupLockPath(root),
+			JSON.stringify({ pid: process.pid, at: Date.now() - STARTUP_LOCK_TTL_MS - 5_000 }),
+		);
+
+		touchStartupLock(root);
+		const contender = acquireStartupLock(root);
+
+		expect(contender.acquired).toBe(false);
+	});
+});
+
+describe("touchStartupLock — negative (must not touch someone else's lock)", () => {
+	it("N1: a lock owned by a different pid is left byte-for-byte alone", () => {
+		const foreignAt = Date.now() - STARTUP_LOCK_TTL_MS - 1_000;
+		foreignLock(foreignAt, process.pid + 1);
+		touchStartupLock(root);
+		expect(readStartupLockHolder(root)).toEqual({ pid: process.pid + 1, at: foreignAt });
+	});
+
+	it("N2: no lock file present is a silent no-op, not a throw", () => {
+		expect(() => touchStartupLock(root)).not.toThrow();
+		expect(existsSync(startupLockPath(root))).toBe(false);
 	});
 });
 

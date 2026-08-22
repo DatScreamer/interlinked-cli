@@ -20,7 +20,16 @@
 //    signals — the recorded age (TTL) and the holder pid's liveness.
 //  - Never throw. A start path that dies of its lock is worse than a herd.
 
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync, closeSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { daemonSocketPaths, isDaemonSocketServing } from "./session-paths.js";
 
@@ -151,6 +160,36 @@ export function releaseStartupLock(repoRoot: string): void {
 		unlinkSync(startupLockPath(repoRoot));
 	} catch {
 		/* intentional: already gone */
+	}
+}
+
+/**
+ * Refresh a lock THIS process holds so a legitimately slow start does not go
+ * stale under a concurrent caller mid-poll.
+ *
+ * Root cause this closes (2026-08-22 postmortem): `isStartupLockStale`
+ * declares a lock stale once its `at` timestamp is older than
+ * `STARTUP_LOCK_TTL_MS` (15s) — REGARDLESS of whether the holder is still
+ * alive. `daemonizeHarness` can legitimately poll for up to 60s (a cold
+ * TypeScript compile, or a swap-bound machine under load), so the lock's
+ * fixed acquisition timestamp goes stale from every OTHER caller's point of
+ * view long before the holder is actually done. The next `harness start` /
+ * self-heal then steals the lock and starts a competing daemon spawn while
+ * the first one is still legitimately in flight — the second contributor to
+ * the churn (the first is the unconditional kill in `stopRunningHarnessForRestart`,
+ * fixed via `resolveRestartAction` in harness-lifecycle-helpers.ts).
+ *
+ * The caller (`daemonizeHarness`'s poll loop) calls this once per tick. A
+ * lock owned by someone else is left untouched — same ownership rule as
+ * `releaseStartupLock`; never throws.
+ */
+export function touchStartupLock(repoRoot: string, nowMs: number = Date.now()): void {
+	const holder = readStartupLockHolder(repoRoot);
+	if (holder === null || holder.pid !== process.pid) return;
+	try {
+		writeFileSync(startupLockPath(repoRoot), JSON.stringify({ pid: process.pid, at: nowMs }));
+	} catch {
+		/* intentional: best-effort heartbeat — a missed touch only risks a steal */
 	}
 }
 

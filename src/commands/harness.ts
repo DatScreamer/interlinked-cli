@@ -20,6 +20,7 @@ import {
 	zombieWarningLine,
 } from "./harness-liveness.js";
 import { reapOrphanHarnessesVerified, stopAllDaemons } from "./harness-daemon-control.js";
+import { reportRestartDecision, resolveRestartAction } from "./harness-restart-guard.js";
 import {
 	buildHarnessSpawnArgs,
 	cleanStaleRestartFiles,
@@ -243,6 +244,16 @@ export async function harnessRestartCommand(opts: {
 	const sessionId = opts.sessionId || "default";
 
 	try {
+		// Pre-flight (2026-08-22 postmortem): defer to an in-flight start, or
+		// back off under the churn backstop, BEFORE ever calling
+		// `stopRunningHarnessForRestart` — see harness-restart-guard.ts for the
+		// race this closes. Only "proceed"/"deferred-timeout" fall through to the
+		// stop+respawn sequence below; the other two verdicts are terminal.
+		const decision = await resolveRestartAction(cwd);
+		if (decision.action !== "proceed") {
+			reportRestartDecision(mode, cwd, decision);
+			if (decision.action !== "deferred-timeout") return;
+		}
 		// A restart is a PLANNED exit. Record the intent first so the daemon's
 		// own `signal` exit row is upgraded to `explicit-restart` by
 		// `describeLastExit` — otherwise an operator restart is indistinguishable
