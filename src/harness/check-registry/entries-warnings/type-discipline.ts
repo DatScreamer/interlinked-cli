@@ -7,6 +7,7 @@
 
 import { detectConditionalEmptyObjectSpread } from "../../checks/type-discipline.js";
 import { detectUnknownTypeAlias } from "../../checks/type-discipline-unknown-alias.js";
+import { detectTagReflectionTypeCheck } from "../../checks/tag-reflection.js";
 import type { CheckRegistration } from "../types.js";
 
 export const TYPE_DISCIPLINE_ENTRIES: CheckRegistration[] = [
@@ -41,5 +42,21 @@ export const TYPE_DISCIPLINE_ENTRIES: CheckRegistration[] = [
 		fn: detectUnknownTypeAlias,
 		resultsPropName: "unknownTypeAlias",
 		content_keywords: ["unknown"],
+	},
+	{
+		id: "tag_reflection_type_check",
+		phase: "post",
+		name: "Tag-Reflection Type Check",
+		description:
+			'Detects a tag-reflection type check for a primitive (`instanceof String/Number/Boolean` or `Object.prototype.toString.call(x) === "[object String/Number/Boolean]"`) where `typeof` already answers the question. Object.prototype.toString comparisons against non-primitive tags (Date, Array, RegExp, Map, etc.) are not flagged — typeof cannot distinguish those, so tag reflection is the correct tool there.',
+		tier: 1,
+		determinism: "heuristic",
+		severity: "warning",
+		pipeline: "agent_safety",
+		fix_instruction:
+			'Prefer `typeof x === "string"` (or "number"/"boolean") over instanceof/tag-reflection checks for these three primitive types — tag reflection is spoofable via Symbol.toStringTag and does not survive a cross-realm value (an object from another iframe/vm reports its own realm\'s tag).',
+		fn: detectTagReflectionTypeCheck,
+		resultsPropName: "tagReflectionTypeCheck",
+		content_keywords: ["instanceof", "[object "],
 	},
 ];

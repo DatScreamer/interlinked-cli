@@ -291,6 +291,16 @@ const VERIFY_ONLY_CHECKS = new Set([
 	// Measured on the inline path it pushed determinism-conformance past its 30s
 	// budget. Advisory taste check, 17 hits repo-wide — deep-audit cadence.
 	"halstead_difficulty",
+	// type_smuggling: the assignability test builds a full ts.Program per file,
+	// and one file's Program pulls its whole import closure (~2,900 SourceFiles,
+	// ~1.9GB of AST in this repo). On the inline path that ran per edit INSIDE
+	// the daemon — heap-snapshot-attributed (2026-08-22) as the recurring
+	// +1GB/tick RSS spikes and emergency-gc restarts. Deep audit runs it in the
+	// CLI's own process, where the allocation dies with the run.
+	"type_smuggling",
+	// Import-name alias of type_smuggling for the import-parity sweep below
+	// (the set is matched against both check ids and imported function names).
+	"checkTypeSmuggling",
 	// readme_script_drift: verify-only sibling of gitignored_written_config —
 	// the detector is 3-arg (content, filePath, getScripts); it needs a
 	// package.json `scripts` resolver walking up from the markdown file, which
@@ -391,6 +401,11 @@ const POSTTOOLUSE_ONLY_CHECKS = new Set([
 	"conditional_empty_object_spread",
 	"detectUnknownTypeAlias",
 	"unknown_type_alias",
+	// tag_reflection_type_check (2026-08-22): new detector in the same
+	// type-discipline family. Shipped PostToolUse-enforced only; verify-surface
+	// wiring deferred to the same batch as its two siblings above.
+	"detectTagReflectionTypeCheck",
+	"tag_reflection_type_check",
 	// Plan 25 lanes 6-8 (2026-08-17): portability lint + boundary/contract wave.
 	// Shipped PostToolUse-enforced now; their verify-surface wiring (interface +
 	// init + push + streamCqSection) is a deferred batch, matching the
