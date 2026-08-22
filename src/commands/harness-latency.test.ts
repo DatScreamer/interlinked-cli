@@ -63,14 +63,8 @@ const DEFAULT_LOG = "/repo/.interlinked/logs/latency.jsonl";
 
 /** Build one latency record with sane defaults; override any field. */
 const sample = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-	schema: "v1",
-	kind: "hook_decision",
-	ts: "2026-04-27T20:00:00.000Z",
 	hook_event: "PostToolUse",
-	tool_name: "Edit",
 	session_id: "s1",
-	agent_source: "claude",
-	decision: "allow",
 	checks_ran: ["typescript", "biome_lint"],
 	checks_timing_ms: 1000,
 	...overrides,

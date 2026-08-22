@@ -18,15 +18,12 @@ interface ToolBreakdownRecord {
 	finding_count: number;
 }
 
+// Only the fields the report reads. Wire rows carry more (schema/kind/ts/
+// tool_name/agent_source/decision); parsing them was validate-and-ignore
+// dead weight — twice-confirmed unobserved by mutation re-measure 2026-08-22.
 interface LatencyRecord {
-	schema?: string;
-	kind?: string;
-	ts?: string;
 	hook_event?: string | null;
-	tool_name?: string | null;
 	session_id?: string | null;
-	agent_source?: string | null;
-	decision?: string;
 	checks_ran?: string[] | null;
 	checks_timing_ms?: number | null;
 	tool_breakdown?: ToolBreakdownRecord[] | null;
@@ -50,28 +47,14 @@ interface LatencyRecord {
  */
 function parseLatencyRecord(value: unknown): LatencyRecord | null {
 	if (!isJsonObject(value)) return null;
-	const {
-		schema,
-		kind,
-		ts,
-		hook_event,
-		tool_name,
-		session_id,
-		agent_source,
-		decision,
-		checks_ran,
-		checks_timing_ms,
-		tool_breakdown,
-	} = value;
+	// Wire rows carry more fields (schema/kind/ts/tool_name/agent_source/
+	// decision); parsing them here was validate-and-ignore dead weight —
+	// twice-confirmed unobserved by mutation re-measure 2026-08-22. The
+	// parser now keeps only what the report reads.
+	const { hook_event, session_id, checks_ran, checks_timing_ms, tool_breakdown } = value;
 	return {
-		...(typeof schema === "string" ? { schema } : {}),
-		...(typeof kind === "string" ? { kind } : {}),
-		...(typeof ts === "string" ? { ts } : {}),
 		hook_event: typeof hook_event === "string" || hook_event === null ? hook_event : null,
-		tool_name: typeof tool_name === "string" || tool_name === null ? tool_name : null,
 		session_id: typeof session_id === "string" || session_id === null ? session_id : null,
-		agent_source: typeof agent_source === "string" || agent_source === null ? agent_source : null,
-		...(typeof decision === "string" ? { decision } : {}),
 		// Element-level validation is deliberately NOT done here (see
 		// addBreakdownTimings/addChecksRanTimings) — they already skip
 		// malformed entries one-by-one, and duplicating that here would risk

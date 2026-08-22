@@ -12,14 +12,8 @@ vi.mock("node:fs", () => ({
 import { computeLatencyReport, harnessLatencyCommand } from "./harness-latency.js";
 
 const record = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-	schema: "v1",
-	kind: "hook_decision",
-	ts: "2026-08-20T00:00:00.000Z",
 	hook_event: "PostToolUse",
-	tool_name: "Edit",
 	session_id: "session-1",
-	agent_source: "codex",
-	decision: "allow",
 	checks_ran: ["typescript"],
 	checks_timing_ms: 10,
 	...overrides,
@@ -54,9 +48,9 @@ describe("untrusted latency record fields", () => {
 	// test-contract: security — wrong primitive types are normalized so aggregation never treats them as valid labels or session ids
 	it("normalizes wrong types while preserving null optionals and valid labels", () => {
 		writeLines(
-			record({ hook_event: null, tool_name: null, session_id: null, agent_source: null }),
-			record({ hook_event: 42, tool_name: 42, session_id: 42, agent_source: 42 }),
-			record({ hook_event: "PreToolUse", tool_name: "Shell", session_id: "s2", agent_source: "claude" }),
+			record({ hook_event: null, session_id: null }),
+			record({ hook_event: 42, session_id: 42 }),
+			record({ hook_event: "PreToolUse", session_id: "s2" }),
 		);
 		const report = computeLatencyReport(CWD);
 		expect(report.total_events).toBe(3);
