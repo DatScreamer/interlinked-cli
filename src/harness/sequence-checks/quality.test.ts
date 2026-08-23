@@ -390,6 +390,20 @@ describe("magic_literal_cross_file_proliferation", () => {
 		expect(matches[0]?.message).toContain("3 different files");
 	});
 
+	it("does not fire when the spread is scratch probe scripts (2026-08-23 carve-out: throwaway analysis files repeat fixtures by nature)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Write", tool_input: { file_path: "scratch/w57/sim2.mjs" } },
+		]);
+		session.literal_occurrences = new Map([
+			[
+				"hash:probe-fixture",
+				new Set(["scratch/w57/sim2.mjs", "scratch/w57/sim3.mjs", "scratch/w57/sim4.mjs", "src/real.ts"]),
+			],
+		]);
+		// 3 scratch probes filtered; 1 source file remains — under threshold.
+		expect(magicLiteralCrossFileProliferation.fn(session, lastEvent)).toEqual([]);
+	});
+
 	it("does not fire when the literal appears in only 2 files", () => {
 		const { session, lastEvent } = buildTrajectoryFixture([
 			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },

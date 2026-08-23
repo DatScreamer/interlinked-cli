@@ -241,8 +241,13 @@ export const magicLiteralCrossFileProliferation: SequenceDetector = {
 			// Test files are exempt: self-contained suites repeat fixture literals
 			// BY CONTRACT (no cross-test-file coupling), so counting them made
 			// every parallel test-writing wave fire this detector (5x on
-			// 2026-08-23 alone). Only non-test files count toward the threshold.
-			const fileList = Array.from(files).filter((f) => !/\.(test|spec)\.[cm]?[jt]sx?$/.test(f));
+			// 2026-08-23 alone). Scratch probes are equally exempt — throwaway
+			// analysis scripts under scratch/ repeat fixtures by nature and
+			// share no maintained constant surface. Only non-test, non-scratch
+			// files count toward the threshold.
+			const fileList = Array.from(files).filter(
+				(f) => !isTestFilePath(f) && !/(?:^|\/)scratch\//.test(f),
+			);
 			if (fileList.length < MAGIC_LITERAL_FILE_THRESHOLD) continue;
 			matches.push({
 				prior_event_count: fileList.length,
