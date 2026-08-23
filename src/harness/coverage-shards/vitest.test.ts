@@ -93,6 +93,21 @@ describe("shardIdForRecord", () => {
 	it("leaves single-project (unnamed) records unqualified — the common path", () => {
 		expect(shardIdForRecord(record(null), "/repo")).toBe("tests/a.test.mjs");
 	});
+
+	// test-contract: public-api — multi-file records join sorted rel paths
+	// with " + " (w41: pins both the .sort() call and the separator literal).
+	it("joins multiple test files sorted, separated by ' + '", () => {
+		const multi = {
+			version: 1 as const,
+			testFiles: ["tests/b.test.ts", "tests/a.test.ts"],
+			environment: "node",
+			project: null,
+			durationMs: null,
+			passed: null,
+			istanbul: {},
+		};
+		expect(shardIdForRecord(multi, "/repo")).toBe("tests/a.test.ts + tests/b.test.ts");
+	});
 });
 
 // ==================================================================
@@ -254,6 +269,81 @@ describe("shardIdForTestFile", () => {
 		expect(shardIdForTestFile("/repo/tests/a.test.ts", "/repo")).toBe("tests/a.test.ts");
 		expect(shardIdForTestFile("tests/a.test.ts", "/repo")).toBe("tests/a.test.ts");
 	});
+
+	// test-contract: public-api — backslash-to-slash normalization is applied
+	// to the input path before the absolute-path check runs.
+	it("normalizes backslashes to forward slashes in a relative test path", () => {
+		expect(shardIdForTestFile("tests\\nested\\a.test.ts", "/repo")).toBe("tests/nested/a.test.ts");
+	});
+});
+
+// ==================================================================
+// parseShardRecord — project / durationMs / passed field coercion
+// (w41 mutation-kill additions)
+// ==================================================================
+
+describe("parseShardRecord — field coercion (w41)", () => {
+	// test-contract: public-api — valid project/durationMs values are carried
+	// through as-is, not just accepted/rejected wholesale.
+	it("carries through a valid string project and numeric durationMs", () => {
+		const parsed = parseShardRecord({
+			version: 1,
+			testFiles: ["t.test.ts"],
+			environment: "node",
+			project: "workspace-a",
+			durationMs: 555,
+			passed: true,
+			istanbul: {},
+		});
+		expect(parsed?.project).toBe("workspace-a");
+		expect(parsed?.durationMs).toBe(555);
+	});
+
+	// test-contract: public-api — a non-string project and non-number
+	// durationMs each coerce to null rather than passing the raw value through.
+	it("coerces a non-string project and a non-number durationMs to null", () => {
+		const parsed = parseShardRecord({
+			version: 1,
+			testFiles: ["t.test.ts"],
+			environment: "node",
+			project: 42,
+			durationMs: "not-a-number",
+			passed: true,
+			istanbul: {},
+		});
+		expect(parsed?.project).toBeNull();
+		expect(parsed?.durationMs).toBeNull();
+	});
+
+	// test-contract: public-api — a non-boolean passed value coerces to null.
+	it("coerces a non-boolean passed value to null", () => {
+		const parsed = parseShardRecord({
+			version: 1,
+			testFiles: ["t.test.ts"],
+			environment: "node",
+			project: null,
+			durationMs: null,
+			passed: "yes",
+			istanbul: {},
+		});
+		expect(parsed?.passed).toBeNull();
+	});
+
+	// test-contract: boundary — an empty testFiles array is rejected even
+	// though it is a well-formed array of strings.
+	it("rejects an empty testFiles array", () => {
+		expect(
+			parseShardRecord({
+				version: 1,
+				testFiles: [],
+				environment: "node",
+				project: null,
+				durationMs: null,
+				passed: null,
+				istanbul: {},
+			}),
+		).toBeNull();
+	});
 });
 
 // ==================================================================
@@ -365,6 +455,62 @@ describe("captureVitestShards — readCapturedShards branch paths (fake spawn)",
 		});
 		expect(result.shards).toEqual([]);
 		expect(result.degraded).toBe("malformed shard record bad.json");
+	});
+
+	// test-contract: public-api — a non-.json entry is skipped entirely, not
+	// attempted as a shard record (w41: kills the "continue" condition
+	// weakening to always-false).
+	it("skips a non-.json entry outright, leaving the 'no records captured' outcome", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/readme.txt", "not a shard record at all");
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.shards).toEqual([]);
+		expect(result.degraded).toBe("run succeeded but no shard records were captured");
+	});
+
+	// test-contract: boundary — readCapturedShards processes entries in sorted
+	// order (w41: kills the .sort() removal on readdirSync); the
+	// alphabetically-first malformed entry wins the degraded message.
+	it("processes shard entries in sorted order, not filesystem order", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		write(".capture/shards/zzz-bad.json", "not-json");
+		write(".capture/shards/aaa-bad.json", "not-json");
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			spawn: okSpawn(coverageDir),
+		});
+		expect(result.degraded).toBe("malformed shard record aaa-bad.json");
+	});
+
+	// test-contract: public-api — an explicit timeoutMs is threaded through to
+	// the underlying spawn call's `timeout` option (w41: kills the
+	// opts.timeoutMs !== undefined ternary being weakened to always-false,
+	// its === flip, and the `{}` object-literal replacement).
+	it("threads an explicit timeoutMs through to the spawn call", async () => {
+		const captureDir = join(scratch, ".capture");
+		const coverageDir = join(captureDir, "coverage");
+		let seenTimeout: number | undefined;
+		const spawn: SpawnFn = async (_bin, _args, options) => {
+			seenTimeout = options.timeout;
+			mkdirSync(coverageDir, { recursive: true });
+			writeFileSync(join(coverageDir, COVERAGE_FINAL_FILENAME), "{}", "utf-8");
+			return { stdout: "", stderr: "", status: 0 };
+		};
+		const result = await captureVitestShards({
+			projectRoot: scratch,
+			captureDir,
+			timeoutMs: 12_345,
+			spawn,
+		});
+		expect(result.runResult.ok).toBe(true);
+		expect(seenTimeout).toBe(12_345);
 	});
 });
 

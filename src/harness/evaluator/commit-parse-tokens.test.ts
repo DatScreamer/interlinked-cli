@@ -309,6 +309,68 @@ describe("shortClusterTakesValue", () => {
 	});
 });
 
+// ===========================================
+// w41 mutation-kill additions
+// ===========================================
+
+describe("stripLeadingPrefix — regex boundary cases (w41)", () => {
+	// test-contract: invariant — a non-identifier-shaped token (leading digit)
+	// must never be consumed as a VAR= assignment, whether checked right after
+	// `env` or at the top-level fallback check.
+	it("does not strip a digit-led token that only superficially resembles VAR=", () => {
+		expect(stripLeadingPrefix(["env", "1BAD=2", "git", "commit"])).toEqual([
+			"1BAD=2",
+			"git",
+			"commit",
+		]);
+	});
+
+	// test-contract: invariant — the assignment name must be made of WORD
+	// characters (letters/digits/underscore), not non-word characters, between
+	// the leading letter and `=`.
+	it("does not strip a token whose assignment name contains a non-word character", () => {
+		expect(stripLeadingPrefix(["env", "F.=1", "git", "commit"])).toEqual([
+			"F.=1",
+			"git",
+			"commit",
+		]);
+	});
+});
+
+describe("combineCwd — Windows-drive match must anchor at the start (w41)", () => {
+	// test-contract: invariant — a `C:/`-shaped substring embedded MID-STRING
+	// (not at position 0) must not be read as an absolute Windows path; the
+	// whole `next` value is a relative segment to be joined onto base.
+	it("joins a relative segment even when it contains a mid-string drive-letter pattern", () => {
+		expect(combineCwd("/a/b", "fooC:/bar")).toBe("/a/b/fooC:/bar");
+	});
+});
+
+describe("clusterBooleanLetters — dash-token guard (w41)", () => {
+	// test-contract: invariant — a token that starts with `-` and has one
+	// boolean letter must report that letter, not "".
+	it("reads the boolean letter of a two-character dash cluster", () => {
+		expect(clusterBooleanLetters("-a")).toBe("a");
+	});
+});
+
+describe("shortClusterTakesValue — leading-dash guard (w41)", () => {
+	// test-contract: invariant — a token with NO leading dash must never be
+	// read as a value-taking cluster, even when its letters coincidentally
+	// match a value-taking short flag letter (e.g. "m").
+	it("is false for a dash-less token whose letters look like a value-taking cluster", () => {
+		expect(shortClusterTakesValue("am")).toBe(false);
+		expect(shortClusterTakesValue("mm")).toBe(false);
+	});
+
+	// test-contract: invariant — a genuine dash-prefixed cluster ending in a
+	// value-taking letter still reports true (regression guard alongside the
+	// dash-less case above).
+	it("is true for a genuine dash-prefixed cluster ending in a value-taking letter", () => {
+		expect(shortClusterTakesValue("-am")).toBe(true);
+	});
+});
+
 describe("COMMIT_VALUE_FLAGS", () => {
 	it("contains every following-token value flag", () => {
 		expect([...COMMIT_VALUE_FLAGS]).toEqual([

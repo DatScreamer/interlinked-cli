@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	detectRemovedAssertions,
@@ -6,6 +9,7 @@ import {
 	type MutationDirectedProfileArgs,
 	REMOVED_ASSERTION_CHECK_ID,
 } from "./mutation-directed-profile.js";
+import { TRUNCATION_SUMMARY_PREFIX } from "./test-legitimacy.js";
 
 const MUTATION_PATH = "src/lib/widget.mutation-kill.test.ts";
 const ORDINARY_PATH = "src/lib/widget.test.ts";
@@ -167,5 +171,267 @@ describe("detectRemovedAssertions — GATE 2 (new detection: assertion-removal d
 		// verify-suppressions.json entry would need to name; the loader itself is
 		// exercised by pre-block-gate.test.ts / suppressions.test.ts.
 		expect(REMOVED_ASSERTION_CHECK_ID).toBe("mutation_directed_assertion_removal");
+	});
+});
+
+describe("mutation-hardening additions (wave 41)", () => {
+	// test-contract: invariant — path normalization must replace backslashes with
+	// forward slashes, not delete them; deleting them can splice two segments
+	// into a false dotted-token match the regex would otherwise reject.
+	it("isMutationDirectedFile: a backslash inside the dotted token must NOT be deleted", () => {
+		expect(isMutationDirectedFile("a.mutation\\-kill.test.ts")).toBe(false);
+	});
+
+	// test-contract: invariant — a receipt-missing finding (not a broad-truthiness
+	// one) must be counted exactly once in `introduced`; the truthy-filter stage
+	// must not leak it in as a duplicate second entry.
+	it("GATE 1: a lone receipt-missing case (no toBeTruthy) yields exactly one introduced finding", () => {
+		const content = 'it("case", () => { expect(x).toEqual(1); });';
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced.length).toBe(1);
+	});
+
+	// test-contract: invariant — a sole toBeTruthy() nested inside describe > it
+	// must still escalate; block lookup must find the innermost (it) block, not
+	// treat the match as unowned.
+	it("GATE 1: a sole toBeTruthy() nested in describe > it still escalates", () => {
+		const content = [
+			'describe("suite", () => {',
+			CONTRACT,
+			'  it("case", () => {',
+			"    expect(result).toBeTruthy();",
+			"  });",
+			"});",
+		].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced.length).toBe(1);
+	});
+
+	// test-contract: invariant — a broad-truthiness match with NO enclosing test
+	// block must be safely skipped, never crash the detector.
+	it("GATE 1: a truthiness assertion outside any it()/describe() does not throw", () => {
+		const content = "expect(x).toBeTruthy();";
+		expect(() => evaluateMutationDirectedSignals(args({ content }))).not.toThrow();
+	});
+
+	// test-contract: boundary — a truthiness assertion sitting directly inside a
+	// describe() (never inside an it()) must NOT escalate; its enclosing block is
+	// a suite, not a test.
+	it("GATE 1: a truthiness assertion inside describe() but no it() does not escalate", () => {
+		const content = ['describe("suite", () => {', "  expect(x).toBeTruthy();", "});"].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced).toEqual([]);
+	});
+
+	// test-contract: invariant — the sole-assertion count must be scoped to the
+	// truthy match's OWN enclosing block, not the whole file; a second, unrelated
+	// it() block's expect() calls must not count against the first block's total.
+	it("GATE 1: sole-assertion scoping is per-block, not whole-file", () => {
+		const content = [
+			CONTRACT,
+			'it("first", () => {',
+			"  expect(result).toBeTruthy();",
+			"});",
+			CONTRACT,
+			'it("second", () => {',
+			"  expect(other).toEqual(1);",
+			"});",
+		].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced.length).toBe(1);
+	});
+
+	// test-contract: boundary — the block-span join must use "\n" so `\bexpect`'s
+	// word boundary is preserved across masked-line joins; joining without a
+	// separator can merge a preceding token into "expect" and hide a real second
+	// assertion, wrongly reading a non-sole toBeTruthy() as sole.
+	it("GATE 1: a second same-block expect() hidden only by a joined-newline is still counted", () => {
+		const content = [
+			CONTRACT,
+			'it("case", () => {',
+			"  expect(result).toBeTruthy();",
+			"x",
+			"expect(other).toEqual(1);",
+			"});",
+		].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced).toEqual([]);
+	});
+
+	// test-contract: boundary — the trailing truncation-count summary line must
+	// never itself be treated as a truthiness finding, even when it happens to
+	// reuse a line whose real content matches BROAD_TRUTHINESS.
+	it("GATE 1: the truncation summary line is never counted as a truthiness finding", () => {
+		const filler = Array.from({ length: 19 }, (_, i) => `it("t${i}", () => expect(v${i}).toEqual(${i}));`);
+		const case20 = 'it("t20", () => expect(y).toBeTruthy());';
+		const case21 = 'it("t21", () => expect(z).toEqual(2));';
+		const content = [...filler, case20, case21].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced.some((m) => m.text.startsWith(TRUNCATION_SUMMARY_PREFIX))).toBe(false);
+	});
+
+	// test-contract: public-api — an inline-ignored sole toBeTruthy() must be
+	// dropped from `introduced`, exactly like the already-covered receipt-missing
+	// suppression case.
+	it("GATE 1: an inline-ignored sole toBeTruthy() is suppressed out of introduced", () => {
+		const content = [
+			CONTRACT,
+			'it("case", () => {',
+			"// interlinked-ignore: test_legitimacy — deliberately allowed truthiness smoke check",
+			"  expect(result).toBeTruthy();",
+			"});",
+		].join("\n");
+		const [legitimacy] = evaluateMutationDirectedSignals(args({ content }));
+		expect(legitimacy?.introduced).toEqual([]);
+	});
+
+	// test-contract: public-api — an inline-ignored missing-SUT-import finding
+	// must be dropped from the test_missing_sut_import outcome's `introduced`.
+	it("GATE 1: an inline-ignored missing-SUT-import finding is suppressed", () => {
+		const content = [
+			"// interlinked-ignore: test_missing_sut_import — deliberately mismatched SUT for smoke test",
+			'it("does a thing", () => expect(1).toEqual(1));',
+		].join("\n");
+		const outcomes = evaluateMutationDirectedSignals(args({ content }));
+		const sut = outcomes.find((o) => o.checkId === "test_missing_sut_import");
+		expect(sut?.introduced).toEqual([]);
+	});
+
+	// test-contract: public-api — the test_legitimacy outcome must carry the
+	// registry's real fix_instruction text, not an empty string.
+	it("GATE 1: test_legitimacy outcome carries a non-empty instruction", () => {
+		const content = 'it("covers the survivor", () => expect(render()).toEqual("Empty"));';
+		const outcomes = evaluateMutationDirectedSignals(args({ content }));
+		const legitimacy = outcomes.find((o) => o.checkId === "test_legitimacy");
+		expect(legitimacy?.instruction.length).toBeGreaterThan(0);
+	});
+
+	// test-contract: public-api — the test_missing_sut_import outcome must carry
+	// the registry's real fix_instruction text, not an empty string.
+	it("GATE 1: test_missing_sut_import outcome carries a non-empty instruction", () => {
+		const content = `${CONTRACT}\nit("does a thing", () => expect(1).toEqual(1));`;
+		const outcomes = evaluateMutationDirectedSignals(args({ content }));
+		const sut = outcomes.find((o) => o.checkId === "test_missing_sut_import");
+		expect(sut?.instruction.length).toBeGreaterThan(0);
+	});
+
+	// test-contract: invariant — neither GATE 1 outcome is ever deferrable; a
+	// mutation-directed severity remap is never a coordinated-refactor transient.
+	it("GATE 1: both outcomes report deferrable: false", () => {
+		const content = 'it("covers the survivor", () => expect(render()).toEqual("Empty"));';
+		const outcomes = evaluateMutationDirectedSignals(args({ content }));
+		expect(outcomes.find((o) => o.checkId === "test_legitimacy")?.deferrable).toBe(false);
+		expect(outcomes.find((o) => o.checkId === "test_missing_sut_import")?.deferrable).toBe(false);
+	});
+
+	// test-contract: boundary — assertionAndCaseLines must return [] for a file
+	// that is neither a strict test file nor a JS/TS file, even when it IS
+	// mutation-directed (the outer isMutationDirectedFile gate alone is not
+	// sufficient to admit scanning).
+	it("GATE 2: a mutation-directed but non-test non-JS/TS file is never scanned", () => {
+		const baseline = 'it("case", () => expect(a).toBe(1));';
+		const proposed = "";
+		const found = detectRemovedAssertions(
+			args({ filePath: "docs/notes.mutation-kill.md", content: proposed, baselineContent: baseline }),
+		);
+		expect(found).toEqual([]);
+	});
+
+	// test-contract: boundary — the guard is `!isStrictTestFile || !hasJsTsExt`
+	// (OR): a strict test file (by directory convention) with a non-JS/TS
+	// extension must STILL be skipped — only one side needs to be true.
+	it("GATE 2: a mutation-directed file in a tests/ dir with a non-JS/TS extension is still skipped", () => {
+		const baseline = 'it("case", () => expect(a).toBe(1));';
+		const proposed = "";
+		const found = detectRemovedAssertions(
+			args({ filePath: "proj/tests/notes.mutation-kill.md", content: proposed, baselineContent: baseline }),
+		);
+		expect(found).toEqual([]);
+	});
+
+	// test-contract: invariant — a plain non-assertion, non-case-declaration line
+	// (e.g. a helper const) must never be tracked by assertionAndCaseLines;
+	// removing it must not surface as a GATE 2 finding.
+	it("GATE 2: removing a benign non-assertion line is not flagged", () => {
+		const baseline = 'it("x", () => expect(a).toBe(1));\nconst helper = 1;';
+		const proposed = 'it("x", () => expect(a).toBe(1));';
+		const found = detectRemovedAssertions(args({ content: proposed, baselineContent: baseline }));
+		expect(found).toEqual([]);
+	});
+
+	// test-contract: invariant — a reported removed match's `.line` must be the
+	// 1-based line number of the DELETED line itself (i + 1), not an off-by-one
+	// in the other direction.
+	it("GATE 2: a removed match reports the correct 1-based line number", () => {
+		const baseline = [
+			'it("kept", () => expect(a).toBe(1));',
+			'it("deleted", () => expect(b).toBe(2));',
+		].join("\n");
+		const proposed = 'it("kept", () => expect(a).toBe(1));';
+		const found = detectRemovedAssertions(args({ content: proposed, baselineContent: baseline }));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(2);
+	});
+
+	// test-contract: boundary — a removed match's `.text` must be capped at 150
+	// characters, mirroring every other detector's listing cap.
+	it("GATE 2: a removed match's text is capped at 150 characters", () => {
+		const longName = "x".repeat(200);
+		const baseline = `it("${longName}", () => expect(a).toBe(1));`;
+		const proposed = "";
+		const found = detectRemovedAssertions(args({ content: proposed, baselineContent: baseline }));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text.length).toBe(150);
+	});
+
+	// test-contract: invariant — a removed match's `.text` must be the TRIMMED
+	// line, with no leading/trailing whitespace from the original source line.
+	it("GATE 2: a removed match's text is trimmed of surrounding whitespace", () => {
+		const baseline = '  it("case", () => expect(a).toBe(1));  ';
+		const proposed = "";
+		const found = detectRemovedAssertions(args({ content: proposed, baselineContent: baseline }));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text).toBe('it("case", () => expect(a).toBe(1));');
+	});
+
+	// test-contract: security — a file-level verify-suppressions.json entry for
+	// REMOVED_ASSERTION_CHECK_ID must suppress GATE 2 entirely for that file,
+	// read from a real on-disk suppression file (no inline-comment fallback
+	// exists for a deleted line).
+	it("GATE 2: a real on-disk file-level suppression drops the finding entirely", () => {
+		const dir = mkdtempSync(join(tmpdir(), "mdp-w41-"));
+		try {
+			mkdirSync(join(dir, ".interlinked"), { recursive: true });
+			writeFileSync(
+				join(dir, ".interlinked", "verify-suppressions.json"),
+				JSON.stringify({
+					"widget.mutation-kill.test.ts": { [REMOVED_ASSERTION_CHECK_ID]: { reason: "silenced for test" } },
+				}),
+			);
+			const baseline = [
+				'it("kept", () => expect(a).toBe(1));',
+				'it("deleted", () => expect(b).toBe(2));',
+			].join("\n");
+			const proposed = 'it("kept", () => expect(a).toBe(1));';
+			const found = detectRemovedAssertions({
+				filePath: "widget.mutation-kill.test.ts",
+				content: proposed,
+				baselineContent: baseline,
+				projectRoot: dir,
+			});
+			expect(found).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// test-contract: boundary — EXPECT_CALL must permit WHITESPACE (not just
+	// zero characters) between `expect` and its opening paren, matching real
+	// formatted call sites like `expect (x)`.
+	it("GATE 2: an expect() call with a space before its paren is still tracked", () => {
+		const baseline = "expect (a).toBe(1);";
+		const proposed = "";
+		const found = detectRemovedAssertions(args({ content: proposed, baselineContent: baseline }));
+		expect(found).toHaveLength(1);
 	});
 });
