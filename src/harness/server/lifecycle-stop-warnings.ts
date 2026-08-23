@@ -85,7 +85,16 @@ const OBSERVED_CHECK_RED = "red";
  * and repeating the identical warning at every Stop would train the reader to
  * ignore it.
  */
-export function buildStaleBaselineNudge(ctx: ServerRuntime, event: HarnessEvent): string | null {
+export function buildStaleBaselineNudge(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	sessionWroteFiles = true,
+): string | null {
+	// Repo-housekeeping nudges address sessions DOING repo work. A read-only
+	// session (zero files_written) was nagged about 56-day-old baselines it
+	// never touched (operator report 2026-08-23) — same class as the
+	// gate-reach fix; stay silent there.
+	if (!sessionWroteFiles) return null;
 	const interlinkedDir = join(event.cwd || ctx.cwd, ".interlinked");
 	const now = Date.now();
 	if (!shouldNudge({ interlinkedDir, now })) return null;

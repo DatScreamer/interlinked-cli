@@ -1205,6 +1205,23 @@ describe("buildStaleBaselineNudge", () => {
 		}
 	});
 
+	it("stays silent for a read-only session (sessionWroteFiles=false) even when every baseline is stale — repo-housekeeping nudges address sessions doing repo work (2026-08-23 operator report)", async () => {
+		const { mkdtempSync, rmSync, existsSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const cwd = mkdtempSync(join(tmpdir(), "stale-baseline-readonly-"));
+		try {
+			// Same maximally-stale fixture as the positive case above; the only
+			// difference is the read-only flag, so silence here pins the guard.
+			const ctx = makeCtx({ cwd });
+			expect(buildStaleBaselineNudge(ctx, makeEvent(), false)).toBeNull();
+			// The throttle marker must NOT be consumed by a silent skip.
+			expect(existsSync(join(cwd, ".interlinked"))).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("fires and successfully writes the marker when .interlinked/ already exists", async () => {
 		const { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } = await import(
 			"node:fs"

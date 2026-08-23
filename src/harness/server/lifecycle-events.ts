@@ -442,7 +442,7 @@ function buildStopWarnings(
 	// Stale quality baselines. Not about THIS turn: it reports that the ratchets
 	// themselves are measuring against an out-of-date water-line. Self-throttled
 	// to once a day so a weeks-stale baseline does not nag every Stop.
-	const staleBaselineWarning = buildStaleBaselineNudge(ctx, event);
+	const staleBaselineWarning = buildStaleBaselineNudge(ctx, event, session.files_written.size > 0);
 	if (staleBaselineWarning !== null) warnings.push(staleBaselineWarning);
 	for (const w of buildVerificationStopWarnings(ctx, event, session)) {
 		warnings.push(w);
