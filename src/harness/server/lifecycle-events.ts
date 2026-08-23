@@ -457,15 +457,14 @@ function buildStopWarnings(
 	})) {
 		warnings.push(w);
 	}
-	// Gate reach (plan 16 §4) — each quality gate's coverage OF ITSELF, so a gate
-	// that silently stopped seeing part of the tree becomes a number instead of
-	// false confidence. Reporting only, never a block; self-throttled to once per
-	// session per interval because it walks the tree. A disabled gate is LOUD
-	// here: silent disablement is the failure this exists to prevent.
+	// Gate reach (plan 16 §4) — each gate's coverage OF ITSELF; disabled gates are
+	// LOUD (silent disablement is the failure this prevents). Read-only sessions
+	// (zero files_written) skip it — the gates judged none of this session's work.
 	const gateReachWarning = buildGateReachStopWarning({
 		cwd,
 		sessionId: event.session_id || "unknown",
 		perEditCoverageEnabled: ctx.rules.per_edit_coverage?.enabled !== false,
+		sessionWroteFiles: session.files_written.size > 0,
 	});
 	if (gateReachWarning !== null) warnings.push(gateReachWarning);
 	// Stop-phase sequence detectors — multi-event quality + cross-agent +

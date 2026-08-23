@@ -521,7 +521,14 @@ function bEvent(over: Partial<HarnessEvent> = {}): HarnessEvent {
 }
 
 function bSession(over: Record<string, unknown> = {}): SessionTrajectory {
-	return { session_id: "s1", agent_name: "agent-a", ...over } as unknown as SessionTrajectory;
+	// files_written non-empty by default: gate-reach only reports for sessions
+	// that wrote something, and most Stop-path tests assume an editing session.
+	return {
+		session_id: "s1",
+		agent_name: "agent-a",
+		files_written: new Set(["src/a.ts"]),
+		...over,
+	} as unknown as SessionTrajectory;
 }
 
 function fnOf<T>(v: T): ReturnType<typeof vi.fn> {
@@ -1068,6 +1075,22 @@ describe("Stop handler — branch coverage", () => {
 			expect(warnings.some((w) => w.includes("[interlinked:gate-reach]"))).toBe(true);
 			expect(warnings.some((w) => w.includes("gate=per_edit_coverage"))).toBe(true);
 			expect(warnings.some((w) => w.includes("disabled=true"))).toBe(true);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("suppresses the gate-reach meta-metric for a read-only session (zero files_written)", async () => {
+		// The disabled-gate figure is about THIS session's edits; a session that
+		// wrote nothing must not be nagged on its first turn (2026-08-23 report).
+		const repo = mkdtempSync(join(tmpdir(), "lifecycle-gate-reach-ro-"));
+		try {
+			mkdirSync(join(repo, "src"), { recursive: true });
+			writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n", "utf-8");
+			const ctx = bCtx({ cwd: repo, rules: { per_edit_coverage: { enabled: false } } });
+			const out = await stop(ctx, { cwd: repo }, bSession({ files_written: new Set() }));
+			const warnings = out?.warnings ?? [];
+			expect(warnings.some((w) => w.includes("[interlinked:gate-reach]"))).toBe(false);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}

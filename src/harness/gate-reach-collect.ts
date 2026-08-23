@@ -274,10 +274,14 @@ export function buildGateReachStopWarning(args: {
 	cwd: string;
 	sessionId: string;
 	perEditCoverageEnabled: boolean;
+	/** false = the session wrote nothing; the gates judged none of its work, so
+	 *  the reach figure is nag, not signal — skip (undefined = legacy caller, run). */
+	sessionWroteFiles?: boolean;
 	now?: number;
 	intervalMs?: number;
 	gates?: string[];
 }): string | null {
+	if (args.sessionWroteFiles === false) return null;
 	const now = args.now ?? Date.now();
 	const throttle: { cwd: string; sessionId: string; now: number; intervalMs?: number } = {
 		cwd: args.cwd,
