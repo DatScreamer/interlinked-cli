@@ -25,6 +25,15 @@ export const FLAG_LOWERCASE = 1;
 export const FLAG_MASKS = 2;
 export const DEFAULT_MAX_FILE_SIZE = 1_048_576; // 1MB
 export const DEFAULT_STOP_THRESHOLD = 0.4; // 40% of files
+/** Ceiling on brand-new files the in-memory dirty layer accumulates before a
+ *  full `save()`/rebuild folds them into the base index. Unbounded growth here
+ *  was root-caused 2026-08-22: a mutation-campaign scratch churn of ~19k files
+ *  (each Write/Edit call adding a live-referenced Set<number> of trigrams that
+ *  no idle/emergency shrink path ever clears) pinned a daemon's old_space at
+ *  ~1.8GB until it hard-aborted. Past this cap, a brand-new file is treated
+ *  like any other skip-listed file: still on disk, just not accelerated —
+ *  the existing full-`rg` fallback (unindexed candidate) already covers it. */
+export const MAX_DIRTY_NEW_FILES = 3000;
 export const EARLY_TERMINATION_THRESHOLD = 20;
 export const INDEX_DIR_NAME = "index";
 export const LOOKUP_FILE_NAME = "trigram.lookup";

@@ -43,7 +43,7 @@ import { type FilePriority } from "./file-priority.js";
 import { FileContentCache } from "./grep-accelerator.js";
 import { createLearnedRulesStore } from "./learned-rules.js";
 import { sweepStaleLiveSnapshots } from "./live-snapshot.js";
-import { clearManifestCache } from "./mutation/manifest.js"; import { clearTscOverlayCache } from "./check-engine/tool-runners/tsc-overlay.js";
+import { makeShrinkIdleMemory } from "./server/idle-shrink.js";
 import {
 	type ClassifierSessionState,
 	resolveApiKey,
@@ -680,11 +680,9 @@ installDaemonTimers({
 	snapshotDir: INTERLINKED_DIR,
 	// Idle shrink (~5min no events): drop manifest + force GC — not a jetsam target.
 	lastEventAtMs: () => lastHookEventAtMs,
-	shrinkIdleMemory: () => {
-		clearManifestCache();
-		clearTscOverlayCache(); // shed the ~2GB in-daemon LS — the dominant retained set (heap-attributed 2026-08-22); next overlay check pays a cold rebuild instead of the daemon dying
-		(globalThis as { gc?: () => void }).gc?.(); // SAFETY: gc exists only under --expose-gc (every spawn path passes it).
-	},
+	// Body lives in server/idle-shrink.ts (this file is over the line cap and
+	// may not grow); also clears the trigram dirty layer (2026-08-22 root cause).
+	shrinkIdleMemory: makeShrinkIdleMemory(() => trigramIndex),
 	log: logAlways,
 });
 

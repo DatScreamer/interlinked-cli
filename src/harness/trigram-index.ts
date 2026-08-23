@@ -303,10 +303,12 @@ export class TrigramIndex {
 
 	/**
 	 * Update the index for a single file (in-memory dirty layer).
-	 * Pass null content to mark a file as deleted.
+	 * Pass null content to mark a file as deleted. Returns false when the
+	 * file was skip-listed, oversized, or past the dirty-layer's brand-new
+	 * file cap — see `updateFileInState`'s docstring.
 	 */
-	updateFile(relPath: string, content: string | null): void {
-		updateFileInState(this.view(), relPath, content);
+	updateFile(relPath: string, content: string | null): boolean {
+		return updateFileInState(this.view(), relPath, content);
 	}
 
 	/** Get the number of dirty (modified/added/deleted) files */

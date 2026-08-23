@@ -22,6 +22,7 @@ import {
 	extractTrigrams,
 	extractTrigramsWithMasks,
 	isBinaryContent,
+	MAX_DIRTY_NEW_FILES,
 	type PostingList,
 	shouldSkipFile,
 } from "./trigram-primitives.js";
@@ -39,27 +40,56 @@ export interface MutableIndexView {
 	allocFileId(): number;
 }
 
+/** Drop any prior dirty state for a file an update is refusing to index
+ *  (skip-listed, oversized, or past the brand-new-file cap) — same treatment
+ *  the build/incremental paths give a skip-listed file: still on disk, just
+ *  not accelerated, and never left indexed on stale content. */
+function dropDirtyState(view: MutableIndexView, relPath: string, existingId: number | undefined): void {
+	if (existingId !== undefined) view.dirtyOverrides.set(existingId, null);
+	view.dirtyNewFiles.delete(relPath);
+}
+
+/** True when this content must NOT be added to the dirty layer — the same
+ *  skip-list/size guard `incrementalUpdateState` already applies, mirrored
+ *  here since this path (every Write/Edit tool call) never went through it. */
+function isDirtyLayerExempt(relPath: string, content: string): boolean {
+	return shouldSkipFile(relPath) || Buffer.byteLength(content, "utf-8") > DEFAULT_MAX_FILE_SIZE;
+}
+
 /**
  * Update the index for a single file (in-memory dirty layer).
  * Pass null content to mark a file as deleted.
+ *
+ * Returns whether the file was actually indexed (false when it was skipped —
+ * name/extension skip-list, oversized, or the dirty layer is at its brand-new
+ * file cap). A skipped file is treated exactly like the pre-existing
+ * skip-list/oversize cases the build/incremental paths already had: still on
+ * disk, just not accelerated — the caller's grep/rg fallback still finds it.
+ *
+ * This mirrors the same two guards `incrementalUpdateState` already applies
+ * (skip-list, size), plus a cap on brand-new files unique to this path: every
+ * Write/Edit tool call reaches here uncapped, and a large churn of brand-new
+ * files (a mutation-campaign scratch directory, for instance) has no other
+ * bound — root-caused 2026-08-22 as the dominant retained-heap set on a
+ * daemon that hard-aborted with three emergency-GCs reclaiming nothing (the
+ * dirty-layer Sets were live-referenced, not garbage).
  */
 export function updateFileInState(
 	view: MutableIndexView,
 	relPath: string,
 	content: string | null,
-): void {
+): boolean {
 	const existingId = view.fileToId.get(relPath);
 	const dirtyNew = view.dirtyNewFiles.get(relPath);
 
 	if (content === null) {
-		// File deleted
-		if (existingId !== undefined) {
-			view.dirtyOverrides.set(existingId, null);
-		}
-		if (dirtyNew) {
-			view.dirtyNewFiles.delete(relPath);
-		}
-		return;
+		dropDirtyState(view, relPath, existingId);
+		return true;
+	}
+
+	if (isDirtyLayerExempt(relPath, content)) {
+		dropDirtyState(view, relPath, existingId);
+		return false;
 	}
 
 	// Extract new trigrams
@@ -68,14 +98,19 @@ export function updateFileInState(
 	if (existingId !== undefined) {
 		// Override existing file
 		view.dirtyOverrides.set(existingId, trigrams);
-	} else if (dirtyNew) {
+		return true;
+	}
+	if (dirtyNew) {
 		// Update an already-dirty new file
 		dirtyNew.trigrams = trigrams;
-	} else {
-		// Brand new file
-		const id = view.allocFileId();
-		view.dirtyNewFiles.set(relPath, { id, trigrams });
+		return true;
 	}
+	// Brand new file — bounded: past the cap, leave it unindexed rather than
+	// growing the dirty layer without limit (see docstring above).
+	if (view.dirtyNewFiles.size >= MAX_DIRTY_NEW_FILES) return false;
+	const id = view.allocFileId();
+	view.dirtyNewFiles.set(relPath, { id, trigrams });
+	return true;
 }
 
 /** Read-only slice of the dirty layer the count/flag/clear helpers consume. */

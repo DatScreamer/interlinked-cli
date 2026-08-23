@@ -111,7 +111,7 @@ function daemonPidFileNames(interlinkedDir: string): string[] {
  *  stale pidfile must still block + self-heal). Returns null only when no pid
  *  file exists at all — the never-configured / clean-stop case the caller then
  *  resolves via the config check. */
-function discoverDaemonPid(interlinkedDir: string): number | null {
+export function discoverDaemonPid(interlinkedDir: string): number | null {
 	const names = daemonPidFileNames(interlinkedDir);
 	let firstPresent: number | null = null;
 	for (const name of names) {
@@ -178,7 +178,7 @@ function daemonSocketPresent(interlinkedDir: string): boolean {
  *  next call is guarded): a dead pid (crash → stale pidfile), an alive pid whose
  *  socket was stomped/removed (unreachable), or a configured repo with no daemon
  *  at all (clean-stop / idle while the session is live). */
-function daemonCutOut(interlinkedDir: string, pid: number | null): boolean {
+export function daemonCutOut(interlinkedDir: string, pid: number | null): boolean {
 	if (pid === null && !harnessConfigured(interlinkedDir)) return false;
 	if (pid !== null && isPidAlive(pid) && daemonSocketPresent(interlinkedDir)) return false;
 	return true;
@@ -306,7 +306,7 @@ export function isHarnessRecoveryCommand(action: UnifiedHookEvent["action"]): bo
  *  own cwd, or the process cwd — first that resolves to an interlinked project.
  *  Pulling the `??` chain out keeps the gate under the complexity ratchet as new
  *  decision branches (e.g. the disable check) are added. */
-function resolveGateRoot(event: UnifiedHookEvent, cwd: string | undefined): string | null {
+export function resolveGateRoot(event: UnifiedHookEvent, cwd: string | undefined): string | null {
 	return findRepoRoot(cwd ?? event.context?.cwd ?? process.cwd());
 }
 

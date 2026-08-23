@@ -71,9 +71,13 @@ function updateIndexedPath(ctx: ServerRuntime, editedPath: string): void {
 			return;
 		}
 		const content = readFileSync(absPath, "utf-8");
-		ctx.trigramIndex?.updateFile(relPath, content);
+		const indexed = ctx.trigramIndex?.updateFile(relPath, content);
 		ctx.fileContentCache.set(relPath, content);
-		ctx.log(`Trigram index dirty update: ${relPath}`);
+		ctx.log(
+			indexed === false
+				? `Trigram index dirty update SKIPPED (skip-list/oversize/dirty-cap): ${relPath}`
+				: `Trigram index dirty update: ${relPath}`,
+		);
 	} catch (e) {
 		void e;
 	}

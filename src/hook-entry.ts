@@ -38,6 +38,7 @@ import {
 } from "./hook-entry-daemon-gate.js";
 import { coldDaemonUnreachableBlockReasonFresh } from "./hook-entry-daemon-probe.js";
 import { defaultTimeoutForPhase, isCodeEditEvent } from "./hook-entry-deadlines.js";
+import { attemptSelfHealOnStop } from "./hook-entry-stop-self-heal.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
 import { nonNull } from "./lib/non-null.js";
 
@@ -386,6 +387,11 @@ async function encodeColdFallback(
 		);
 		return coldBlockResult(adapter, event, reason, "harness-offline", daemonDownReason);
 	}
+	// PROACTIVE self-heal on Stop/SubagentStop: the reactive gate above only
+	// runs on a blocked pre-tool call, so a turn with zero tool calls left a
+	// dead daemon unrevived for 22 minutes (root-caused 2026-08-22). Never
+	// blocks; no-ops on every other phase and every healthy/recent case.
+	attemptSelfHealOnStop(event, cwd, env, isDryRunEvent(event) ? { dryRun: true } : {});
 
 	// Exception: fail-closed graph-prediction gate. If the agent is about to
 	// edit a file with a fresh `.graph.*` shard and we can't reach the

@@ -1,0 +1,65 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { clearManifestCacheMock, clearTscOverlayCacheMock } = vi.hoisted(() => ({
+	clearManifestCacheMock: vi.fn(),
+	clearTscOverlayCacheMock: vi.fn(),
+}));
+
+vi.mock("../mutation/manifest.js", () => ({
+	clearManifestCache: clearManifestCacheMock,
+}));
+vi.mock("../check-engine/tool-runners/tsc-overlay.js", () => ({
+	clearTscOverlayCache: clearTscOverlayCacheMock,
+}));
+
+import { makeShrinkIdleMemory } from "./idle-shrink.js";
+
+describe("makeShrinkIdleMemory", () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+		// biome-ignore lint/performance/noDelete: test cleanup of a global test-only stub
+		delete (globalThis as { gc?: () => void }).gc;
+	});
+
+	// P1 (must fire): clears the manifest cache, the tsc overlay cache, and the
+	// trigram index's dirty layer — the three retainers root-caused 2026-08-22.
+	it("P1: clears manifest cache, tsc overlay cache, and trigram dirty layer", () => {
+		const clearDirty = vi.fn();
+		const trigramIndex = { clearDirty } as unknown as { clearDirty: () => void };
+		const shrink = makeShrinkIdleMemory(() => trigramIndex as never);
+
+		shrink();
+
+		expect(clearManifestCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearTscOverlayCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearDirty).toHaveBeenCalledTimes(1);
+	});
+
+	// P2 (must fire): a null trigram index (not yet loaded) must not throw —
+	// the other two caches still get cleared.
+	it("P2: tolerates a null trigram index without throwing", () => {
+		const shrink = makeShrinkIdleMemory(() => null);
+
+		expect(() => shrink()).not.toThrow();
+		expect(clearManifestCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearTscOverlayCacheMock).toHaveBeenCalledTimes(1);
+	});
+
+	// P3 (must fire): when --expose-gc's global gc is present, it is invoked.
+	it("P3: invokes globalThis.gc when present", () => {
+		const gcMock = vi.fn();
+		(globalThis as { gc?: () => void }).gc = gcMock;
+		const shrink = makeShrinkIdleMemory(() => null);
+
+		shrink();
+
+		expect(gcMock).toHaveBeenCalledTimes(1);
+	});
+
+	// N1 (must NOT throw/fire gc): without --expose-gc, globalThis.gc is
+	// undefined — the optional-chained call must be a silent no-op.
+	it("N1: does not throw when globalThis.gc is absent", () => {
+		const shrink = makeShrinkIdleMemory(() => null);
+		expect(() => shrink()).not.toThrow();
+	});
+});
