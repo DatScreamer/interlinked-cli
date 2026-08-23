@@ -15,10 +15,12 @@ import {
 	rememberWorkspaceSnapshot,
 	shouldObserveWorkspaceEffects,
 } from "./workspace-effects.js";
+import { resetReconciledEffectRegistry } from "./workspace-effect-attribution.js";
 
 let root: string;
 
 beforeEach(() => {
+	resetReconciledEffectRegistry();
 	root = mkdtempSync(join(tmpdir(), "interlinked-effects-"));
 	execFileSync("git", ["init", "-q"], { cwd: root });
 	writeFileSync(join(root, "tracked.ts"), "export const value = 1;\n");
@@ -185,6 +187,34 @@ describe("workspace effect ChangeSet", () => {
 		discardWorkspaceSnapshot({ toolUseId: "blocked", sessionId: "s1" });
 		writeFileSync(join(root, "later.ts"), "later\n");
 		expect(consumeWorkspaceResidue("s1", root)).toBeNull();
+	});
+
+	it("excludes another session's reconciled write from this session's residue", () => {
+		// Session s1 opens a snapshot, then session s2 writes a file and
+		// reconciles it through its own PostToolUse. s1's Stop residue must not
+		// charge s1 for s2's work.
+		rememberWorkspaceSnapshot({ toolUseId: "s1-call", sessionId: "s1", root });
+		rememberWorkspaceSnapshot({ toolUseId: "s2-call", sessionId: "s2", root });
+		writeFileSync(join(root, "other-session.ts"), "export {};\n");
+		expect(consumeWorkspaceSnapshot({ toolUseId: "s2-call", sessionId: "s2", root })?.files).toMatchObject([
+			{ path: "other-session.ts", kind: "created" },
+		]);
+		const residue = consumeWorkspaceResidue("s1", root);
+		expect(residue?.files).toEqual([]);
+		expect(residue?.attributed_to_other_sessions).toBe(1);
+		clearWorkspaceEffectSession("s2");
+	});
+
+	it("attributes a path another session reconciled even when the file changed again (2026-08-23 widening: the re-editing concurrent writer was the residual leak into innocent sessions' Stop rescans)", () => {
+		rememberWorkspaceSnapshot({ toolUseId: "s1-call", sessionId: "s1", root });
+		rememberWorkspaceSnapshot({ toolUseId: "s2-call", sessionId: "s2", root });
+		writeFileSync(join(root, "contested.ts"), "theirs\n");
+		consumeWorkspaceSnapshot({ toolUseId: "s2-call", sessionId: "s2", root });
+		writeFileSync(join(root, "contested.ts"), "changed-again\n");
+		const residue = consumeWorkspaceResidue("s1", root);
+		expect(residue?.files).toEqual([]);
+		expect(residue?.attributed_to_other_sessions).toBe(1);
+		clearWorkspaceEffectSession("s2");
 	});
 
 	it("surfaces unconsumed effects at Stop and consumes the residue once", () => {

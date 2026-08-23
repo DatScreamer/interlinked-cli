@@ -28,6 +28,12 @@ import {
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WATER_LINE_PATHS } from "./evaluator/water-line-files.js";
+import {
+	EFFECT_ATTRIBUTION_STORE_REL,
+	initEffectAttributionStore,
+	partitionResidueByAttribution,
+	recordReconciledEffects,
+} from "./workspace-effect-attribution.js";
 
 const MAX_FILES = 25_000;
 const MAX_HASH_BYTES = 8 * 1024 * 1024;
@@ -103,6 +109,10 @@ export interface WorkspaceChangeSet {
 	before_captured_at: string;
 	after_captured_at: string;
 	files: WorkspaceFileEffect[];
+	/** Residue only: effects dropped because their observed content hash exactly
+	 *  matched a DIFFERENT session's reconciled PostToolUse write — that work
+	 *  belongs to the other session and must not be charged to this one. */
+	attributed_to_other_sessions?: number;
 }
 
 interface PendingSnapshot {
@@ -273,6 +283,9 @@ export function captureWorkspaceSnapshot(rootInput: string): WorkspaceSnapshot {
 	const files: Record<string, WorkspaceFileFingerprint> = {};
 	let hashedBytes = 0;
 	for (const rel of paths.slice(0, MAX_FILES)) {
+		// The attribution registry's own write-through file must never read as
+		// a workspace effect, or every reconcile would self-generate residue.
+		if (rel.replaceAll("\\", "/") === EFFECT_ATTRIBUTION_STORE_REL) continue;
 		const absolute = isAbsolute(rel) ? resolve(rel) : resolve(root, rel);
 		if (!isInside(root, absolute) || !existsSync(absolute)) continue;
 		const found = fingerprint(absolute, MAX_TOTAL_HASH_BYTES - hashedBytes);
@@ -416,7 +429,12 @@ export function consumeWorkspaceSnapshot(opts: {
 	if (!pending) return null;
 	const after = captureWorkspaceSnapshot(opts.root);
 	lastReconciledBySession.set(opts.sessionId, after);
-	return diffWorkspaceSnapshots(pending.snapshot, after);
+	const changeSet = diffWorkspaceSnapshots(pending.snapshot, after);
+	// Feed the cross-session attribution registry so Stop residue can tell
+	// "this session's unreconciled write" from "another session's work".
+	initEffectAttributionStore(opts.root);
+	recordReconciledEffects(opts.sessionId, changeSet.files);
+	return changeSet;
 }
 
 /**
@@ -437,7 +455,11 @@ export function consumeWorkspaceResidue(sessionId: string, root: string): Worksp
 	const oldest = candidates.reduce((a, b) =>
 		a.captured_at <= b.captured_at ? a : b,
 	);
-	return diffWorkspaceSnapshots(oldest, captureWorkspaceSnapshot(root));
+	const raw = diffWorkspaceSnapshots(oldest, captureWorkspaceSnapshot(root));
+	// The diff is time-scoped; drop effects proven to be another session's
+	// reconciled work so they are not folded into THIS session's rescan.
+	const { own, attributedElsewhere } = partitionResidueByAttribution(sessionId, raw.files);
+	return { ...raw, files: own, attributed_to_other_sessions: attributedElsewhere };
 }
 
 /** Render a bounded Stop warning for writes whose PostToolUse was missed. */
@@ -448,9 +470,14 @@ export function formatWorkspaceResidueWarning(changeSet: WorkspaceChangeSet): st
 		? ` (+${changeSet.files.length - shown.length} more)`
 		: "";
 	const completeness = changeSet.complete ? "complete" : "bounded/incomplete";
+	const attributed = changeSet.attributed_to_other_sessions ?? 0;
+	const attributedNote = attributed > 0
+		? ` ${attributed} further effect(s) matched another session's reconciled writes and were excluded.`
+		: "";
 	return (
 		`[interlinked:effect-residue] Stop observed ${changeSet.files.length} filesystem effect(s) ` +
-		`that were not reconciled by PostToolUse (${completeness} snapshot): ${shown.join(", ")}${more}. ` +
+		`that were not reconciled by PostToolUse (${completeness} snapshot): ${shown.join(", ")}${more}.` +
+		`${attributedNote} ` +
 		"The files were added to the touched-file rescan; this is a backstop, not rollback of the originating command."
 	);
 }
