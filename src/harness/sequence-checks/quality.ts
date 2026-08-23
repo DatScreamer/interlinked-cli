@@ -238,13 +238,17 @@ export const magicLiteralCrossFileProliferation: SequenceDetector = {
 		if (!occurrences || occurrences.size === 0) return [];
 		const matches: SequenceMatch[] = [];
 		for (const [literalHash, files] of occurrences) {
-			if (files.size < MAGIC_LITERAL_FILE_THRESHOLD) continue;
-			const fileList = Array.from(files);
+			// Test files are exempt: self-contained suites repeat fixture literals
+			// BY CONTRACT (no cross-test-file coupling), so counting them made
+			// every parallel test-writing wave fire this detector (5x on
+			// 2026-08-23 alone). Only non-test files count toward the threshold.
+			const fileList = Array.from(files).filter((f) => !/\.(test|spec)\.[cm]?[jt]sx?$/.test(f));
+			if (fileList.length < MAGIC_LITERAL_FILE_THRESHOLD) continue;
 			matches.push({
-				prior_event_count: files.size,
-				prior_summary: `literal seen in ${files.size} files`,
+				prior_event_count: fileList.length,
+				prior_summary: `literal seen in ${fileList.length} files`,
 				message:
-					`The same literal (${literalHash}) was introduced in ${files.size} different files ` +
+					`The same literal (${literalHash}) was introduced in ${fileList.length} different files ` +
 					`this session: ${fileList.slice(0, 3).join(", ")}` +
 					(fileList.length > 3 ? ` (+${fileList.length - 3} more)` : "") +
 					". Extract it into a shared constant rather than repeating the value.",

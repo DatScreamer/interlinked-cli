@@ -364,6 +364,32 @@ describe("magic_literal_cross_file_proliferation", () => {
 		expect(match?.evidence?.length).toBe(3);
 	});
 
+	it("does not fire when the spread is test files — self-contained suites repeat fixtures by contract (2026-08-23 carve-out)", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.test.ts" } },
+		]);
+		session.literal_occurrences = new Map([
+			[
+				"hash:shared-fixture",
+				new Set(["src/a.test.ts", "src/b.mutation-kill-w49.test.ts", "src/c.spec.tsx", "src/d.ts", "src/e.ts"]),
+			],
+		]);
+		// 3 test files filtered out; 2 non-test files remain — under threshold.
+		expect(magicLiteralCrossFileProliferation.fn(session, lastEvent)).toEqual([]);
+	});
+
+	it("still fires when 3+ NON-test files share the literal even alongside test files", () => {
+		const { session, lastEvent } = buildTrajectoryFixture([
+			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+		]);
+		session.literal_occurrences = new Map([
+			["hash:real-spread", new Set(["src/a.ts", "src/b.ts", "src/c.ts", "src/d.test.ts"])],
+		]);
+		const matches = magicLiteralCrossFileProliferation.fn(session, lastEvent);
+		expect(matches.length).toBe(1);
+		expect(matches[0]?.message).toContain("3 different files");
+	});
+
 	it("does not fire when the literal appears in only 2 files", () => {
 		const { session, lastEvent } = buildTrajectoryFixture([
 			{ tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
