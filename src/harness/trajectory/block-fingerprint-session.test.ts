@@ -90,9 +90,11 @@ describe("detectWorkaround", () => {
 		expect(detectWorkaround(s, { content: blockedContent }, T0)).toBeNull();
 	});
 
-	it("D1 — flags the same refused content resurfacing through another channel", () => {
+	it("D1 — flags the same refused content resurfacing through the command channel", () => {
+		// 2026-08-23 tightening: only command-channel candidates can evade the
+		// write gates, so the detector now requires the candidate channel.
 		const s = armed();
-		const sig = detectWorkaround(s, { content: blockedContent }, T0 + 1000);
+		const sig = detectWorkaround(s, { content: blockedContent, channel: "command" }, T0 + 1000);
 		expect(sig?.detector).toBe("same-content-resurfacing");
 		expect(sig?.ruleId).toBe("eval_injection");
 	});
@@ -107,9 +109,9 @@ describe("detectWorkaround", () => {
 		expect(sig).toBeNull();
 	});
 
-	it("D2 — flags a write to the same target path via a different channel", () => {
+	it("D2 — flags a command-channel touch of the same target path", () => {
 		const s = armed();
-		const sig = detectWorkaround(s, { target: "src/danger.ts" }, T0 + 1000);
+		const sig = detectWorkaround(s, { target: "src/danger.ts", channel: "command" }, T0 + 1000);
 		expect(sig?.detector).toBe("same-target-different-channel");
 	});
 
@@ -280,13 +282,24 @@ describe("channel awareness — evasion vs remediation", () => {
 		).toBeNull();
 	});
 
-	it("still flags when the armed fingerprint predates channel tracking", () => {
-		// An undefined channel must not silently disable the detector for
-		// fingerprints persisted by an older daemon.
+	it("still flags a command-channel candidate when the armed fingerprint predates channel tracking", () => {
+		// An undefined FINGERPRINT channel must not silently disable the
+		// detector for fingerprints persisted by an older daemon. The candidate
+		// side must be command — writes are judged, so they remediate (2026-08-23).
 		const s = fresh();
 		recordBlockFingerprint(s, { ruleId: "empty_catch", content: REFUSED, target: "src/a.ts", atMs: T0 });
-		expect(detectWorkaround(s, { content: REFUSED, channel: "write" }, T0 + 1000)?.detector).toBe(
+		expect(detectWorkaround(s, { content: REFUSED, channel: "command" }, T0 + 1000)?.detector).toBe(
 			"same-content-resurfacing",
 		);
+	});
+
+	it("an ALLOWED write on an armed target disarms it — a later bash touch fires no stale signal (2026-08-23)", () => {
+		// The six-FP session shape: TDD/line-cap/tsc-overlay blocks are
+		// remediated through gated writes; the armed fingerprint must not
+		// linger to charge an incidental later command touching the same file.
+		const s = fresh();
+		recordBlockFingerprint(s, { ruleId: "large-file-cap", content: REFUSED, target: "src/a.ts", atMs: T0, channel: "write" });
+		expect(detectWorkaround(s, { content: "shrunken", target: "src/a.ts", channel: "write" }, T0 + 500)).toBeNull();
+		expect(detectWorkaround(s, { command: "wc -l src/a.ts", target: "src/a.ts", channel: "command" }, T0 + 1000)).toBeNull();
 	});
 });

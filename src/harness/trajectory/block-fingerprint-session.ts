@@ -64,6 +64,37 @@ function sameKnownChannel(a: string | undefined, b: string | undefined): boolean
 	return a !== undefined && b !== undefined && a === b;
 }
 
+/** Content/target resurfacing counts as evasion only on the command channel —
+ *  a bash redirect is the one path that dodges the write gates. */
+function detectCommandChannelResurfacing(
+	armed: readonly BlockFingerprint[],
+	candidate: WorkaroundCandidate,
+): WorkaroundSignal | null {
+	if (candidate.channel !== "command") return null;
+	const byContent = candidate.content ? sameContentResurfacing(armed, candidate.content) : null;
+	if (byContent && !sameKnownChannel(byContent.channel, candidate.channel)) {
+		return { detector: "same-content-resurfacing", ruleId: byContent.ruleId };
+	}
+	const byTarget = sameTargetDifferentChannel(armed, candidate.target);
+	if (byTarget) return { detector: "same-target-different-channel", ruleId: byTarget.ruleId };
+	return null;
+}
+
+/** An ALLOWED write on an armed target means the objection was remediated —
+ *  disarm it so a later incidental bash touch cannot fire a stale signal. */
+function disarmRemediatedTarget(
+	session: SessionTrajectory,
+	armed: BlockFingerprint[],
+	candidate: WorkaroundCandidate,
+): void {
+	if (candidate.channel !== "write" || !candidate.target) {
+		session.block_fingerprints = armed;
+		return;
+	}
+	const norm = candidate.target.replace(/\\/g, "/");
+	session.block_fingerprints = armed.filter((f) => f.target !== norm);
+}
+
 /**
  * Run the four workaround detectors on a candidate event against the armed set.
  * Returns the first signal (highest-priority detector), or null. `content` is
@@ -78,25 +109,20 @@ export function detectWorkaround(
 	const armed = pruneExpired(session.block_fingerprints ?? [], nowMs);
 	if (armed.length === 0) return null;
 
-	// Only a CHANNEL CHANGE can evade a gate. Same-channel resurfacing reaches
-	// this point solely because the gate allowed it, which means the agent fixed
-	// the objection rather than routed around it. Direction matters too:
-	// command→write is COMPLIANCE, not evasion — the bash-redirect guards block
-	// shell writes precisely to force content through the fully-gated Write
-	// tool, and their block text says so (2026-08-23: flagging an agent for
-	// following that advice taught the opposite lesson). Only a move OFF the
-	// write channel (or between command forms) can dodge a content gate.
-	const byContent = candidate.content ? sameContentResurfacing(armed, candidate.content) : null;
-	if (
-		byContent &&
-		!sameKnownChannel(byContent.channel, candidate.channel) &&
-		!(byContent.channel === "command" && candidate.channel === "write")
-	) {
-		return { detector: "same-content-resurfacing", ruleId: byContent.ruleId };
-	}
-
-	const byTarget = sameTargetDifferentChannel(armed, candidate.target);
-	if (byTarget) return { detector: "same-target-different-channel", ruleId: byTarget.ruleId };
+	// Only movement to an UNDER-GATED channel can evade a gate (2026-08-23,
+	// generalized from the command→write carve-out after six FP signals in one
+	// session). A Write-channel candidate reaching this point was fully judged
+	// and ALLOWED — that is remediation by definition, whatever the gate was:
+	// test-first after a TDD block, extract-then-shrink after the line cap,
+	// resequenced edits after the tsc overlay all legitimately revisit the same
+	// target/content through gated tools. So the content/target detectors fire
+	// only for command-channel candidates (the bash side, where a redirect can
+	// dodge the write gates); an allowed write DISARMS its target instead.
+	// Env-escape and config-loosening below stay channel-independent — those
+	// shapes are evasion on any channel.
+	const commandSignal = detectCommandChannelResurfacing(armed, candidate);
+	if (commandSignal) return commandSignal;
+	disarmRemediatedTarget(session, armed, candidate);
 
 	const byConfig = configLooseningAfterBlock(armed, candidate.target);
 	if (byConfig) return { detector: "config-loosening-in-window", ruleId: byConfig.ruleId };
