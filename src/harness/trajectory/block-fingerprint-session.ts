@@ -80,9 +80,18 @@ export function detectWorkaround(
 
 	// Only a CHANNEL CHANGE can evade a gate. Same-channel resurfacing reaches
 	// this point solely because the gate allowed it, which means the agent fixed
-	// the objection rather than routed around it.
+	// the objection rather than routed around it. Direction matters too:
+	// command→write is COMPLIANCE, not evasion — the bash-redirect guards block
+	// shell writes precisely to force content through the fully-gated Write
+	// tool, and their block text says so (2026-08-23: flagging an agent for
+	// following that advice taught the opposite lesson). Only a move OFF the
+	// write channel (or between command forms) can dodge a content gate.
 	const byContent = candidate.content ? sameContentResurfacing(armed, candidate.content) : null;
-	if (byContent && !sameKnownChannel(byContent.channel, candidate.channel)) {
+	if (
+		byContent &&
+		!sameKnownChannel(byContent.channel, candidate.channel) &&
+		!(byContent.channel === "command" && candidate.channel === "write")
+	) {
 		return { detector: "same-content-resurfacing", ruleId: byContent.ruleId };
 	}
 

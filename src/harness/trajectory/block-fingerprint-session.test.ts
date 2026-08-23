@@ -258,9 +258,13 @@ describe("channel awareness — evasion vs remediation", () => {
 		expect(signal?.detector).toBe("same-content-resurfacing");
 	});
 
-	it("flags refused COMMAND content that comes back as a file write", () => {
-		const signal = detectWorkaround(arm("command"), { content: REFUSED, channel: "write" }, T0 + 1000);
-		expect(signal?.detector).toBe("same-content-resurfacing");
+	it("does NOT flag refused COMMAND content that comes back as a file write — command→write is compliance (2026-08-23 reversal)", () => {
+		// The bash-redirect guards block shell writes precisely to force the
+		// content through the fully-gated Write tool, and their block text says
+		// so. Flagging the agent for following that advice taught the opposite
+		// lesson (operator report, unrelated session). Script-staging evasion is
+		// covered by the install-then-execute sequence detector instead.
+		expect(detectWorkaround(arm("command"), { content: REFUSED, channel: "write" }, T0 + 1000)).toBeNull();
 	});
 
 	it("does NOT flag a same-channel retry — that is remediation, not evasion", () => {
