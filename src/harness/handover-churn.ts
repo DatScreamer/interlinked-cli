@@ -50,7 +50,12 @@ export function netUnresolvedHandovers(
 	let listens = 0;
 	for (const e of events) {
 		if (e.at < windowStart || e.at > nowMs) continue;
-		if (e.event === "handover") handovers++;
+		// A churn-backstop row is a REFUSAL, not an attempt. Counting it made
+		// the backstop feed itself: every suppression wrote a handover row that
+		// kept the count above threshold, so suppression never decayed —
+		// 2026-08-25 outage: build-refresh suppressed every 120s for ~90 min
+		// until the stale daemon was OOM-killed with no successor.
+		if (e.event === "handover" && e.reason !== "churn-backstop") handovers++;
 		else if (e.event === "listening") listens++;
 	}
 	return Math.max(0, handovers - listens);

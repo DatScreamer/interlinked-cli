@@ -99,6 +99,32 @@ describe("handoverChurnExceeded — negative (must not fire)", () => {
 	});
 });
 
+describe("backstop refusal rows never count as attempts (2026-08-25 outage pin)", () => {
+	it("P: suppression rows do not sustain the lockout — the backstop decays once real attempts age out", () => {
+		// The outage shape: 4 real never-listened handovers trip the backstop,
+		// then every 120s a churn-backstop row is written. Under the old
+		// counting those rows kept the window full forever; under the fix the
+		// backstop releases as soon as the REAL attempts age past the window.
+		const nowMs = 1_000_000_000;
+		const stale = HANDOVER_CHURN_WINDOW_MS + 60_000;
+		const events = [
+			...Array.from({ length: HANDOVER_CHURN_MAX_ATTEMPTS }, (_, i) => handover(nowMs - stale - i)),
+			...Array.from({ length: 10 }, (_, i) =>
+				churnBackstopEvent(39414, nowMs - i * 120_000, "build-refresh handover suppressed"),
+			),
+		];
+		expect(handoverChurnExceeded(events, nowMs)).toBe(false);
+	});
+
+	it("N: real never-listened handovers inside the window still trip the backstop", () => {
+		const nowMs = 1_000_000_000;
+		const events = Array.from({ length: HANDOVER_CHURN_MAX_ATTEMPTS }, (_, i) =>
+			handover(nowMs - 1_000 - i),
+		);
+		expect(handoverChurnExceeded(events, nowMs)).toBe(true);
+	});
+});
+
 describe("churnBackstopEvent", () => {
 	it("builds a handover row tagged churn-backstop with the given detail", () => {
 		const evt = churnBackstopEvent(4242, 5_000, "rss-ceiling suppressed");
