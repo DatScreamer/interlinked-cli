@@ -59,6 +59,7 @@ import {
 	evaluateWriteContent,
 	type PreToolCtx,
 } from "./pre-tool-decision-phases.js";
+import { evaluateBashEditObligationGate } from "../bash-edit-obligations.js";
 import { evaluateInterpreterWriteGuard } from "./interpreter-write-guard.js";
 import {
 	evaluateBaselineIntegrityGate,
@@ -195,6 +196,9 @@ export function evaluatePreToolUse(
 		() => evaluateConfigLooseningGate(event, toolName, warnings),
 		// Baseline-integrity gate — block lowering a committed ratchet water-line.
 		() => evaluateBaselineIntegrityGate(event, toolName, warnings),
+		// Bash-edit obligations — the Ring-2 equalizer: a bash-channel edit that
+		// introduced pre_block findings gates write-class calls until fixed.
+		() => evaluateBashEditObligationGate(event, toolName, warnings),
 		// Auto file reservation.
 		() =>
 			evaluateAutoReservation(event, session, toolName, toolInput, reservations, cohort, warnings),

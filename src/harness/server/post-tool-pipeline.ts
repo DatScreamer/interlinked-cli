@@ -41,6 +41,7 @@ import { consumeWorkspaceSnapshot, isWorkspaceControlPath } from "../workspace-e
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
 import { appendFlakeCheckWarning } from "./post-tool-flake-phase.js";
 import { appendMutationHarvestWarning } from "./post-tool-mutation-harvest.js";
+import { appendBashEditObligationWarnings } from "../bash-edit-obligations.js";
 import { resolveEditedPaths } from "./post-tool-pipeline-paths.js";
 import {
 	dischargeCoverageOnGreenRun,
@@ -106,9 +107,7 @@ function appendFailureChannelWarnings(
 	if (event.tool_outcome !== "error") return;
 	try {
 		const channelsOutput = runFailureChannels({ event, session, cwd: ctx.cwd });
-		if (channelsOutput && channelsOutput.warnings.length > 0) {
-			pushWarnings(postDecision, ...channelsOutput.warnings);
-		}
+		if (channelsOutput) pushWarnings(postDecision, ...channelsOutput.warnings);
 	} catch (e) {
 		ctx.log(`Failure-recovery channels error: ${e instanceof Error ? e.message : String(e)}`);
 	}
@@ -442,15 +441,15 @@ export async function runPostToolPipeline(
 	// --- Tool-response checks (run for ALL PostToolUse events, not just file edits) ---
 	// These inspect tool_response payloads, so they apply equally to MCP tools,
 	// Bash JSON output, and any other tool that returns structured data.
-	// (Phase mark for diagnostic instrumentation — captures time spent in
-	// the bookkeeping between handler entry and tool-response checks.)
 	markPhase("pre_tool_response");
 	appendToolResponseChecks(event, session, postDecision, checksRan);
 
 	// Run quality checks (synchronous, with timeouts per check). Resolve which
 	// file(s) this event edited (direct edit declared paths, or a path scanned
 	// out of a Bash command) and whether any checks should run at all.
-	const { editedFilePath, editedFilePaths, shouldRunChecks } = resolveEditedPaths(event);
+	const { editedFilePath, editedFilePaths, isDirectFileEdit, shouldRunChecks } = resolveEditedPaths(event);
+	// Ring-2 equalizer (gap 6): bash-channel edits judged post-state → obligations.
+	appendBashEditObligationWarnings(event, ctx.cwd, isDirectFileEdit, editedFilePaths, postDecision);
 	if (shouldRunChecks) {
 		// The accumulator carries every cross-iteration / cross-phase value:
 		// the once-per-event project-wide-sweep guard, the recurrence cursor,

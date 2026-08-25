@@ -50,7 +50,9 @@ defeat the pattern.
 | **Sensitive-file read** | `Read` of `.env`, `credentials.json`, `service-account*.json`, `*.pem`/`*.key` | `.env.example` |
 | **Repo confinement** | any Write/Edit whose real (symlink-resolved) target is outside the repo root | paths under the allowlist / session scratchpad |
 | **Package installs** | any un-allowlisted `npm/pip/cargo/go/…` install; URL/git/tarball specs — see **interlinked-supply-chain** | allowlisted + exact-pinned |
-| **Bash-routed write bypass** | a `>` / `tee` redirect writing a tracked source file (dodges the content gate) | routed to Write/Edit or `interlinked write` |
+| **Bash-routed write bypass** | a `>` / `tee` redirect, `sed -i` / `perl -pi` / `gawk -i inplace` / `ex` / `ed` in-place edit, `patch` / `git apply` diff applier, or a wrapped form (`xargs`, `find -exec`, `timeout`) writing a tracked source file (dodges the content gate) | routed to Write/Edit or `interlinked write` |
+| **Applier-script execution** (`builtin-patch-applier`) | running an interpreter on a pre-existing throwaway script that writes into repo source | route the edit through Write/Edit; committed codegen belongs in `scripts/` |
+| **Bash-edit obligation** (`bash-edit-obligation`) | a bash-channel edit left an INTRODUCED `pre_block`-class finding on disk; until it is fixed, write-class tool calls to OTHER files are refused (edits to the flagged file and reads stay allowed; the gate re-checks and self-releases) | fix the flagged file first |
 | **Hand-rolled patch applier** | a throwaway script in the scratchpad or `scratch/` that calls `writeFileSync`/`appendFileSync`/`write_text` on a path outside its sandbox (`"src/…"`, `process.cwd()`, `../`) — a re-implementation of Edit with the gates removed | probes that only READ repo source; scripts writing beside themselves; committed codegen under `scripts/` |
 | **Content pre_block** (introduced-only) | edit that *introduces* merge-conflict markers, `eval()`, and other zero-FP checks | pre-existing instances (warn, not block) |
 
@@ -113,6 +115,8 @@ tools, the daemon snapshots Git-visible files plus standalone ignored local file
 created/modified/deleted ChangeSet after it. PostToolUse file checks prefer those observed paths over
 command text or runner-declared paths. A Stop-time `[interlinked:effect-residue]` warning means a
 PostToolUse was missing/unreconciled; the observed files were added to the touched-file rescan.
+Effects whose content hash matches another session's reconciled write are excluded (the warning
+reports the excluded count) — on a shared tree, one session is not charged for another's work.
 The noisy `.interlinked/` runtime tree stays collapsed, but its exact local policy/control files are
 observed and cannot be silenced by `skip_paths`.
 
