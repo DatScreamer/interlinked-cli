@@ -9,14 +9,20 @@
 // diff-overlay). Returning a non-null result tells the caller to block with
 // a message asking the agent to use the Write tool instead.
 
-/** File extensions the harness's content-gate checks care about. */
 import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 import { nonNull } from "../lib/non-null.js";
+import {
+	CODE_FILE_EXT_RE,
+	splitCommandSegments,
+	splitShellWordsLoose,
+	stripOuterQuotes,
+} from "./pre-checks-bash-write-shared.js";
 import { scanInPlaceAndPatchVerbs, withUnwrappedCommands } from "./pre-checks-bash-write-verbs.js";
 
-export const CODE_FILE_EXT_RE =
-	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
+// Parsing primitives live in ./pre-checks-bash-write-shared.ts (leaf module,
+// breaks the detect↔verbs import cycle). Re-exported for existing importers.
+export { CODE_FILE_EXT_RE, splitCommandSegments, splitShellWordsLoose, stripOuterQuotes };
 
 /**
  * True when the write target lands INSIDE the guarded project root — the only
@@ -407,28 +413,5 @@ function detectDdWriteToProtected(
 	return null;
 }
 
-export function splitCommandSegments(cmd: string): string[] {
-	return cmd.split(/\s+(?:&&|\|\||;|\|)\s+/).filter(Boolean);
-}
-
-export function splitShellWordsLoose(segment: string): string[] {
-	// Flatten nested-quantifier alternation: `(?:[^"\\]|\\[\s\S])*` advances
-	// one character per iteration with no backtracking, avoiding the
-	// catastrophic-backtracking shape of `[^"\\]*(?:\\.[^"\\]*)*`.
-	const words: string[] = [];
-	const re = /"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|(\S+)/g;
-	for (const match of segment.matchAll(re)) {
-		words.push(match[0]);
-	}
-	return words;
-}
-
-export function stripOuterQuotes(value: string): string {
-	if (
-		(value.startsWith("'") && value.endsWith("'")) ||
-		(value.startsWith("\"") && value.endsWith("\""))
-	) {
-		return value.slice(1, -1);
-	}
-	return value;
-}
+// (splitCommandSegments / splitShellWordsLoose / stripOuterQuotes moved to
+// ./pre-checks-bash-write-shared.ts — re-exported near the top of this file.)

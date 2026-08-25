@@ -13,7 +13,7 @@ import {
 	splitCommandSegments,
 	splitShellWordsLoose,
 	stripOuterQuotes,
-} from "./pre-checks-bash-write-detect.js";
+} from "./pre-checks-bash-write-shared.js";
 
 export interface VerbWriteHit {
 	target: string;
