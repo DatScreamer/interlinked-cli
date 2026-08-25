@@ -378,6 +378,27 @@ export function detectInterpreterWrite(cmd: string, projectRoot: string): Interp
 	return null;
 }
 
+/** Write tokens whose FIRST argument is computed (not a string literal) — the
+ *  destination the direct/indirect passes cannot resolve. `open` is excluded:
+ *  `open(f)` for reading is ubiquitous and mode-less matches would drown it. */
+const COMPUTED_WRITE_RE =
+	/\b(writeFileSync|appendFileSync|createWriteStream|writeFile|appendFile|write_text|write_bytes)\s*\(\s*(?!['"`])/;
+
+/** Gap 4 (2026-08-25 audit): an inline program with a write call whose
+ *  destination is computed is UNPROVABLE pre-execution — not blockable at zero
+ *  FP, but silence taught nothing. Returns the interpreter + call token for a
+ *  warning; null when every write is literal (the block passes own those). */
+export function detectComputedInterpreterWrite(
+	cmd: string,
+): { interpreter: string; call: string } | null {
+	if (!cmd) return null;
+	for (const program of [...collectHeredocPrograms(cmd), ...collectFlagPrograms(cmd)]) {
+		const m = COMPUTED_WRITE_RE.exec(program.body);
+		if (m) return { interpreter: program.interpreter, call: nonNull(m[1]) };
+	}
+	return null;
+}
+
 /** Block reason. Names the interpreter, the matched write call and the RESOLVED
  *  target so an indirect path (`$DEST`, a `cd` hop) is unambiguous, then points
  *  at the sanctioned channel — same voice as the redirect gate's message. */
@@ -422,7 +443,18 @@ export function evaluateInterpreterWriteGuard(
 	if (!isBash(toolName) || !event.cwd) return null;
 	const cmd = typeof toolInput.command === "string" ? toolInput.command : "";
 	const hit = detectInterpreterWrite(cmd, event.cwd);
-	if (!hit) return null;
+	if (!hit) {
+		const soft = detectComputedInterpreterWrite(cmd);
+		if (soft) {
+			warnings.push(
+				`[interlinked:interpreter-write] [heuristic] Inline ${soft.interpreter} program calls ` +
+					`${soft.call}( with a COMPUTED destination the guard cannot resolve pre-execution. ` +
+					`If it targets repo source, use the Write/Edit tools so the content gates judge it; ` +
+					`throwaway probes belong in <repo>/scratch/. The post-tool ChangeSet is judged either way.`,
+			);
+		}
+		return null;
+	}
 	if (isInterpreterWriteGuardDisabled()) {
 		// Logged, never silent: the bypass exists for documented flows, and an
 		// ungated write to repo source should still leave a trace in the session.

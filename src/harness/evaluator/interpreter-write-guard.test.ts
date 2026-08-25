@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessEvent } from "../types.js";
 import {
 	buildInterpreterWriteReason,
+	detectComputedInterpreterWrite,
 	detectInterpreterWrite,
 	evaluateInterpreterWriteGuard,
 	isInterpreterWriteGuardDisabled,
@@ -325,5 +326,26 @@ describe("buildInterpreterWriteReason", () => {
 		expect(reason).toContain("open('src/a.ts','w')");
 		expect(reason).toContain(`${ROOT}/src/a.ts`);
 		expect(reason).toContain("INTERLINKED_DISABLE_INTERPRETER_WRITE_GUARD=1");
+	});
+});
+
+describe("detectComputedInterpreterWrite — gap 4 soft warn (2026-08-25)", () => {
+	it("P1: node -e with a computed writeFileSync destination is flagged", () => {
+		const soft = detectComputedInterpreterWrite(
+			`node -e 'const fs=require("fs");fs.writeFileSync(path.join(dir,"x.ts"), body)'`,
+		);
+		expect(soft?.call).toBe("writeFileSync");
+	});
+
+	it("N1: a literal destination is NOT the soft path (the block passes own it)", () => {
+		expect(
+			detectComputedInterpreterWrite(`node -e 'fs.writeFileSync("/tmp/x.ts", body)'`),
+		).toBeNull();
+	});
+
+	it("N2: a read-only inline program is not flagged", () => {
+		expect(
+			detectComputedInterpreterWrite(`node -e 'console.log(fs.readFileSync(p,"utf8"))'`),
+		).toBeNull();
 	});
 });
