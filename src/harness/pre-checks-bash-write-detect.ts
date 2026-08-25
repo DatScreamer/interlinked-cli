@@ -13,6 +13,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 import { nonNull } from "../lib/non-null.js";
+import { scanInPlaceAndPatchVerbs, withUnwrappedCommands } from "./pre-checks-bash-write-verbs.js";
 
 export const CODE_FILE_EXT_RE =
 	/\.(?:tsx?|jsx?|mjs|cjs|mts|cts|py|pyi|go|rs|java|kt|swift|c|cc|cpp|cxx|h|hpp|hxx|rb|php|cs|scala|clj|sh|bash|zsh)$/i;
@@ -317,9 +318,15 @@ export function detectBashCodeFileWrite(
 	const tee = scanTee(normalized, inRoot);
 	if (tee) return tee;
 
-	// sed -i (in-place edit).
-	const sedInPlace = detectSedInPlaceEdit(normalized);
-	if (sedInPlace && inRoot(sedInPlace.target)) return sedInPlace;
+	// Wrapper indirection (2026-08-25, gap 3): `xargs sed -i`, `find -exec
+	// sed -i {}`, `timeout 60 perl -pi …` hide the mutating verb behind a
+	// launcher the verb scanners cannot see. Unwrap once and append the inner
+	// commands as extra segments so every scanner below sees them too.
+	// In-place editors (sed/perl/awk/ex/ed) and patch/git-apply live in the
+	// extracted helper to hold this orchestrator's branch count.
+	const scannable = withUnwrappedCommands(normalized);
+	const editorHit = scanInPlaceAndPatchVerbs(scannable, inRoot, projectRoot);
+	if (editorHit) return editorHit;
 
 	const inline = scanInlineInterpreter(normalized, inRoot);
 	if (inline) return inline;
@@ -400,35 +407,11 @@ function detectDdWriteToProtected(
 	return null;
 }
 
-function detectSedInPlaceEdit(cmd: string): { target: string; mechanism: string } | null {
-	for (const segment of splitCommandSegments(cmd)) {
-		const args = splitShellWordsLoose(segment);
-		const sedIdx = args.findIndex((arg) => /(?:^|\/)sed$/.test(stripOuterQuotes(arg)));
-		if (sedIdx < 0) continue;
-
-		const sedArgs = args.slice(sedIdx + 1).map(stripOuterQuotes);
-		if (!sedArgs.some(isSedInPlaceOption)) continue;
-
-		for (let i = sedArgs.length - 1; i >= 0; i--) {
-			const arg = nonNull(sedArgs[i]);
-			if (arg.startsWith("-")) continue;
-			if (CODE_FILE_EXT_RE.test(arg)) {
-				return { target: arg, mechanism: "sed -i (in-place)" };
-			}
-		}
-	}
-	return null;
-}
-
-function isSedInPlaceOption(arg: string): boolean {
-	return arg === "-i" || /^-[A-Za-z]*i(?:$|[^A-Za-z].*)/.test(arg);
-}
-
-function splitCommandSegments(cmd: string): string[] {
+export function splitCommandSegments(cmd: string): string[] {
 	return cmd.split(/\s+(?:&&|\|\||;|\|)\s+/).filter(Boolean);
 }
 
-function splitShellWordsLoose(segment: string): string[] {
+export function splitShellWordsLoose(segment: string): string[] {
 	// Flatten nested-quantifier alternation: `(?:[^"\\]|\\[\s\S])*` advances
 	// one character per iteration with no backtracking, avoiding the
 	// catastrophic-backtracking shape of `[^"\\]*(?:\\.[^"\\]*)*`.
@@ -440,7 +423,7 @@ function splitShellWordsLoose(segment: string): string[] {
 	return words;
 }
 
-function stripOuterQuotes(value: string): string {
+export function stripOuterQuotes(value: string): string {
 	if (
 		(value.startsWith("'") && value.endsWith("'")) ||
 		(value.startsWith("\"") && value.endsWith("\""))
