@@ -16,6 +16,11 @@ import {
 	ruleAppliesToRole,
 } from "../command-decomposition.js";
 import { detectBashCodeFileWrite, resolveBashWriteTarget } from "../pre-checks.js";
+import {
+	buildPatchApplierReason,
+	detectPatchApplierExecution,
+	isPatchApplierGuardDisabled,
+} from "./patch-applier-guard.js";
 import type {
 	GuardRule,
 	GuardRulesConfig,
@@ -258,8 +263,30 @@ function evaluateBashRoutedWrite(
 				category: "harness-integrity",
 			};
 		}
+		const applierBlock = evaluateApplierExecution(cmd, warnings, projectRoot);
+		if (applierBlock) return applierBlock;
 	}
 	return null;
+}
+
+/** Gap 5 (2026-08-25): executing a PRE-EXISTING applier script evades the
+ *  write-time patch-applier guard — classify the script file at exec time. */
+function evaluateApplierExecution(
+	cmd: string,
+	warnings: string[],
+	projectRoot?: string,
+): HarnessDecision | null {
+	if (!projectRoot || isPatchApplierGuardDisabled()) return null;
+	const exec = detectPatchApplierExecution(cmd, projectRoot);
+	if (!exec) return null;
+	return {
+		decision: "block",
+		reason: buildPatchApplierReason({ target: exec.scriptPath, evidence: exec.evidence }),
+		warnings,
+		rule_id: "builtin-patch-applier",
+		severity: "high",
+		category: "harness-integrity",
+	};
 }
 
 /**

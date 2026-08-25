@@ -2,10 +2,14 @@
 // modelled on the real artifact this guard exists for: the `plm/apply.mjs`
 // anchor/replacement applier recovered from the 2026-07 scratchpad archive.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildPatchApplierReason,
 	detectPatchApplier,
+	detectPatchApplierExecution,
 	isPatchApplierGuardDisabled,
 } from "./patch-applier-guard.js";
 
@@ -142,5 +146,47 @@ describe("detectPatchApplier — real appliers still caught — positive (must f
 	it("P2: a genuine call whose PATH is a string literal still fires", () => {
 		const src = ["const dest = 'src/harness/y.ts';", "writeFileSync(dest, patched);"].join("\n");
 		expect(detectPatchApplier(src, "apply.mjs")).not.toBeNull();
+	});
+});
+
+describe("detectPatchApplierExecution — exec-time classification (2026-08-25 gap 5)", () => {
+	let root = "";
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "applier-exec-"));
+	});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("P1: running a pre-existing applier script via node is detected", () => {
+		const script = join(root, "apply.mjs");
+		writeFileSync(script, "import fs from 'node:fs';\nfs.writeFileSync('src/harness/x.ts', body);\n");
+		const hit = detectPatchApplierExecution(`node ${script}`, root);
+		expect(hit?.evidence.writeCall).toContain("writeFileSync");
+	});
+
+	it("P2: python applier execution is detected", () => {
+		const script = join(root, "apply.py");
+		// write_text survives comment/string stripping (the open('…','w') form
+		// hides its mode char inside a stripped string — a known detector bound).
+		writeFileSync(script, "from pathlib import Path\nPath('src/harness/x.ts').write_text(body)\n");
+		expect(detectPatchApplierExecution(`python3 ${script}`, root)).not.toBeNull();
+	});
+
+	it("N1: a read-only script is not an applier", () => {
+		const script = join(root, "probe.mjs");
+		writeFileSync(script, "import fs from 'node:fs';\nconsole.log(fs.readFileSync('src/x.ts','utf8').length);\n");
+		expect(detectPatchApplierExecution(`node ${script}`, root)).toBeNull();
+	});
+
+	it("N2: a committed scripts/ path is exempt (reviewed codegen home)", () => {
+		mkdirSync(join(root, "scripts"), { recursive: true });
+		const script = join(root, "scripts", "gen.mjs");
+		writeFileSync(script, "import fs from 'node:fs';\nfs.writeFileSync('src/generated.ts', out);\n");
+		expect(detectPatchApplierExecution(`node scripts/gen.mjs`, root)).toBeNull();
+	});
+
+	it("N3: a nonexistent script path is ignored", () => {
+		expect(detectPatchApplierExecution("node no-such-file.mjs", root)).toBeNull();
 	});
 });

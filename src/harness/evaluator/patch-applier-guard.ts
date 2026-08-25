@@ -26,7 +26,8 @@
 // would then be a one-line bypass, and a script that writes generated content
 // into `src/` from inline strings is the same evasion.
 
-import { basename } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { basename, isAbsolute, resolve } from "node:path";
 import { stripCommentsAndStrings } from "../checks/shared-text-utils.js";
 
 /** Script extensions this guard inspects. Non-scripts cannot execute a write,
@@ -83,6 +84,45 @@ export function detectPatchApplier(
 	const target = REPO_TARGET_RE.exec(content);
 	if (!target) return null;
 	return { writeCall: write[0].trim(), repoTarget: target[0].trim() };
+}
+
+/** Interpreters that can execute a script file passed as an argument. */
+const EXEC_INTERPRETER_RE =
+	/(?:^|[;&|]\s*)(?:node|tsx|npx\s+tsx|python3?|bash|sh|zsh|ruby|deno\s+run|bun)\s+((?:[^\s;&|]+\/)?[^\s;&|]+\.(?:mjs|cjs|js|mts|cts|ts|py|sh|bash|zsh|rb))\b/g;
+
+/** Reviewed in-repo homes for legitimate codegen — executing those is fine. */
+const REVIEWED_SCRIPT_DIR_RE = /(?:^|\/)(?:scripts|tools|node_modules|dist|build)\//;
+
+const EXEC_SCAN_MAX_BYTES = 64 * 1024;
+
+/**
+ * Gap 5 (2026-08-25 audit): the write-time guard above fires when the applier
+ * SCRIPT is written — but a script written before the guard existed, or
+ * fetched, evades it and only Ring 2 sees the aftermath. This closes the
+ * EXECUTION door: a bash command running an interpreter on an existing script
+ * file gets that file's first 64KB run through the same two-signal applier
+ * classifier. Committed script homes (scripts/, tools/) are exempt — those are
+ * the reviewed version of the shape.
+ */
+export function detectPatchApplierExecution(
+	cmd: string,
+	projectRoot: string,
+): { scriptPath: string; evidence: PatchApplierEvidence } | null {
+	for (const m of cmd.matchAll(EXEC_INTERPRETER_RE)) {
+		const raw = m[1];
+		if (!raw || REVIEWED_SCRIPT_DIR_RE.test(raw)) continue;
+		const abs = isAbsolute(raw) ? raw : resolve(projectRoot, raw);
+		let content: string;
+		try {
+			if (statSync(abs).size > EXEC_SCAN_MAX_BYTES) continue;
+			content = readFileSync(abs, "utf-8");
+		} catch {
+			continue; // no such file / unreadable — nothing to classify
+		}
+		const evidence = detectPatchApplier(content, abs);
+		if (evidence) return { scriptPath: raw, evidence };
+	}
+	return null;
 }
 
 /** Block reason. Names the two matched fragments so the agent can see exactly
