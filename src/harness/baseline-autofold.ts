@@ -39,6 +39,7 @@ import {
 	type FoldKind,
 	type FoldOutcome,
 	foldCoverage,
+	foldCoverageEditBaseline,
 	foldLargeFiles,
 	foldUntestedFiles,
 	toRepoRelative,
@@ -77,6 +78,7 @@ export function sessionStartMs(session: SessionTrajectory | undefined): number {
 /** How each fold's movement reads in the one-line summary. */
 const FOLD_PHRASE: Record<FoldKind, (n: number) => string> = {
 	coverage: (n) => `coverage +${n} raised`,
+	coverage_edit: (n) => `edit-baseline +${n} raised`,
 	untested_files: (n) => `untested -${n} dropped`,
 	large_files: (n) => `large-files -${n} dropped`,
 };
@@ -171,6 +173,10 @@ export function runBaselineAutoFold(opts: {
 					sessionStartMs: opts.sessionStartMs,
 					dryRun: opts.dryRun,
 				}),
+		],
+		[
+			"coverage_edit",
+			() => foldCoverageEditBaseline({ interlinkedDir, dryRun: opts.dryRun }),
 		],
 		[
 			"untested_files",

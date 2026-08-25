@@ -19,7 +19,7 @@
 //
 // Orchestration, budget, audit log and config live in `baseline-autofold.ts`.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { loadCheckPolicy } from "./check-policy.js";
 import {
@@ -44,7 +44,7 @@ import {
 } from "./tested-file-policy.js";
 
 /** Which water-line a fold moved. Stable — this is the audit-row contract. */
-export type FoldKind = "coverage" | "untested_files" | "large_files";
+export type FoldKind = "coverage" | "coverage_edit" | "untested_files" | "large_files";
 
 /** Why a fold did nothing. `null` means it ran and moved something. */
 export type FoldSkipReason =
@@ -179,6 +179,74 @@ export function foldCoverage(opts: {
 	if (raised === 0) return skippedOutcome("coverage", "no-change", refused);
 	if (!opts.dryRun) saveBaseline(opts.interlinkedDir, result.nextBaseline);
 	return { kind: "coverage", changed: raised, refused, skipped: null, details, dryRun: opts.dryRun };
+}
+
+// ===========================================
+// Fold A2 — per-edit coverage baseline (coverage-edit-baseline.json)
+// ===========================================
+
+/** Raw on-disk shape of coverage-edit-baseline.json: fraction, or {f, scope}. */
+type EditBaselineValue = number | { f?: unknown; scope?: unknown };
+
+function editBaselineFraction(value: EditBaselineValue | undefined): number | null {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "object" && value !== null && typeof value.f === "number") return value.f;
+	return null;
+}
+
+/**
+ * Fold the full-run water-line's per-file line coverage into the per-edit
+ * gate's baseline (`coverage-edit-baseline.json`).
+ *
+ * WHY: that file's only other writer is the per-edit coverage gate itself, so
+ * with the gate disabled the file fossilized (58 days stale, 2026-08-25) while
+ * `coverage-baseline.json` stayed fresh via Fold A. This fold gives it a
+ * second, always-on producer. Runs AFTER Fold A so it reads the just-raised
+ * water-line. Tighten-only: an entry may only rise, and a missing entry may be
+ * added (both make the drop-check stricter); a lower full-run number is
+ * REFUSED — the prior high-water holds, which also preserves scoped entries
+ * measured under narrower test scopes. Idempotent, so no freshness gate: a
+ * no-op fold reports "no-change" and writes nothing.
+ */
+export function foldCoverageEditBaseline(opts: {
+	interlinkedDir: string;
+	dryRun: boolean;
+}): FoldOutcome {
+	const full = loadBaseline(opts.interlinkedDir);
+	const entries = Object.entries(full.files);
+	if (entries.length === 0) return skippedOutcome("coverage_edit", "no-input");
+	const editPath = join(opts.interlinkedDir, "coverage-edit-baseline.json");
+	// Boundary parse: a corrupt file folds as empty and gets rebuilt tighter.
+	let prior: Record<string, EditBaselineValue> = {};
+	try {
+		if (existsSync(editPath)) {
+			// SAFETY: shape is re-validated per entry by editBaselineFraction.
+			prior = JSON.parse(readFileSync(editPath, "utf-8")) as Record<string, EditBaselineValue>;
+		}
+	} catch (err) {
+		void err; // unreadable/corrupt baseline — rebuild from the full water-line
+	}
+	const next: Record<string, EditBaselineValue> = { ...prior };
+	const details: string[] = [];
+	let raised = 0;
+	let refused = 0;
+	for (const [file, entry] of entries) {
+		if (!Number.isFinite(entry.lines_pct)) continue;
+		const fraction = entry.lines_pct / 100;
+		const existing = editBaselineFraction(prior[file]);
+		if (existing !== null && fraction <= existing) {
+			if (fraction < existing) refused++;
+			continue;
+		}
+		next[file] = fraction;
+		raised++;
+		if (details.length < FOLD_DETAIL_CAP) {
+			details.push(`${file}: ${existing === null ? "new" : existing.toFixed(2)}→${fraction.toFixed(2)}`);
+		}
+	}
+	if (raised === 0) return skippedOutcome("coverage_edit", "no-change", refused);
+	if (!opts.dryRun) writeFileSync(editPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+	return { kind: "coverage_edit", changed: raised, refused, skipped: null, details, dryRun: opts.dryRun };
 }
 
 // ===========================================

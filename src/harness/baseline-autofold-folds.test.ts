@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	findCoverageSummary,
 	foldCoverage,
+	foldCoverageEditBaseline,
 	foldLargeFiles,
 	foldUntestedFiles,
 	isCoverageReportFresh,
@@ -301,4 +302,53 @@ describe("toRepoRelative — negative (must drop)", () => {
 // A file the folds rely on existing for the untested-fold companion lookup.
 it("sanity: the tmp fixture root is created", () => {
 	expect(existsSync(cwd)).toBe(true);
+});
+
+// ───────────────────────────────────────────────────────────────────
+describe("coverage-edit fold — positive (must fold)", () => {
+	function readEditBaseline(): Record<string, number | { f: number; scope?: string }> {
+		// SAFETY: written by foldCoverageEditBaseline / this test's own fixtures.
+		return JSON.parse(
+			readFileSync(join(cwd, ".interlinked/coverage-edit-baseline.json"), "utf-8"),
+		) as Record<string, number | { f: number; scope?: string }>;
+	}
+
+	it("P1: raises a stale entry and adds a missing one from the full water-line", () => {
+		writeCoverageBaseline({
+			"src/a.ts": { lines_pct: 90, branches_pct: 80 },
+			"src/b.ts": { lines_pct: 75, branches_pct: 60 },
+		});
+		writeFileSync(
+			join(cwd, ".interlinked/coverage-edit-baseline.json"),
+			JSON.stringify({ "src/a.ts": 0.4 }),
+		);
+		const out = foldCoverageEditBaseline({ interlinkedDir: join(cwd, ".interlinked"), dryRun: false });
+		expect(out.changed).toBe(2);
+		const edit = readEditBaseline();
+		expect(edit["src/a.ts"]).toBe(0.9);
+		expect(edit["src/b.ts"]).toBe(0.75);
+	});
+});
+
+describe("coverage-edit fold — negative (must hold)", () => {
+	it("N1: never lowers an entry — a lower full-run number is refused and the scoped high-water survives", () => {
+		writeCoverageBaseline({ "src/a.ts": { lines_pct: 50, branches_pct: 50 } });
+		const editPath = join(cwd, ".interlinked/coverage-edit-baseline.json");
+		writeFileSync(editPath, JSON.stringify({ "src/a.ts": { f: 0.95, scope: "companion" } }));
+		const out = foldCoverageEditBaseline({ interlinkedDir: join(cwd, ".interlinked"), dryRun: false });
+		expect(out.changed).toBe(0);
+		expect(out.refused).toBe(1);
+		// no-change fold must not rewrite the file
+		const raw = JSON.parse(readFileSync(editPath, "utf-8")) as Record<string, { f: number; scope: string }>;
+		expect(raw["src/a.ts"]).toEqual({ f: 0.95, scope: "companion" });
+	});
+
+	it("N2: dry run reports the fold but writes nothing", () => {
+		writeCoverageBaseline({ "src/a.ts": { lines_pct: 90, branches_pct: 80 } });
+		const editPath = join(cwd, ".interlinked/coverage-edit-baseline.json");
+		const out = foldCoverageEditBaseline({ interlinkedDir: join(cwd, ".interlinked"), dryRun: true });
+		expect(out.changed).toBe(1);
+		expect(out.dryRun).toBe(true);
+		expect(existsSync(editPath)).toBe(false);
+	});
 });
