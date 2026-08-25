@@ -3,6 +3,7 @@ import { detectBashCodeFileWrite } from "./pre-checks-bash-write-detect.js";
 import {
 	detectInPlaceEditorVerbs,
 	detectPatchApplyVerb,
+	detectSedInPlaceEdit,
 	scanInPlaceAndPatchVerbs,
 	withUnwrappedCommands,
 } from "./pre-checks-bash-write-verbs.js";
@@ -70,6 +71,18 @@ describe("detectPatchApplyVerb — negative (must not fire)", () => {
 
 	it("N4: the word patch inside an argument does not fire", () => {
 		expect(detectPatchApplyVerb("rg -n patch src/harness")).toBeNull();
+	});
+});
+
+describe("detectSedInPlaceEdit — direct surface", () => {
+	it("P1: sed -i with a code-file target fires", () => {
+		const hit = detectSedInPlaceEdit("sed -i '' 's/a/b/' src/a.ts");
+		expect(hit?.target).toBe("src/a.ts");
+		expect(hit?.mechanism).toContain("sed -i");
+	});
+
+	it("N1: sed without -i (stdout filter) does not fire", () => {
+		expect(detectSedInPlaceEdit("sed 's/a/b/' src/a.ts")).toBeNull();
 	});
 });
 
