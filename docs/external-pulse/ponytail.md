@@ -260,7 +260,7 @@ Ranking should be based on a risk-adjusted value such as:
 
 `validated impact × confidence × reversibility ÷ change risk`
 
-Raw estimated line count is only a tie-breaker. Two findings touching the same code or dependency belong to an overlap group and cannot both contribute to a total.
+Raw estimated line count is only a tie-breaker. Findings touching the same code or dependency belong to an overlap group and cannot all contribute to a total.
 
 ### Safety boundaries that must be stronger than Ponytail audit
 
