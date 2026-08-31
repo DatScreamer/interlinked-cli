@@ -129,6 +129,7 @@ LIFE_BLOCKED=$(read_snap lifetime_blocked "")
 LIFE_CAUGHT=$(read_snap lifetime_caught "")
 CAP_CC=$(read_snap cap_cyclomatic "")
 CAP_CRAP=$(read_snap cap_crap "")
+CAP_FN_TOKENS=$(read_snap cap_function_tokens "")
 CLSF=$(read_snap classifier_enabled disabled)
 SCNF=$(read_snap scanner_enabled disabled)
 IDXS=$(read_snap index_status missing)
@@ -238,7 +239,7 @@ fi
 # Caps render as "≤N" because DOWN is progress here; a rising number regressed.
 CAPS_SEG=""
 if [ -n "$CAP_CC" ] && [ "$CAP_CC" != "0" ]; then
-    CAPS_SEG="\${SEP}$(osc8 "file://$ID/metric-caps.json" "cc≤\${CAP_CC} crap≤\${CAP_CRAP}")"
+    CAPS_SEG="\${SEP}$(osc8 "file://$ID/metric-caps.json" "fn≤\${CAP_FN_TOKENS} cc≤\${CAP_CC} crap≤\${CAP_CRAP}")"
 fi
 
 # Off-state badges — each links to its most actionable target:

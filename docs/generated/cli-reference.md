@@ -18,7 +18,7 @@ Commands:
   allowlist                                  Manage the supply-chain package allowlist (.interlinked/package-allowlist.json)
   attach [options]                           Attach local CLI settings to workspace/agent and link remote identity
   audit                                      Verify tamper-evidence of the guard-decision audit chain in activity.jsonl
-  caps [options]                             View, set, and explain the quality-metric caps (lines/cyclomatic/CRAP/coverage)
+  caps [options]                             View, set, and explain quality caps (lines/function-tokens/complexity/CRAP/coverage)
   check [options]                            Scan project for structural issues and optionally run external tool checks (tsc, biome, eslint, semgrep, gitleaks, mypy, ruff, etc.)
   checkpoint [options] [message]             Git checkpoint management
   ci-status [options]                        Surface CI failure-rate patterns from GitHub Actions (uses gh CLI)
@@ -54,7 +54,7 @@ Commands:
   logout [options]                           Clear authentication credentials (preserves other config)
   logs [options]                             View local activity log (offline, no server needed)
   mcp                                        Record mediated MCP server protocol traffic
-  metrics [options]                          Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function
+  metrics [options]                          Scan the whole codebase: function tokens, companion-test presence, coverage, complexity, and CRAP
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
   mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
@@ -70,9 +70,10 @@ Commands:
   scanner                                    PII filter (content scanner) — toggle, inspect, audit
   scratch                                    Manage the sanctioned session/agent-script home (<repo>/scratch/)
   search [options] <query>                   Search the local codebase (ripgrep with native fallback)
-  simplify                                   Simplification evidence, explicit recording, and Agent CI handoff preparation
+  semantic                                   Build and query the optional local semantic function index
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate
+  simplify                                   Simplification evidence, explicit recording, and Agent CI handoff preparation
   skill                                      Skill marker management (scopes distilled rules via active_when)
   spec                                       Spec-substrate utilities (fact ledger, review agenda)
   sponsor                                    Opt-in sponsor slot on the statusline (free-sponsor phase)
@@ -228,6 +229,90 @@ Options:
   --dead-code              Run Supermodel's cloud dead-code analysis (opt-in;
                            requires the `supermodel` CLI)
   -h, --help               display help for command
+```
+
+## Metrics
+
+```
+Usage: interlinked metrics [options] [command]
+
+Scan the whole codebase: function tokens, companion-test presence, coverage,
+complexity, and CRAP
+
+Options:
+  --cwd <path>        Project root (default: current directory)
+  --top <n>           Number of function/file token and CRAP hotspots to show
+                      (default: 25)
+  --include-tests     Include test/spec functions as advisory token
+                      measurements
+  --json              Machine-readable output (full per-file + per-function)
+  --short             One-line summary
+  --full              Show every per-file and per-function token measurement
+  -h, --help          display help for command
+
+Commands:
+  coupling [options]  Change coupling from git history — co-changed file pairs;
+                      pairs with no import edge are flagged 'hidden'
+  arch [options]      Martin metrics per directory (Ca/Ce/instability) +
+                      propagation cost from the import graph
+  rework [options]    Churn age from git blame — share of changed lines whose
+                      previous version was written in the last --window days
+```
+
+### metrics coupling
+
+```
+Usage: interlinked metrics coupling [options]
+
+Change coupling from git history — co-changed file pairs; pairs with no import
+edge are flagged 'hidden'
+
+Options:
+  --cwd <path>            Project root (default: current directory)
+  --since <when>          git --since expression (default: '90 days ago')
+  --min-support <n>       Minimum co-change commits per pair (default: 4)
+  --max-commit-files <n>  Skip bulk commits touching more files (default: 30)
+  --min-strength <pct>    Minimum Tornhill strength percentage (default: 30)
+  --limit <n>             Maximum pairs to report (default: 25)
+  --json                  Machine-readable output
+  --short                 One-line summary
+  -h, --help              display help for command
+```
+
+### metrics arch
+
+```
+Usage: interlinked metrics arch [options]
+
+Martin metrics per directory (Ca/Ce/instability) + propagation cost from the
+import graph
+
+Options:
+  --cwd <path>     Project root (default: current directory)
+  --depth <n>      Directory fold depth (default: 2)
+  --include-tests  Include test files in the edge set
+  --json           Machine-readable output
+  --short          One-line summary
+  -h, --help       display help for command
+```
+
+### metrics rework
+
+```
+Usage: interlinked metrics rework [options]
+
+Churn age from git blame — share of changed lines whose previous version was
+written in the last --window days
+
+Options:
+  --cwd <path>            Project root (default: current directory)
+  --days <n>              How far back to scan commits (default: 30)
+  --window <n>            Rework age threshold in days (default: 14)
+  --max-commits <n>       Commit scan cap (default: 100)
+  --max-commit-files <n>  Skip bulk commits touching more files (default: 30)
+  --json                  Machine-readable output
+  --short                 One-line summary
+  -h, --help              display help for command
 ```
 
 ## Harness

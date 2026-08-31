@@ -432,6 +432,8 @@ describe("runHookEntry — cold fallback on daemon absence", () => {
 		});
 		expect(result.fell_back).toBe(true);
 		expect(result.stderr).toContain("evaluator skipped"); // benign allow path
+		expect(result.stderr).toContain("function-tokens:not-measured");
+		expect(result.stderr).toContain("requires the running harness daemon");
 		expect(result.stderr).not.toContain("large-file cap");
 	});
 });

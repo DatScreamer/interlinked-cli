@@ -19,6 +19,7 @@ import {
 	hookVersionChecks,
 	legacyConfigCheck,
 	localFileChecks,
+	metricCapsConfigCheck,
 	permissionRuleChecks,
 	sessionFileChecks,
 	statusIcon,
@@ -165,6 +166,7 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// 1–4. Config dir / shared / local config / agent identity / hook presence
 	const configDir = getConfigDir(cwd);
 	results.push(...localFileChecks(cwd, resolvedConfig));
+	results.push(metricCapsConfigCheck(cwd));
 
 	// 4c. Data collection liveness — is the canonical collection.jsonl stream
 	// advancing? This is the guard the legacy activity.jsonl never had: a stream

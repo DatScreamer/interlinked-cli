@@ -205,7 +205,14 @@ describe("registerQualityCommands — structure", () => {
 		expect(optsOf("write")).toEqual(
 			["--batch", "--from-file", "--json", "--stdin", "--unsafe-outside-repo"].sort(),
 		);
-		expect(optsOf("metrics")).toEqual(["--cwd", "--json", "--short", "--top"].sort());
+		expect(optsOf("metrics")).toEqual([
+			"--cwd",
+			"--full",
+			"--include-tests",
+			"--json",
+			"--short",
+			"--top",
+		].sort());
 	});
 
 	it("wires the documented options on structure subcommands", () => {
@@ -639,14 +646,26 @@ describe("metrics — action wiring", () => {
 	it("forwards all options to metricsCommand", async () => {
 		const program = build();
 		await program.parseAsync(
-			["metrics", "--cwd", "/m", "--top", "10", "--json", "--short"],
+			[
+				"metrics",
+				"--cwd",
+				"/m",
+				"--top",
+				"10",
+				"--include-tests",
+				"--json",
+				"--short",
+				"--full",
+			],
 			{ from: "user" },
 		);
 		expect(metricsCommand).toHaveBeenCalledWith({
 			cwd: "/m",
 			top: "10",
+			includeTests: true,
 			json: true,
 			short: true,
+			full: true,
 		});
 	});
 

@@ -332,6 +332,7 @@ function detectMetricCaps(file: string, before: unknown, after: unknown): Baseli
 	// the ratchet reuses the guarded file rather than minting a loosenable new one.
 	for (const k of [
 		"max_lines",
+		"max_function_tokens",
 		"max_cyclomatic",
 		"max_cognitive",
 		"crap_threshold",

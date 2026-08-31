@@ -27,6 +27,9 @@ hooks, guard, and activity capture work with zero network.
   line-cap, merge conflicts).
 - **The server is optional.** Auth / sync only matter for server-backed coordination
   (see `interlinked-coordination`). Skip it entirely for local-only use.
+- **Semantic search is optional and local.** Setup never downloads model weights. The explicit
+  `interlinked semantic install` command is the only model-acquisition path; see
+  **interlinked-semantic-index**.
 
 ## Turning it on
 
@@ -185,12 +188,22 @@ something the daemon executes changed**.
   (operational tier), `skip_paths`, `pii_patterns`, nested `harness` feature flags.
 - **`.interlinked/config.local.json`** (gitignored): `access_token`, `agent_name`,
   `workspace_id`, `sync_mode`, `active_server` + `servers` map, `guard_mode`, `data_dir`.
+- **`.interlinked/semantic.json`** (committed): optional semantic-index enablement, exact pinned
+  model reference, and source/test include policy.
+- **`.interlinked/semantic.local.json`** (gitignored): local-only CPU/runtime topology. Remote URLs,
+  API tokens, and cloud fallbacks are rejected by the v1 schema.
 - **Env overrides** (win over both files): `INTERLINKED_SERVER_URL`,
   `INTERLINKED_ACCESS_TOKEN` (alias `INTERLINKED_TOKEN`), `INTERLINKED_AGENT_NAME`,
   `INTERLINKED_WORKSPACE_ID`, `INTERLINKED_SYNC_MODE`, `INTERLINKED_HOME` (relocates the whole
   config dir), `INTERLINKED_DATA_DIR`, `INTERLINKED_CLIENTS` (non-interactive bootstrap only).
 
 **Two different `mode` commands — do not conflate them:**
+`enable`, `adopt`, `doctor`, metrics, hooks, and search do not auto-download embedding weights.
+The experimental semantic commands also require compatible local `llama-embedding` and
+`llama-tokenize` executables (override their command names only in `semantic.local.json`). Model
+weights live in the platform user cache; project vectors live under the gitignored
+`.interlinked/index/functions/` directory and are never synced.
+
 - `interlinked mode <balanced|strict|lenient>` → per-check **policy** preset → `check-policy.json`.
 - `interlinked harness mode <budget|quality|ci>` → operational **timeout tier** → `config.json`
   `mode` + regenerates the hook. Requires `harness restart` to take effect.
@@ -241,3 +254,4 @@ interlinked logout [--all]
 - **interlinked-harness** — what the guard blocks and how to respond when a tool call is refused.
 - **interlinked-observability** — inspect the activity the hooks capture (`status`, `activity`, `logs`).
 - **interlinked-coordination** — the optional server-backed side (tasks, messages, workspaces).
+- **interlinked-semantic-index** — explicitly install a model and build/query the local function index.

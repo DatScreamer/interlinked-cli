@@ -1,6 +1,6 @@
 ---
 name: interlinked
-description: "Overview and router for the Interlinked CLI — a local guard, quality-enforcement, simplification-review, and observability layer for AI coding agents. Load this when working in a repo that has a `.interlinked/` directory, when you see any `[interlinked:*]` output or a `BLOCKED: … Suggestion: …` reason and are not sure which area it belongs to, or when you need to know what the `interlinked` command can do. This skill explains the mental model, the `.interlinked/` layout, the `[proven]`/`[heuristic]` tags, and routes you to the focused `interlinked-*` skill for setup, guard blocks, verify/checks, quality ratchets, simplification, supply-chain, spec-audit, observability, or coordination."
+description: "Overview and router for the Interlinked CLI — a local guard, quality-enforcement, simplification-review, semantic-code-search, and observability layer for AI coding agents. Load this when working in a repo that has a `.interlinked/` directory, when you see any `[interlinked:*]` output or a `BLOCKED: … Suggestion: …` reason and are not sure which area it belongs to, or when you need to know what the `interlinked` command can do. This skill explains the mental model, the `.interlinked/` layout, the `[proven]`/`[heuristic]` tags, and routes you to the focused `interlinked-*` skill for setup, guard blocks, verify/checks, quality ratchets, simplification, local semantic indexing, supply-chain, spec-audit, observability, or coordination."
 ---
 
 # interlinked — overview & skill router
@@ -39,6 +39,8 @@ Everything is per-`cwd` under `<repo>/.interlinked/`. Key files:
 | `mutation-manifest.json` | mixed | stable per-mutant state for the live per-edit mutation ratchet |
 | `findings/corpus.jsonl` | committed-capable | common finding storage, including recorded simplification extensions |
 | `findings/simplification-runs.jsonl`, `debt/manual-marker-snapshots.jsonl` | local | explicit simplification-run and manual-marker snapshot receipts |
+| `semantic.json` / `.local.json` | team / local | optional local semantic-index policy / machine runtime topology |
+| `index/functions/` | local | generation-scoped function metadata and vectors; never synced |
 | `activity.jsonl`, `collection.jsonl`, `timeline.jsonl` | local | captured agent activity (`enable` gitignores the first two) |
 | `harness.sock` / `harness.pid` | — | the running daemon |
 
@@ -67,8 +69,9 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 | Installing / enabling Interlinked, connecting a coding client/hook, daemon down or **zombie**, `doctor` fails, config/mode | **interlinked-setup** |
 | A Bash command or edit was **BLOCKED**; a sandbox/effect-residue warning; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
 | Running `interlinked verify`; a `pre_block` check blocked an edit; landing a cross-file refactor; scratch scripts | **interlinked-verify** |
-| Blocked by a **line-cap / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; automatic obligation or manual marker debt; **dead code** (`deadcode` scan + `--categorize` deletion-safety buckets, per-edit `dead_code_action`) | **interlinked-quality-gates** |
+| Blocked by a **line-cap / function-token / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; automatic obligation or manual marker debt; **dead code** (`deadcode` scan + `--categorize` deletion-safety buckets, per-edit `dead_code_action`) | **interlinked-quality-gates** |
 | Finding, reviewing, recording, or auditing opportunities to delete, replace, defer, or shrink code; `simplify …`; simplification coverage/evidence/deep handoff | **interlinked-simplification** |
+| Installing a local embedding model; building, inspecting, searching, or repairing the optional function-vector index | **interlinked-semantic-index** |
 | An `npm/pip/cargo/…` install or manifest edit was blocked; the package **allowlist** | **interlinked-supply-chain** |
 | Spec/doc facts, drift, invariants, review **findings**, `doctest`; `[interlinked:spec-*]` | **interlinked-spec-audit** |
 | Inspect activity/logs, tail live, guard-block history, **recurrence**, `viz`, tamper-chain `audit`, evidence-classed `impact`, `sync` | **interlinked-observability** |

@@ -424,9 +424,14 @@ async function encodeColdFallback(
 	};
 	const output = adapter.encodeDecision(decision, event);
 	const fallbackNotice = `[interlinked] ${reason}; evaluator skipped\n`;
+	const functionTokenNotice = isCodeEditEvent(event)
+		? "[interlinked:function-tokens:not-measured] function-token enforcement requires the running harness daemon and an exact language adapter; this cold-fallback edit was not measured\n"
+		: "";
 	return {
 		stdout: output.stdout,
-		stderr: output.stderr ? `${output.stderr}\n${fallbackNotice}` : fallbackNotice,
+		stderr: output.stderr
+			? `${output.stderr}\n${fallbackNotice}${functionTokenNotice}`
+			: `${fallbackNotice}${functionTokenNotice}`,
 		exit_code: output.exit_code,
 		fell_back: true,
 	};

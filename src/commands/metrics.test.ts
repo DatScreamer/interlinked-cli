@@ -4,6 +4,7 @@ import type { FunctionComplexityEntry } from "../harness/checks/cyclomatic.js";
 import type { CanonicalCoverage } from "../harness/coverage-canonical.js";
 import type { PerFileCoverage } from "../harness/coverage-final-reader.js";
 import type { CoverageSummary } from "../harness/coverage-ratchet.js";
+import type { FunctionTokenMetricsReport } from "./metrics-function-tokens.js";
 
 // ===========================================
 // metricsCommand — behavioral, module-boundary mocks
@@ -22,6 +23,8 @@ const m = vi.hoisted(() => ({
 		vi.fn<(content: string, filePath: string) => FunctionComplexityEntry[] | null>(),
 	computeCyclomaticComplexity:
 		vi.fn<(content: string, filePath: string) => FunctionComplexityEntry[]>(),
+	computeFunctionTokens: vi.fn(),
+	buildFunctionTokenMetricsReport: vi.fn<() => FunctionTokenMetricsReport>(),
 	loadCoverageFinal:
 		vi.fn<(p: string, root: string) => Map<string, PerFileCoverage> | null>(),
 	coverageForFile:
@@ -36,12 +39,14 @@ const m = vi.hoisted(() => ({
 	companionTestCandidates: vi.fn<(srcAbs: string) => string[]>(),
 	isTddExemptPath: vi.fn<(p: string) => boolean>(),
 	readFileSync: vi.fn<(p: unknown, enc?: unknown) => string>(),
+	realpathSync: vi.fn<(p: unknown) => string>(),
 	statSync: vi.fn<(p: unknown) => { mtimeMs: number }>(),
 	existsSync: vi.fn<(p: unknown) => boolean>(),
 }));
 
 vi.mock("node:fs", () => ({
 	readFileSync: (p: unknown, enc?: unknown) => m.readFileSync(p, enc),
+	realpathSync: (p: unknown) => m.realpathSync(p),
 	statSync: (p: unknown) => m.statSync(p),
 	existsSync: (p: unknown) => m.existsSync(p),
 }));
@@ -52,6 +57,12 @@ vi.mock("../harness/checks/cyclomatic-ast.js", () => ({
 }));
 vi.mock("../harness/checks/cyclomatic.js", () => ({
 	computeCyclomaticComplexity: m.computeCyclomaticComplexity,
+}));
+vi.mock("../harness/function-tokens/index.js", () => ({
+	computeFunctionTokens: m.computeFunctionTokens,
+}));
+vi.mock("./metrics-function-tokens.js", () => ({
+	buildFunctionTokenMetricsReport: m.buildFunctionTokenMetricsReport,
 }));
 vi.mock("../harness/coverage-final-reader.js", () => ({
 	loadCoverageFinal: m.loadCoverageFinal,
@@ -80,6 +91,100 @@ vi.mock("../harness/evaluator/tdd-new-file-gate.js", () => ({
 import { nonNull } from "../lib/non-null.js";
 import { cyclomaticForMetrics, loadMetricsCoverage, metricsCommand } from "./metrics.js";
 
+function tokenReport(entries: Array<{ name: string; line: number; tokens: number }> = []): FunctionTokenMetricsReport {
+	const functions = entries.map((entry) => ({
+		file: "src/a.ts",
+		name: entry.name,
+		qualifiedName: entry.name,
+		declarationKind: "function" as const,
+		language: "typescript",
+		line: entry.line,
+		endLine: entry.line,
+		canonicalTokens: entry.tokens,
+		sourceScope: "product" as const,
+		capEnforced: true,
+		overCap: entry.tokens > 500,
+	}));
+	const values = functions.map((entry) => entry.canonicalTokens).sort((a, b) => a - b);
+	const sum = values.reduce((total, value) => total + value, 0);
+	const maximum = values.at(-1) ?? null;
+	const summary = {
+		count: values.length,
+		sum,
+		min: values[0] ?? null,
+		mean: values.length === 0 ? null : sum / values.length,
+		p50: values[Math.max(0, Math.ceil(values.length * 0.5) - 1)] ?? null,
+		p75: values[Math.max(0, Math.ceil(values.length * 0.75) - 1)] ?? null,
+		p90: values[Math.max(0, Math.ceil(values.length * 0.9) - 1)] ?? null,
+		p95: values[Math.max(0, Math.ceil(values.length * 0.95) - 1)] ?? null,
+		p99: maximum,
+		max: maximum,
+	};
+	const files = entries.length === 0 ? [] : [{
+		file: "src/a.ts",
+		sourceScope: "product" as const,
+		capEnforced: true,
+		functionCount: entries.length,
+		summedFunctionTokens: sum,
+		meanFunctionTokens: summary.mean,
+		medianFunctionTokens: summary.p50,
+		p95FunctionTokens: summary.p95,
+		maxFunctionTokens: maximum,
+		functionsOverCap: functions.filter((entry) => entry.overCap).length,
+	}];
+	return {
+		schemaVersion: 1,
+		tokenizer: "interlinked-code-v1",
+		cap: 500,
+		elapsedMs: 0,
+		scope: {
+			includeTests: false,
+			discoveredFiles: files.length,
+			candidateFiles: files.length,
+			measuredFiles: files.length,
+			filesWithFunctions: files.length,
+			productFiles: files.length,
+			testFiles: 0,
+			unmeasuredFiles: 0,
+			functionCount: functions.length,
+			productFunctions: functions.length,
+			testFunctions: 0,
+		},
+		totals: {
+			summedFunctionTokens: sum,
+			functionsOverCap: functions.filter((entry) => entry.overCap).length,
+			enforcedFunctionsOverCap: functions.filter((entry) => entry.overCap).length,
+			functionTokens: summary,
+			summedFileFunctionTokens: files.length === 0 ? summary : {
+				...summary,
+				count: 1,
+				min: sum,
+				mean: sum,
+				p50: sum,
+				p75: sum,
+				p90: sum,
+				p95: sum,
+				p99: sum,
+				max: sum,
+			},
+		},
+		distributions: {
+			functions: {
+				"≤100": values.filter((value) => value <= 100).length,
+				"101–250": values.filter((value) => value >= 101 && value <= 250).length,
+				"251–500": values.filter((value) => value >= 251 && value <= 500).length,
+				">500": values.filter((value) => value > 500).length,
+			},
+			files: { "0": files.length === 0 ? 0 : Number(sum === 0) },
+		},
+		topFunctions: [...functions].sort((a, b) => b.canonicalTokens - a.canonicalTokens),
+		topFiles: files,
+		functions,
+		files,
+		notMeasured: [],
+	};
+}
+
 // --- helpers ------------------------------------------------------------
 let logged = "";
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -94,6 +199,9 @@ beforeEach(() => {
 	m.discoverFiles.mockReturnValue([]);
 	m.computeCyclomaticAst.mockReturnValue([]);
 	m.computeCyclomaticComplexity.mockReturnValue([]);
+	m.computeFunctionTokens.mockReturnValue([]);
+	m.buildFunctionTokenMetricsReport.mockReturnValue(tokenReport());
+	m.realpathSync.mockImplementation((p) => String(p));
 	m.loadCoverageFinal.mockReturnValue(null);
 	m.coverageForFile.mockReturnValue(undefined);
 	m.loadCoverageSummary.mockReturnValue(null);
@@ -154,9 +262,16 @@ interface JsonReport {
 		functionsCyclomaticBad: number;
 		filesMissingCompanion: number;
 		filesNoCoverage: number;
+		functionsOverTokenCap?: number;
 	};
-	distributions: { cyclomatic: Record<string, number>; crap: Record<string, number> };
+	distributions: {
+		cyclomatic: Record<string, number>;
+		crap: Record<string, number>;
+		functionTokens?: Record<string, number>;
+	};
 	hotspots: Array<{ file: string; name: string; crap: number | null; cyclomatic: number }>;
+	tokenHotspots?: Array<{ file: string; name: string; canonicalTokens?: number | null }>;
+	functionTokenMetrics?: FunctionTokenMetricsReport;
 	missingCompanion: string[];
 	files: Array<{
 		file: string;
@@ -231,6 +346,49 @@ describe("metricsCommand — file selection (isAnalyzableSource)", () => {
 			"15–25": 0,
 			">25": 0,
 		});
+	});
+});
+
+describe("metricsCommand — canonical function-token metrics", () => {
+	it("reports exact stable buckets and hotspots independently of complexity inventory", async () => {
+		m.discoverFiles.mockReturnValue([abs("src/a.ts")]);
+		m.computeCyclomaticAst.mockReturnValue([]);
+		m.buildFunctionTokenMetricsReport.mockReturnValue(tokenReport([
+			{ name: "tiny", line: 1, tokens: 100 },
+			{ name: "review", line: 10, tokens: 250 },
+			{ name: "large", line: 20, tokens: 500 },
+			{ name: "over", line: 30, tokens: 501 },
+		]));
+		await metricsCommand({ cwd: CWD, json: true });
+		const report = lastJson();
+		expect(report.distributions.functionTokens).toEqual({
+			"≤100": 1,
+			"101–250": 1,
+			"251–500": 1,
+			">500": 1,
+		});
+		expect(report.gates.functionsOverTokenCap).toBe(1);
+		expect(report.tokenHotspots?.map((item) => item.name)).toEqual(["over", "large", "review", "tiny"]);
+		expect(report.functionTokenMetrics?.functions).toHaveLength(4);
+	});
+
+	it("uses the enforced product-function denominator when advisory tests are included", async () => {
+		const report = tokenReport([{ name: "over", line: 1, tokens: 501 }]);
+		report.scope = {
+			...report.scope,
+			includeTests: true,
+			functionCount: 2,
+			productFunctions: 1,
+			testFunctions: 1,
+		};
+		m.buildFunctionTokenMetricsReport.mockReturnValue(report);
+
+		await metricsCommand({ cwd: CWD, includeTests: true, short: true });
+		expect(logged).toContain("fn-tokens>500: 1/1 measured");
+
+		logged = "";
+		await metricsCommand({ cwd: CWD, includeTests: true });
+		expect(logged).toContain("1 / 1 measured functions");
 	});
 });
 
@@ -467,6 +625,9 @@ describe("metricsCommand — output modes", () => {
 		expect(logged).toContain("CRAP ≥ 30");
 		expect(logged).toContain("cyclomatic > 25");
 		expect(logged).toContain("CRAP distribution");
+		expect(logged).toContain("Function-token distribution (interlinked-code-v1)");
+		expect(logged).toContain("summedFunctionTokens=");
+		expect(logged).toContain("files by summed function tokens");
 		// no coverage → "files no coverage" line is suppressed.
 		expect(logged).not.toContain("files no coverage");
 		// no coverage → empty hotspots placeholder line.
@@ -533,14 +694,17 @@ describe("metricsCommand — output modes", () => {
 		expect(logged).not.toContain("(no coverage)");
 	});
 
-	it("full mode falls back to the normal renderer", async () => {
+	it("full mode adds the exhaustive function-token inventory", async () => {
 		await metricsCommand({ cwd: CWD, full: true });
 		expect(logged).toContain("Test-Quality Metrics");
+		expect(logged).toContain("All per-file function-token totals");
+		expect(logged).toContain("All functions by file and line");
 	});
 
 	it("json mode emits pretty-printed JSON", async () => {
 		await metricsCommand({ cwd: CWD, json: true });
 		expect(logged).toContain('"scope"');
+		expect(logged).toContain('"functionTokenMetrics"');
 		expect(logged).toContain("\n  "); // 2-space indentation from JSON.stringify
 		expect(() => lastJson()).not.toThrow();
 	});

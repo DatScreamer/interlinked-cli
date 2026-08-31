@@ -1,6 +1,6 @@
 ---
 name: interlinked-quality-gates
-description: "Configure and respond to Interlinked's metric ratchets: line-count, cyclomatic complexity, coverage, CRAP, baseline integrity, the report-based mutation-score ratchet, and the live per-edit mutation survivor gate. Load this for a quality-gate block; `caps`, `coverage`, `mutation`, automatic debt obligations, manual `debt markers`, `metrics`, or `adopt`; a lowered-baseline refusal; choosing mutation cadence/scope/strictness; configuring `mutation_gate` or `per_edit_mutation`; connecting/sharding a mutation runner; or interpreting `[interlinked:mutation]` and `[mutation:not-measured]`. Water-lines only tighten: meet the bar rather than lowering the baseline."
+description: "Configure and respond to Interlinked's metric ratchets: line-count, per-function canonical-token count, cyclomatic complexity, coverage, CRAP, baseline integrity, the report-based mutation-score ratchet, and the live per-edit mutation survivor gate. Load this for a quality-gate block; `caps`, `coverage`, `mutation`, automatic debt obligations, manual `debt markers`, `metrics`, or `adopt`; a lowered-baseline refusal; choosing mutation cadence/scope/strictness; configuring `mutation_gate` or `per_edit_mutation`; connecting/sharding a mutation runner; or interpreting `[interlinked:mutation]` and `[mutation:not-measured]`. Water-lines only tighten: meet the bar rather than lowering the baseline."
 ---
 
 # interlinked-quality-gates — the metric ratchets
@@ -27,6 +27,7 @@ or block.
 | Gate | Blocks when | Threshold | Correct response |
 |---|---|---|---|
 | **Line cap** | a Write/Edit grows a *cappable* file past its ceiling | **500** lines (`DEFAULT_MAX_LINES`) | Decompose into a re-exporting entry + sibling modules |
+| **Function tokens** | an edit introduces or grows an implementation above the inclusive canonical-token cap | **500** tokens; no per-edit slew allowance | Extract cohesive helpers; an already-over-cap function may hold or shrink |
 | **Cyclomatic — over cap** | edit adds/raises a function over the hard cap | **22** | Extract cohesive branches into named helpers |
 | **Cyclomatic — slew** | a uniquely-named ≤cap function jumps **>2** branches in one edit | tolerance **2**/edit | Extract cohesive branches into named helpers; do not stage one logical complexity increase across edits |
 | **Cognitive — over cap** | edit leaves a function over the cognitive cap | **30** | Flatten: guard clauses, extract the deepest-nested block |
@@ -78,6 +79,19 @@ check, and a `[interlinked:file-size]` PostToolUse nudge. **Cappable = hand-writ
 exempt: `.d.ts`, anything under `.interlinked/`, root `scratch/`, non-code extensions
 (md/json/yaml/toml/html/…), generated files (`.gen.`/`generated/` path or `@generated`
 content), test/spec paths, and `@codegen-data`-marked modules.
+
+**Function tokens** — a deterministic, model-independent size cap. Interlinked counts complete
+implementation spans with the versioned `interlinked-code-v1` lexer: comments and whitespace do
+not count, while code tokens do. The shipped ceiling is inclusive (`500` passes, `501` is over)
+and may be ratcheted down but never raised above 500. The edit comparison has brownfield delta
+semantics: a pre-existing over-cap function may hold or shrink, but may not grow; a new or newly
+over-cap function blocks. TypeScript/JavaScript and Python have exact adapters. Unsupported or
+unavailable languages fail open with a visible `not-measured` warning because heuristic spans are
+not eligible for a hard block. There is no suppression or model-tokenizer fallback.
+
+This count is not an embedding context-window estimate. `interlinked semantic` records a selected
+model's separate `modelTokens` value and chunks inputs that do not fit; semantic availability,
+scores, and tokenization never affect this gate. See **interlinked-semantic-index** for that surface.
 
 **Cyclomatic** — strict, **no override**. Over-cap uses an identity-free multiset compare (a new
 over-cap function, or raising one past the cap, blocks); sub-cap limits a named function to +2
@@ -277,15 +291,15 @@ Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline 
 ## Command surface
 | Command | Purpose |
 |---|---|
-| `interlinked caps` | Show effective caps (lines/cyclomatic/crap/coverage) + provenance. |
-| `interlinked caps set <lines\|cyclomatic\|crap\|coverage> <n>` | Retune a cap → `.interlinked/metric-caps.json`. |
+| `interlinked caps` | Show effective caps (lines/function-tokens/cyclomatic/crap/coverage) + provenance. |
+| `interlinked caps set <lines\|function-tokens\|cyclomatic\|crap\|coverage> <n>` | Retune a cap → `.interlinked/metric-caps.json`. Function tokens cannot exceed 500. |
 | `interlinked caps explain [metric]` | Definition, default, fix hint per metric. |
 | `interlinked coverage check [--update-baseline] [--json]` | Full-suite per-file coverage ratchet vs `coverage-baseline.json`. |
 | `interlinked mutation check [--report <p>] [--update-baseline]` | Per-file mutation-score ratchet vs `mutation-baseline.json` (needs a Stryker report). |
 | `interlinked mutation measure <file> [--record]` | Measure one source file; `--record` promotes a clean runner result into the manifest. |
 | `interlinked mutation survivors [--file <substr>]` | Rank open manifest survivors by file, symbol, and mutator. |
 | `interlinked mutation sweep [--all-eligible] [--measured-before <iso>]` | Re-measure ranked debt or run a restartable full-source census; repeat `--runner-url` for worker lanes. |
-| `interlinked metrics [--top <n>] [--json]` | Read-only whole-repo scan: companion-test, coverage, cyclomatic, CRAP hotspots + gate verdicts. |
+| `interlinked metrics [--top <n>] [--full] [--include-tests] [--json]` | Read-only whole-repo scan: exhaustive function-token inventory and file aggregates, companion-test, coverage, cyclomatic, CRAP + gate verdicts. |
 | `interlinked debt list \| show <file> \| resolve <file>` | The obligation ledger — coverage / red-suite debts AND `transient` debts (the deferred tsc/registry findings a coordinated edit opens). All three verbs see every kind; `resolve` is the human override for a debt no future edit will clear. |
 | `interlinked debt markers [--root <path...>] [--exclude <path...>] [--record [--reason <text>]] [--json\|--short\|--full]` | Scan explicit design-debt receipts in source comments. The default is read-only; `--record` appends a local snapshot and lifecycle transitions. Neither mode consults or mutates the obligation ledger. |
 | `interlinked adopt [--dry-run] [--suite-baseline]` | Seed the supported adoption artifacts from the repo's current state (see below; mutation state is excluded). |
@@ -293,6 +307,28 @@ Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline 
 `interlinked coverage`/`mutation` need a report on disk first (a coverage run / `stryker run`) —
 those runs are slow; don't trigger them incidentally. `interlinked metrics` reports complexity +
 companion presence even without a coverage report (coverage columns marked unavailable).
+
+### Function-token inventory
+
+`interlinked metrics --top 10` shows the stable function bands, percentile summaries, the ten
+largest functions, and the ten files with the largest summed function-token counts. `--json`
+always includes every measured function and file under `functionTokenMetrics`; `--full` prints
+that exhaustive inventory for humans. The default scope is exactly the hard cap's hand-written
+product-source scope. `--include-tests` adds test/spec functions as advisory measurements — it
+does not make the hard cap apply to tests. Unsupported adapters and unreadable tracked sources
+appear under `notMeasured`; they are never reported as zero. Normal output previews up to five
+of those gaps with their reasons, while `--full` and `--json` show the complete list. Hand-written
+product files with an unrecognized code extension are reported as unsupported instead of silently
+disappearing; generated, vendored, declaration, documentation/configuration, markup/data,
+dependency/build/binary, scratch, and tool-state paths remain outside the product scope. The
+function-token census uses its own broad tracked/unignored discovery pass, so hidden product
+source and large source files omitted by the ordinary verify walk are still classified.
+
+Per-file `summedFunctionTokens` is the sum of function measurements, not a unique lexical count
+for the whole file. Nested implementations intentionally count once in their own row and again
+inside the enclosing function's span, and imports/types/top-level statements outside functions
+are absent. Use `maxFunctionTokens` to judge the cap and the summed value to understand the
+nested-inclusive function payload carried by a file.
 
 ## Automatic obligations vs manual debt markers
 
@@ -357,7 +393,7 @@ The integrity gate matches these eight files; direction is **per-file**:
 | `mutation-baseline.json` | score/killed may only **rise**. |
 | `large-files-baseline.json` | `max_lines` may only **fall**; a grandfather count may only **shrink**; a new over-cap entry is blocked. |
 | `untested-files-baseline.json` | `min_coverage_pct` may only **rise**; `files` is an **exemption list** → may only **shrink**. |
-| `metric-caps.json` | `max_*`/`crap_threshold` may only **tighten**; `min_coverage` may only **rise**. Includes `max_predicate_drift` — see below. |
+| `metric-caps.json` | `max_*`/`crap_threshold` may only **tighten**; `min_coverage` may only **rise**. `max_function_tokens` also has an absolute 500 ceiling. Includes `max_predicate_drift` — see below. |
 | `skipped-tests-baseline.json` | `max_skipped` may only **tighten**; a grandfather count may only **shrink**. |
 | `mutation-manifest.json` | the accepted-survivor set may only **shrink**. |
 
@@ -446,6 +482,8 @@ public `interlinked mutation adopt` command.
   (large-files-baseline) are pinned equal by a test; `metric-caps.json → max_lines` overrides
   both. Ratchet down by editing them together (or `caps set lines`).
 - **Lowering a baseline is exactly what the integrity gate stops.** If you're blocked editing a
+- **The function-token cap is canonical, not model-specific.** Use `caps set function-tokens`
+  to tighten it. Do not infer pass/fail from MiniLM, Nomic, llama.cpp, or another model tokenizer.
   baseline, you're doing the gate-gaming move. Intentional reset:
   `INTERLINKED_DISABLE_BASELINE_GUARD=1`.
 - **Cyclomatic & per-edit-coverage gates have no bypass and no suppression** — decompose/test is
@@ -523,7 +561,8 @@ deletion or mutation evidence for behaviorally inert branches. Load
 ## Quick reference
 ```bash
 interlinked caps                       # current caps + provenance
-interlinked metrics --top 15           # worst CRAP/complexity hotspots
+interlinked metrics --top 10           # token distributions + top function/file outliers
+interlinked metrics --json             # exhaustive functionTokenMetrics inventory
 interlinked adopt --dry-run            # preview seeding a legacy repo
 interlinked coverage check             # full-suite coverage ratchet
 interlinked mutation check --report reports/mutation/mutation.json

@@ -11,7 +11,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoverageRunner, CoverageRunResult } from "../harness/coverage-runner.js";
 import { DEFAULT_MAX_LINES, resetLargeFileBaselineCache } from "../harness/large-file-policy.js";
-import { METRIC_DEFS, resetMetricCapsCache } from "../harness/metric-caps.js";
+import {
+	DEFAULT_MAX_FUNCTION_TOKENS,
+	METRIC_DEFS,
+	resetMetricCapsCache,
+} from "../harness/metric-caps.js";
 import { readSuiteBaseline } from "../harness/suite-baseline.js";
 import {
 	DEFAULT_MIN_COVERAGE_PCT,
@@ -246,6 +250,7 @@ describe("metricCapsStep", () => {
 		expect(result.action).toBe("written");
 		const caps = readJson(".interlinked/metric-caps.json");
 		expect(caps.max_lines).toBe(DEFAULT_MAX_LINES);
+		expect(caps.max_function_tokens).toBe(DEFAULT_MAX_FUNCTION_TOKENS);
 		expect(caps.version).toBe(1);
 	});
 

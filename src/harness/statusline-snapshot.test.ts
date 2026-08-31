@@ -412,6 +412,7 @@ describe("statusline snapshot rows", () => {
 			"lifetime_evaluated",
 			"cap_cyclomatic",
 			"cap_crap",
+			"cap_function_tokens",
 			"generated_at",
 		]);
 		expect(text.endsWith("\n")).toBe(true);
@@ -1515,5 +1516,6 @@ describe("safeCaps — resolves metric-caps.json from interlinkedDir's own root"
 		const text = readFileSync(join(interlinkedDir, "statusline.snapshot"), "utf-8");
 		expect(text).toMatch(/^cap_cyclomatic=25$/m);
 		expect(text).toMatch(/^cap_crap=30$/m);
+		expect(text).toMatch(/^cap_function_tokens=500$/m);
 	});
 });

@@ -32,10 +32,11 @@ describe("caps commands", () => {
         const output = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Record<string, unknown>;
         expect(output).toMatchObject({
             lines: { value: 500, source: "default", default: 500 },
+            "function-tokens": { value: 500, source: "default", default: 500 },
             cyclomatic: { value: 25, source: "default", default: 25 },
             coverage: { value: 100, source: "default", default: 100 },
         });
-        expect(Object.keys(output)).toEqual(["lines", "cyclomatic", "cognitive", "crap", "coverage"]);
+        expect(Object.keys(output)).toEqual(["lines", "function-tokens", "cyclomatic", "cognitive", "crap", "coverage"]);
     });
 
     // test-contract: JSON set reports the selected metric and writes its numeric config value.

@@ -72,8 +72,9 @@ export interface MetricGateSpec<E extends NamedMetricEntry> {
 	label: string;
 	/** Entry name used by the analyzer for anonymous units (no cross-edit identity). */
 	anonName: string;
-	/** Max per-edit rise allowed for a uniquely-named function at/under the cap. */
-	slewTolerance: number;
+	/** Max per-edit rise allowed for a uniquely-named function at/under the cap.
+	 *  `null` means the metric has only an end-state cap and over-cap shrink rule. */
+	slewTolerance: number | null;
 	/** Read the metric value off one entry. */
 	metricOf: (entry: E) => number;
 	/** Pick the analyzer for a path, or null to skip the file entirely. */
@@ -265,6 +266,7 @@ function subCapSlewViolations<E extends NamedMetricEntry>(
 	afterEntries: readonly E[],
 	cap: number,
 ): string[] {
+	if (spec.slewTolerance === null) return [];
 	const before = uniqueByName(spec, beforeEntries);
 	const out: string[] = [];
 	for (const [name, post] of uniqueByName(spec, afterEntries)) {
@@ -344,10 +346,13 @@ export function buildMetricBlock<E extends NamedMetricEntry>(
 	violations: string[],
 	cap: number,
 ): string {
+	const policy = spec.slewTolerance === null
+		? `no function may exceed the ${cap}-${spec.unitAdj} cap`
+		: `a function may rise by at most ${spec.slewTolerance} ${spec.unitPlural} ` +
+			`per edit, and no function may exceed the ${cap}-${spec.unitAdj} cap`;
 	return (
 		`[interlinked:${spec.label}] BLOCKED: this edit pushes ${violations.length} function(s) past a ` +
-		`${spec.limitPhrase} — a function may rise by at most ${spec.slewTolerance} ${spec.unitPlural} ` +
-		`per edit, and no function may exceed the ${cap}-${spec.unitAdj} cap:\n` +
+		`${spec.limitPhrase} — ${policy}:\n` +
 		`${violations.map((v) => `  • ${v}`).join("\n")}\n` +
 		`${spec.advice} Holding or reducing an existing function is always allowed; ` +
 		"there is no suppression.\n" +

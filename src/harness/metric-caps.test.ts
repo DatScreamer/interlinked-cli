@@ -8,6 +8,7 @@ import {
 	DEFAULT_COVERAGE_GOAL,
 	DEFAULT_CRAP_THRESHOLD,
 	DEFAULT_MAX_CYCLOMATIC,
+	DEFAULT_MAX_FUNCTION_TOKENS,
 	DEFAULT_MAX_LINES,
 	DEFAULT_MIN_COVERAGE,
 	describeMetricForAgent,
@@ -16,6 +17,7 @@ import {
 	METRIC_CAPS_REL,
 	METRIC_DEFS,
 	maxCyclomaticFor,
+	maxFunctionTokensFor,
 	maxLinesOverride,
 	metricDef,
 	minCoverageFor,
@@ -41,6 +43,7 @@ describe("metric-caps", () => {
 
 	it("ships the documented default constants", () => {
 		expect(DEFAULT_MAX_LINES).toBe(500);
+		expect(DEFAULT_MAX_FUNCTION_TOKENS).toBe(500);
 		expect(DEFAULT_MAX_CYCLOMATIC).toBe(25);
 		expect(DEFAULT_CRAP_THRESHOLD).toBe(30);
 		expect(DEFAULT_MIN_COVERAGE).toBe(0);
@@ -62,9 +65,10 @@ describe("metric-caps", () => {
 		expect(coverageGoalFor(cwd)).toBe(100); // beyond the scale's ceiling — dropped
 	});
 
-	it("exposes exactly the five metrics with complete glossary metadata", () => {
+	it("exposes exactly the six metrics with complete glossary metadata", () => {
 		expect(METRIC_DEFS.map((d) => d.key)).toEqual([
 			"lines",
+			"function-tokens",
 			"cyclomatic",
 			"cognitive",
 			"crap",
@@ -76,6 +80,17 @@ describe("metric-caps", () => {
 			expect(d.fixHint.length).toBeGreaterThan(10);
 			expect(["lower", "higher"]).toContain(d.stricter);
 		}
+	});
+
+	it("accepts only integer function-token caps in the fixed 1..500 range", () => {
+		for (const value of [0, -1, 500.5, 501, Number.POSITIVE_INFINITY]) {
+			writeCaps(cwd, { max_function_tokens: value });
+			resetMetricCapsCache();
+			expect(loadMetricCaps(cwd).max_function_tokens).toBeUndefined();
+		}
+		writeCaps(cwd, { max_function_tokens: 500 });
+		resetMetricCapsCache();
+		expect(loadMetricCaps(cwd).max_function_tokens).toBe(500);
 	});
 
 	it("metricDef returns the entry and throws on an unknown key", () => {
@@ -119,19 +134,22 @@ describe("metric-caps", () => {
 		expect(r.max_cyclomatic).toEqual({ value: 15, source: "metric-caps.json" });
 		expect(r.crap_threshold).toEqual({ value: 22, source: "legacy-config" });
 		expect(r.max_lines).toEqual({ value: 600, source: "legacy-config" });
+		expect(r.max_function_tokens).toEqual({ value: 500, source: "default" });
 		expect(r.min_coverage).toEqual({ value: 0, source: "default" });
 	});
 
 	it("per-metric resolvers honor overrides then fall back", () => {
 		expect(maxCyclomaticFor(cwd)).toBe(25);
+		expect(maxFunctionTokensFor(cwd)).toBe(500);
 		expect(crapThresholdFor(cwd)).toBe(30);
 		expect(crapThresholdFor(cwd, 22)).toBe(22); // legacy honored
 		expect(minCoverageFor(cwd)).toBe(0);
 		expect(maxLinesOverride(cwd)).toBeUndefined();
 
-		writeCaps(cwd, { max_cyclomatic: 15, crap_threshold: 20, min_coverage: 90, max_lines: 500 });
+		writeCaps(cwd, { max_cyclomatic: 15, max_function_tokens: 400, crap_threshold: 20, min_coverage: 90, max_lines: 500 });
 		resetMetricCapsCache();
 		expect(maxCyclomaticFor(cwd)).toBe(15);
+		expect(maxFunctionTokensFor(cwd)).toBe(400);
 		expect(crapThresholdFor(cwd, 22)).toBe(20); // override beats legacy
 		expect(minCoverageFor(cwd)).toBe(90);
 		expect(maxLinesOverride(cwd)).toBe(500);

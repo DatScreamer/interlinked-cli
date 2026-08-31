@@ -28,6 +28,7 @@ import { readGuardDisable } from "../lib/guard-state.js";
 import { isInterlinkedHookCommand } from "../lib/hook-ownership.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { isJsonObject } from "../lib/json-types.js";
+import { functionTokenCapConfigIssue } from "../harness/metric-caps.js";
 import {
 	defaultSettingsPaths,
 	stripMalformedRules,
@@ -196,6 +197,13 @@ export function localFileChecks(
 	}
 
 	return out;
+}
+
+export function metricCapsConfigCheck(cwd: string): CheckResult {
+	const issue = functionTokenCapConfigIssue(cwd);
+	return issue === null
+		? { name: "Function-token cap", status: "pass", message: "max_function_tokens is valid (default 500 when absent)" }
+		: { name: "Function-token cap", status: "warn", message: issue };
 }
 
 /** Build the single Hook-version CheckResult for a stamp-bearing or stamp-less

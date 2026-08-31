@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import { CHECK_REGISTRY } from "./check-registry/index.js";
 import { updateEnforcementLedger } from "./enforcement-ledger.js";
-import { crapThresholdFor, maxCyclomaticFor } from "./metric-caps.js";
+import { crapThresholdFor, maxCyclomaticFor, maxFunctionTokensFor } from "./metric-caps.js";
 import { BUILTIN_RULES } from "./rules/builtin-rules.js";
 import type { GuardRule, GuardRulesConfig, QualityCheckConfig } from "./types.js";
 
@@ -120,13 +120,17 @@ function safeWork(interlinkedDir: string): { blocked: number; caught: number; ev
 }
 
 /** Effective metric caps, or 0 (rendered as "off") when unreadable. */
-function safeCaps(interlinkedDir: string): { cyclomatic: number; crap: number } {
+function safeCaps(interlinkedDir: string): { cyclomatic: number; crap: number; functionTokens: number } {
 	try {
 		const root = interlinkedDir.replace(/[/\\]\.interlinked[/\\]?$/, "");
-		return { cyclomatic: maxCyclomaticFor(root), crap: crapThresholdFor(root) };
+		return {
+			cyclomatic: maxCyclomaticFor(root),
+			crap: crapThresholdFor(root),
+			functionTokens: maxFunctionTokensFor(root),
+		};
 	} catch (err) {
 		void err;
-		return { cyclomatic: 0, crap: 0 };
+		return { cyclomatic: 0, crap: 0, functionTokens: 0 };
 	}
 }
 
@@ -187,6 +191,7 @@ function buildSnapshot(input: StatuslineSnapshotInput): string {
 		// direction reads correctly to someone glancing at it.
 		`cap_cyclomatic=${caps.cyclomatic}`,
 		`cap_crap=${caps.crap}`,
+		`cap_function_tokens=${caps.functionTokens}`,
 		`generated_at=${new Date().toISOString()}`,
 	];
 	return `${rows.join("\n")}\n`;

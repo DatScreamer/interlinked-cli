@@ -308,6 +308,36 @@ describe("runPerFileChecks — large_files cap", () => {
 	});
 });
 
+describe("runPerFileChecks — function-token cap", () => {
+	const run = (file: string, content: string): CodeQualityResults => {
+		const r = emptyResults();
+		runPerFileChecks({
+			file,
+			content,
+			cwd: "/tmp",
+			r,
+			moduleExportsCache: new Map(),
+			allEnvRefs: new Map(),
+			piiOpts: {},
+		});
+		return r;
+	};
+
+	it("reports an exact over-cap implementation with symbol, count, and tokenizer", () => {
+		const statements = Array.from({ length: 130 }, (_, index) => `let value${index} = ${index};`).join("\n");
+		const result = run("/tmp/huge-function.ts", `export function huge() {\n${statements}\n}\n`);
+		const finding = result.complexity.find((issue) => issue.check === "function_tokens");
+		expect(finding?.line).toBe(1);
+		expect(finding?.message).toMatch(/huge has \d+ canonical code tokens \(cap 500, tokenizer interlinked-code-v1\)/);
+	});
+
+	it("keeps test functions advisory by excluding them from the default verify gate", () => {
+		const statements = Array.from({ length: 130 }, (_, index) => `let value${index} = ${index};`).join("\n");
+		const result = run("/tmp/huge-function.test.ts", `function huge() {\n${statements}\n}\n`);
+		expect(result.complexity.some((issue) => issue.check === "function_tokens")).toBe(false);
+	});
+});
+
 describe("runPerFileChecks — untested_files ratchet", () => {
 	let dir: string;
 

@@ -1,8 +1,8 @@
 // ===========================================
 // `interlinked caps` — view, set, and explain the quality-metric caps
 // ===========================================
-// One surface for the four caps the harness enforces (lines / cyclomatic / CRAP
-// / coverage). We ship conservative defaults; every user tunes their own caps
+// One surface for the six caps/goals the harness enforces (lines / function
+// tokens / cyclomatic / cognitive / CRAP / coverage). We ship conservative defaults; every user tunes their own caps
 // here, written to the committed `.interlinked/metric-caps.json`. All metric
 // definitions come from the single-sourced METRIC_DEFS glossary in
 // `metric-caps.ts`, so the command, the block messages, and the generated docs
@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { loadLargeFileBaseline } from "../harness/large-file-policy.js";
 import {
 	COVERAGE_SCALE_MAX,
+	DEFAULT_MAX_FUNCTION_TOKENS,
 	METRIC_DEFS,
 	resetMetricCapsCache,
 	resolveMetricCaps,
@@ -70,7 +71,7 @@ function formatCapShowRow(r: CapRow): string {
 	);
 }
 
-/** `interlinked caps` — show the four effective caps + where each came from. */
+/** `interlinked caps` — show the six effective caps/goals + where each came from. */
 export async function capsShowAction(
 	opts: { json?: boolean },
 	deps: { cwd?: string } = {},
@@ -102,15 +103,36 @@ function readExisting(path: string): JsonObject {
 	}
 }
 
+function validateFunctionTokenValue(n: number): string | null {
+	if (!Number.isInteger(n)) return "function-tokens cap must be an integer";
+	if (n < 1 || n > DEFAULT_MAX_FUNCTION_TOKENS) {
+		return `function-tokens cap must be between 1 and ${DEFAULT_MAX_FUNCTION_TOKENS}`;
+	}
+	return null;
+}
+
 /** Validate a proposed cap value for `metricKey`; null when valid, else an error. */
 function validateValue(metricKey: string, n: number): string | null {
 	if (!Number.isFinite(n)) return "value must be a number";
+	if (metricKey === "function-tokens") return validateFunctionTokenValue(n);
 	if (metricKey === "coverage") {
 		return n < 1 || n > COVERAGE_SCALE_MAX
 			? "coverage goal must be between 1 and 100 (it is a target, not a cap — 100 is the scale's own ceiling)"
 			: null;
 	}
 	return n <= 0 ? `${metricKey} cap must be a positive number` : null;
+}
+
+function functionTokenLoosening(
+	metricKey: string,
+	n: number,
+	cwd: string,
+): string | null {
+	if (metricKey !== "function-tokens") return null;
+	const current = resolveMetricCaps(cwd).max_function_tokens.value;
+	return n > current
+		? `${n} would loosen the committed ${current}-token water-line; this cap may only tighten`
+		: null;
 }
 
 /** `interlinked caps set <metric> <value>` — write one cap to metric-caps.json. */
@@ -130,6 +152,11 @@ export async function capsSetAction(
 	const invalid = validateValue(def.key, n);
 	if (invalid) {
 		console.error(`Cannot set ${def.key}: ${invalid} (got "${value}").`);
+		return 1;
+	}
+	const loosening = functionTokenLoosening(def.key, n, cwd);
+	if (loosening) {
+		console.error(`Cannot set function-tokens: ${loosening}.`);
 		return 1;
 	}
 	const dir = join(cwd, ".interlinked");

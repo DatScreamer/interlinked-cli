@@ -9,6 +9,12 @@
 // relocated. metrics.ts imports these back.
 
 import { c, header, kvLine } from "../lib/formatter.js";
+import {
+	renderFunctionTokenInventoryLines,
+	renderFunctionTokenOutlierLines,
+	renderFunctionTokenSummaryLines,
+} from "./metrics-function-token-renderer.js";
+import type { FunctionTokenMetricsReport } from "./metrics-function-tokens.js";
 
 export interface FnMetric {
 	file: string;
@@ -19,6 +25,8 @@ export interface FnMetric {
 	coveragePct: number | null;
 	/** null when no coverage data is available (CRAP needs coverage). */
 	crap: number | null;
+	/** Model-independent interlinked-code-v1 count; null when not measured. */
+	canonicalTokens?: number | null;
 }
 
 export interface FileMetric {
@@ -33,6 +41,7 @@ export interface FileMetric {
 	companion: boolean | null;
 	/** functions in this file at/over the CRAP gate. */
 	overGate: number;
+	maxFunctionTokens?: number | null;
 }
 
 export interface MetricsReport {
@@ -61,6 +70,7 @@ export interface MetricsReport {
 		 *  `DEFAULT_MIN_COVERAGE_PCT`). Threaded so the renderer's split reads
 		 *  the number the gate enforces. */
 		minCoveragePct: number;
+		functionTokens?: number;
 	};
 	gates: {
 		functionsOverCrap: number;
@@ -68,12 +78,17 @@ export interface MetricsReport {
 		functionsCyclomaticBad: number;
 		filesMissingCompanion: number;
 		filesNoCoverage: number;
+		functionsOverTokenCap?: number;
 	};
 	distributions: {
 		cyclomatic: Record<string, number>;
 		crap: Record<string, number>;
+		functionTokens?: Record<string, number>;
 	};
 	hotspots: FnMetric[];
+	tokenHotspots?: FnMetric[];
+	/** Exhaustive canonical-token inventory; top arrays alone remain for compatibility. */
+	functionTokenMetrics?: FunctionTokenMetricsReport;
 	missingCompanion: string[];
 	files: FileMetric[];
 }
@@ -86,7 +101,52 @@ export interface MetricsReport {
 
 export function renderShort(r: MetricsReport): string {
 	const cov = r.scope.coverageAvailable ? "" : " (no coverage)";
-	return `${r.scope.files} files · ${r.scope.functions} fns · CRAP≥${r.caps.crap}: ${r.gates.functionsOverCrap} · cyc>${r.caps.cyclomatic}: ${r.gates.functionsCyclomaticBad} · no-companion: ${r.gates.filesMissingCompanion}${cov}`;
+	return `${r.scope.files} files · ${r.scope.functions} fns${shortFunctionTokenGate(r)} · CRAP≥${r.caps.crap}: ${r.gates.functionsOverCrap} · cyc>${r.caps.cyclomatic}: ${r.gates.functionsCyclomaticBad} · no-companion: ${r.gates.filesMissingCompanion}${cov}`;
+}
+
+function shortFunctionTokenGate(r: MetricsReport): string {
+	if (r.caps.functionTokens === undefined) return "";
+	const denominator = r.functionTokenMetrics?.scope.productFunctions;
+	const measured = denominator === undefined ? "" : `/${denominator} measured`;
+	return ` · fn-tokens>${r.caps.functionTokens}: ${r.gates.functionsOverTokenCap ?? 0}${measured}`;
+}
+
+function functionTokenGateLines(r: MetricsReport): string[] {
+	if (r.caps.functionTokens === undefined) return [];
+	const count = r.gates.functionsOverTokenCap ?? 0;
+	const denominator = r.functionTokenMetrics?.scope.productFunctions;
+	const value = denominator === undefined
+		? gateStr(count)
+		: `${gateStr(count)} / ${denominator} measured functions`;
+	return [
+		kvLine(
+			`  function tokens > ${r.caps.functionTokens}`,
+			value,
+			22,
+		),
+	];
+}
+
+function functionTokenDistributionLines(r: MetricsReport): string[] {
+	if (r.functionTokenMetrics) return renderFunctionTokenSummaryLines(r.functionTokenMetrics);
+	if (!r.distributions.functionTokens) return [];
+	const lines = ["", c.bold("  Function-token distribution (interlinked-code-v1)")];
+	for (const [bucket, n] of Object.entries(r.distributions.functionTokens)) {
+		lines.push(`    ${bucket.padEnd(10)} ${n}`);
+	}
+	return lines;
+}
+
+function functionTokenHotspotLines(r: MetricsReport): string[] {
+	if (r.functionTokenMetrics) return renderFunctionTokenOutlierLines(r.functionTokenMetrics);
+	if (!r.tokenHotspots) return [];
+	const lines = ["", c.bold(`  Top ${r.tokenHotspots.length} function-token hotspots`)];
+	for (const hotspot of r.tokenHotspots) {
+		lines.push(
+			`    ${String(hotspot.canonicalTokens ?? 0).padStart(6)} tokens  ${hotspot.file}:${hotspot.line}::${hotspot.name}`,
+		);
+	}
+	return lines;
 }
 
 export function renderNormal(r: MetricsReport): string {
@@ -108,6 +168,7 @@ export function renderNormal(r: MetricsReport): string {
 	}
 	lines.push("");
 	lines.push(c.bold("  Gates"));
+	lines.push(...functionTokenGateLines(r));
 	lines.push(kvLine(`  CRAP ≥ ${r.caps.crap}`, gateStr(r.gates.functionsOverCrap), 22));
 	lines.push(kvLine(`  cyclomatic > ${r.caps.cyclomatic}`, gateStr(r.gates.functionsCyclomaticBad), 22));
 	lines.push(
@@ -126,6 +187,8 @@ export function renderNormal(r: MetricsReport): string {
 	for (const [bucket, n] of Object.entries(r.distributions.crap)) {
 		lines.push(`    ${bucket.padEnd(10)} ${n}`);
 	}
+	lines.push(...functionTokenDistributionLines(r));
+	lines.push(...functionTokenHotspotLines(r));
 	lines.push("");
 	lines.push(c.bold(`  Top ${r.hotspots.length} CRAP hotspots`));
 	if (r.hotspots.length === 0) {
@@ -141,6 +204,14 @@ export function renderNormal(r: MetricsReport): string {
 		lines.push(...renderMissingCompanionSection(r));
 	}
 	return lines.join("\n");
+}
+
+export function renderFull(r: MetricsReport): string {
+	if (!r.functionTokenMetrics) return renderNormal(r);
+	return [
+		renderNormal(r),
+		...renderFunctionTokenInventoryLines(r.functionTokenMetrics),
+	].join("\n");
 }
 
 function gateStr(n: number): string {

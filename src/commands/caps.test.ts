@@ -29,10 +29,11 @@ function capsFile(): Record<string, unknown> {
 const out = (): string => logs.join("\n");
 
 describe("capsShowAction", () => {
-	it("shows the four metrics at their shipped defaults when no override exists", async () => {
+	it("shows every metric at its shipped default when no override exists", async () => {
 		const code = await capsShowAction({}, { cwd });
 		expect(code).toBe(0);
 		expect(out()).toContain("cyclomatic");
+		expect(out()).toContain("function-tokens");
 		expect(out()).toContain("25"); // default cyclomatic
 		expect(out()).toContain("default");
 	});
@@ -49,6 +50,7 @@ describe("capsShowAction", () => {
 		const parsed = JSON.parse(out()) as Record<string, { value: number; source: string }>;
 		expect(nonNull(parsed.cyclomatic).value).toBe(25);
 		expect(nonNull(parsed.lines).value).toBe(500);
+		expect(nonNull(parsed["function-tokens"]).value).toBe(500);
 		expect(nonNull(parsed.crap).value).toBe(30);
 		expect(nonNull(parsed.coverage).value).toBe(100); // the GOAL, default 100
 	});
@@ -74,15 +76,25 @@ describe("capsSetAction", () => {
 
 	it("maps each metric to its config key", async () => {
 		await capsSetAction("lines", "500", {}, { cwd });
+		await capsSetAction("function-tokens", "400", {}, { cwd });
 		await capsSetAction("crap", "20", {}, { cwd });
 		await capsSetAction("coverage", "90", {}, { cwd });
 		const f = capsFile();
 		expect(f.max_lines).toBe(500);
+		expect(f.max_function_tokens).toBe(400);
 		expect(f.crap_threshold).toBe(20);
 		// `caps set coverage` writes the GOAL; the min_coverage hard floor is a
 		// separate hand-edited lever (2026-08-17 goal-vs-cap redesign).
 		expect(f.coverage_goal).toBe(90);
 		expect(f.min_coverage).toBeUndefined();
+	});
+
+	it("enforces the fixed integer ceiling and refuses to loosen a tightened function-token cap", async () => {
+		expect(await capsSetAction("function-tokens", "501", {}, { cwd })).toBe(1);
+		expect(await capsSetAction("function-tokens", "499.5", {}, { cwd })).toBe(1);
+		expect(await capsSetAction("function-tokens", "400", {}, { cwd })).toBe(0);
+		expect(await capsSetAction("function-tokens", "401", {}, { cwd })).toBe(1);
+		expect(capsFile().max_function_tokens).toBe(400);
 	});
 
 	it("merges into an existing file without clobbering other keys", async () => {
@@ -146,10 +158,10 @@ describe("capsSetAction", () => {
 });
 
 describe("capsExplainAction", () => {
-	it("explains all four metrics when no metric is named", async () => {
+	it("explains every metric when no metric is named", async () => {
 		const code = await capsExplainAction(undefined, {}, { cwd });
 		expect(code).toBe(0);
-		for (const m of ["lines", "cyclomatic", "cognitive", "crap", "coverage"])
+		for (const m of ["lines", "function-tokens", "cyclomatic", "cognitive", "crap", "coverage"])
 			expect(out()).toContain(m);
 	});
 
@@ -168,6 +180,7 @@ describe("capsExplainAction", () => {
 		const parsed = JSON.parse(out()) as Array<{ key: string }>;
 		expect(parsed.map((d) => d.key)).toEqual([
 			"lines",
+			"function-tokens",
 			"cyclomatic",
 			"cognitive",
 			"crap",

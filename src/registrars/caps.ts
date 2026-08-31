@@ -1,7 +1,7 @@
 // ===========================================
 // Caps registrar — `interlinked caps [set|explain]`
 // ===========================================
-// One surface for the four quality-metric caps the harness enforces. Bare
+// One surface for the six quality-metric caps/goals the harness enforces. Bare
 // `caps` shows the effective caps + provenance; `caps set` writes a per-repo
 // override to .interlinked/metric-caps.json; `caps explain` prints the glossary.
 // Actions live in src/commands/caps.ts.
@@ -12,7 +12,7 @@ import { capsExplainAction, capsSetAction, capsShowAction } from "../commands/ca
 export function registerCapsCommands(program: Command): void {
 	const caps = program
 		.command("caps")
-		.description("View, set, and explain the quality-metric caps (lines/cyclomatic/CRAP/coverage)")
+		.description("View, set, and explain quality caps (lines/function-tokens/complexity/CRAP/coverage)")
 		.option("--json", "Machine-readable output")
 		.action(async (opts: { json?: boolean }) => {
 			process.exitCode = await capsShowAction(opts);
@@ -20,7 +20,7 @@ export function registerCapsCommands(program: Command): void {
 
 	caps
 		.command("set <metric> <value>")
-		.description("Set a cap (metric: lines | cyclomatic | crap | coverage) in metric-caps.json")
+		.description("Set a cap (metric: lines | function-tokens | cyclomatic | cognitive | crap | coverage)")
 		.option("--json", "Machine-readable output")
 		.action(async (metric: string, value: string, opts: { json?: boolean }) => {
 			process.exitCode = await capsSetAction(metric, value, opts);

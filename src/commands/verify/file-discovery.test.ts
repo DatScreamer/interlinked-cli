@@ -7,7 +7,11 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CODE_EXTENSIONS, discoverFiles } from "./file-discovery.js";
+import {
+	CODE_EXTENSIONS,
+	discoverFiles,
+	discoverFunctionTokenFiles,
+} from "./file-discovery.js";
 
 let tempDir: string;
 let counter = 0;
@@ -296,4 +300,30 @@ describe("discoverFiles", () => {
 		});
 	});
 
+});
+
+describe("discoverFunctionTokenFiles", () => {
+	it("keeps hidden source directories in a non-git codebase", () => {
+		mkdirSync(join(tempDir, ".storybook"), { recursive: true });
+		writeFileSync(join(tempDir, ".storybook", "main.ts"), "export const x = 1;\n");
+		const paths = discoverFunctionTokenFiles(tempDir).map((file) => file.replace(tempDir, ""));
+		expect(paths).toContain("/.storybook/main.ts");
+	});
+
+	it("keeps source files at and above the ordinary walk size limit", () => {
+		writeFileSync(join(tempDir, "large.ts"), "x".repeat(1_000_000));
+		const names = discoverFunctionTokenFiles(tempDir).map((file) => file.split("/").pop());
+		expect(names).toContain("large.ts");
+	});
+
+	it("returns tracked build and runner paths for the shared scope policy to classify", () => {
+		gitInit(tempDir);
+		mkdirSync(join(tempDir, "dist"), { recursive: true });
+		mkdirSync(join(tempDir, ".claude"), { recursive: true });
+		writeFileSync(join(tempDir, "dist", "manual.ts"), "export const x = 1;\n");
+		writeFileSync(join(tempDir, ".claude", "tool.ts"), "export const x = 1;\n");
+		const paths = discoverFunctionTokenFiles(tempDir).map((file) => file.replace(tempDir, ""));
+		expect(paths).toContain("/dist/manual.ts");
+		expect(paths).toContain("/.claude/tool.ts");
+	});
 });

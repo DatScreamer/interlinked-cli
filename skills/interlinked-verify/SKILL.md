@@ -10,13 +10,16 @@ Interlinked gates edits at **three moments**, and they run different check sets:
   runs `pre_block` registry checks → **biome** overlay → **tsc** overlay. Blocking findings stop
   the write. **No coverage/complexity/`post` checks here.** (`interlinked multi-edit` is the
   exception — it runs **only biome + tsc**, not `pre_block`; see the ordering section.)
-- **Other PreToolUse guards** (real Edit/Write only): coverage, cyclomatic, CRAP, baseline —
+- **Other PreToolUse guards** (real Edit/Write only): function tokens, coverage, cyclomatic, CRAP, baseline —
   see **interlinked-quality-gates**; package/allowlist — see **interlinked-supply-chain**.
 - **PostToolUse** (after the write lands): external tools (tsc/biome/eslint/semgrep/gitleaks/…)
   plus the inline check registry. **Warn only** — surfaced to you next turn. Bash and unknown
   writer tools are routed by their observed filesystem ChangeSet, not merely command parsing.
 
 `interlinked verify` is the **on-demand, whole-project** run of that same check catalog.
+Its `function_tokens` finding uses exact canonical adapters and reports every current
+product-source implementation over the effective cap. Unsupported languages are reported as
+not measured; semantic-model token counts are unrelated and never substitute for this check.
 
 ## Load this when
 - You want to verify a batch of edits before declaring done.
@@ -127,7 +130,7 @@ tool ran it — fix it) or `[heuristic]` (regex/AST shape — evaluate it). See
 (`// interlinked-ignore: <check> — reason` / `verify-suppressions.json`).
 
 ## Landing multi-file edits (the ordering rule)
-Three agent-callable commands gate proposed content **without** running coverage/complexity/post
+Three agent-callable commands gate proposed content **without** running function-token/coverage/complexity/post
 checks. `interlinked write` and `verify-changeset` run `pre_block → biome → tsc`; `interlinked
 multi-edit` runs **biome + tsc only** (no `pre_block` — it does *not* screen for eval/injection/etc.):
 
@@ -159,8 +162,8 @@ interlinked verify-changeset --file <cs.json>    # preview the gate, write nothi
 > blames on your edit. Either (a) put the exporter **and** every importer in **one atomic
 > `write --batch` / `multi-edit --manifest`** (the gate sees the whole consistent final state),
 > or (b) if sequencing with real Edits, **land the exporter first**, then the importers — never
-> the reverse. (Batch editing skips the coverage ratchet, so a batch can land under-covered;
-> the coverage gate re-asserts on the next real Edit.)
+> the reverse. (Batch editing skips the function-token and coverage ratchets, so a batch can land
+> over-cap or under-covered; the commit backstop/next real Edit and coverage gate re-assert them.)
 
 ## Scratch — where probe/draft code goes
 The scratchpad guard **blocks** agent-authored **code** aimed at the host session scratchpad and
@@ -189,8 +192,8 @@ Convention: one date-prefixed subdir per effort (`scratch/2026-07-19-<slug>/`). 
   mutant is necessary evidence for that campaign, not proof that the test protects a real contract.
 
 ## Gotchas
-- Batch gate ≠ full edit gate — `write`/`multi-edit`/`verify-changeset` skip coverage,
-  cyclomatic, CRAP, and `post` checks. A batch that passes can still trip those on the next real
+- Batch gate ≠ full edit gate — `write`/`multi-edit`/`verify-changeset` skip function tokens,
+  coverage, cyclomatic, CRAP, and `post` checks. A batch that passes can still trip those on the next real
   Edit, and verify will still flag `post` findings.
 - New files skip the biome/tsc overlay (no baseline to diff) but run `pre_block` strictly —
   run `verify` to type-check them.
@@ -207,5 +210,5 @@ interlinked verify-changeset --file cs.json --json
 
 ## Related skills
 - **interlinked-harness** — how blocks read, suppression grammar, determinism tags.
-- **interlinked-quality-gates** — the coverage/complexity/line-cap ratchets the content gate does NOT run.
+- **interlinked-quality-gates** — the function-token/coverage/complexity/line-cap ratchets the content gate does NOT run.
 - **interlinked-supply-chain** — the package-install gate.

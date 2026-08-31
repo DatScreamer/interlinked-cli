@@ -292,7 +292,7 @@ describe("describePostureReceipt — mutation kill", () => {
 			"    · per-edit coverage strict: an uncovered added line blocks the edit (no debt)",
 			"    · session-end verification + commit-cadence nudges on",
 			"    change: interlinked mode strict|balanced|lenient  (preview first: --diff)",
-			"  caps: lines ≤ 500 · cyclomatic ≤ 25 · cognitive ≤ 30 · crap ≤ 30 · coverage goal 100 %",
+			"  caps: lines ≤ 500 · function-tokens ≤ 500 · cyclomatic ≤ 25 · cognitive ≤ 30 · crap ≤ 30 · coverage goal 100 %",
 			"    change: interlinked caps set <metric> <value>  ·  meanings: interlinked caps explain",
 			"  scope: diff — only what the agent changes is judged  (rerun the wizard to widen)",
 			"  baselines: seeded from today's state; ratchets only tighten  (re-seed: interlinked adopt)",

@@ -45,9 +45,17 @@ import {
 	type FileMetric,
 	type FnMetric,
 	type MetricsReport,
+	renderFull,
 	renderNormal,
 	renderShort,
 } from "./metrics-renderers.js";
+import {
+	functionTokenMetricsContext,
+} from "./metrics-function-token-compat.js";
+import {
+	compareMetricText,
+	uniqueMetricComplexities,
+} from "./metrics-function-token-joins.js";
 import { discoverFiles } from "./verify/file-discovery.js";
 
 // The cyclomatic "review" band is the design-smell window just below the hard
@@ -68,6 +76,7 @@ interface MetricsOptions {
 	json?: boolean;
 	short?: boolean;
 	full?: boolean;
+	includeTests?: boolean;
 	/** Cap the hotspot table (default 25). */
 	top?: string;
 }
@@ -317,11 +326,12 @@ export function cyclomaticForMetrics(content: string, filePath: string): Functio
  */
 function fileFunctionMetrics(args: {
 	comps: FunctionComplexityEntry[];
+	tokenCounts: ReadonlyMap<string, number>;
 	perFile: PerFileCoverage | undefined;
 	rel: string;
 	fileMtime: number;
 }): FnMetric[] {
-	const { comps, perFile, rel, fileMtime } = args;
+	const { comps, tokenCounts, perFile, rel, fileMtime } = args;
 	const scored = perFile
 		? computeCrapForFile({
 				complexities: comps,
@@ -342,25 +352,36 @@ function fileFunctionMetrics(args: {
 			cyclomatic: e.cyclomatic,
 			coveragePct: hit ? hit.coverage_pct : null,
 			crap: hit ? hit.crap_score : null,
+			canonicalTokens: tokenCounts.get(`${e.name}:${e.line}`) ?? null,
 		};
 	});
 }
 
-function buildReport(cwd: string, topN: number): MetricsReport {
+function discoverMetricSourceFiles(cwd: string, coverage: MetricsCoverage): string[] {
+	return discoverFiles(cwd)
+		.map((file) => relative(cwd, file).replace(/\\/g, "/"))
+		.filter((file) => isAnalyzableSource(file, coverage.fileSet))
+		.sort();
+}
+
+function buildReport(cwd: string, topN: number, includeTests: boolean): MetricsReport {
 	// Resolve the gate caps ONCE per scan from `.interlinked/metric-caps.json`
 	// (else the shipped defaults) — these are the SAME numbers the write/commit
 	// gates enforce, so the report's labels + counts can never drift from them.
 	const crapGate = crapThresholdFor(cwd);
 	const cyclomaticBad = maxCyclomaticFor(cwd);
+	const tokenContext = functionTokenMetricsContext({ cwd, topN, includeTests });
+	const functionTokenCap = tokenContext.cap;
+	const functionTokenMetrics = tokenContext.report;
+	const tokenCounts = tokenContext.countsByFile;
+	const tokenFiles = tokenContext.filesByPath;
 	const cov = loadMetricsCoverage(cwd);
 	// discoverFiles returns absolute paths — normalize to repo-relative for
 	// coverage lookup, companion paths, and display.
-	const sourceFiles = discoverFiles(cwd)
-		.map((f) => relative(cwd, f).replace(/\\/g, "/"))
-		.filter((rel) => isAnalyzableSource(rel, cov.fileSet))
-		.sort();
+	const sourceFiles = discoverMetricSourceFiles(cwd, cov);
 
 	const fns: FnMetric[] = [];
+	const tokenFns: FnMetric[] = [];
 	const files: FileMetric[] = [];
 	const missingCompanion: string[] = [];
 	let filesNoCoverage = 0;
@@ -382,7 +403,13 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 		const perFile = cov.perFile(rel, comps, fileMtime);
 		if (cov.available && !perFile) filesNoCoverage++;
 
-		const fileFns = fileFunctionMetrics({ comps, perFile, rel, fileMtime });
+		const fileFns = fileFunctionMetrics({
+			comps,
+			tokenCounts: tokenCounts.get(rel) ?? new Map(),
+			perFile,
+			rel,
+			fileMtime,
+		});
 		fns.push(...fileFns);
 
 		const companionExpected = !isTddExemptPath(rel);
@@ -401,18 +428,35 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			maxCrap: perFile ? fileFns.reduce((m, f) => Math.max(m, f.crap ?? 0), 0) : null,
 			companion,
 			overGate: fileFns.filter((f) => (f.crap ?? 0) >= crapGate).length,
+			maxFunctionTokens: tokenFiles.get(rel)?.maxFunctionTokens ?? null,
 		});
 	}
+
+	const complexityByLocation = uniqueMetricComplexities(fns);
+	tokenFns.push(...functionTokenMetrics.functions.map((row) => ({
+		file: row.file,
+		name: row.qualifiedName,
+		line: row.line,
+		cyclomatic: complexityByLocation.get(`${row.file}:${row.name}:${row.line}`) ?? 0,
+		coveragePct: null,
+		crap: null,
+		canonicalTokens: row.canonicalTokens,
+	})));
 
 	const cycSorted = fns.map((f) => f.cyclomatic).sort((a, b) => a - b);
 	const crapVals = fns
 		.map((f) => f.crap)
 		.filter((x): x is number => x !== null)
 		.sort((a, b) => a - b);
-
 	const hotspots = [...fns]
 		.filter((f) => f.crap !== null)
 		.sort((a, b) => (b.crap ?? 0) - (a.crap ?? 0))
+		.slice(0, topN);
+	const tokenHotspots = [...tokenFns]
+		.sort((a, b) => (b.canonicalTokens ?? 0) - (a.canonicalTokens ?? 0)
+			|| compareMetricText(a.file, b.file)
+			|| a.line - b.line
+			|| compareMetricText(a.name, b.name))
 		.slice(0, topN);
 
 	return {
@@ -428,6 +472,7 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			cyclomatic: cyclomaticBad,
 			cyclomaticReview: CYCLOMATIC_REVIEW,
 			minCoveragePct: minCoverageFor(cwd),
+			functionTokens: functionTokenCap,
 		},
 		gates: {
 			functionsOverCrap: crapVals.filter((x) => x >= crapGate).length,
@@ -437,12 +482,16 @@ function buildReport(cwd: string, topN: number): MetricsReport {
 			functionsCyclomaticBad: fns.filter((f) => f.cyclomatic > cyclomaticBad).length,
 			filesMissingCompanion: missingCompanion.length,
 			filesNoCoverage,
+			functionsOverTokenCap: functionTokenMetrics.totals.enforcedFunctionsOverCap,
 		},
 		distributions: {
 			cyclomatic: bucketize(cycSorted, [5, 10, 15, 25]),
 			crap: bucketize(crapVals, [10, 30, 60, 100]),
+			functionTokens: functionTokenMetrics.distributions.functions,
 		},
 		hotspots,
+		tokenHotspots,
+		functionTokenMetrics,
 		missingCompanion,
 		files,
 	};
@@ -464,11 +513,12 @@ export async function metricsCommand(opts: MetricsOptions): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = resolve(opts.cwd || process.cwd());
 	const topN = Math.max(1, Math.min(200, Number.parseInt(opts.top ?? "25", 10) || 25));
-	const report = buildReport(cwd, topN);
+	const report = buildReport(cwd, topN, opts.includeTests ?? false);
 
 	output(mode, report, {
 		json: () => report,
 		short: () => renderShort(report),
 		normal: () => renderNormal(report),
+		full: () => renderFull(report),
 	});
 }

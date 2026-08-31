@@ -79,6 +79,20 @@ const BLOCKED_BASENAMES = new Set([
 const MAX_WALK_ENTRIES = 50_000;
 const MAX_FILE_BYTES = 1_000_000;
 
+function gitFileList(root: string): string[] | null {
+	try {
+		const output = execSync("git ls-files --cached --others --exclude-standard -z", {
+			cwd: root,
+			encoding: "utf-8",
+			timeout: 15_000,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		return output.split("\0").filter(Boolean);
+	} catch {
+		return null;
+	}
+}
+
 /** Decides whether a relative path (from the repo root) should enter the
  *  discovery universe. Keeps the filter centralized so the git-based path
  *  and the manual-walk fallback agree. */
@@ -97,22 +111,9 @@ function shouldDiscover(relPath: string): boolean {
 /** Public API — consumed by `verify.ts` (entry point for verify's file set). */
 export function discoverFiles(root: string): string[] {
 	// Try git ls-files first (respects .gitignore)
-	try {
-		const output = execSync("git ls-files --cached --others --exclude-standard -z", {
-			cwd: root,
-			encoding: "utf-8",
-			timeout: 15_000,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		if (output.length > 0) {
-			return output
-				.split("\0")
-				.filter(Boolean)
-				.filter(shouldDiscover)
-				.map((f) => join(root, f));
-		}
-	} catch {
-		/* intentional: not a git repo, or git is missing — fall through to manual walk */
+	const gitFiles = gitFileList(root);
+	if (gitFiles !== null) {
+		return gitFiles.filter(shouldDiscover).map((file) => join(root, file));
 	}
 
 	// Fallback: manual walk (for non-git dirs)
@@ -147,5 +148,49 @@ export function discoverFiles(root: string): string[] {
 		}
 	}
 	walk(root, "");
+	return files;
+}
+
+const FUNCTION_TOKEN_WALK_SKIP = new Set([
+	".git",
+	".interlinked",
+	".claude",
+	".codex",
+	"node_modules",
+	"dist",
+	"build",
+	"coverage",
+	"target",
+	"__pycache__",
+	".venv",
+	"venv",
+]);
+
+/**
+ * Broader discovery for the function-token census. Git repositories return
+ * every tracked/unignored path and let the shared cappable-file policy decide
+ * scope. The fallback keeps hidden source directories and files >=1 MB, which
+ * the ordinary verify walk omits for cost control.
+ */
+export function discoverFunctionTokenFiles(root: string): string[] {
+	const gitFiles = gitFileList(root);
+	if (gitFiles !== null) return gitFiles.map((file) => join(root, file));
+
+	const files: string[] = [];
+	function walk(dir: string): void {
+		if (files.length >= MAX_WALK_ENTRIES) return;
+		try {
+			for (const entry of readdirSync(dir)) {
+				if (FUNCTION_TOKEN_WALK_SKIP.has(entry)) continue;
+				const full = join(dir, entry);
+				const stat = statSync(full);
+				if (stat.isDirectory()) walk(full);
+				else if (stat.isFile()) files.push(full);
+			}
+		} catch {
+			/* unreadable paths are represented only when discovery can name them */
+		}
+	}
+	walk(root);
 	return files;
 }

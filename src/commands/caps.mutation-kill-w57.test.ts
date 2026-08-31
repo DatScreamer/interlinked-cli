@@ -117,7 +117,7 @@ describe("caps.ts — mutation-kill w57", () => {
 		expect(code).toBe(1);
 		const msg = String(errSpy.mock.calls[0]?.[0]);
 		expect(msg).toContain('Unknown metric "bogus"');
-		expect(msg).toContain("lines, cyclomatic, cognitive, crap, coverage");
+		expect(msg).toContain("lines, function-tokens, cyclomatic, cognitive, crap, coverage");
 	});
 
 	it("P1: capsSetAction json branch only fires when opts.json is true (kills edfd68a51b69fc6a)", async () => {
@@ -141,7 +141,7 @@ describe("caps.ts — mutation-kill w57", () => {
 		expect(code).toBe(1);
 		const msg = String(errSpy.mock.calls[0]?.[0]);
 		expect(msg).toContain('Unknown metric "bogus"');
-		expect(msg).toContain("lines, cyclomatic, cognitive, crap, coverage");
+		expect(msg).toContain("lines, function-tokens, cyclomatic, cognitive, crap, coverage");
 	});
 
 	it("P1: capsExplainAction non-json prints label/definition/default/configure/fix per metric (kills 686f9245c5b9cd3b/fb309d2656a7bfe0/a9882eec2d55a717/7776556748f8202b/3a43c784a778496c/b964f6d092b58928/6f93762423a5b718)", async () => {

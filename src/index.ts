@@ -34,6 +34,7 @@ import { registerObservabilityLogCommands } from "./registrars/observability-log
 import { registerQualityCommands } from "./registrars/quality.js";
 import { registerReplayCommands } from "./registrars/replay.js";
 import { registerScratchCommands } from "./registrars/scratch.js";
+import { registerSemanticCommands } from "./registrars/semantic.js";
 import { registerSimplifyCommands } from "./registrars/simplification.js";
 import { registerSetupCommands } from "./registrars/setup.js";
 import { registerSponsorCommands } from "./registrars/sponsor.js";
@@ -94,6 +95,7 @@ registerCoordinationCommands(program);
 registerQualityCommands(program);
 registerCapsCommands(program);
 registerScratchCommands(program);
+registerSemanticCommands(program);
 registerSimplifyCommands(program);
 registerFindingsCommands(program);
 registerSpecCommands(program);

@@ -22,6 +22,7 @@ import { readSharedConfig } from "../../lib/config.js";
 import { injectCoordinationWarnings, shouldCoordinate } from "../auto-coordinate.js";
 import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
 import { runCommitBaselineGate } from "../evaluator/commit-baseline-gate.js";
+import { runCommitFunctionTokenGate } from "../evaluator/commit-function-token-gate.js";
 import { runCommitLaunderingGate } from "../evaluator/commit-laundering-gate.js";
 import { evaluatePreToolUse, extractPermissionPattern } from "../evaluator.js";
 import {
@@ -423,6 +424,8 @@ export async function runPreToolPipeline(
 	// config-gated coverage commit gate.
 	const commitBaselineDecision = runCommitBaselineGate(event, preDecision);
 	if (commitBaselineDecision) return commitBaselineDecision;
+	const commitFunctionTokenDecision = runCommitFunctionTokenGate(event, preDecision);
+	if (commitFunctionTokenDecision) return commitFunctionTokenDecision;
 
 	// Workaround-laundering block (P3 §5.2 — the single outflow escalation of the
 	// P1 shadow detectors): block a commit whose staged content still carries a

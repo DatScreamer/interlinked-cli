@@ -57,7 +57,7 @@ const LARGE_FILE_BASELINE_REL = ".interlinked/large-files-baseline.json";
  * Module-private — reached via `isCappableFile`.
  */
 const FILE_SIZE_SKIP_EXT_RE =
-	/\.(?:md|mdx|markdown|txt|rst|adoc|html?|xhtml|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|diff|patch|svg|min\.[a-z]+)$/i;
+	/\.(?:md|mdx|markdown|txt|rst|adoc|html?|xhtml|xml|xsd|xsl|xslt|json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|lock|log|diff|patch|svg|min\.[a-z]+)$/i;
 
 /**
  * Path markers for generated code: a `.gen.`/`.generated.` infix on a
@@ -66,6 +66,35 @@ const FILE_SIZE_SKIP_EXT_RE =
  */
 const GENERATED_PATH_RE =
 	/(?:\.gen|\.generated)\.(?:tsx?|jsx?|mjs|cjs|py)$|\/(?:generated|__generated__)\//;
+
+/** Dependency source checked into the repository is not hand-written product code. */
+const VENDORED_PATH_RE = /(?:^|\/)(?:vendor|vendored|third[-_]party)(?:\/|$)/i;
+
+/** Documentation trees and configuration artifacts are not product source modules. */
+const DOCUMENTATION_PATH_RE = /(?:^|\/)(?:docs?|documentation)(?:\/|$)/i;
+const CONFIG_ARTIFACT_RE = /(?:^|\/)\.env(?:\.[^/]*)?$|\.(?:ini|cfg|conf|properties)$/i;
+const NON_PRODUCT_TREE_RE =
+	/(?:^|\/)(?:node_modules|dist|build|coverage|target|__pycache__|\.venv|venv|\.claude|\.codex)(?:\/|$)/i;
+const BINARY_ARTIFACT_RE =
+	/\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff|heic|mp3|mp4|wav|ogg|webm|m4a|mov|flac|avi|mkv|woff2?|ttf|otf|eot|zip|tar|gz|tgz|bz2|7z|rar|xz|lz4|zst|exe|dll|so|dylib|bin|class|pyc|pyo|wasm|a|lib|obj|o|node|pdf|psd|ai|sketch|fig|iso|dmg|img)$/i;
+const NON_CODE_BASENAMES = new Set([
+	"package-lock.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"npm-shrinkwrap.json",
+	"Cargo.lock",
+	"poetry.lock",
+	"Pipfile.lock",
+	"composer.lock",
+	"Gemfile.lock",
+	"go.sum",
+]);
+
+function isNonProductArtifactPath(norm: string): boolean {
+	if (NON_PRODUCT_TREE_RE.test(norm)) return true;
+	if (BINARY_ARTIFACT_RE.test(norm)) return true;
+	return NON_CODE_BASENAMES.has(basename(norm));
+}
 
 /**
  * The harness's own state directory. `.interlinked/` holds append-only logs,
@@ -348,7 +377,9 @@ export function isInsideRoot(root: string, filePath: string): boolean {
  * paths (event-driven gates/nudges) MUST pass `root`; repo-walk callers
  * (verify) may omit it.
  */
-export function isCappableFile(file: { filePath: string; content: string; root?: string }): boolean {
+export function isHandwrittenCodeFile(
+	file: { filePath: string; content: string; root?: string },
+): boolean {
 	if (file.root !== undefined && !isInsideRoot(file.root, file.filePath)) return false;
 	const norm = file.filePath.replace(/\\/g, "/");
 	if (norm.endsWith(".d.ts")) return false;
@@ -356,10 +387,17 @@ export function isCappableFile(file: { filePath: string; content: string; root?:
 	if (isRepoScratchPath(norm, file.root)) return false;
 	if (FILE_SIZE_SKIP_EXT_RE.test(norm)) return false;
 	if (GENERATED_PATH_RE.test(norm)) return false;
-	if (isTestSourcePath(norm)) return false;
+	if (VENDORED_PATH_RE.test(norm)) return false;
+	if (DOCUMENTATION_PATH_RE.test(norm)) return false;
+	if (CONFIG_ARTIFACT_RE.test(norm)) return false;
+	if (isNonProductArtifactPath(norm)) return false;
 	if (isGeneratedFile(file.content)) return false;
 	if (hasCodegenDataMarker(file.content)) return false;
 	return true;
+}
+
+export function isCappableFile(file: { filePath: string; content: string; root?: string }): boolean {
+	return isHandwrittenCodeFile(file) && !isTestSourcePath(file.filePath.replace(/\\/g, "/"));
 }
 
 /** Verify-side verdict for a static file snapshot. */

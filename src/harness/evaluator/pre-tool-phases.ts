@@ -35,6 +35,8 @@ import type {
 import { checkCognitiveComplexityWrite } from "./cognitive-write-guard.js";
 import { recordComplexityPulse } from "./complexity-pulse.js";
 import { checkFunctionComplexityWrite } from "./complexity-write-guard.js";
+import { checkFunctionTokenWrite } from "./function-token-write-guard.js";
+import { recordFunctionTokenPulse } from "./function-token-pulse.js";
 import { addPermissionToSettings, extractPermissionPattern } from "./permission-patterns.js";
 import { checkTestSignalErosion } from "./pre-tool-test-integrity.js";
 import { estimateEditLine, isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
@@ -159,14 +161,28 @@ function checkFileWriteMetricCaps(
 	// above so neither shadows the other: a file can trip cognitive alone,
 	// cyclomatic alone, or both (reasons are concatenated below when both fire).
 	const cognitiveBlock = checkCognitiveComplexityWrite(toolInput, eventCwd);
-	if (!complexityBlock?.block && !cognitiveBlock?.block) return null;
+	const functionTokenBlock = checkFunctionTokenWrite(
+		toolInput,
+		eventCwd,
+		(filePath, beforeFns, afterFns, afterContent) => {
+			const absPath = isAbsolute(filePath) ? filePath : resolve(eventCwd, filePath);
+			recordFunctionTokenPulse(event.session_id, absPath, beforeFns, afterFns, afterContent);
+		},
+	);
+	if (!complexityBlock?.block && !cognitiveBlock?.block && !functionTokenBlock?.block) return null;
 	// rule_id stays "cyclomatic-cap" when the cyclomatic gate fires (even
 	// alongside cognitive) to preserve the existing rule_id contract other
 	// consumers pin on; a cognitive-only block gets its own distinct id.
 	return {
 		decision: "block",
-		reason: [complexityBlock?.block, cognitiveBlock?.block].filter(Boolean).join("\n\n"),
-		rule_id: complexityBlock?.block ? "cyclomatic-cap" : "cognitive-cap",
+		reason: [complexityBlock?.block, cognitiveBlock?.block, functionTokenBlock?.block]
+			.filter(Boolean)
+			.join("\n\n"),
+		rule_id: complexityBlock?.block
+			? "cyclomatic-cap"
+			: cognitiveBlock?.block
+				? "cognitive-cap"
+				: "function-tokens-cap",
 		severity: "medium",
 		category: "complexity",
 	};

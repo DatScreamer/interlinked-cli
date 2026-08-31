@@ -247,13 +247,15 @@ describe("registerQualityCommands — command + option descriptions (mutation-ki
 	it("metrics (parent — has its own options)", () => {
 		const cmd = top(build(), "metrics");
 		expect(cmd.description()).toBe(
-			"Scan the whole codebase: companion-test presence, coverage, cyclomatic complexity, and CRAP per file/function",
+			"Scan the whole codebase: function tokens, companion-test presence, coverage, complexity, and CRAP",
 		);
 		expect(optionDescriptions(cmd)).toEqual({
 			"--cwd": "Project root (default: current directory)",
-			"--top": "Number of CRAP hotspots to show (default: 25)",
+			"--top": "Number of function/file token and CRAP hotspots to show (default: 25)",
+			"--include-tests": "Include test/spec functions as advisory token measurements",
 			"--json": "Machine-readable output (full per-file + per-function)",
 			"--short": "One-line summary",
+			"--full": "Show every per-file and per-function token measurement",
 		});
 	});
 

@@ -1,10 +1,11 @@
 // ===========================================
-// Metric caps — the single source of truth for the five quality-metric caps
+// Metric caps — the single source of truth for the quality-metric caps
 // ===========================================
-// The harness enforces five numeric quality metrics, each with a cap every user
+// The harness enforces six numeric quality metrics, each with a cap/goal every user
 // can tune (we ship conservative defaults; users are in charge of the figures):
 //
 //   - lines       — per-file line count                         (lower is stricter)
+//   - function-tokens — canonical tokens per implementation     (lower is stricter)
 //   - cyclomatic  — per-function independent branch paths        (lower is stricter)
 //   - cognitive   — per-function nesting-weighted readability    (lower is stricter)
 //   - crap        — per-function complexity × under-coverage     (lower is stricter)
@@ -29,6 +30,8 @@ import { join } from "node:path";
 /** Shipped default per-file line cap (overridable). Imported + re-exported by
  *  `large-file-policy.ts`, which keeps the grandfather list + legacy baseline. */
 export const DEFAULT_MAX_LINES = 500;
+/** Shipped, model-independent per-function canonical-token ceiling. */
+export const DEFAULT_MAX_FUNCTION_TOKENS = 500;
 /** Shipped default per-function cyclomatic cap (overridable). */
 export const DEFAULT_MAX_CYCLOMATIC = 25;
 /** Shipped default per-function COGNITIVE-complexity cap (overridable). This is
@@ -57,14 +60,21 @@ export const DEFAULT_COVERAGE_GOAL = 100;
  *  (shared by the goal validation here and `caps set coverage` bounds). */
 export const COVERAGE_SCALE_MAX = 100;
 
-/** The five metrics, by stable key. */
-export type MetricKey = "lines" | "cyclomatic" | "cognitive" | "crap" | "coverage";
+/** The six metrics, by stable key. */
+export type MetricKey =
+	| "lines"
+	| "function-tokens"
+	| "cyclomatic"
+	| "cognitive"
+	| "crap"
+	| "coverage";
 
 /** Fully-resolved caps for a repo (every key populated). `coverage_goal` is a
  *  TARGET, not a gate input: enforcement reads `min_coverage` (hard floor) and
  *  the per-file high-water ratchet; the goal drives display and nudges. */
 export interface MetricCaps {
 	max_lines: number;
+	max_function_tokens: number;
 	max_cyclomatic: number;
 	max_cognitive: number;
 	crap_threshold: number;
@@ -146,6 +156,23 @@ export const METRIC_DEFS: readonly MetricDef[] = [
 		fixHint:
 			"Split the file into a re-exporting entry module plus smaller sibling modules " +
 			"grouped by responsibility. Shrinking or holding an over-cap file is always allowed.",
+	},
+	{
+		key: "function-tokens",
+		configKey: "max_function_tokens",
+		label: "canonical function size (per function)",
+		unit: "tokens",
+		stricter: "lower",
+		defaultValue: DEFAULT_MAX_FUNCTION_TOKENS,
+		definition:
+			"The number of non-trivia lexical code tokens in one implementation under " +
+			"the stable interlinked-code-v1 contract. It is independent of any embedding " +
+			"model tokenizer: 500 passes, 501 is over the shipped absolute ceiling.",
+		howToConfigure:
+			"`interlinked caps set function-tokens <n>` (or .interlinked/metric-caps.json → max_function_tokens)",
+		fixHint:
+			"Split the implementation into cohesive named helpers. Existing over-cap " +
+			"functions may hold or shrink, but may not grow; there is no inline suppression.",
 	},
 	{
 		key: "cyclomatic",
@@ -239,6 +266,7 @@ export function metricDef(key: MetricKey): MetricDef {
 interface RawMetricCaps {
 	version?: unknown;
 	max_lines?: unknown;
+	max_function_tokens?: unknown;
 	max_cyclomatic?: unknown;
 	max_cognitive?: unknown;
 	crap_threshold?: unknown;
@@ -267,6 +295,12 @@ function readGoalPct(value: unknown): number | undefined {
 	return n !== undefined && n >= 1 && n <= COVERAGE_SCALE_MAX ? n : undefined;
 }
 
+function readFunctionTokenCap(value: unknown): number | undefined {
+	const n = readPositive(value);
+	if (n === undefined || !Number.isInteger(n)) return undefined;
+	return n >= 1 && n <= DEFAULT_MAX_FUNCTION_TOKENS ? n : undefined;
+}
+
 /** Parse a raw object into the present, valid overrides only. Caps must be
  *  strictly positive; a coverage floor of 0 is valid (means "no floor"). */
 function normalizeOverrides(raw: unknown): MetricCapsOverrides {
@@ -275,6 +309,8 @@ function normalizeOverrides(raw: unknown): MetricCapsOverrides {
 	const out: MetricCapsOverrides = {};
 	const maxLines = readPositive(obj.max_lines);
 	if (maxLines !== undefined && maxLines > 0) out.max_lines = maxLines;
+	const maxFunctionTokens = readFunctionTokenCap(obj.max_function_tokens);
+	if (maxFunctionTokens !== undefined) out.max_function_tokens = maxFunctionTokens;
 	const maxCyclomatic = readPositive(obj.max_cyclomatic);
 	if (maxCyclomatic !== undefined && maxCyclomatic > 0) out.max_cyclomatic = maxCyclomatic;
 	const maxCognitive = readPositive(obj.max_cognitive);
@@ -335,6 +371,7 @@ export interface LegacyCapInputs {
 
 const DEFAULTS: MetricCaps = {
 	max_lines: DEFAULT_MAX_LINES,
+	max_function_tokens: DEFAULT_MAX_FUNCTION_TOKENS,
 	max_cyclomatic: DEFAULT_MAX_CYCLOMATIC,
 	max_cognitive: DEFAULT_MAX_COGNITIVE_CAP,
 	crap_threshold: DEFAULT_CRAP_THRESHOLD,
@@ -367,6 +404,11 @@ export function resolveMetricCaps(
 	const o = loadMetricCaps(cwd);
 	return {
 		max_lines: resolveOne(o.max_lines, legacy.max_lines, DEFAULTS.max_lines),
+		max_function_tokens: resolveOne(
+			o.max_function_tokens,
+			undefined,
+			DEFAULTS.max_function_tokens,
+		),
 		max_cyclomatic: resolveOne(o.max_cyclomatic, undefined, DEFAULTS.max_cyclomatic),
 		max_cognitive: resolveOne(o.max_cognitive, undefined, DEFAULTS.max_cognitive),
 		crap_threshold: resolveOne(o.crap_threshold, legacy.crap_threshold, DEFAULTS.crap_threshold),
@@ -378,6 +420,33 @@ export function resolveMetricCaps(
 /** Effective per-function cyclomatic cap for `cwd` (override else default). */
 export function maxCyclomaticFor(cwd: string): number {
 	return loadMetricCaps(cwd).max_cyclomatic ?? DEFAULT_MAX_CYCLOMATIC;
+}
+
+/** Effective canonical per-function token cap. The absolute ceiling is 500. */
+export function maxFunctionTokensFor(cwd: string): number {
+	return loadMetricCaps(cwd).max_function_tokens ?? DEFAULT_MAX_FUNCTION_TOKENS;
+}
+
+/** Doctor-facing validation for the fixed function-token cap. Ordinary
+ * analysis still falls soft to 500; this makes that degradation visible. */
+export function functionTokenCapConfigIssue(cwd: string): string | null {
+	const path = join(cwd, METRIC_CAPS_REL);
+	if (!existsSync(path)) return null;
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			return "metric-caps.json must contain a JSON object";
+		}
+		// SAFETY: object-ness is checked above; every field remains unknown until
+		// the same strict parser used by ordinary analysis validates it.
+		const raw = parsed as RawMetricCaps;
+		if (raw.max_function_tokens === undefined) return null;
+		return readFunctionTokenCap(raw.max_function_tokens) === undefined
+			? `max_function_tokens must be an integer from 1 through ${DEFAULT_MAX_FUNCTION_TOKENS}; analysis is using ${DEFAULT_MAX_FUNCTION_TOKENS}`
+			: null;
+	} catch {
+		return `metric-caps.json is malformed; function-token analysis is using ${DEFAULT_MAX_FUNCTION_TOKENS}`;
+	}
 }
 
 /** Effective per-function cognitive cap for `cwd` (override else default). */

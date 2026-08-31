@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Tighten-only function-token cap** — exact TypeScript/JavaScript and Python
+  adapters enforce an inclusive default of 500 `interlinked-code-v1`
+  canonical code tokens per implementation. Brownfield functions above the
+  cap may hold or shrink; introduced/growing violations block at edit time and
+  at the commit backstop. `caps`, `adopt`, `metrics`, `verify`, doctor,
+  statusline, and hook feedback share the same water-line.
+- **Exhaustive function-token metrics** — `interlinked metrics --json` now
+  reports every measured function, nested-inclusive per-file sums, percentile
+  summaries, stable distributions, explicit not-measured files, and ranked
+  function/file outliers. `--full` renders the complete human inventory and
+  `--include-tests` adds test/spec functions as advisory measurements. Normal
+  output previews unsupported/unreadable gaps, and unknown product-code
+  extensions are reported rather than silently omitted.
+- **Experimental local semantic function index** — `interlinked semantic`
+  explicitly installs a hash-pinned Nomic Embed GGUF model, uses local
+  llama.cpp tokenizer/embedding commands, builds atomic hash-verified vector
+  generations, and provides exact-cosine `search` and `similar`. No model is
+  auto-downloaded, and no source, query, or vector is sent to the Interlinked
+  MCP Server or another remote inference service.
 - **Evidence-backed simplification suite** — `interlinked simplify
   scan|review|audit` composes local dead-code, structure, dependency, and
   complexity evidence into advisory findings with stable identities, exact
@@ -28,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   controlled-experiment, and adversarial-fixture schemas are available for
   the Interlinked MCP Server implementation. The CLI does not pretend that a
   remote job was submitted or executed.
+
+Canonical tokens are stable enforcement units; model tokens are
+fingerprint-bound retrieval metadata. They are intentionally not comparable
+or interchangeable.
 
 ### Removed
 

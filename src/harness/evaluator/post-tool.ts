@@ -42,6 +42,7 @@ import type {
 } from "../types.js";
 import { STUB_INTRODUCED_CAP, scanForStubs } from "../verification-stop-checks.js";
 import { collectComplexityPulseWarnings } from "./complexity-pulse.js";
+import { collectFunctionTokenPulseWarnings } from "./function-token-pulse.js";
 import { collectPostWriteFileWarnings } from "./post-tool-write-warnings.js";
 import {
 	globMatch,
@@ -93,6 +94,7 @@ export function evaluatePostToolUse(
 	// Ambient per-edit cyclomatic telemetry — consumes the PreToolUse stash the
 	// complexity gate's observer recorded (see complexity-pulse.ts).
 	warnings.push(...collectComplexityPulseWarnings(event));
+	warnings.push(...collectFunctionTokenPulseWarnings(event));
 	warnings.push(...collectReadFileSizeWarning(event));
 	warnings.push(...collectToolMissWarning(event));
 	warnings.push(...collectEditNearMissWarning(event));

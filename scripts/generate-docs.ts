@@ -340,6 +340,7 @@ function generateCliReference(): string {
 	const commandNames = [
 		"structure",
 		"verify",
+		"metrics",
 		"harness",
 		"checkpoint",
 		"tasks",
@@ -353,6 +354,7 @@ function generateCliReference(): string {
 	// Commands with subcommands — mirror the groups registered in src/index.ts.
 	const commandsWithSubs: Record<string, string[]> = {
 		structure: ["init", "scan", "status", "accept", "doctor", "baseline"],
+		metrics: ["coupling", "arch", "rework"],
 		checkpoint: ["list", "show", "compare", "prune", "archive"],
 		tasks: ["list", "create", "show", "claim", "complete"],
 		workspace: ["list", "switch"],

@@ -112,6 +112,35 @@ describe("isCappableFile", () => {
 		expect(isCappableFile({ filePath: "src/client.gen.ts", content })).toBe(false);
 		expect(isCappableFile({ filePath: "docs/guide.md", content })).toBe(false);
 		expect(isCappableFile({ filePath: "config/data.json", content })).toBe(false);
+		expect(isCappableFile({ filePath: "config/data.xml", content })).toBe(false);
+	});
+
+	it("exempts vendored dependency paths but not similarly named product modules", () => {
+		expect(isCappableFile({ filePath: "vendor/library/index.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "third_party/library/index.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "third-party/library/index.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "src/vendor-client.ts", content })).toBe(true);
+	});
+
+	it("exempts documentation and configuration artifacts but keeps product policy code", () => {
+		expect(isCappableFile({ filePath: "docs/examples/policy.cedar", content })).toBe(false);
+		expect(isCappableFile({ filePath: ".env.example", content })).toBe(false);
+		expect(isCappableFile({ filePath: "evals/fixtures/pytest.ini", content })).toBe(false);
+		expect(isCappableFile({ filePath: "src/policy.cedar", content })).toBe(true);
+	});
+
+	it("exempts dependency and build artifacts", () => {
+		expect(isCappableFile({ filePath: "node_modules/pkg/index.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "dist/manual.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "build/generated.py", content })).toBe(false);
+		expect(isCappableFile({ filePath: "go.sum", content })).toBe(false);
+	});
+
+	it("exempts tool-state and binary artifacts without hiding hidden product source", () => {
+		expect(isCappableFile({ filePath: ".claude/tool.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: ".codex/tool.ts", content })).toBe(false);
+		expect(isCappableFile({ filePath: "assets/image.png", content })).toBe(false);
+		expect(isCappableFile({ filePath: ".storybook/main.ts", content })).toBe(true);
 	});
 
 	it("exempts the repo-provisioned root scratch/ probe dir (2026-07-17)", () => {

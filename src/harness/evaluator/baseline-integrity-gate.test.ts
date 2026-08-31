@@ -415,7 +415,12 @@ describe("skipped-tests-baseline.json — skip cap tightens, grandfather counts 
 });
 
 describe("metric-caps.json — caps may only tighten", () => {
-	const base = { max_lines: 500, max_cyclomatic: 25, crap_threshold: 30, min_coverage: 60 };
+	const base = { max_lines: 500, max_function_tokens: 500, max_cyclomatic: 25, crap_threshold: 30, min_coverage: 60 };
+	it("BLOCKS raising max_function_tokens", () => {
+		const found = detect(CAPS, { ...base, max_function_tokens: 400 }, { ...base, max_function_tokens: 401 });
+		expect(found).toHaveLength(1);
+		expect(found[0]?.rule).toBe("max_function_tokens");
+	});
 	it("BLOCKS raising max_cyclomatic", () => {
 		const found = detect(CAPS, base, { ...base, max_cyclomatic: 40 });
 		expect(found).toHaveLength(1);

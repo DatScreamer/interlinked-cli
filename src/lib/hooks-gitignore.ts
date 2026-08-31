@@ -26,6 +26,7 @@ const GITIGNORE_ENTRIES = [
 	".interlinked/harness.pid",
 	".interlinked/pending-quality-warnings.json",
 	".interlinked/index/",
+	".interlinked/semantic.local.json",
 	".interlinked/error-history.jsonl",
 	// Personal guard stand-down marker + the append-only guard audit log. The
 	// TEAM marker (`guard-disabled.json`, no `.local`) is committed on purpose

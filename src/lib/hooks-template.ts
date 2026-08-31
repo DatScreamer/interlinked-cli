@@ -775,6 +775,10 @@ ${PROVIDER_RESPONSES_CHUNK}
             // through whenever the harness was unavailable.
             guardDecision = inlineGuardCheck(hookEvent, harnessEvent.tool_name, harnessEvent.tool_input);
         }
+		if (!guardDecision && ["Write", "Edit", "MultiEdit", "apply_patch", "write_file", "replace", "replace_string", "create_file"].includes(harnessEvent.tool_name)) {
+			process.stderr.write("[interlinked:function-tokens:not-measured] function-token enforcement requires the running harness daemon and an exact language adapter; this cold-fallback edit was not measured\\n");
+		}
+
 
         const preElapsedMs = Date.now() - preStartMs;
 

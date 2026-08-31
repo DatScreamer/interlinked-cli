@@ -22,9 +22,29 @@ import {
 	hookVersionChecks,
 	legacyConfigCheck,
 	localFileChecks,
+	metricCapsConfigCheck,
 	permissionRuleChecks,
 	sessionFileChecks,
 } from "./doctor-checks.js";
+
+describe("metricCapsConfigCheck", () => {
+	it("warns when max_function_tokens is outside the fixed integer range", () => {
+		const dir = mkdtempSync(join(tmpdir(), "doctor-metric-caps-"));
+		try {
+			mkdirSync(join(dir, ".interlinked"));
+			writeFileSync(
+				join(dir, ".interlinked", "metric-caps.json"),
+				JSON.stringify({ version: 1, max_function_tokens: 512 }),
+			);
+			const result = metricCapsConfigCheck(dir);
+			expect(result.status).toBe("warn");
+			expect(result.message).toContain("1 through 500");
+			expect(result.message).toContain("using 500");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 vi.mock("./harness.js", () => ({
 	isHarnessRunning: vi.fn().mockReturnValue({ running: false }),

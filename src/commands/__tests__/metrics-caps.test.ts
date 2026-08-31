@@ -56,7 +56,7 @@ function writeCaps(overrides: Record<string, number>): void {
 }
 
 interface JsonReport {
-	caps: { crap: number; cyclomatic: number; cyclomaticReview: number; minCoveragePct: number };
+	caps: { crap: number; cyclomatic: number; cyclomaticReview: number; minCoveragePct: number; functionTokens: number };
 	scope: { functions: number };
 	gates: {
 		functionsCyclomaticReview: number;
@@ -98,6 +98,7 @@ describe("metricsCommand — caps drive the JSON report (G4)", () => {
 			cyclomatic: 25,
 			cyclomaticReview: 15,
 			minCoveragePct: 60,
+			functionTokens: 500,
 		});
 		// branchy (cyclomatic ~13) is comfortably UNDER the default bad cap of 25
 		// and under the default review lower bound of 15 — neither bad nor review.
@@ -115,6 +116,7 @@ describe("metricsCommand — caps drive the JSON report (G4)", () => {
 			cyclomatic: 10,
 			cyclomaticReview: 15,
 			minCoveragePct: 60,
+			functionTokens: 500,
 		});
 		// branchy is now OVER the tightened cyclomatic cap of 10 → "bad", not review.
 		expect(r.gates.functionsCyclomaticBad).toBe(1);

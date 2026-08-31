@@ -54,9 +54,11 @@ The local-first, hook-driven architecture draws inspiration from [Entire CLI](ht
 | `explain` | Narrative timeline of agent actions from activity log | Optional | Observability |
 | `sync` | Manual batch sync of buffered events to server | Yes | Sync |
 | `doctor` | Diagnose config, hooks, auth, and server issues | Optional | Maintenance |
+| `caps` / `metrics` | Configure tighten-only quality water-lines and inspect current measurements | No | Quality |
 | `simplify scan|review|audit|status` | Collect, optionally record, and inspect advisory simplification evidence | No | Quality |
 | `debt markers` | Scan or explicitly snapshot source-owned design-debt ceilings and triggers | No | Quality |
 | `impact` | Render evidence-classed simplification, lifecycle, worktree, and experiment facts | No | Observability |
+| `semantic` | Explicitly install a pinned local embedding model and build/query the experimental function index | No | Local retrieval |
 | `clean` | Remove stale sessions, truncate large logs | No | Maintenance |
 | `reset` | Nuclear: remove all Interlinked CLI config and hooks | No | Maintenance |
 | `workspace` | List/switch workspaces on the remote server | Yes | Workspace |
@@ -295,6 +297,53 @@ This keeps `.interlinked/harness.sock` working for the generated legacy hook scr
 
 The harness architecture draws from [Sondera](https://github.com/sondera-ai/sondera-coding-agent-hooks) (Cedar policies, YARA signatures, Unix socket harness) and [Entire CLI](https://github.com/entireio/cli) (local-first capture, git-native checkpoints). The key differentiator is server coordination — the harness syncs file reservations and guard events with the Interlinked MCP Server for team-wide visibility.
 
-## 9. Relationship to Entire CLI
+## 9. Function-size enforcement and local semantic retrieval
+
+The Interlinked CLI now has two intentionally separate function-level surfaces:
+
+1. The hard `max_function_tokens` quality metric uses the versioned
+   `interlinked-code-v1` canonical code lexer. The shipped cap is inclusive at
+   500, may only ratchet downward, and has exact TypeScript/JavaScript and
+   Python adapters. Pre-existing over-cap functions may hold or shrink, but a
+   new over-cap function or growth above the water-line blocks. Unsupported
+   languages fail open with a visible not-measured result; embeddings never
+   participate in this decision.
+2. The optional `semantic` command group canonicalizes complete function
+   inputs, counts with the selected model's actual tokenizer, directly embeds
+   inputs that fit, and syntax-chunks/aggregates longer inputs. It publishes
+   immutable, hash-verified generations under
+   `.interlinked/index/functions/`; `CURRENT` changes only after the metadata,
+   JSONL function rows, and little-endian float32 vectors validate.
+
+`interlinked metrics` reuses the exact cap adapters for a read-only repository
+census. Its JSON report contains every measured function plus per-file
+`summedFunctionTokens`, distributions, percentiles, and deterministic function
+and file outliers. The sum is nested-inclusive by design rather than a unique
+whole-file lexical count. Default discovery matches the hard-cap product scope;
+`--include-tests` adds test/spec functions as advisory measurements. Product
+files whose extension has no exact adapter remain visible as not measured,
+including in a bounded normal-output preview; vendored and markup/data paths
+are excluded by the shared cappable-file policy, as are documentation and
+configuration, dependency/build, binary, and runner tool-state artifacts,
+rather than disappearing at the analyzer layer. Its cap-specific discovery
+keeps hidden product source and files above the ordinary verify walk's size
+limit in the classification universe.
+
+The initial experimental registry entry pins an Apache-2.0 Nomic Embed v1.5
+GGUF artifact by repository revision, byte count, and SHA-256. Download is
+authorized only by `interlinked semantic install`; ordinary commands, setup,
+hooks, and the daemon never auto-download weights. Inference uses optional
+local llama.cpp `llama-embedding` and `llama-tokenize` executables. There is no
+cloud fallback, repository model code execution, semantic blocking rule, or
+sync of source-derived vectors and queries to the Interlinked MCP Server.
+
+Search exact-scans cosine similarity and binds each generation/result to the
+full model/runtime/input/chunk-policy fingerprint. A stale generation remains
+queryable with an explicit warning; corrupt and fingerprint-mismatched
+generations are refused. Automatic daemon idle indexing and hybrid retrieval
+remain deferred while the feature is experimental. See
+`docs/semantic-index.md` and plan 29 for the operator and design contracts.
+
+## 10. Relationship to Entire CLI
 
 The local-first, hook-driven architecture draws inspiration from Entire CLI. Both projects share the philosophy that AI agent activity should be captured locally, durably, and transparently. The key divergence is scope: Entire captures session transcripts for single-agent, single-repo workflows; Interlinked MCP Server + Interlinked CLI capture activity events for multi-agent, multi-workspace orchestration.

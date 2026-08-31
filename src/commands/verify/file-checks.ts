@@ -35,6 +35,11 @@ import {
 	loadLargeFileBaseline,
 	maxLinesFor,
 } from "../../harness/large-file-policy.js";
+import {
+	computeFunctionTokens,
+	functionTokenAnalyzerStatus,
+} from "../../harness/function-tokens/index.js";
+import { maxFunctionTokensFor } from "../../harness/metric-caps.js";
 import { parseImports, resolveImportPath } from "../../harness/project-graph.js";
 import { findAnyTypes } from "../../harness/quality-checks.js";
 import {
@@ -210,6 +215,40 @@ function collectLargeFileFinding(file: string, content: string, cwd: string, rel
 	});
 }
 
+function collectFunctionTokenFindings(
+	file: string,
+	content: string,
+	cwd: string,
+	relPath: string,
+	r: CodeQualityResults,
+): void {
+	if (!isCappableFile({ filePath: file, content, root: cwd })) return;
+	const entries = computeFunctionTokens(content, file);
+	if (entries === null) {
+		const status = functionTokenAnalyzerStatus(file);
+		if (status.language === "unknown") return;
+		r.complexity.push({
+			check: "function_tokens_not_measured",
+			file: relPath,
+			line: 0,
+			message: `${status.language} functions not measured: ${status.reason ?? "exact analyzer unavailable"}`,
+		});
+		return;
+	}
+	const cap = maxFunctionTokensFor(cwd);
+	for (const entry of entries) {
+		if (entry.canonicalTokens <= cap) continue;
+		r.complexity.push({
+			check: "function_tokens",
+			file: relPath,
+			line: entry.line,
+			message:
+				`${entry.qualifiedName} has ${entry.canonicalTokens} canonical code tokens ` +
+				`(cap ${cap}, tokenizer interlinked-code-v1). Split it into cohesive named helpers.`,
+		});
+	}
+}
+
 /**
  * Per-cwd memo for the coverage accessor. `loadMetricsCoverage` parses the
  * istanbul/LCOV report; the per-file battery calls `collectUntestedFileFinding`
@@ -336,6 +375,7 @@ function collectPerFileFindings(args: RunFileChecksArgs): void {
 	const isDts = file.endsWith(DTS_SUFFIX);
 
 	collectLargeFileFinding(file, content, cwd, relPath, r);
+	collectFunctionTokenFindings(file, content, cwd, relPath, r);
 	collectUntestedFileFinding(file, cwd, relPath, r, content);
 
 	if (collectJsonFindings(file, content, ext, relPath, r)) return;

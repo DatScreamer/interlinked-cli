@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Semantic Index"
+  short_description: "Operate local semantic function search"
+  default_prompt: "Use $interlinked-semantic-index to install, build, query, or diagnose the local semantic function index without conflating model tokens with the hard canonical-token cap."

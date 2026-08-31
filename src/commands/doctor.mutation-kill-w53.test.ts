@@ -55,6 +55,7 @@ const harnessChecksMock = vi.fn();
 const hookVersionChecksMock = vi.fn();
 const legacyConfigCheckMock = vi.fn();
 const localFileChecksMock = vi.fn();
+const metricCapsConfigCheckMock = vi.fn();
 const permissionRuleChecksMock = vi.fn();
 const sessionFileChecksMock = vi.fn();
 const systemChecksMock = vi.fn();
@@ -66,6 +67,7 @@ vi.mock("./doctor-checks.js", () => ({
 	hookVersionChecks: (...a: unknown[]) => hookVersionChecksMock(...a),
 	legacyConfigCheck: (...a: unknown[]) => legacyConfigCheckMock(...a),
 	localFileChecks: (...a: unknown[]) => localFileChecksMock(...a),
+	metricCapsConfigCheck: (...a: unknown[]) => metricCapsConfigCheckMock(...a),
 	permissionRuleChecks: (...a: unknown[]) => permissionRuleChecksMock(...a),
 	sessionFileChecks: (...a: unknown[]) => sessionFileChecksMock(...a),
 	statusIcon: (status: string) => `[${status}]`,
@@ -108,6 +110,9 @@ function resetAllMocksToBenignDefaults(): void {
 	hookVersionChecksMock.mockReset().mockReturnValue([]);
 	legacyConfigCheckMock.mockReset().mockReturnValue([]);
 	localFileChecksMock.mockReset().mockReturnValue([]);
+	metricCapsConfigCheckMock
+		.mockReset()
+		.mockReturnValue({ name: "Metric caps config", status: "pass", message: "ok" });
 	permissionRuleChecksMock.mockReset().mockReturnValue([]);
 	sessionFileChecksMock.mockReset().mockReturnValue([]);
 	systemChecksMock.mockReset().mockReturnValue([]);
@@ -184,7 +189,7 @@ describe("Data collection result entry — positive (must fire)", () => {
 // ===========================================
 describe("json summary pass/fail/warn counts — positive (must fire)", () => {
 	it("counts exactly the pass entries, distinguishable from total and from non-pass", async () => {
-		// pass=4, fail=1, warn=2, total=7 (asymmetric so pass != total-pass != total)
+		// pass=5, fail=1, warn=2, total=8 (asymmetric so pass != total-pass != total)
 		systemChecksMock.mockReturnValue([{ name: "sys", status: "pass", message: "ok" }]);
 		localFileChecksMock.mockReturnValue([{ name: "local", status: "fail", message: "bad" }]);
 		collectionLivenessCheckMock.mockReturnValue({ status: "pass", message: "ok" });
@@ -195,11 +200,11 @@ describe("json summary pass/fail/warn counts — positive (must fire)", () => {
 
 		await doctorCommand({ json: true });
 		const payload = lastJsonPayload();
-		expect(payload.summary.pass).toBe(4);
+		expect(payload.summary.pass).toBe(5);
 		expect(payload.summary.fail).toBe(1);
 		expect(payload.summary.warn).toBe(2);
 		const total = payload.local.length + payload.server.length;
-		expect(total).toBe(7);
+		expect(total).toBe(8);
 	});
 });
 
@@ -225,7 +230,7 @@ describe("normal-mode text rendering — positive (must fire)", () => {
 	});
 
 	it("displays the filtered pass count, not the total result count", async () => {
-		// pass=4, fail=1, warn=2, total=7 — same asymmetric setup as the json test
+		// pass=5, fail=1, warn=2, total=8 — same asymmetric setup as the json test
 		systemChecksMock.mockReturnValue([{ name: "sys", status: "pass", message: "ok" }]);
 		localFileChecksMock.mockReturnValue([{ name: "local", status: "fail", message: "bad" }]);
 		collectionLivenessCheckMock.mockReturnValue({ status: "pass", message: "ok" });
@@ -236,8 +241,8 @@ describe("normal-mode text rendering — positive (must fire)", () => {
 
 		await doctorCommand({});
 		const text = lastNormalText();
-		expect(text).toContain("4 passed");
-		expect(text).not.toContain("7 passed");
+		expect(text).toContain("5 passed");
+		expect(text).not.toContain("8 passed");
 	});
 
 	it("joins summary parts with a comma and a space", async () => {
