@@ -9,11 +9,10 @@
 //
 // This module is the daemon-wide attribution registry: the last reconciled
 // PostToolUse effect per path, across ALL sessions the daemon serves.
-// Content-hash equality is the attribution proof — an observed after-state
-// that byte-matches what another session's reconciliation recorded is that
-// session's work, not this session's residue. A hash mismatch keeps the
-// effect: the file changed again after the other session's write, so the
-// backstop stays conservative.
+// Exact path ownership is the attribution proof: a reconciled actor owns the
+// latest observed write to that path until another reconciliation replaces it.
+// The stored hash remains useful evidence and preserves the durable format,
+// but a later unobserved re-edit does not charge that actor's path to a peer.
 //
 // The registry is deliberately NOT cleared when a session ends — it is
 // cross-session evidence, and the writing session usually stops before the
@@ -27,6 +26,8 @@ import type { WorkspaceFileEffect } from "./workspace-effects.js";
 
 interface ReconciledEffectRecord {
 	sessionId: string;
+	/** Stable spawned-thread id. null = known root; absent = legacy actor unknown. */
+	subagentId?: string | null;
 	sha256: string | null;
 }
 
@@ -70,12 +71,18 @@ function loadRegistryOnce(): void {
 			if (reconciledEffectByPath.has(path)) continue; // live rows outrank disk
 			if (typeof rec !== "object" || rec === null) continue;
 			const sessionId = (rec as { sessionId?: unknown }).sessionId;
+			const subagentId = (rec as { subagentId?: unknown }).subagentId;
 			const sha256 = (rec as { sha256?: unknown }).sha256;
 			if (typeof sessionId !== "string") continue;
-			reconciledEffectByPath.set(path, {
+			const record: ReconciledEffectRecord = {
 				sessionId,
 				sha256: typeof sha256 === "string" ? sha256 : null,
-			});
+			};
+			if (subagentId === null) record.subagentId = null;
+			else if (typeof subagentId === "string" && subagentId.length > 0) {
+				record.subagentId = subagentId;
+			}
+			reconciledEffectByPath.set(path, record);
 		}
 	} catch (err) {
 		// Corrupt/unreadable store: registry falls back to in-memory-only
@@ -106,13 +113,19 @@ function persistRegistry(): void {
 export function recordReconciledEffects(
 	sessionId: string,
 	effects: readonly WorkspaceFileEffect[],
+	subagentId?: string,
 ): void {
 	loadRegistryOnce();
 	for (const effect of effects) {
 		// Delete-then-set keeps the map in recency order, so pruning removes the
 		// stalest attribution first.
 		reconciledEffectByPath.delete(effect.path);
-		reconciledEffectByPath.set(effect.path, { sessionId, sha256: effect.after_sha256 });
+		const record: ReconciledEffectRecord = {
+			sessionId,
+			subagentId: subagentId || null,
+			sha256: effect.after_sha256,
+		};
+		reconciledEffectByPath.set(effect.path, record);
 	}
 	while (reconciledEffectByPath.size > RECONCILED_PATH_CEILING) {
 		const oldest = reconciledEffectByPath.keys().next().value;
@@ -129,22 +142,32 @@ export function recordReconciledEffects(
  *    and this session never did. A concurrent writer that edits its own file
  *    again after reconciling made the stale hash mismatch, which was the
  *    remaining leak path into innocent sessions' Stop rescans. */
-function isAttributedToOtherSession(sessionId: string, effect: WorkspaceFileEffect): boolean {
+function isAttributedToOtherActor(
+	sessionId: string,
+	subagentId: string | undefined,
+	effect: WorkspaceFileEffect,
+): boolean {
 	loadRegistryOnce();
 	const record = reconciledEffectByPath.get(effect.path);
-	return record !== undefined && record.sessionId !== sessionId;
+	if (!record) return false;
+	if (record.sessionId !== sessionId) return true;
+	// Pre-actor-identity rows omit subagentId. They prove session ownership only,
+	// so remain conservative for every actor in that same session.
+	if (record.subagentId === undefined) return false;
+	return record.subagentId !== (subagentId || null);
 }
 
-/** Split residue effects into this session's own vs. ones proven to belong to
- *  a different session. */
+/** Split residue effects into this actor's own vs. ones proven to belong to a
+ *  different actor. */
 export function partitionResidueByAttribution(
 	sessionId: string,
 	effects: readonly WorkspaceFileEffect[],
+	subagentId?: string,
 ): { own: WorkspaceFileEffect[]; attributedElsewhere: number } {
 	const own: WorkspaceFileEffect[] = [];
 	let attributedElsewhere = 0;
 	for (const effect of effects) {
-		if (isAttributedToOtherSession(sessionId, effect)) attributedElsewhere++;
+		if (isAttributedToOtherActor(sessionId, subagentId, effect)) attributedElsewhere++;
 		else own.push(effect);
 	}
 	return { own, attributedElsewhere };

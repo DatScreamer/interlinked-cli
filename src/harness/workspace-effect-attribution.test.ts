@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -40,6 +40,37 @@ describe("partitionResidueByAttribution — positive (must attribute elsewhere)"
 		const result = partitionResidueByAttribution("session-a", [effect("src/foo.ts", "new")]);
 		expect(result.attributedElsewhere).toBe(1);
 	});
+
+	it("P4: distinguishes sibling subagents that share one session", () => {
+		recordReconciledEffects("shared-session", [effect("src/child.ts", "child-a")], "child-a");
+		const result = partitionResidueByAttribution(
+			"shared-session",
+			[effect("src/child.ts", "child-a")],
+			"child-b",
+		);
+		expect(result.own).toEqual([]);
+		expect(result.attributedElsewhere).toBe(1);
+	});
+
+	it("P5: distinguishes a child from the root actor in the same session", () => {
+		recordReconciledEffects("shared-session", [effect("src/child.ts", "child")], "child-a");
+		const result = partitionResidueByAttribution("shared-session", [
+			effect("src/child.ts", "child"),
+		]);
+		expect(result.own).toEqual([]);
+		expect(result.attributedElsewhere).toBe(1);
+	});
+
+	it("P6: distinguishes a root write from a child actor in the same session", () => {
+		recordReconciledEffects("shared-session", [effect("src/root.ts", "root")]);
+		const result = partitionResidueByAttribution(
+			"shared-session",
+			[effect("src/root.ts", "root")],
+			"child-a",
+		);
+		expect(result.own).toEqual([]);
+		expect(result.attributedElsewhere).toBe(1);
+	});
 });
 
 describe("partitionResidueByAttribution — negative (must keep as own residue)", () => {
@@ -59,6 +90,17 @@ describe("partitionResidueByAttribution — negative (must keep as own residue)"
 	it("N3: keeps an effect reconciled by the SAME session — own work is never excluded", () => {
 		recordReconciledEffects("session-a", [effect("src/foo.ts", "abc")]);
 		const result = partitionResidueByAttribution("session-a", [effect("src/foo.ts", "abc")]);
+		expect(result.own).toHaveLength(1);
+		expect(result.attributedElsewhere).toBe(0);
+	});
+
+	it("N4: keeps an effect reconciled by the same child actor", () => {
+		recordReconciledEffects("shared-session", [effect("src/child.ts", "abc")], "child-a");
+		const result = partitionResidueByAttribution(
+			"shared-session",
+			[effect("src/child.ts", "abc")],
+			"child-a",
+		);
 		expect(result.own).toHaveLength(1);
 		expect(result.attributedElsewhere).toBe(0);
 	});
@@ -105,5 +147,68 @@ describe("durable registry — survives a daemon restart", () => {
 		const result = partitionResidueByAttribution("session-a", [effect("src/foo.ts", "theirs")]);
 		expect(result.own).toHaveLength(1);
 		expect(result.attributedElsewhere).toBe(0);
+	});
+
+	it("P-persist-child: preserves same-session child identity across a restart", () => {
+		const root = mkdtempSync(join(tmpdir(), "effect-attr-child-store-"));
+		try {
+			initEffectAttributionStore(root);
+			recordReconciledEffects("shared-session", [effect("src/child.ts", "theirs")], "child-a");
+			resetReconciledEffectRegistry();
+			initEffectAttributionStore(root);
+			const result = partitionResidueByAttribution(
+				"shared-session",
+				[effect("src/child.ts", "theirs")],
+				"child-b",
+			);
+			expect(result.own).toEqual([]);
+			expect(result.attributedElsewhere).toBe(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("P-persist-root: preserves known-root identity across a restart", () => {
+		const root = mkdtempSync(join(tmpdir(), "effect-attr-root-store-"));
+		try {
+			initEffectAttributionStore(root);
+			recordReconciledEffects("shared-session", [effect("src/root.ts", "theirs")]);
+			resetReconciledEffectRegistry();
+			initEffectAttributionStore(root);
+			const result = partitionResidueByAttribution(
+				"shared-session",
+				[effect("src/root.ts", "theirs")],
+				"child-a",
+			);
+			expect(result.own).toEqual([]);
+			expect(result.attributedElsewhere).toBe(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("N-legacy: a persisted row without actor identity stays session-scoped", () => {
+		const root = mkdtempSync(join(tmpdir(), "effect-attr-legacy-store-"));
+		try {
+			const storeDir = join(root, ".interlinked");
+			mkdirSync(storeDir, { recursive: true });
+			writeFileSync(
+				join(storeDir, "effect-attribution.json"),
+				JSON.stringify({
+					"src/legacy.ts": { sessionId: "shared-session", sha256: "legacy" },
+				}),
+				"utf-8",
+			);
+			initEffectAttributionStore(root);
+			const result = partitionResidueByAttribution(
+				"shared-session",
+				[effect("src/legacy.ts", "legacy")],
+				"child-a",
+			);
+			expect(result.own).toHaveLength(1);
+			expect(result.attributedElsewhere).toBe(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

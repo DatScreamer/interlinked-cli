@@ -205,6 +205,24 @@ describe("workspace effect ChangeSet", () => {
 		clearWorkspaceEffectSession("s2");
 	});
 
+	it("excludes a sibling subagent's reconciled write from root residue", () => {
+		rememberWorkspaceSnapshot({ toolUseId: "root-call", sessionId: "shared", root });
+		rememberWorkspaceSnapshot({ toolUseId: "child-call", sessionId: "shared", root });
+		writeFileSync(join(root, "sibling-write.ts"), "export {};\n");
+		expect(
+			consumeWorkspaceSnapshot({
+				toolUseId: "child-call",
+				sessionId: "shared",
+				subagentId: "child-a",
+				root,
+			})?.files,
+		).toMatchObject([{ path: "sibling-write.ts", kind: "created" }]);
+		const residue = consumeWorkspaceResidue("shared", root);
+		expect(residue?.files).toEqual([]);
+		expect(residue?.attributed_to_other_sessions).toBe(1);
+		clearWorkspaceEffectSession("shared");
+	});
+
 	it("attributes a path another session reconciled even when the file changed again (2026-08-23 widening: the re-editing concurrent writer was the residual leak into innocent sessions' Stop rescans)", () => {
 		rememberWorkspaceSnapshot({ toolUseId: "s1-call", sessionId: "s1", root });
 		rememberWorkspaceSnapshot({ toolUseId: "s2-call", sessionId: "s2", root });

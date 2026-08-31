@@ -28,6 +28,11 @@ interface PendingCall {
     timestampMs: number;
 }
 
+interface PendingAttributionMatch {
+    parsed: ParsedAttributionRollout;
+    call: PendingCall;
+}
+
 export interface ParsedAttributionRollout {
     attribution: CodexSubagentAttribution | null;
     cwd: string | null;
@@ -52,6 +57,7 @@ interface RolloutAccumulator {
     attribution: CodexSubagentAttribution | null;
     cwd: string | null;
     model: string | null;
+    sessionMetaSeen: boolean;
     executionIds: Set<string>;
     pending: Map<string, PendingCall>;
 }
@@ -109,7 +115,8 @@ function consumeRolloutEntry(entry: JsonObject, acc: RolloutAccumulator): void {
     const payload = nestedObject(entry, "payload");
     if (!payload) return;
     const entryType = stringField(entry, "type");
-    if (entryType === "session_meta") {
+    if (entryType === "session_meta" && !acc.sessionMetaSeen) {
+        acc.sessionMetaSeen = true;
         acc.attribution = readSpawnMetadata(payload);
         acc.cwd = stringField(payload, "cwd");
     }
@@ -131,6 +138,7 @@ export function parseCodexAttributionRollout(text: string): ParsedAttributionRol
         attribution: null,
         cwd: null,
         model: null,
+        sessionMetaSeen: false,
         executionIds: new Set<string>(),
         pending: new Map<string, PendingCall>(),
     };
@@ -229,6 +237,26 @@ function pendingMatch(
     return candidates.sort((a, b) => b.timestampMs - a.timestampMs)[0] ?? null;
 }
 
+function rememberPendingActor(
+    matches: Map<string, PendingAttributionMatch>,
+    parsed: ParsedAttributionRollout,
+    call: PendingCall,
+): void {
+    const attribution = parsed.attribution;
+    if (!attribution) return;
+    const prior = matches.get(attribution.subagent_id);
+    if (!prior || prior.call.timestampMs < call.timestampMs) {
+        matches.set(attribution.subagent_id, { parsed, call });
+    }
+}
+
+function uniquePendingAttribution(
+    matches: Map<string, PendingAttributionMatch>,
+): CodexSubagentAttribution | null {
+    if (matches.size !== 1) return null;
+    return matches.values().next().value?.parsed.attribution ?? null;
+}
+
 /** Resolve the acting Codex collaboration subagent. Exact execution-id
  * correlation wins; PreToolUse falls back to the matching pending call. */
 export function resolveCodexSubagentAttribution(
@@ -242,16 +270,15 @@ export function resolveCodexSubagentAttribution(
     const root = options.sessionsDir ?? join(homedir(), ".codex", "sessions");
     const paths = options.rolloutPaths
         ?? recentRolloutPaths(root, nowMs, options.maxAgeMs ?? DEFAULT_MAX_AGE_MS);
-    const pendingMatches: Array<{ parsed: ParsedAttributionRollout; call: PendingCall }> = [];
+    const pendingByActor = new Map<string, PendingAttributionMatch>();
     for (const path of paths) {
         const parsed = readRollout(path);
         if (!parsed?.attribution || (parsed.cwd && event.cwd && parsed.cwd !== event.cwd)) continue;
         if (event.tool_use_id && parsed.executionIds.has(event.tool_use_id)) return parsed.attribution;
         const call = pendingMatch(parsed, event, eventMs);
-        if (call) pendingMatches.push({ parsed, call });
+        if (call) rememberPendingActor(pendingByActor, parsed, call);
     }
-    pendingMatches.sort((a, b) => b.call.timestampMs - a.call.timestampMs);
-    return pendingMatches[0]?.parsed.attribution ?? null;
+    return uniquePendingAttribution(pendingByActor);
 }
 
 /** Fill missing fields only; native runner attribution remains authoritative. */

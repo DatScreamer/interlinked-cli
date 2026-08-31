@@ -109,9 +109,8 @@ export interface WorkspaceChangeSet {
 	before_captured_at: string;
 	after_captured_at: string;
 	files: WorkspaceFileEffect[];
-	/** Residue only: effects dropped because their observed content hash exactly
-	 *  matched a DIFFERENT session's reconciled PostToolUse write — that work
-	 *  belongs to the other session and must not be charged to this one. */
+	/** Residue only: effects attributed to another actor's latest reconciled
+	 *  write. The field name is retained for wire compatibility. */
 	attributed_to_other_sessions?: number;
 }
 
@@ -423,6 +422,7 @@ export function discardWorkspaceSnapshot(opts: {
 export function consumeWorkspaceSnapshot(opts: {
 	toolUseId?: string | undefined;
 	sessionId: string;
+	subagentId?: string | undefined;
 	root: string;
 }): WorkspaceChangeSet | null {
 	const pending = takePending(opts.toolUseId, opts.sessionId);
@@ -430,10 +430,10 @@ export function consumeWorkspaceSnapshot(opts: {
 	const after = captureWorkspaceSnapshot(opts.root);
 	lastReconciledBySession.set(opts.sessionId, after);
 	const changeSet = diffWorkspaceSnapshots(pending.snapshot, after);
-	// Feed the cross-session attribution registry so Stop residue can tell
-	// "this session's unreconciled write" from "another session's work".
+	// Feed the cross-actor attribution registry so Stop residue can distinguish
+	// this actor's unreconciled write from a peer's reconciled work.
 	initEffectAttributionStore(opts.root);
-	recordReconciledEffects(opts.sessionId, changeSet.files);
+	recordReconciledEffects(opts.sessionId, changeSet.files, opts.subagentId);
 	return changeSet;
 }
 
@@ -442,7 +442,11 @@ export function consumeWorkspaceSnapshot(opts: {
  * reconciled PostToolUse, or since an unconsumed PreToolUse snapshot. This is
  * advisory evidence; it cannot retroactively make an irreversible call safe.
  */
-export function consumeWorkspaceResidue(sessionId: string, root: string): WorkspaceChangeSet | null {
+export function consumeWorkspaceResidue(
+	sessionId: string,
+	root: string,
+	subagentId?: string,
+): WorkspaceChangeSet | null {
 	const candidates: WorkspaceSnapshot[] = [];
 	const reconciled = lastReconciledBySession.get(sessionId);
 	if (reconciled) candidates.push(reconciled);
@@ -456,9 +460,13 @@ export function consumeWorkspaceResidue(sessionId: string, root: string): Worksp
 		a.captured_at <= b.captured_at ? a : b,
 	);
 	const raw = diffWorkspaceSnapshots(oldest, captureWorkspaceSnapshot(root));
-	// The diff is time-scoped; drop effects proven to be another session's
-	// reconciled work so they are not folded into THIS session's rescan.
-	const { own, attributedElsewhere } = partitionResidueByAttribution(sessionId, raw.files);
+	// The diff is time-scoped; drop effects proven to be another actor's
+	// reconciled work so they are not folded into THIS actor's rescan.
+	const { own, attributedElsewhere } = partitionResidueByAttribution(
+		sessionId,
+		raw.files,
+		subagentId,
+	);
 	return { ...raw, files: own, attributed_to_other_sessions: attributedElsewhere };
 }
 
@@ -472,7 +480,7 @@ export function formatWorkspaceResidueWarning(changeSet: WorkspaceChangeSet): st
 	const completeness = changeSet.complete ? "complete" : "bounded/incomplete";
 	const attributed = changeSet.attributed_to_other_sessions ?? 0;
 	const attributedNote = attributed > 0
-		? ` ${attributed} further effect(s) matched another session's reconciled writes and were excluded.`
+		? ` ${attributed} further effect(s) matched another actor's reconciled writes and were excluded.`
 		: "";
 	return (
 		`[interlinked:effect-residue] Stop observed ${changeSet.files.length} filesystem effect(s) ` +

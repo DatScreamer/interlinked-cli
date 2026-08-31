@@ -16,6 +16,8 @@ export interface CohortAgent {
 	name: string;
 	/** Session ID from the coding agent */
 	session_id: string;
+	/** Stable spawned-thread id. Present for subagents that expose one. */
+	subagent_id?: string;
 	/** Which coding agent runtime */
 	source: AgentSource;
 	/** Current status */

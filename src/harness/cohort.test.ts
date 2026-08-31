@@ -128,6 +128,29 @@ describe("CohortManager.agentLeft", () => {
 });
 
 describe("CohortManager.subagentJoined", () => {
+	it("prefers top-level Codex actor identity and lineage fields", () => {
+		const c = new CohortManager();
+		const sub = c.subagentJoined(
+			ev({
+				session_id: "shared-session",
+				agent_name: "child-task",
+				subagent_id: "thread-child-a",
+				parent_agent: "thread-root",
+				tool_input: {
+					subagent_id: "stale-tool-id",
+					parent_agent_name: "stale-tool-parent",
+				},
+			}),
+		);
+
+		expect(sub).toMatchObject({
+			name: "child-task",
+			session_id: "shared-session",
+			subagent_id: "thread-child-a",
+			parent_agent: "thread-root",
+		});
+	});
+
 	it("uses agent_name when present and records the parent_agent_name", () => {
 		const c = new CohortManager();
 		const sub = c.subagentJoined(
@@ -218,6 +241,21 @@ describe("CohortManager.subagentJoined", () => {
 });
 
 describe("CohortManager.subagentLeft", () => {
+	it("marks only the child selected by top-level subagent_id idle", () => {
+		const c = new CohortManager();
+		c.subagentJoined(
+			ev({ agent_name: "child-a", session_id: "shared", subagent_id: "thread-a" }),
+		);
+		c.subagentJoined(
+			ev({ agent_name: "child-b", session_id: "shared", subagent_id: "thread-b" }),
+		);
+
+		c.subagentLeft(ev({ session_id: "shared", subagent_id: "thread-b" }));
+
+		expect(c.getAgent("child-a")?.status).toBe("active");
+		expect(c.getAgent("child-b")?.status).toBe("idle");
+	});
+
 	it("marks a subagent idle by agent_name", () => {
 		const c = new CohortManager();
 		c.subagentJoined(ev({ agent_name: "sub1", tool_input: {} }));
@@ -266,6 +304,41 @@ describe("CohortManager.subagentLeft", () => {
 });
 
 describe("CohortManager.recordActivity", () => {
+	it("updates the selected same-session child instead of its root or sibling", () => {
+		const c = new CohortManager();
+		c.agentJoined(
+			ev({ agent_name: "root", session_id: "shared", timestamp: "2026-06-06T09:00:00.000Z" }),
+		);
+		c.subagentJoined(
+			ev({
+				agent_name: "child-a",
+				session_id: "shared",
+				subagent_id: "thread-a",
+				timestamp: "2026-06-06T09:00:00.000Z",
+			}),
+		);
+		c.subagentJoined(
+			ev({
+				agent_name: "child-b",
+				session_id: "shared",
+				subagent_id: "thread-b",
+				timestamp: "2026-06-06T09:00:00.000Z",
+			}),
+		);
+
+		c.recordActivity(
+			ev({
+				session_id: "shared",
+				subagent_id: "thread-b",
+				timestamp: "2026-06-06T11:00:00.000Z",
+			}),
+		);
+
+		expect(c.getAgent("root")?.last_event_at).toBe("2026-06-06T09:00:00.000Z");
+		expect(c.getAgent("child-a")?.last_event_at).toBe("2026-06-06T09:00:00.000Z");
+		expect(c.getAgent("child-b")?.last_event_at).toBe("2026-06-06T11:00:00.000Z");
+	});
+
 	it("bumps last_event_at on a matched agent without changing an already-active status", () => {
 		const c = new CohortManager();
 		c.agentJoined(ev({ agent_name: "alice", timestamp: "2026-06-06T10:00:00.000Z" }));
@@ -497,6 +570,19 @@ describe("CohortManager.findByEvent (via public methods)", () => {
 });
 
 describe("CohortManager.activeAgentCount — the number cohort rules gate on", () => {
+	it("counts a root and same-session Codex siblings as distinct actors", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "root", session_id: "shared" }));
+		c.subagentJoined(
+			ev({ agent_name: "child-a", session_id: "shared", subagent_id: "thread-a" }),
+		);
+		c.subagentJoined(
+			ev({ agent_name: "child-b", session_id: "shared", subagent_id: "thread-b" }),
+		);
+
+		expect(c.activeAgentCount()).toBe(3);
+	});
+
 	// Over-counting here is not cosmetic: `active_agent_count_at_least(2)` gates
 	// git checkout / stash / rebase, so a phantom second agent blocks a solo
 	// session from switching branches. Measured live 2026-08-07.
@@ -566,6 +652,22 @@ describe("active-cohort provider", () => {
 });
 
 describe("isLineage", () => {
+	it("matches a child whose parent is identified by the root session id", () => {
+		const c = new CohortManager();
+		c.agentJoined(ev({ agent_name: "root", session_id: "root-session" }));
+		c.subagentJoined(
+			ev({
+				agent_name: "child",
+				session_id: "root-session",
+				subagent_id: "thread-child",
+				parent_agent: "root-session",
+			}),
+		);
+
+		expect(isLineage(c, "root", "thread-child")).toBe(true);
+		expect(isLineage(c, "thread-child", "root-session")).toBe(true);
+	});
+
 	it("true for parent↔child in either direction", () => {
 		const c = new CohortManager();
 		c.agentJoined(ev({ agent_name: "main", session_id: "s-main" }));

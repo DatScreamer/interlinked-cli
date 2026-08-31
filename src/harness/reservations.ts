@@ -48,6 +48,19 @@ export {
 	sameOwner,
 };
 
+export interface ReservationConflictAtPath {
+	filePath: string;
+	conflict: ReservationConflict;
+}
+
+export interface ReservationBatchOptions {
+	filePaths: string[];
+	agentName: string;
+	cohort: CohortManager;
+	/** Return true when this conflict should abort the whole acquisition. */
+	shouldBlock: (filePath: string, conflict: ReservationConflict) => boolean;
+}
+
 /** How long to hold a reservation after the last edit before auto-releasing (30s) */
 const AUTO_RELEASE_MS = 30_000;
 
@@ -107,7 +120,52 @@ export class ReservationManager {
 		agentName: string,
 		cohort: CohortManager,
 	): ReservationConflict | null {
-		// Check cache for conflicts
+		return (
+			this.checkAndReserveBatch({
+				filePaths: [filePath],
+				agentName,
+				cohort,
+				shouldBlock: () => true,
+			})?.conflict ?? null
+		);
+	}
+
+	/**
+	 * Preflight and acquire a write's full target set as one synchronous local
+	 * transaction. A blocking conflict aborts before any target is granted or
+	 * sent to the server. Non-blocking conflicts are skipped while every free
+	 * target is granted, preserving warning-only sibling-lease behavior.
+	 */
+	checkAndReserveBatch(options: ReservationBatchOptions): ReservationConflictAtPath | null {
+		const filePaths = [...new Set(options.filePaths)];
+		const conflicts: ReservationConflictAtPath[] = [];
+		for (const filePath of filePaths) {
+			const conflict = this.findConflict(filePath, options.agentName, options.cohort);
+			if (!conflict) continue;
+			conflicts.push({ filePath, conflict });
+			this.emitConflict(filePath, options.agentName, conflict);
+		}
+
+		for (const conflictAtPath of conflicts) {
+			if (options.shouldBlock(conflictAtPath.filePath, conflictAtPath.conflict)) {
+				return conflictAtPath;
+			}
+		}
+
+		const conflictedPaths = new Set(conflicts.map((entry) => entry.filePath));
+		for (const filePath of filePaths) {
+			if (!conflictedPaths.has(filePath)) {
+				this.grant(filePath, options.agentName, options.cohort);
+			}
+		}
+		return null;
+	}
+
+	private findConflict(
+		filePath: string,
+		agentName: string,
+		cohort: CohortManager,
+	): ReservationConflict | null {
 		for (const [pattern, entry] of this.cache) {
 			if (sameOwner(entry.agent_name, agentName)) continue; // Own reservation (any name variant)
 			if (this.pathMatchesPattern(filePath, pattern)) {
@@ -122,21 +180,40 @@ export class ReservationManager {
 					cohort: isLocal ? "local" : "remote",
 					expires_at: entry.expires_at,
 				};
-				this.emit({
-					ts: new Date().toISOString(),
-					action: "conflict",
-					file: filePath,
-					agent_name: agentName,
-					holder: entry.agent_name,
-					cohort: conflict.cohort,
-					expires_at: entry.expires_at,
-					conflict_reason: "preexisting",
-				});
 				return conflict;
 			}
 		}
+		return null;
+	}
 
-		// No conflict — optimistically reserve locally via the SSoT transition.
+	private emitConflict(
+		filePath: string,
+		agentName: string,
+		conflict: ReservationConflict,
+	): void {
+		this.emit({
+			ts: new Date().toISOString(),
+			action: "conflict",
+			file: filePath,
+			agent_name: agentName,
+			holder: conflict.agent_name,
+			cohort: conflict.cohort,
+			expires_at: conflict.expires_at,
+			conflict_reason: "preexisting",
+		});
+	}
+
+	private cancelOwnedReleaseTimer(filePath: string, agentName: string): void {
+		const existing = this.cache.get(filePath);
+		if (!existing || !sameOwner(existing.agent_name, agentName)) return;
+		const timerKey = `${existing.agent_name}:${filePath}`;
+		const timer = this.releaseTimers.get(timerKey);
+		if (timer) clearTimeout(timer);
+		this.releaseTimers.delete(timerKey);
+	}
+
+	private grant(filePath: string, agentName: string, cohort: CohortManager): void {
+		this.cancelOwnedReleaseTimer(filePath, agentName);
 		const now = new Date();
 		const expires = new Date(now.getTime() + RESERVATION_TTL_S * 1000);
 		applyTransition(this.cache, {
@@ -171,8 +248,6 @@ export class ReservationManager {
 				this.rollbackOptimisticGrant(filePath, agentName, cohort);
 			});
 		}
-
-		return null;
 	}
 
 	/**

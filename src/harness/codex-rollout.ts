@@ -57,6 +57,7 @@ interface CodexContext {
 	cwd: string | undefined;
 	agentId: string | undefined;
 	attributionAgent: string | undefined;
+	parentAgent: string | undefined;
 	isSidechain: boolean | undefined;
 }
 
@@ -138,7 +139,11 @@ function parseLine(line: string): CodexEntry | null {
  *  a later entry, not on `session_meta`). One linear pass, no records emitted. */
 function codexThreadSpawn(
 	source: unknown,
-): { agentPath: string | undefined; nickname: string | undefined } | null {
+): {
+	agentPath: string | undefined;
+	nickname: string | undefined;
+	parentThreadId: string | undefined;
+} | null {
 	if (!isJsonObject(source)) return null;
 	const subagent = source.subagent;
 	if (!isJsonObject(subagent)) return null;
@@ -148,17 +153,23 @@ function codexThreadSpawn(
 	const nickname = typeof threadSpawn.agent_nickname === "string"
 		? threadSpawn.agent_nickname
 		: undefined;
-	return agentPath || nickname ? { agentPath, nickname } : null;
+	const parentThreadId = typeof threadSpawn.parent_thread_id === "string"
+		? threadSpawn.parent_thread_id
+		: undefined;
+	return agentPath || nickname || parentThreadId
+		? { agentPath, nickname, parentThreadId }
+		: null;
 }
 
 function consumeSessionMeta(payload: CodexPayload, ctx: CodexContext): void {
-	if (typeof payload.session_id === "string") ctx.session = payload.session_id;
-	else if (typeof payload.id === "string") ctx.session = payload.id;
+	if (typeof payload.id === "string") ctx.session = payload.id;
+	else if (typeof payload.session_id === "string") ctx.session = payload.session_id;
 	if (typeof payload.cwd === "string") ctx.cwd = payload.cwd;
 	const spawn = codexThreadSpawn(payload.source);
 	if (!spawn) return;
 	ctx.agentId = ctx.session || undefined;
 	ctx.attributionAgent = spawn.agentPath ?? spawn.nickname;
+	ctx.parentAgent = spawn.parentThreadId;
 	ctx.isSidechain = true;
 }
 
@@ -169,12 +180,15 @@ function scanContext(entries: (CodexEntry | null)[]): CodexContext {
 		cwd: undefined,
 		agentId: undefined,
 		attributionAgent: undefined,
+		parentAgent: undefined,
 		isSidechain: undefined,
 	};
+	let sessionMetaSeen = false;
 	for (const e of entries) {
 		const p = e?.payload;
 		if (!p) continue;
-		if (e?.type === "session_meta") {
+		if (e?.type === "session_meta" && !sessionMetaSeen) {
+			sessionMetaSeen = true;
 			consumeSessionMeta(p, ctx);
 		}
 		if (ctx.model === undefined && typeof p.model === "string" && p.model) {
@@ -195,6 +209,7 @@ type RecordBase = Pick<
 	| "agent_id"
 	| "is_sidechain"
 	| "attribution_agent"
+	| "parent_agent"
 >;
 
 /** Build one record with the shared base + category-specific fields. */
@@ -259,6 +274,7 @@ function entryRecords(e: CodexEntry, ctx: CodexContext, lineIndex: number): Time
 		agent_id: ctx.agentId,
 		is_sidechain: ctx.isSidechain,
 		attribution_agent: ctx.attributionAgent,
+		parent_agent: ctx.parentAgent,
 	};
 	if (e.type === "response_item") {
 		if (p.type === "message") return messageRecords(base, p, ctx.model);

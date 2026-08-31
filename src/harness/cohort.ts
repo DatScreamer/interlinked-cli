@@ -8,6 +8,18 @@ import type { AgentStatus, CohortAgent, HarnessEvent } from "./types.js";
 /** Timeout before an active agent is marked as "lost" — triggers reservation release (5 minutes) */
 const LOST_TIMEOUT_MS = 5 * 60 * 1000;
 
+function eventSubagentId(event: HarnessEvent): string | undefined {
+	if (event.subagent_id) return event.subagent_id;
+	const fromTool = event.tool_input?.subagent_id ?? event.tool_input?.agent_id;
+	return typeof fromTool === "string" && fromTool ? fromTool : undefined;
+}
+
+function eventParentAgent(event: HarnessEvent): string | undefined {
+	if (event.parent_agent) return event.parent_agent;
+	const fromTool = event.tool_input?.parent_agent_name ?? event.tool_input?.parent_agent;
+	return typeof fromTool === "string" && fromTool ? fromTool : undefined;
+}
+
 export class CohortManager {
 	private agents: Map<string, CohortAgent> = new Map();
 
@@ -52,22 +64,20 @@ export class CohortManager {
 
 	/** Register a subagent joining */
 	subagentJoined(event: HarnessEvent): CohortAgent {
+		const subagentId = eventSubagentId(event);
 		const name =
 			event.agent_name ||
-			(event.tool_input?.subagent_id as string) ||
-			(event.tool_input?.agent_id as string) ||
+			subagentId ||
 			`sub-${event.session_id.slice(0, 8)}`;
-
-		const parentName =
-			(event.tool_input?.parent_agent_name as string) ||
-			(event.tool_input?.parent_agent as string);
+		const parentName = eventParentAgent(event);
 
 		const agent: CohortAgent = {
 			name,
 			session_id: event.session_id,
+			...(subagentId ? { subagent_id: subagentId } : {}),
 			source: event.agent_source,
 			status: "active",
-			parent_agent: parentName,
+			...(parentName ? { parent_agent: parentName } : {}),
 			joined_at: event.timestamp,
 			last_event_at: event.timestamp,
 			files_reserved: [],
@@ -79,16 +89,15 @@ export class CohortManager {
 
 	/** Mark a subagent as idle */
 	subagentLeft(event: HarnessEvent): void {
-		const name =
-			event.agent_name ||
-			(event.tool_input?.subagent_id as string) ||
-			(event.tool_input?.agent_id as string);
-		if (name) {
-			const agent = this.agents.get(name);
-			if (agent) {
-				agent.status = "idle";
-				agent.last_event_at = event.timestamp;
-			}
+		const subagentId = eventSubagentId(event);
+		const agent = subagentId
+			? this.findBySubagentId(subagentId) ?? this.agents.get(subagentId)
+			: event.agent_name
+				? this.agents.get(event.agent_name)
+				: undefined;
+		if (agent) {
+			agent.status = "idle";
+			agent.last_event_at = event.timestamp;
 		}
 	}
 
@@ -108,7 +117,9 @@ export class CohortManager {
 			}
 			return;
 		}
-		if (event.agent_name || event.session_id) {
+		if (event.subagent_id) {
+			this.subagentJoined(event);
+		} else if (event.agent_name || event.session_id) {
 			this.agentJoined(event);
 		}
 	}
@@ -160,6 +171,18 @@ export class CohortManager {
 		return this.agents.get(name);
 	}
 
+	/** Resolve a name, stable subagent id, or session id to one cohort actor. */
+	findAgentByIdentity(identity: string): CohortAgent | undefined {
+		const byName = this.agents.get(identity);
+		if (byName) return byName;
+		const bySubagent = this.findBySubagentId(identity);
+		if (bySubagent) return bySubagent;
+		const sessionMatches = [...this.agents.values()].filter(
+			(agent) => agent.session_id === identity,
+		);
+		return sessionMatches.find((agent) => !agent.subagent_id) ?? sessionMatches[0];
+	}
+
 	/** Get all active agents */
 	getActiveAgents(): CohortAgent[] {
 		return [...this.agents.values()].filter((a) => a.status === "active");
@@ -197,12 +220,13 @@ export class CohortManager {
 	 *    may never see it. Reading `last_event_at` at CALL time makes the count
 	 *    correct without depending on a background timer having run.
 	 *
-	 * 2. **Double registration.** Agents are keyed by NAME, computed as
+	 * 2. **Double registration.** Root agents are keyed by NAME, computed as
 	 *    `agent_name || "<source>-<sid8>"`. One session whose events sometimes
 	 *    carry `agent_name` and sometimes do not registers under BOTH keys and
 	 *    counts twice. Collapsing by `session_id` (falling back to the name when
 	 *    a session id is absent) counts a session once however it identified
-	 *    itself.
+	 *    itself. Spawned agents are intentionally distinct even when Codex keeps
+	 *    the parent's session id; their stable `subagent_id` names the actor.
 	 *
 	 * Deliberately NOT mutating status here: this is a read path consulted on
 	 * every gated tool call, and a predicate that silently rewrites cohort state
@@ -214,21 +238,38 @@ export class CohortManager {
 		for (const agent of this.agents.values()) {
 			if (agent.status !== "active") continue;
 			if (new Date(agent.last_event_at).getTime() < cutoff) continue;
-			live.add(agent.session_id || agent.name);
+			live.add(
+				agent.subagent_id
+					? `${agent.session_id}\0${agent.subagent_id}`
+					: agent.session_id || agent.name,
+			);
 		}
 		return live.size;
 	}
 
 	/** Find agent by session ID or agent name from event */
 	private findByEvent(event: HarnessEvent): CohortAgent | undefined {
+		const subagentId = eventSubagentId(event);
+		if (subagentId) {
+			const bySubagent = this.findBySubagentId(subagentId);
+			if (bySubagent) return bySubagent;
+		}
 		// Try by agent name first
 		if (event.agent_name) {
 			const byName = this.agents.get(event.agent_name);
 			if (byName) return byName;
 		}
-		// Fall back to session ID match
+		// Fall back to the root actor for the session. Codex children share this
+		// session id, so an arbitrary first match can mutate a sibling instead.
+		const sessionMatches = [...this.agents.values()].filter(
+			(agent) => agent.session_id === event.session_id,
+		);
+		return sessionMatches.find((agent) => !agent.subagent_id) ?? sessionMatches[0];
+	}
+
+	private findBySubagentId(subagentId: string): CohortAgent | undefined {
 		for (const agent of this.agents.values()) {
-			if (agent.session_id === event.session_id) return agent;
+			if (agent.subagent_id === subagentId) return agent;
 		}
 		return undefined;
 	}
@@ -265,7 +306,12 @@ export function getActiveCohort(): CohortManager | null {
  * SubagentStart must not turn ordinary delegation into a block).
  */
 export function isLineage(cohort: CohortManager, a: string, b: string): boolean {
-	const agentA = cohort.getAgent(a);
-	const agentB = cohort.getAgent(b);
-	return agentA?.parent_agent === b || agentB?.parent_agent === a;
+	const agentA = cohort.findAgentByIdentity(a);
+	const agentB = cohort.findAgentByIdentity(b);
+	if (!agentA || !agentB) return false;
+	const identifies = (identity: string | undefined, agent: CohortAgent): boolean =>
+		identity === agent.name ||
+		identity === agent.session_id ||
+		(identity !== undefined && identity === agent.subagent_id);
+	return identifies(agentA.parent_agent, agentB) || identifies(agentB.parent_agent, agentA);
 }
