@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -78,5 +78,51 @@ describe("captureGitBaseline (real git repo)", () => {
 		const b = captureGitBaseline(repo);
 		expect(b.staged.has("staged.ts")).toBe(true);
 		expect(b.untracked.has("staged.ts")).toBe(false);
+	});
+});
+
+describe("captureGitBaseline (linked worktree isolation)", () => {
+	let root: string;
+	let main: string;
+	let linked: string;
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "ilk-gitbase-worktree-"));
+		main = join(root, "main");
+		linked = join(root, "linked");
+		mkdirSync(main);
+		const runMain = (args: string[]) =>
+			execFileSync("git", args, { cwd: main, stdio: ["pipe", "pipe", "pipe"] });
+		runMain(["init", "-q"]);
+		runMain(["config", "user.email", "test@example.com"]);
+		runMain(["config", "user.name", "Test"]);
+		writeFileSync(join(main, "committed.ts"), "export const value = 1;\n");
+		runMain(["add", "committed.ts"]);
+		runMain(["commit", "-q", "-m", "initial"]);
+		runMain(["worktree", "add", "-q", "-b", "linked-test", linked]);
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("reports only the linked checkout's HEAD and dirty files", () => {
+		writeFileSync(join(main, "committed.ts"), "export const value = 2;\n");
+		writeFileSync(join(main, "main-only.ts"), "export const mainOnly = true;\n");
+		writeFileSync(join(linked, "committed.ts"), "export const value = 3;\n");
+		writeFileSync(join(linked, "linked-only.ts"), "export const linkedOnly = true;\n");
+
+		const baseline = captureGitBaseline(linked);
+		const linkedHead = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: linked,
+			encoding: "utf8",
+		}).trim();
+
+		expect(baseline.head_sha).toBe(linkedHead);
+		expect([...baseline.modified]).toEqual(["committed.ts"]);
+		expect([...baseline.untracked]).toEqual(["linked-only.ts"]);
+		expect(baseline.staged.size).toBe(0);
+		expect(baseline.modified.has("main-only.ts")).toBe(false);
+		expect(baseline.untracked.has("main-only.ts")).toBe(false);
 	});
 });
