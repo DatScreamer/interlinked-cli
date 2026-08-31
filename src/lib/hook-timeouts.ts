@@ -16,6 +16,8 @@
 // quality pass. Events not listed keep the client default.
 
 export const HOOK_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
+	// Observation-only Codex lifecycle telemetry must never make Ctrl-C wait.
+	Interrupt: 3,
 	PreToolUse: 240,
 	PostToolUse: 120,
 };

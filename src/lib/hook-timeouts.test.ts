@@ -18,7 +18,15 @@ describe("hook timeout policy", () => {
 		expect(hookTimeoutSecondsFor("Stop")).toBeUndefined();
 	});
 
-	it("exposes exactly the two governed events", () => {
-		expect(Object.keys(HOOK_TIMEOUT_SECONDS).sort()).toEqual(["PostToolUse", "PreToolUse"]);
+	it("caps observational Interrupt handling at three seconds", () => {
+		expect(hookTimeoutSecondsFor("Interrupt")).toBe(3);
+	});
+
+	it("exposes exactly the three governed events", () => {
+		expect(Object.keys(HOOK_TIMEOUT_SECONDS).sort()).toEqual([
+			"Interrupt",
+			"PostToolUse",
+			"PreToolUse",
+		]);
 	});
 });
