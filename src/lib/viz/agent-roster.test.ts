@@ -22,6 +22,8 @@ describe("runnerOf", () => {
 		expect(runnerOf("session-claude-5a6ba76e")).toBe("claude");
 		expect(runnerOf("session-codex-abc")).toBe("codex");
 		expect(runnerOf("session-gemini-abc")).toBe("gemini");
+		expect(runnerOf("session-opencode-abc")).toBe("opencode");
+		expect(runnerOf("session-pi-abc")).toBe("pi");
 	});
 
 	it("falls back to unknown for an unrecognized name", () => {
@@ -105,6 +107,22 @@ describe("AgentRoster", () => {
 		expect(roster.get("session-claude-5a6ba76e")?.subagents).toEqual(["s1"]);
 		const child = roster.get("session-claude-5a6ba76e/s1");
 		expect(child).toMatchObject({ isSubagent: true, parent: "session-claude-5a6ba76e" });
+	});
+
+	it("links an explicitly named parent thread through the root lane's session", () => {
+		const roster = new AgentRoster();
+		roster.apply(ev({ agent: "root-agent", session: "root-thread" }));
+		const child = roster.apply(
+			ev({
+				agent: "child-task",
+				session: "root-thread",
+				subagent_id: "child-thread",
+				parent_agent: "root-thread",
+			}),
+		);
+
+		expect(child.parent).toBe("root-agent");
+		expect(roster.get("root-agent")?.subagents).toEqual(["child-thread"]);
 	});
 
 	it("tracks recent files newest-first without duplicates", () => {

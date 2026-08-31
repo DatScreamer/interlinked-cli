@@ -18,7 +18,7 @@ export interface AgentPresence {
 	id: string;
 	/** Display name, short enough for a lane header. */
 	label: string;
-	/** Runner family parsed from the agent name: claude / codex / copilot / gemini / unknown. */
+	/** Runner family parsed from the agent name (for example claude, codex, opencode, or pi). */
 	runner: string;
 	/** Hue (0–359) derived from `id` — the actor's colour everywhere in the UI. */
 	hue: number;
@@ -51,7 +51,7 @@ const FILES_KEPT = 6;
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
 
 /** Runner families recognized in an agent name (`session-<runner>-<id8>`). */
-const RUNNERS = ["claude", "codex", "copilot", "gemini", "cursor", "aider"];
+const RUNNERS = ["claude", "codex", "copilot", "gemini", "cursor", "opencode", "pi", "aider"];
 
 /**
  * Stable hue for an actor id: the same FNV-1a → hue mapping the graph uses for
@@ -103,7 +103,7 @@ function freshPresence(ev: VizEvent, id: string): AgentPresence {
 		files: [],
 		subagents: [],
 	};
-	if (ev.subagent_id) presence.parent = agent;
+	if (ev.subagent_id) presence.parent = ev.parent_agent ?? agent;
 	return presence;
 }
 
@@ -148,15 +148,21 @@ export class AgentRoster {
 			rememberFile(presence, ev.file);
 		}
 		countOutcome(presence, ev);
-		this.linkSubagent(ev);
+		this.linkSubagent(ev, presence);
 		return presence;
 	}
 
 	/** Record a spawned subagent on its parent's lane, if the parent is known. */
-	private linkSubagent(ev: VizEvent): void {
-		if (!ev.subagent_id || !ev.agent) return;
-		const parent = this.actors.get(ev.agent);
-		if (parent && !parent.subagents.includes(ev.subagent_id)) parent.subagents.push(ev.subagent_id);
+	private linkSubagent(ev: VizEvent, child: AgentPresence): void {
+		if (!ev.subagent_id) return;
+		const identity = ev.parent_agent ?? ev.agent;
+		if (!identity) return;
+		const parent = this.actors.get(identity) ?? [...this.actors.values()].find(
+			(actor) => !actor.isSubagent && actor.session === identity,
+		);
+		if (!parent) return;
+		child.parent = parent.id;
+		if (!parent.subagents.includes(ev.subagent_id)) parent.subagents.push(ev.subagent_id);
 	}
 
 	/** Every known actor, most recently active first. */
