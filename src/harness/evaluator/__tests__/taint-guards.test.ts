@@ -472,18 +472,36 @@ describe("checkProvenanceTaintToExternalAction", () => {
 		expect(result?.decision).toBe("ask");
 	});
 
-	it.each(["web_fetch", "WebSearch"])("recognizes %s as an external-action tool", (toolName) => {
+	it.each(["web_fetch", "WebSearch", "web_search"])(
+		"recognizes %s as an external-action tool",
+		(toolName) => {
+			const session = makeSession({
+				taint_sources: [
+					{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
+				] as TaintSource[],
+			});
+			const result = checkProvenanceTaintToExternalAction(
+				toolName,
+				{ url: "https://x/data.json" },
+				session,
+			);
+			expect(result?.decision).toBe("ask");
+		},
+	);
+
+	it("does not classify an MCP read tool whose resource name contains an external verb", () => {
 		const session = makeSession({
 			taint_sources: [
 				{ file: "data.json", level: "Public", at_step: 1, provenance: "mcp_remote" },
 			] as TaintSource[],
 		});
-		const result = checkProvenanceTaintToExternalAction(
-			toolName,
-			{ url: "https://x/data.json" },
-			session,
-		);
-		expect(result?.decision).toBe("ask");
+		expect(
+			checkProvenanceTaintToExternalAction(
+				"mcp__github__get_post",
+				{ path: "data.json" },
+				session,
+			),
+		).toBeNull();
 	});
 
 	it("does not classify a non-MCP tool with an MCP-like suffix as external", () => {

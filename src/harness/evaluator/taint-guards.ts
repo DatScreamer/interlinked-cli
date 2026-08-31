@@ -35,7 +35,12 @@ import type {
 	TaintProvenance,
 	TaintTrackingConfig,
 } from "../types.js";
-import { isBash, isFileWrite, isReadOperation } from "./tool-classifiers.js";
+import {
+	classifyToolExternality,
+	isBash,
+	isFileWrite,
+	isReadOperation,
+} from "./tool-classifiers.js";
 
 /** Read-only tools that stay allowed once the step budget is exhausted. */
 const READ_ONLY_TOOLS_ON_BUDGET = new Set(["Read", "Glob", "Grep", "Ls", "WebSearch"]);
@@ -62,60 +67,6 @@ const UNTRUSTED_PROVENANCE: ReadonlySet<TaintProvenance> = new Set<TaintProvenan
 	"fetched_external",
 	"mcp_remote",
 ]);
-
-/**
- * External-action tool detection — stubbed allowlist gating which tool
- * invocations are sensitive enough to require confirmation when their
- * input may carry untrusted-provenance data. Three signals match:
- *   1. Explicit network-fetch tools (WebFetch, WebSearch).
- *   2. Bash commands containing destructive-external verbs
- *      (curl/wget/scp/rsync/ssh/mail/git push/npm publish/gh pr create/
- *      docker push/kubectl apply/terraform apply).
- *   3. MCP tool names with mutating-verb segments (send / publish /
- *      deploy / push / email / create_pull_request / post).
- *
- * TODO(item-4-coordination): Item #4 ships a proper
- * `classifyToolExternality(toolName, toolInput)` taxonomy. When that
- * lands, the merger should replace this stub with
- * `classifyToolExternality(toolName, toolInput) === "external_action"`
- * and delete this helper.
- */
-const BASH_EXTERNAL_VERBS = [
-	"curl",
-	"wget",
-	"scp",
-	"rsync",
-	"ssh",
-	"mail",
-	"git push",
-	"npm publish",
-	"gh pr create",
-	"docker push",
-	"kubectl apply",
-	"terraform apply",
-];
-
-/** Compile once — case-sensitive, word-boundary where appropriate. The
- *  multi-token entries (`git push`, `npm publish`) check literal substrings
- *  rather than word boundaries because the second token would not match a
- *  `\b` after the space on some regex flavors. */
-const MCP_EXTERNAL_ACTION_RE =
-	/^mcp__.*(send|publish|deploy|push|email|create_pull_request|post)/i;
-
-function isExternalActionTool(toolName: string, toolInput: JsonObject): boolean {
-	if (toolName === "WebFetch" || toolName === "web_fetch" || toolName === "WebSearch") {
-		return true;
-	}
-	if (MCP_EXTERNAL_ACTION_RE.test(toolName)) return true;
-	if (isBash(toolName)) {
-		const cmd = (toolInput.command as string) || "";
-		if (!cmd) return false;
-		for (const verb of BASH_EXTERNAL_VERBS) {
-			if (cmd.includes(verb)) return true;
-		}
-	}
-	return false;
-}
 
 /**
  * Flatten the tool_input into a single searchable string — every value in
@@ -170,7 +121,7 @@ export function checkProvenanceTaintToExternalAction(
 	toolInput: JsonObject,
 	session: SessionTrajectory,
 ): HarnessDecision | null {
-	if (!isExternalActionTool(toolName, toolInput)) return null;
+	if (classifyToolExternality(toolName, toolInput) !== "external_action") return null;
 	if (!session.taint_sources || session.taint_sources.length === 0) return null;
 
 	const haystack = flattenToolInputToString(toolInput);
