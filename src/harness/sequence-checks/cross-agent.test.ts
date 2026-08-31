@@ -54,6 +54,16 @@ function writeActivityLog(dir: string, events: ReadonlyArray<ActivityRow>): void
 	writeFileSync(join(sub, "activity.jsonl"), `${lines.join("\n")}\n`, "utf-8");
 }
 
+function writeV5ActivityLog(dir: string, events: ReadonlyArray<Record<string, unknown>>): void {
+	const sub = join(dir, ".interlinked");
+	mkdirSync(sub, { recursive: true });
+	writeFileSync(
+		join(sub, "activity.jsonl"),
+		`${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+		"utf-8",
+	);
+}
+
 /** Minutes from now, formatted as ISO. Negative values are in the past. */
 function isoMinutesFromNow(minutes: number): string {
 	return new Date(Date.now() + minutes * 60 * 1000).toISOString();
@@ -98,6 +108,35 @@ describe("stale_read_then_write", () => {
 		const matches = staleReadThenWrite.fn(session, candidate);
 		expect(matches.length).toBe(1);
 		expect(matches[0]?.message).toMatch(/stale|rival|since this session/i);
+	});
+
+	it("fires from a real v5 activity row after wire-field normalization", () => {
+		const filePath = "src/v5-live.ts";
+		const { session } = buildTrajectoryFixture(
+			[{ tool_name: "Read", tool_input: { file_path: filePath }, cwd: dir }],
+			{ started_at: "2026-05-27T00:00:00.000Z", agent_name: "me" },
+		);
+		writeV5ActivityLog(dir, [
+			{
+				schema_version: 5,
+				ts: "2026-05-27T00:05:00.000Z",
+				agent: "rival",
+				type: "tool_use_start",
+				tool: "Edit",
+				tool_input: { file_path: filePath },
+				session: "other-session",
+			},
+		]);
+		const candidate = makeCandidate({
+			tool_name: "Edit",
+			tool_input: { file_path: filePath },
+			cwd: dir,
+			agent_name: "me",
+		});
+
+		expect(staleReadThenWrite.fn(session, candidate)).toMatchObject([
+			{ prior_summary: expect.stringContaining(`rival wrote ${filePath}`) },
+		]);
 	});
 
 	it("fires for Write candidate even when prior other-agent write was MultiEdit", () => {
