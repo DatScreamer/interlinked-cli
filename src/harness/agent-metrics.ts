@@ -2,12 +2,12 @@
 // Per-subagent transcript metrics
 // ===========================================
 // A spawned agent's own transcript carries the ONLY record of what that agent
-// cost and did: per-assistant-turn `message.usage` (input / output / cache
-// read / cache creation tokens), the model it actually ran on (often NOT the
-// parent's model), and every tool call it made. None of it reaches the parent:
-// Claude Code's SubagentStop payload carries no `usage` field (measured
-// 2026-08-07 — 0/1507 stop events had one), so before this module the entire
-// cost and shape of a subagent's run was discarded at capture time.
+// cost and did: per-turn token usage, the model it actually ran on (often NOT
+// the parent's model), and every tool call it made. Claude records those facts
+// in assistant `message.usage` / content blocks; Codex records them in
+// `event_msg` token_count, `turn_context`, and `response_item` rows. None of it
+// reaches the parent hook payload, so before this module the entire cost and
+// shape of a subagent's run was discarded at capture time.
 //
 // `summarizeAgentTranscript` is a pure function over transcript JSONL text so
 // it can be unit-tested without a daemon or a filesystem. It is called once,
@@ -53,12 +53,22 @@ export function emptyAgentMetrics(): AgentTranscriptMetrics {
 	};
 }
 
-function addUsage(totals: AgentTokenTotals, usage: JsonObject): void {
-	const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-	totals.input += n(usage.input_tokens);
-	totals.output += n(usage.output_tokens);
-	totals.cache_read += n(usage.cache_read_input_tokens);
-	totals.cache_creation += n(usage.cache_creation_input_tokens);
+function finiteMetric(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function addClaudeUsage(totals: AgentTokenTotals, usage: JsonObject): void {
+	totals.input += finiteMetric(usage.input_tokens);
+	totals.output += finiteMetric(usage.output_tokens);
+	totals.cache_read += finiteMetric(usage.cache_read_input_tokens);
+	totals.cache_creation += finiteMetric(usage.cache_creation_input_tokens);
+}
+
+function addCodexUsage(totals: AgentTokenTotals, usage: JsonObject): void {
+	totals.input += finiteMetric(usage.input_tokens);
+	totals.output += finiteMetric(usage.output_tokens);
+	totals.cache_read += finiteMetric(usage.cached_input_tokens);
+	totals.cache_creation += finiteMetric(usage.cache_write_input_tokens);
 }
 
 /** Fold one `tool_use` block: per-tool count plus the capped id list. */
@@ -88,7 +98,7 @@ function foldAssistantEntry(message: JsonObject, m: AgentTranscriptMetrics): voi
 	const usage = message.usage;
 	if (isJsonObject(usage)) {
 		m.assistant_turns += 1;
-		addUsage(m.tokens, usage);
+		addClaudeUsage(m.tokens, usage);
 	}
 	const model = message.model;
 	if (typeof model === "string" && model && !m.models.includes(model)) m.models.push(model);
@@ -98,6 +108,50 @@ function foldAssistantEntry(message: JsonObject, m: AgentTranscriptMetrics): voi
 		// transcript content is untyped JSON; foldContentBlock guards every field it reads.
 		if (isJsonObject(raw)) foldContentBlock(raw, m);
 	}
+}
+
+/** Codex emits one incremental `last_token_usage` object per completed model
+ * request. `total_token_usage` is cumulative across the rollout and must never
+ * be summed here. Reasoning output is already included in `output_tokens`. */
+function foldCodexTokenCount(payload: JsonObject, m: AgentTranscriptMetrics): void {
+	if (payload.type !== "token_count") return;
+	const info = payload.info;
+	if (!isJsonObject(info)) return;
+	const usage = info.last_token_usage;
+	if (!isJsonObject(usage)) return;
+	m.assistant_turns += 1;
+	addCodexUsage(m.tokens, usage);
+}
+
+/** Codex tool calls live as response items rather than assistant content
+ * blocks. `call_id` is the result-join key; provider `id` is a safe fallback
+ * for incomplete or older rollout rows. */
+function foldCodexToolCall(payload: JsonObject, m: AgentTranscriptMetrics): void {
+	if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return;
+	const id =
+		typeof payload.call_id === "string" && payload.call_id
+			? payload.call_id
+			: typeof payload.id === "string"
+				? payload.id
+				: "";
+	foldToolUse({ name: payload.name, id }, m);
+}
+
+/** Fold the provider-specific facts carried by a Codex rollout row. Every
+ * nested object is shape-gated so partial rows remain harmless. */
+function foldCodexEntry(entry: JsonObject, m: AgentTranscriptMetrics): void {
+	const payload = entry.payload;
+	if (!isJsonObject(payload)) return;
+	if (entry.type === "event_msg") foldCodexTokenCount(payload, m);
+	if (
+		(entry.type === "turn_context" || payload.type === "turn_context") &&
+		typeof payload.model === "string" &&
+		payload.model &&
+		!m.models.includes(payload.model)
+	) {
+		m.models.push(payload.model);
+	}
+	if (entry.type === "response_item") foldCodexToolCall(payload, m);
 }
 
 /** Track the transcript's time span; entries are chronological but a tail read
@@ -144,6 +198,7 @@ export function summarizeAgentTranscript(jsonlText: string): AgentTranscriptMetr
 		if (entry.type === "assistant" && isJsonObject(message)) {
 			foldAssistantEntry(message, m);
 		}
+		foldCodexEntry(entry, m);
 	}
 	m.duration_ms = spanMs(m.first_ts, m.last_ts);
 	return m;
