@@ -127,6 +127,7 @@ import {
 	formatDeadOnArrivalWarning,
 } from "../dead-on-arrival.js";
 import { detectFixtureLeaks, formatFixtureLeakWarning } from "../fixture-leak.js";
+import { ALL_TESTS_SENTINEL } from "../server-tdd-cycle.js";
 import { detectSlowTests, formatSlowTestsWarning } from "../slow-test-stop-check.js";
 import type { HarnessEvent, SessionTrajectory } from "../types.js";
 import {
@@ -389,6 +390,34 @@ describe("buildCommitCadenceNudge", () => {
 		expect(arg).toBeDefined();
 		expect(Object.hasOwn(arg as object, "cumulativeTokens")).toBe(false);
 		expect(logLines[0]).toContain("tokens=n/a");
+	});
+
+	it("passes the provider so the token reader rejects Codex before filesystem I/O", () => {
+		const ctx = makeCtx({
+			rules: {
+				commit_cadence: {
+					enabled: true,
+					stop_threshold: 0,
+					token_band_low: 1,
+					token_band_high: 2,
+				},
+			},
+		});
+		mFormatStopNudge.mockReturnValue("N");
+
+		buildCommitCadenceNudge(
+			ctx,
+			makeEvent({ agent_source: "codex", transcript_path: "/huge/codex-rollout.jsonl" }),
+			makeSession(),
+		);
+
+		expect(mReadSessionTokens).toHaveBeenCalledWith(
+			"/huge/codex-rollout.jsonl",
+			"codex",
+		);
+		expect(mFormatStopNudge).toHaveBeenCalledWith(
+			expect.not.objectContaining({ cumulativeTokens: expect.anything() }),
+		);
 	});
 
 	it("treats a tokens object without a total as undefined cumulativeTokens", () => {
@@ -716,6 +745,46 @@ describe("buildVerificationStopWarnings", () => {
 		expect(logLines.some((l) => l.includes("tdd-regression"))).toBe(false);
 	});
 
+	it("does not report suite-sourced fan-out as per-file regressions", () => {
+		const ctx = makeCtx({ rules: vscRules() });
+		const tdd = new Map<string, unknown>([
+			[
+				"a",
+				{
+					state: "regression",
+					source_file: "/a.ts",
+					test_file: "/a.test.ts",
+					red_at: 10,
+				},
+			],
+			[
+				"b",
+				{
+					state: "regression",
+					source_file: "/b.ts",
+					test_file: "/b.test.ts",
+					red_at: 11,
+				},
+			],
+		]);
+		const testRuns = new Map([
+			[ALL_TESTS_SENTINEL, { status: "fail" as const, at_step: 10 }],
+			["/b.test.ts", { status: "fail" as const, at_step: 11 }],
+		]);
+		mFormatTddRegressionWarning.mockReturnValue("TDD-REGRESSION");
+
+		buildVerificationStopWarnings(
+			ctx,
+			makeEvent(),
+			makeSession({ tdd_cycles: tdd, test_runs: testRuns }),
+		);
+
+		expect(mFormatTddRegressionWarning).toHaveBeenCalledWith({
+			regressions: [{ sourceFile: "/b.ts" }],
+		});
+		expect(logLines.some((l) => l.includes("tdd-regression (1)"))).toBe(true);
+	});
+
 	it("includes the bisect-not-reset warning when its formatter fires (+logs)", () => {
 		const ctx = makeCtx({ rules: vscRules() });
 		const session = makeSession({ commands_run: ["git bisect start"] });
@@ -880,6 +949,43 @@ describe("buildVerificationStopWarnings", () => {
 			redChecks: [],
 			redTests: [{ sourceFile: "/a.ts" }],
 		});
+	});
+
+	it("collapses suite-sourced stayed-red fan-out into one aggregate suite failure", () => {
+		const ctx = makeCtx({ rules: vscRules({ warn_unresolved_red: true }) });
+		const tdd = new Map<string, unknown>([
+			[
+				"a",
+				{
+					state: "red",
+					source_file: "/a.ts",
+					test_file: "/a.test.ts",
+					red_at: 974,
+				},
+			],
+		]);
+		const testRuns = new Map([
+			[ALL_TESTS_SENTINEL, { status: "fail" as const, at_step: 974 }],
+		]);
+		mFormatUnresolvedRedWarning.mockReturnValue("UNRESOLVED-RED");
+
+		buildVerificationStopWarnings(
+			ctx,
+			makeEvent(),
+			makeSession({
+				tdd_cycles: tdd,
+				test_runs: testRuns,
+				observed_checks: undefined,
+			}),
+		);
+
+		expect(mFormatUnresolvedRedWarning).toHaveBeenCalledWith({
+			redChecks: [{ kind: "test-suite" }],
+			redTests: [],
+		});
+		expect(
+			logLines.some((line) => line.includes("unresolved-red (1 checks, 0 tests)")),
+		).toBe(true);
 	});
 
 	it("defaults a missing red_at to 0 when comparing against green_at (?? fallback)", () => {

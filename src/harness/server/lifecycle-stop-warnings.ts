@@ -15,12 +15,14 @@ import {
 	NUDGE_MARKER,
 	shouldNudge,
 } from "../baseline-staleness.js";
+import { isSuiteSourcedRed } from "../behavioral-checks-tdd-red-evidence.js";
 import {
 	collectWipCommitSubjects,
 	formatStopNudge,
 	formatWipCommitsNudge,
 	readSessionTokens,
 } from "../commit-cadence.js";
+import { ALL_TESTS_SENTINEL } from "../server-tdd-cycle.js";
 import { checkDeadOnArrival } from "../dead-on-arrival.js";
 import { formatDebtEvasionStopLine } from "../debt-evasion.js";
 import { checkFixtureLeaks } from "../fixture-leak.js";
@@ -119,7 +121,7 @@ export function buildCommitCadenceNudge(
 	if (!cadenceCfg?.enabled || !session || session.stop_nudge_emitted) return null;
 	const nonDocCount = session.non_doc_files_edited_since_commit?.size ?? 0;
 	const docCount = session.doc_files_edited_since_commit ?? 0;
-	const tokens = readSessionTokens(event.transcript_path);
+	const tokens = readSessionTokens(event.transcript_path, event.agent_source);
 	const cumulativeTokens = tokens?.total;
 	const nudge = formatStopNudge({
 		uncommittedNonDocCount: nonDocCount,
@@ -307,7 +309,10 @@ function checkStubsIntroduced(ctx: ServerRuntime, session: SessionTrajectory): s
 function checkTddRegression(ctx: ServerRuntime, session: SessionTrajectory): string | null {
 	const tddRegressions: Array<{ sourceFile: string }> = [];
 	for (const cycle of session.tdd_cycles.values()) {
-		if (cycle.state === TDD_CYCLE_REGRESSION) {
+		if (
+			cycle.state === TDD_CYCLE_REGRESSION &&
+			!isSuiteSourcedRed(session, cycle)
+		) {
 			tddRegressions.push({ sourceFile: cycle.source_file });
 		}
 	}
@@ -335,17 +340,38 @@ function isStayedRedCycle(cycle: {
  *  `observed_checks` (non-test tsc/build/lint); redTests are stayed-red TDD
  *  cycles (the green→red regression case is excluded — `checkTddRegression`
  *  covers it). Reflection only; never blocks. */
-function checkUnresolvedRed(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+function collectRedChecks(
+	session: SessionTrajectory,
+): Array<{ kind: string; detail?: string | undefined }> {
 	const redChecks: Array<{ kind: string; detail?: string | undefined }> = [];
 	for (const observed of (session.observed_checks ?? new Map()).values()) {
 		if (observed.status === OBSERVED_CHECK_RED) {
 			redChecks.push({ kind: observed.kind, detail: observed.detail });
 		}
 	}
+	const suiteRun = session.test_runs?.get(ALL_TESTS_SENTINEL);
+	if (
+		suiteRun?.status === "fail" &&
+		!redChecks.some((check) => check.kind === "test-suite")
+	) {
+		redChecks.push({ kind: "test-suite" });
+	}
+	return redChecks;
+}
+
+function collectStayedRedTests(session: SessionTrajectory): Array<{ sourceFile: string }> {
 	const redTests: Array<{ sourceFile: string }> = [];
 	for (const cycle of session.tdd_cycles.values()) {
-		if (isStayedRedCycle(cycle)) redTests.push({ sourceFile: cycle.source_file });
+		if (isStayedRedCycle(cycle) && !isSuiteSourcedRed(session, cycle)) {
+			redTests.push({ sourceFile: cycle.source_file });
+		}
 	}
+	return redTests;
+}
+
+function checkUnresolvedRed(ctx: ServerRuntime, session: SessionTrajectory): string | null {
+	const redChecks = collectRedChecks(session);
+	const redTests = collectStayedRedTests(session);
 	const warning = formatUnresolvedRedWarning({ redChecks, redTests });
 	if (warning === null) return null;
 	ctx.log(
