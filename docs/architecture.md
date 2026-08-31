@@ -54,6 +54,9 @@ The local-first, hook-driven architecture draws inspiration from [Entire CLI](ht
 | `explain` | Narrative timeline of agent actions from activity log | Optional | Observability |
 | `sync` | Manual batch sync of buffered events to server | Yes | Sync |
 | `doctor` | Diagnose config, hooks, auth, and server issues | Optional | Maintenance |
+| `simplify scan|review|audit|status` | Collect, optionally record, and inspect advisory simplification evidence | No | Quality |
+| `debt markers` | Scan or explicitly snapshot source-owned design-debt ceilings and triggers | No | Quality |
+| `impact` | Render evidence-classed simplification, lifecycle, worktree, and experiment facts | No | Observability |
 | `clean` | Remove stale sessions, truncate large logs | No | Maintenance |
 | `reset` | Nuclear: remove all Interlinked CLI config and hooks | No | Maintenance |
 | `workspace` | List/switch workspaces on the remote server | Yes | Workspace |

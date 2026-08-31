@@ -1,0 +1,45 @@
+{
+  "schema_version": "simplification-adversarial/v1",
+  "fixture_id": "native-platform-version",
+  "remedy": "native",
+  "trap_kind": "platform-semantic-mismatch",
+  "repository_files": [
+    {
+      "path": ".nvmrc",
+      "language": "text",
+      "content": "20.11.1"
+    },
+    {
+      "path": "src/watcher.ts",
+      "language": "typescript",
+      "content": "export const watchTree = portableWatcher({ recursive: true, debounceMs: 25 });"
+    },
+    {
+      "path": "test/watcher.test.ts",
+      "language": "typescript",
+      "content": "it('coalesces rename storms on Linux', async () => { /* platform contract */ });"
+    }
+  ],
+  "candidate": {
+    "summary": "Replace the wrapper with the native recursive watcher",
+    "replacement": "Use fs.watch(root, { recursive: true })",
+    "claimed_evidence": [
+      "native-api-exists"
+    ]
+  },
+  "protected_boundaries": [
+    "compatibility"
+  ],
+  "required_read_paths": [
+    ".nvmrc",
+    "src/watcher.ts",
+    "test/watcher.test.ts"
+  ],
+  "expected": {
+    "disposition": "unconfirmed",
+    "patch_eligible": false,
+    "reason_codes": [
+      "platform-and-version-semantics-not-proven"
+    ]
+  }
+}

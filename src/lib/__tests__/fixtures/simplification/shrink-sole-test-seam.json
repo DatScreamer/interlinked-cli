@@ -1,0 +1,39 @@
+{
+  "schema_version": "simplification-adversarial/v1",
+  "fixture_id": "shrink-sole-test-seam",
+  "remedy": "shrink",
+  "trap_kind": "sole-test-seam",
+  "repository_files": [
+    {
+      "path": "src/clock.ts",
+      "language": "typescript",
+      "content": "export interface Clock { now(): number }\nexport const systemClock: Clock = { now: () => Date.now() };"
+    },
+    {
+      "path": "test/expiry.test.ts",
+      "language": "typescript",
+      "content": "it('expires exactly at the boundary', () => expect(expired(fakeClock)).toBe(true));"
+    }
+  ],
+  "candidate": {
+    "summary": "Inline Date.now because Clock has one production implementation",
+    "replacement": "Call Date.now directly",
+    "claimed_evidence": [
+      "one-production-implementation"
+    ]
+  },
+  "protected_boundaries": [
+    "sole-nontrivial-test"
+  ],
+  "required_read_paths": [
+    "src/clock.ts",
+    "test/expiry.test.ts"
+  ],
+  "expected": {
+    "disposition": "human_review",
+    "patch_eligible": false,
+    "reason_codes": [
+      "interface-is-the-only-deterministic-test-seam"
+    ]
+  }
+}

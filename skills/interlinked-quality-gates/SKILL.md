@@ -1,6 +1,6 @@
 ---
 name: interlinked-quality-gates
-description: "Configure and respond to Interlinked's metric ratchets: line-count, cyclomatic complexity, coverage, CRAP, baseline integrity, the report-based mutation-score ratchet, and the live per-edit mutation survivor gate. Load this for a quality-gate block; `caps`, `coverage`, `mutation`, `debt`, `metrics`, or `adopt`; a lowered-baseline refusal; choosing mutation cadence/scope/strictness; configuring `mutation_gate` or `per_edit_mutation`; connecting/sharding a mutation runner; or interpreting `[interlinked:mutation]` and `[mutation:not-measured]`. Water-lines only tighten: meet the bar rather than lowering the baseline."
+description: "Configure and respond to Interlinked's metric ratchets: line-count, cyclomatic complexity, coverage, CRAP, baseline integrity, the report-based mutation-score ratchet, and the live per-edit mutation survivor gate. Load this for a quality-gate block; `caps`, `coverage`, `mutation`, automatic debt obligations, manual `debt markers`, `metrics`, or `adopt`; a lowered-baseline refusal; choosing mutation cadence/scope/strictness; configuring `mutation_gate` or `per_edit_mutation`; connecting/sharding a mutation runner; or interpreting `[interlinked:mutation]` and `[mutation:not-measured]`. Water-lines only tighten: meet the bar rather than lowering the baseline."
 ---
 
 # interlinked-quality-gates — the metric ratchets
@@ -287,11 +287,65 @@ Pure disk-vs-proposed numeric diff, near-zero FP. Reset an intentional baseline 
 | `interlinked mutation sweep [--all-eligible] [--measured-before <iso>]` | Re-measure ranked debt or run a restartable full-source census; repeat `--runner-url` for worker lanes. |
 | `interlinked metrics [--top <n>] [--json]` | Read-only whole-repo scan: companion-test, coverage, cyclomatic, CRAP hotspots + gate verdicts. |
 | `interlinked debt list \| show <file> \| resolve <file>` | The obligation ledger — coverage / red-suite debts AND `transient` debts (the deferred tsc/registry findings a coordinated edit opens). All three verbs see every kind; `resolve` is the human override for a debt no future edit will clear. |
+| `interlinked debt markers [--root <path...>] [--exclude <path...>] [--record [--reason <text>]] [--json\|--short\|--full]` | Scan explicit design-debt receipts in source comments. The default is read-only; `--record` appends a local snapshot and lifecycle transitions. Neither mode consults or mutates the obligation ledger. |
 | `interlinked adopt [--dry-run] [--suite-baseline]` | Seed the supported adoption artifacts from the repo's current state (see below; mutation state is excluded). |
 
 `interlinked coverage`/`mutation` need a report on disk first (a coverage run / `stryker run`) —
 those runs are slow; don't trigger them incidentally. `interlinked metrics` reports complexity +
 companion presence even without a coverage report (coverage columns marked unavailable).
+
+## Automatic obligations vs manual debt markers
+
+The `debt` namespace has two deliberately separate records:
+
+- `debt list/show/resolve` reads the harness-created, pair-scoped obligation ledger. A coverage,
+  red-suite, or transient finding opens that debt automatically, and future work can clear it.
+- `debt markers` scans source comments that a human or agent explicitly wrote to document an
+  accepted shortcut and its upgrade boundary. A default scan is read-only and its report
+  confirms `read_only: true` and
+  `obligation_ledger: { consulted: false, mutated: false }`.
+
+A valid marker is a source-aware comment whose payload is one JSON object:
+
+```ts
+// interlinked-debt: {"id":"cache-bound","decision":"single-process cache","ceiling":"one process","trigger":"p95 > 50ms","owner":"platform","issue":"OPS-42","review_after":"2026-11-01","finding":"review-42"}
+```
+
+Use either `decision` or its `shortcut` alias, plus a non-empty `ceiling` and a measurable
+`trigger` containing a comparison or threshold. `id`, `owner`, `issue`, `review`,
+`review_after`, and `finding` are optional. An explicit `id` keeps marker identity stable across
+source moves and content changes; it must be unique. `review_after` is a real ISO calendar date,
+and `finding` links to an id in the local common findings corpus. Duplicate ids, stale reviews,
+missing linked findings, malformed JSON, missing/ambiguous fields, unknown fields, and prose-only
+triggers such as “when needed” are advisories, not blocking findings. Ambiguous duplicate-id
+markers are omitted from the valid-marker set until their ids are made unique.
+
+The scanner recognizes each supported language's actual line-comment syntax, ignores ordinary
+string literals plus JavaScript/TypeScript templates and Python triple-quoted strings, and
+excludes generated, vendor, docs, examples, fixtures, build output, and dependencies by default.
+An outside-project `--root` is skipped and counted; it is never traversed. A marker fingerprint
+survives unrelated line movement; the separate content fingerprint detects semantic changes. The
+report also carries repository root, HEAD, tree, exact scanned paths, and working-tree provenance.
+`--exclude` adds repo-relative exclusions and `--root` narrows coverage. Always report the
+coverage receipt with the marker count.
+
+Recording is explicit:
+
+```bash
+interlinked debt markers --record --reason "capacity review"
+```
+
+`--record` appends the source snapshot to
+`.interlinked/debt/manual-marker-snapshots.jsonl` and derives `opened`, `changed`, and `closed`
+transitions against the prior valid snapshot. Source remains authoritative: changing a marker's
+semantic payload changes it, and deleting its source comment closes it on the next explicit
+record when the selected coverage proves absence. Narrow or incomplete scans preserve unknown
+prior markers. The v2 fingerprint binds the previous receipt, timestamp, reason, raw scan,
+materialized state, and transitions; readers also independently derive the lifecycle and skip
+content-addressed but impossible rows. Recording never edits source, never applies a fix, and
+never reads or writes the automatic obligation ledger. `--reason` requires `--record`;
+`--record --json` keeps stdout as the canonical scan report rather than wrapping it in persistence
+metadata.
 
 ## Baselines & direction rules (`.interlinked/`)
 The integrity gate matches these eight files; direction is **per-file**:
@@ -460,6 +514,12 @@ means review, not delete. The buckets exist because the costly error is
 deleting planned or deliberate code — a candidate is a lead, a bucket is a
 policy.
 
+`interlinked simplify scan/review/audit` composes a bounded subset of these dead-code signals
+with other advisory simplification evidence. Its local dead-code adapter deliberately skips
+per-candidate Git archaeology for latency, so it does not replace `deadcode --categorize` before
+deletion or mutation evidence for behaviorally inert branches. Load
+**interlinked-simplification** for its evidence, coverage, recording, and deep-handoff contract.
+
 ## Quick reference
 ```bash
 interlinked caps                       # current caps + provenance
@@ -469,9 +529,12 @@ interlinked coverage check             # full-suite coverage ratchet
 interlinked mutation check --report reports/mutation/mutation.json
 interlinked mutation baseline          # inspect report-ratchet high-water scores
 interlinked mutation survivors --short # rank live-manifest survivor debt
+interlinked debt markers --full        # explicit source-comment debt + coverage
+interlinked debt markers --record --reason "reviewed" # append source snapshot + transitions
 ```
 
 ## Related skills
 - **interlinked-verify** — the content gate (pre_block/biome/tsc) and how to land edits.
 - **interlinked-harness** — the general guard, suppression grammar, cold fallback.
 - **interlinked-observability** — `interlinked metrics` and recurrence for finding hotspots.
+- **interlinked-simplification** — advisory delete/stdlib/native/YAGNI/shrink review and audit.

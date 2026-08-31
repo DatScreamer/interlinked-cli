@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { INTERLINKED_DIR, interlinkedPath } from "../../lib/interlinked-path.js";
 import { parseFinding } from "./parse-finding.js";
+import type { FindingExtensions } from "./simplification-extension.js";
 import {
 	computeCompleteness,
 	computeDedupKey,
@@ -84,6 +85,10 @@ export interface Finding {
 	first_seen: string;
 	last_seen: string;
 	distilled?: FindingDistilled | undefined;
+	/** Lens-specific evidence. The common corpus still owns identity, anchors,
+	 * status, and reconciliation; extensions must not create a parallel
+	 * lifecycle. Unknown sibling keys are preserved by the JSON parser. */
+	extensions?: FindingExtensions | undefined;
 	/** LG-6 content anchor (anchor-liveness.ts): sha256 of the trailing-ws-
 	 *  normalized context window around `line`, captured from the live tree at
 	 *  ingest. Absent on legacy/unanchored rows — consumers fail open. */
@@ -318,8 +323,17 @@ function mergeFindings(existing: Finding, incoming: Finding): Finding {
 		source_runners: [...new Set(provenance.map((p) => p.source_runner))].sort(),
 		first_seen,
 		last_seen,
+		...mergeExtensions(existing, incoming),
 		...carryAnchor(existing, incoming),
 	};
+}
+
+function mergeExtensions(
+	existing: Finding,
+	incoming: Finding,
+): Pick<Finding, "extensions"> | Record<never, never> {
+	if (!existing.extensions && !incoming.extensions) return {};
+	return { extensions: { ...existing.extensions, ...incoming.extensions } };
 }
 
 /** Idempotent upsert: fold `incoming` into an existing row with the same id

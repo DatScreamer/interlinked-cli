@@ -1,0 +1,39 @@
+{
+  "schema_version": "simplification-adversarial/v1",
+  "fixture_id": "delete-dynamic-export",
+  "remedy": "delete",
+  "trap_kind": "dynamic-or-public-surface",
+  "repository_files": [
+    {
+      "path": "package.json",
+      "language": "json",
+      "content": "{\"exports\":{\"./legacy\":\"./src/legacy.ts\"}}"
+    },
+    {
+      "path": "src/legacy.ts",
+      "language": "typescript",
+      "content": "export function legacyAdapter(value: string): string { return value; }"
+    }
+  ],
+  "candidate": {
+    "summary": "Delete the export because the static import graph has no callers",
+    "replacement": "Remove src/legacy.ts",
+    "claimed_evidence": [
+      "no-static-importers"
+    ]
+  },
+  "protected_boundaries": [
+    "compatibility"
+  ],
+  "required_read_paths": [
+    "package.json",
+    "src/legacy.ts"
+  ],
+  "expected": {
+    "disposition": "human_review",
+    "patch_eligible": false,
+    "reason_codes": [
+      "package-export-is-a-public-reachability-edge"
+    ]
+  }
+}

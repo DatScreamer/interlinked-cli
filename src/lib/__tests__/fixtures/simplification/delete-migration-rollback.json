@@ -1,0 +1,45 @@
+{
+  "schema_version": "simplification-adversarial/v1",
+  "fixture_id": "delete-migration-rollback",
+  "remedy": "delete",
+  "trap_kind": "migration-rollback",
+  "repository_files": [
+    {
+      "path": "migrations/041_add_state.down.sql",
+      "language": "sql",
+      "content": "ALTER TABLE jobs DROP COLUMN state;"
+    },
+    {
+      "path": "migrations/041_add_state.up.sql",
+      "language": "sql",
+      "content": "ALTER TABLE jobs ADD COLUMN state TEXT NOT NULL DEFAULT 'queued';"
+    },
+    {
+      "path": "src/schema.ts",
+      "language": "typescript",
+      "content": "export const currentSchemaVersion = 41;"
+    }
+  ],
+  "candidate": {
+    "summary": "Delete the down migration because production code never imports it",
+    "replacement": "Remove migrations/041_add_state.down.sql",
+    "claimed_evidence": [
+      "no-static-importers"
+    ]
+  },
+  "protected_boundaries": [
+    "migrations-and-rollback"
+  ],
+  "required_read_paths": [
+    "migrations/041_add_state.down.sql",
+    "migrations/041_add_state.up.sql",
+    "src/schema.ts"
+  ],
+  "expected": {
+    "disposition": "reject",
+    "patch_eligible": false,
+    "reason_codes": [
+      "rollback-artifact-is-operationally-reachable"
+    ]
+  }
+}

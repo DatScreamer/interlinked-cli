@@ -45,6 +45,7 @@ Commands:
   guard                                      File reservation enforcement via git hooks
   handoff [options] <from-agent> <to-agent>  Explicit agent-to-agent handoff with context transfer
   harness                                    Local harness server: guard evaluation, auto-reservations, agent lifecycle
+  impact [options]                           Report evidence-classed local impact facts without causal attribution
   inbox [options]                            Show recent messages from the server
   index                                      Manage the trigram search index for grep acceleration
   init [options]                             One-command onboarding: detect clients, configure, login, verify
@@ -69,6 +70,7 @@ Commands:
   scanner                                    PII filter (content scanner) — toggle, inspect, audit
   scratch                                    Manage the sanctioned session/agent-script home (<repo>/scratch/)
   search [options] <query>                   Search the local codebase (ripgrep with native fallback)
+  simplify                                   Simplification evidence, explicit recording, and Agent CI handoff preparation
   send [options] <to> [message]              Send a message to an agent
   setup [options]                            One-command setup: install hooks, configure server, authenticate
   skill                                      Skill marker management (scopes distilled rules via active_when)

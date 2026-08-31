@@ -200,6 +200,12 @@ scratch/*
 # only 2 of 252 checks had a recorded run; the adjudication verdicts inside it
 # are reviewed judgments and belong in PR diffs like any other policy record.
 !.interlinked/check-corpus.json
+# The findings corpus is the review system of record and may be shared with
+# the repository. Per-run receipts and reconciliation/local state beneath the
+# same directory remain ignored unless explicitly carved out later.
+!.interlinked/findings/
+.interlinked/findings/*
+!.interlinked/findings/corpus.jsonl
 # Mutation adjudication ledger (plan 18) — the durable record of WHY a survivor is
 # not a defect. Committed policy: the judgments inside it are reviewed decisions and
 # belong in PR diffs, and the manifest they annotate is gitignored local state that

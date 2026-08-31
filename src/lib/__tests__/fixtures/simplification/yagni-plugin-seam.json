@@ -1,0 +1,39 @@
+{
+  "schema_version": "simplification-adversarial/v1",
+  "fixture_id": "yagni-plugin-seam",
+  "remedy": "yagni",
+  "trap_kind": "extension-seam",
+  "repository_files": [
+    {
+      "path": "docs/plugins.md",
+      "language": "markdown",
+      "content": "Third-party plugins implement StorageDriver and register by name."
+    },
+    {
+      "path": "src/storage-driver.ts",
+      "language": "typescript",
+      "content": "export interface StorageDriver { get(key: string): Promise<string | null> }\nexport class LocalDriver implements StorageDriver { /* ... */ }"
+    }
+  ],
+  "candidate": {
+    "summary": "Delete the interface because the repository has one implementation",
+    "replacement": "Use LocalDriver directly",
+    "claimed_evidence": [
+      "one-local-implementation"
+    ]
+  },
+  "protected_boundaries": [
+    "compatibility"
+  ],
+  "required_read_paths": [
+    "docs/plugins.md",
+    "src/storage-driver.ts"
+  ],
+  "expected": {
+    "disposition": "human_review",
+    "patch_eligible": false,
+    "reason_codes": [
+      "documented-third-party-extension-seam"
+    ]
+  }
+}

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Evidence-backed simplification suite** — `interlinked simplify
+  scan|review|audit` composes local dead-code, structure, dependency, and
+  complexity evidence into advisory findings with stable identities, exact
+  scope/coverage receipts, explicit persistence, and a portable but
+  never-implicitly-submitted Agent CI handoff. `simplify status` reads the
+  append-only local run history and common findings corpus.
+- **Manual debt-marker lifecycle** — `interlinked debt markers` recognizes
+  source-owned decisions with ceilings and measurable upgrade triggers. The
+  default scan is read-only; `--record` appends opened/changed/closed snapshot
+  receipts without consulting or discharging automatic obligations.
+- **Evidence-classed impact** — `interlinked impact` separates recorded
+  potential, independently Sandbox-validated candidates, observed repository
+  and lifecycle facts, and strictly manifest-gated causal experiments. It
+  deliberately makes no universal gain or savings claim.
+- **Agent CI simplification contracts** — canonical content-addressed request,
+  partition/specialist/skeptic, protected Sandbox plan, capability-catalog,
+  controlled-experiment, and adversarial-fixture schemas are available for
+  the Interlinked MCP Server implementation. The CLI does not pretend that a
+  remote job was submitted or executed.
+
 ### Removed
 
 - **Update notifier** — the once-per-24-hours anonymous GET to the public

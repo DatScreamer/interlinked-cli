@@ -1,0 +1,331 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadFindings } from "../harness/findings/corpus.js";
+import {
+	loadSimplificationRunReceipts,
+	simplificationRunsPath,
+} from "../harness/findings/simplification-record.js";
+import { parseSimplificationReport } from "../lib/simplification-schema.js";
+import type {
+	SimplificationFinding,
+	SimplificationReport,
+} from "../lib/simplification-types.js";
+import {
+	buildSimplificationReport,
+	groupOverlappingFindings,
+	renderSimplificationText,
+	simplifyCommand,
+	simplifyStatusCommand,
+} from "./simplify.js";
+
+let fixture: string;
+let previousInterlinkedHome: string | undefined;
+
+function git(args: string[]): string {
+	return execFileSync("git", args, {
+		cwd: fixture,
+		encoding: "utf-8",
+		stdio: ["pipe", "pipe", "pipe"],
+	}).trim();
+}
+
+function write(rel: string, content: string): void {
+	const path = join(fixture, rel);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, content);
+}
+
+function commitFixture(): void {
+	git(["add", "-A"]);
+	git([
+		"-c",
+		"user.name=Fixture",
+		"-c",
+		"user.email=fixture@invalid.local",
+		"commit",
+		"-q",
+		"-m",
+		"fixture",
+	]);
+}
+
+function requireFinding(
+	report: SimplificationReport,
+	source: string,
+	path: string,
+): SimplificationFinding {
+	const finding = report.findings.find((candidate) =>
+		candidate.source === source && candidate.location.path === path
+	);
+	if (!finding) throw new Error(`missing ${source} finding at ${path}`);
+	return finding;
+}
+
+beforeEach(() => {
+	previousInterlinkedHome = process.env.INTERLINKED_HOME;
+	fixture = mkdtempSync(join(tmpdir(), "interlinked-simplify-"));
+	process.env.INTERLINKED_HOME = join(fixture, "fake-home");
+	git(["init", "-q"]);
+	write("package.json", JSON.stringify({ name: "simplify-fixture", bin: "./dist/index.js" }));
+	write(
+		"src/index.ts",
+		'import { MemoryStore } from "./store.js";\nconsole.log(new MemoryStore().get());\n',
+	);
+	write("src/contracts.ts", "export interface Store { get(): string; }\n");
+	write(
+		"src/store.ts",
+		'import type { Store } from "./contracts.js";\nexport class MemoryStore implements Store { get(): string { return "ok"; } }\n',
+	);
+	write("src/orphan.ts", "export const abandoned = 1;\n");
+	commitFixture();
+});
+
+afterEach(() => {
+	if (previousInterlinkedHome === undefined) delete process.env.INTERLINKED_HOME;
+	else process.env.INTERLINKED_HOME = previousInterlinkedHome;
+	rmSync(fixture, { recursive: true, force: true });
+	vi.restoreAllMocks();
+});
+
+describe("buildSimplificationReport", () => {
+	// test-contract: public-api — local scan emits the shared strict schema and
+	// keeps every unvalidated detector result advisory/read-only
+	it("emits canonical evidence without invented validation", () => {
+		const report = buildSimplificationReport("scan", { cwd: fixture });
+		expect(parseSimplificationReport(report)).not.toBeNull();
+		expect(report.read_only).toBe(true);
+		expect(report.findings.every((finding) => finding.auto_fix === false)).toBe(true);
+		expect(report.findings.every((finding) => finding.impact.validated === null)).toBe(true);
+	});
+
+	// test-contract: invariant — unchanged evidence produces stable finding
+	// fingerprints instead of per-run identities
+	it("keeps fingerprints stable for unchanged source", () => {
+		const first = buildSimplificationReport("scan", { cwd: fixture });
+		const second = buildSimplificationReport("scan", { cwd: fixture });
+		expect(second.findings.map((finding) => finding.fingerprint)).toEqual(
+			first.findings.map((finding) => finding.fingerprint),
+		);
+	});
+
+	// test-contract: invariant — source anchors may move while the underlying
+	// simplification identity remains stable for the same path/source/remedy/key
+	it("keeps a finding fingerprint stable across unrelated line movement", () => {
+		const wrapper = "function trimValue(value: string): string { return value.trim(); }\nconsole.log(trimValue(' x '));\n";
+		write("src/wrapper.ts", wrapper);
+		const before = requireFinding(
+			buildSimplificationReport("scan", { cwd: fixture }),
+			"opportunity.delegate_only_wrapper",
+			"src/wrapper.ts",
+		);
+		write(
+			"src/wrapper.ts",
+			`const unrelated = 1;\nconst alsoUnrelated = 2;\n${wrapper}`,
+		);
+		const after = requireFinding(
+			buildSimplificationReport("scan", { cwd: fixture }),
+			"opportunity.delegate_only_wrapper",
+			"src/wrapper.ts",
+		);
+		expect(before.location.start_line).toBe(1);
+		expect(after.location.start_line).toBe(2);
+		expect(after.fingerprint).toBe(before.fingerprint);
+	});
+
+	// test-contract: public-api — review defaults to changed scope and uses the
+	// repository-wide implementor context for a changed interface
+	it("filters review findings to changed paths", () => {
+		write("src/contracts.ts", "export interface Store { get(): string; size(): number; }\n");
+		const report = buildSimplificationReport("review", { cwd: fixture });
+		expect(report.scope.kind).toBe("changed");
+		expect(report.scope.selected_paths).toEqual(["src/contracts.ts"]);
+		expect(report.findings.some((finding) =>
+			finding.source === "verify.single_implementation_interface",
+		)).toBe(true);
+	});
+
+	// test-contract: public-api — deep audit and diff review prepare portable requests and
+	// explicitly records that nothing was submitted
+	it("prepares but does not submit the deep handoff", () => {
+		const report = buildSimplificationReport("audit", { cwd: fixture, deepHandoff: true });
+		const review = buildSimplificationReport("review", {
+			cwd: fixture,
+			staged: true,
+			deepHandoff: true,
+		});
+		expect(report.deep_handoff?.submission.status).toBe("not_submitted");
+		expect(review.deep_handoff?.submission.status).toBe("not_submitted");
+		expect(report.deep_handoff?.requested_remedies).toEqual([
+			"delete",
+			"stdlib",
+			"native",
+			"yagni",
+			"shrink",
+		]);
+	});
+
+	it("requires pinned Git identities only when a deep handoff is requested", () => {
+		const nongit = mkdtempSync(join(tmpdir(), "interlinked-simplify-nongit-"));
+		try {
+			const packagePath = join(nongit, "package.json");
+			const sourcePath = join(nongit, "src", "index.ts");
+			mkdirSync(dirname(sourcePath), { recursive: true });
+			writeFileSync(packagePath, JSON.stringify({ name: "nongit" }));
+			writeFileSync(sourcePath, "export const value = 1;\n");
+			expect(() => buildSimplificationReport("audit", {
+				cwd: nongit,
+				deepHandoff: true,
+			})).toThrow("requires a Git commit and tree identity");
+			expect(buildSimplificationReport("audit", { cwd: nongit }).deep_handoff).toBeNull();
+		} finally {
+			rmSync(nongit, { recursive: true, force: true });
+		}
+	});
+
+	// test-contract: boundary — an empty staged scope is still a covered result,
+	// never an unqualified global claim
+	it("uses the bounded empty-result wording", () => {
+		const report = buildSimplificationReport("review", { cwd: fixture, staged: true });
+		const text = renderSimplificationText(report);
+		expect(report.coverage).toMatchObject({
+			status: "complete",
+			selected_files: 0,
+			analyzed_files: 0,
+		});
+		expect(report.coverage.sources).toEqual([]);
+		expect(text).toContain("No findings in covered scope.");
+		expect(text.toLowerCase()).not.toContain("lean already");
+	});
+});
+
+describe("groupOverlappingFindings", () => {
+	function withLocation(
+		fingerprint: string,
+		path: string,
+		startLine: number | null,
+		endLine: number | null,
+		dependencies: string[] = [],
+	): SimplificationFinding {
+		return {
+			fingerprint,
+			lens: "simplification",
+			source: "test.detector",
+			remedy: "shrink",
+			evidence_state: "candidate",
+			confidence: 0.5,
+			location: {
+				path,
+				start_line: startLine,
+				end_line: endLine,
+				tree_sha: "tree",
+				working_tree_sha256: "worktree",
+			},
+			summary: fingerprint,
+			replacement: null,
+			evidence: [],
+			impact: {
+				estimated: { loc: null, dependencies_removed: dependencies },
+				validated: null,
+			},
+			overlap_group: null,
+			validation: {
+				status: "not_run",
+				executor: null,
+				commands: [],
+				artifact_sha: null,
+				notes: [],
+			},
+			advisory: true,
+			auto_fix: false,
+		};
+	}
+
+	it("keeps same-file non-overlapping candidates independent", () => {
+		const grouped = groupOverlappingFindings([
+			withLocation("first", "src/a.ts", 2, 3),
+			withLocation("second", "src/a.ts", 20, 22),
+		]);
+		expect(grouped.map((finding) => finding.overlap_group)).toEqual([null, null]);
+	});
+
+	it("groups transitive span and dependency overlap deterministically", () => {
+		const findings = [
+			withLocation("span-a", "src/a.ts", 2, 6),
+			withLocation("span-b", "src/a.ts", 6, 8, ["left-pad"]),
+			withLocation("dependency", "package.json", 1, 1, ["left-pad"]),
+		];
+		const grouped = groupOverlappingFindings(findings);
+		expect(new Set(grouped.map((finding) => finding.overlap_group)).size).toBe(1);
+		expect(grouped[0]?.overlap_group).toMatch(/^overlap:[a-f0-9]{16}$/);
+		expect(groupOverlappingFindings([...findings].reverse())
+			.map((finding) => finding.overlap_group)).toEqual([
+			grouped[0]?.overlap_group,
+			grouped[0]?.overlap_group,
+			grouped[0]?.overlap_group,
+		]);
+	});
+});
+
+describe("simplifyCommand", () => {
+	// test-contract: public-api — JSON mode prints exactly one parseable shared
+	// report rather than mixing progress text into stdout
+	it("prints one canonical JSON report", async () => {
+		const output: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((value: string) => {
+			output.push(String(value));
+		});
+		const code = await simplifyCommand("scan", { cwd: fixture, json: true });
+		const parsed: unknown = JSON.parse(output.join("\n"));
+		expect(code).toBe(0);
+		expect(parseSimplificationReport(parsed)).not.toBeNull();
+	});
+
+	// test-contract: invariant — ordinary scans remain ephemeral and do not
+	// create either the receipt stream or common-corpus rows
+	it("does not persist without the explicit record flag", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const code = await simplifyCommand("scan", { cwd: fixture });
+		expect(code).toBe(0);
+		expect(existsSync(simplificationRunsPath(fixture))).toBe(false);
+		expect(loadFindings(fixture)).toEqual([]);
+	});
+
+	// test-contract: public-api — --record writes local evidence without
+	// wrapping or otherwise changing canonical JSON report stdout
+	it("records findings while keeping JSON output schema-stable", async () => {
+		const output: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((value: string) => {
+			output.push(String(value));
+		});
+		const code = await simplifyCommand("scan", { cwd: fixture, json: true, record: true });
+		const parsed: unknown = JSON.parse(output.join("\n"));
+		expect(code).toBe(0);
+		expect(parseSimplificationReport(parsed)).not.toBeNull();
+		expect(loadSimplificationRunReceipts(fixture)).toHaveLength(1);
+		expect(loadFindings(fixture).every(
+			(finding) => finding.extensions?.simplification !== undefined,
+		)).toBe(true);
+	});
+
+	// test-contract: public-api — status is a local materialized receipt view
+	// with the full run metadata in JSON mode
+	it("reports locally recorded runs through simplify status", async () => {
+		const output: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((value: string) => {
+			output.push(String(value));
+		});
+		await simplifyCommand("review", { cwd: fixture, staged: true, record: true });
+		output.length = 0;
+		const code = simplifyStatusCommand({ cwd: fixture, json: true });
+		const status = JSON.parse(output.join("\n")) as {
+			run_count: number;
+			runs: Array<{ report: { command: string } }>;
+		};
+		expect(code).toBe(0);
+		expect(status.run_count).toBe(1);
+		expect(status.runs[0]?.report.command).toBe("review");
+	});
+});

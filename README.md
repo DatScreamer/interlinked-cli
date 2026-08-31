@@ -227,6 +227,10 @@ is a fallback for surfaces that don't expose slash-skills. Output lands at
 | `interlinked multi-edit <path>` | Apply N edits to one file atomically (all or none) |
 | `interlinked verify` | Run the full quality + structural gate over the current tree |
 | `interlinked verify --all-checks` | Deep-audit mode: add advisory smell/taste checks |
+| `interlinked simplify scan\|review\|audit` | Read-only local simplification evidence at repository or diff scope; add `--record` to persist findings |
+| `interlinked simplify status` | Inspect explicitly recorded simplification runs and their common-corpus findings |
+| `interlinked debt markers` | Scan explicit source-owned debt ceilings/triggers; add `--record` for lifecycle snapshots |
+| `interlinked impact` | Report potential, Sandbox-validated, observed, and manifest-gated causal evidence without savings claims |
 | `interlinked mode` | Show or switch enforcement mode |
 | `interlinked coverage` | Per-file coverage ratchet (needs a `coverage-summary.json`) |
 | `interlinked mutation` | Per-file mutation-score ratchet (needs a Stryker report) |

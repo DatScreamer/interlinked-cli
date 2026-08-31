@@ -140,6 +140,19 @@ describe("findDeadInterfaceFields", () => {
 		expect(findDeadInterfaceFields(dir, dir)).toEqual([]);
 	});
 
+	it("filters declaration containers before the cross-file read scan", () => {
+		const dir = join(tmp, "src");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "types.ts"),
+			`export interface Settings {\n  unusedSetting: number;\n}\nexport interface Result {\n  unusedResult: number;\n}\n`,
+		);
+		const findings = findDeadInterfaceFields(dir, dir, {
+			containerFilter: (containerName) => containerName === "Settings",
+		});
+		expect(findings.map((finding) => finding.field)).toEqual(["unusedSetting"]);
+	});
+
 	it("returns empty when targetDir/searchRoot don't exist (walkSourceFiles readdirSync catch)", () => {
 		const missing = join(tmp, "does-not-exist");
 		expect(findDeadInterfaceFields(missing, missing)).toEqual([]);

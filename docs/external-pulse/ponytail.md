@@ -4,6 +4,12 @@
 - **Encountered:** 2026-08-30, user-directed repository clone and crosswalk against Interlinked CLI and the Interlinked MCP Server roadmap
 - **Verdict:** **Compound:** Agent CI cloud-roadmap entry for a structured simplification audit/review lens; a layered `interlinked simplify scan|review|audit` capability spanning deterministic Free CLI evidence and deep Agent CI analysis; a Free CLI explicit-debt-marker spike; memory/RFC guidance for benchmark integrity; reject the static `gain` card, subjective blocking checks, and a second bare `audit` meaning.
 
+**Implementation update (2026-08-31):** the Free CLI slices are now implemented: local
+`simplify scan|review|audit|status`, explicit common-corpus recording, source debt-marker
+snapshots, and evidence-classed `impact`. This repository also carries internal, non-exported
+Agent CI request/P4/P5/experiment/capability/fixture contracts; remote submission, semantic
+specialists, Workflows, Sandboxes, and Cloud persistence remain Interlinked MCP Server work.
+
 ## 1. Core idea (one sentence)
 
 Ponytail is a portable set of agent instructions that makes a coding model search for the smallest adequate solution, then exposes the same simplification judgment as diff review, repository audit, deferred-shortcut inventory, and benchmark scoreboard prompts.
@@ -110,35 +116,35 @@ The simplification ladder and benchmark discipline also influence architecture, 
 
 - **Deps:** no new Interlinked CLI runtime dependency. Reuse current scanners/graphs and native TypeScript/Node facilities. Agent CI uses its already-designed model, Artifact, Sandbox, AI Gateway, and persistent findings primitives; it should not import Ponytail.
 - **Displacement:** compose `deadcode --categorize`, `verify --all-checks`, `metrics`/`metrics arch`, dependency inventory, mutation evidence, and the findings corpus. Do not create parallel dead-code, audit-state, debt-obligation, or external-review stores.
-- **Equivalence:** Interlinked is already ahead on safe dead-code evidence and finding lifecycle; it is designed but unbuilt for asynchronous semantic review; it is absent on a dedicated simplification specialist, explicit shortcut-marker grammar, and evidence-generated impact reporting.
+- **Equivalence:** Interlinked is ahead on safe dead-code evidence, now ships the deterministic local evidence/marker/impact slices and internal Cloud contracts, and remains unbuilt only for running asynchronous semantic review, Sandbox validation, and durable Cloud rereview.
 
 ### Capability-by-capability crosswalk
 
 | Ponytail capability | Interlinked equivalent | Status | Disposition |
 |---------------------|------------------------|--------|-------------|
-| Whole-repository simplification audit | Agent CI wide/full-repository review design in `docs/design/tier-3-async-deep-review.md` | **designed** | Add a dedicated `simplification` lens and repository scope; reuse the common reviewer/finding pipeline. |
-| Diff-scoped simplification review | Introduced-only PostToolUse filtering; Tier-3 diff review design | **designed / partial shipped** | One engine, `scope=changed`. A real local `--changed`/`--staged` read-only scope remains useful. |
+| Whole-repository simplification audit | `simplify audit` plus internal Agent CI contracts | **local shipped / Cloud designed** | Keep local evidence advisory; run semantic specialists only in Agent CI. |
+| Diff-scoped simplification review | `simplify review --changed\|--staged\|--range` | **local shipped / Cloud designed** | One engine with explicit scope; deep handoff remains portable and not submitted. |
 | Dead code / removal candidates | `interlinked deadcode --categorize` and safety buckets | **ahead** | Feed this evidence into audit; do not replace it with raw LLM deletion advice. |
 | Single-implementation interface | `single_implementation_interface` advisory check | **shipped** | Keep advisory and provide its evidence to the specialist. |
-| One-product factory | No focused check | **absent** | Candidate advisory detector after corpus validation. |
-| Delegate-only wrapper | Some clone/dead-code overlap; no focused check | **absent** | Candidate advisory detector; require call-graph and boundary evidence. |
-| Never-used flag/configuration | Partial dead-code/use scanning | **partial shipped** | Extend only where usage can be proven; dynamic configuration makes blanket claims unsafe. |
-| Standard-library replacement | No general semantic replacement engine | **absent** | Agent CI, grounded in target runtime/version and semantic contract. |
-| Native-platform replacement | No general version-aware platform catalog | **absent** | Agent CI; Ponytail’s `docs/platform-native.md` can seed examples, never unconditional policy. |
+| One-product factory | Local low-confidence advisory pattern | **shipped** | Keep private-only and candidate-only; semantic validation remains Cloud work. |
+| Delegate-only wrapper | Local low-confidence advisory pattern | **shipped** | Keep private-only and candidate-only; require boundary evidence before edits. |
+| Never-used flag/configuration | Local cross-file field-read advisory | **shipped, conservative** | Dynamic configuration remains an explicit limitation. |
+| Standard-library replacement | Exact-version internal capability catalog, no semantic runner | **contract shipped / execution absent** | Agent CI must prove target runtime and contract parity. |
+| Native-platform replacement | Exact-version internal capability catalog, no semantic runner | **contract shipped / execution absent** | Agent CI must prove platform/version/config parity. |
 | “Same behavior, fewer lines” | Complexity/CRAP/clone metrics expose hotspots, not equivalence | **absent** | Agent CI proposal plus P5 Sandbox validation. |
-| Rank largest cuts first | Metrics rank hotspots; no risk-adjusted simplification ranking | **absent** | Rank non-overlapping findings by confidence-adjusted, validated impact. |
-| Net removable lines/dependencies | Git diff and dependency state exist, no counterfactual estimator | **absent by design** | Separate potential, sandbox-validated, accepted, and causal values. Never sum overlapping guesses. |
+| Rank largest cuts first | Stable confidence/estimated-impact local ordering plus overlap components | **local shipped / richer Cloud rank designed** | Keep risk/maturity-first semantic ranking for Agent CI. |
+| Net removable lines/dependencies | `impact` evidence classes with overlap-safe aggregation and artifact-gated causality | **shipped without savings claims** | Keep potential, Sandbox-validated, observed, and causal facts separate. |
 | Read-only one-shot report | Most verify/metrics/deadcode commands are read-only | **shipped** | Preserve default; recording and patching require explicit actions. |
-| Structured finding schema | Tier-3 JSON design and external findings corpus | **ahead** | Add remedy, impact, validation, overlap, and coverage fields. |
-| Finding persistence/rereview | Findings ingestion, anchored liveness, corpus reconciliation | **ahead** | Write Agent CI results directly to the common corpus; local report stays ephemeral unless `--record`. |
-| Deliberate-shortcut receipt | Current `debt` is automatic coverage/red-suite/transient obligations | **absent and name-colliding** | Add a separate manual marker source/index under `debt markers` or `debt harvest`. |
-| Ceiling + explicit upgrade trigger | No source-marker contract | **absent** | Adopt with a structured, source-aware grammar and `no-trigger` advisory. |
+| Structured finding schema | Strict local report/finding/coverage/validation parsers and common-corpus extension | **shipped** | Keep richer Cloud normalization additive and versioned. |
+| Finding persistence/rereview | Explicit run receipts and common-corpus extension | **storage shipped / generic CLI parity incomplete** | `simplify status` and `impact` project it; general findings reconciliation remains follow-up. |
+| Deliberate-shortcut receipt | `interlinked debt markers` separate from automatic obligations | **shipped** | Keep recording explicit and incapable of waiving gates. |
+| Ceiling + explicit upgrade trigger | Source-aware JSON marker contract and advisories | **shipped** | Cloud trigger evaluation and owner/age views remain later work. |
 | Observed token/cost/LOC activity | Activity/session/status logs | **shipped** | Report as observed activity, not savings. |
-| Causal “gain” measurement | No paired-control product measurement | **absent** | Cloud benchmark/evaluation program only; do not ship a marketing command first. |
+| Causal “gain” measurement | Strict controlled-manifest plus four verified artifact bindings | **reader contract shipped / experiment program absent** | No `gain` command; causal language remains bounded to supplied evidence. |
 | Tamper-evident audit chain | `interlinked audit verify` | **ahead but unrelated** | Preserve the existing meaning. Never make bare `audit` silently run code simplification. |
 | Canonical skill + thin adapters | Focused `skills/interlinked-*` guidance and client installer registry | **shipped / ahead on hook semantics** | Keep one contract, generate adapter/help copies, and test argument plus semantic parity. |
 | Rules in every subagent context | Client-specific hooks and shared generated hook orchestration | **partial shipped / host-dependent** | Audit supported-client behavior; copy only the invariant that subagents get required policy when the host drops parent context. |
-| Benchmark judge canary | Check-evidence corpora and mutation/evidence discipline | **shipped in a different form** | Add labeled audit fixtures and judge self-tests; do not trust an uncalibrated LLM scorer. |
+| Benchmark judge canary | Eight adversarial and five positive fixtures with deterministic parsers/scorers | **contract shipped** | Future model canaries must run against these; local fixtures do not imply a model runner exists. |
 | Full safety/completeness validation | Type/test/security/mutation checks; P5 Sandbox design | **designed / partial shipped** | Run independently of the simplification specialist. “Correctness out of scope” defines report focus, not permission to break it. |
 
 ### Command and state collisions
@@ -148,9 +154,12 @@ The simplification ladder and benchmark discipline also influence architecture, 
 - `interlinked harness scanner review` is PII adjudication, not code review. A future top-level review command must not reuse that store or semantics.
 - The existing opt-in Supermodel dead-code path should be subsumed by one Agent CI simplification pipeline, not become a third review ledger.
 
-## 7. Smallest spike
+## 7. Smallest spike (completed locally; Cloud evaluation remains)
 
-**One-day audit schema + adversarial fixture spike; do not add command plumbing yet.**
+The original one-day audit-schema/adversarial-fixture spike was completed and expanded into the
+local command/contracts implementation. The remaining spike is to run a real Agent CI specialist
+against the content-addressed fixture corpus; local contracts alone do not demonstrate semantic
+review precision.
 
 1. Define the structured simplification finding extension: remedy category, repository/tree SHA, path/span, cut, replacement, evidence, confidence, estimated impact, validated impact, validation receipt, overlap group, and scope coverage.
 2. Build a small labeled fixture corpus with one true positive for each category and traps for a public interface, deliberate test seam, generated file, dynamic configuration, framework adapter, trust-boundary validation, accessibility behavior, and a standard-library API with the wrong semantics.
@@ -166,9 +175,9 @@ There is intentionally **no Guardrails P2–3 row**. Repository-wide inference e
 
 | Surface (phase) | Slice that lands here | Spike | Horizon |
 |-----------------|-----------------------|-------|---------|
-| Free CLI (P1) | Compose shipped dead-code, advisory structure, metrics, dependency, and mutation evidence into a read-only simplification profile; add changed/staged scope rather than a second analyzer. | Prototype a JSON merger/report over current outputs and three fixtures; no new runtime dependency. | next |
-| Free CLI (P1) | Structured manual shortcut receipts under `debt markers`/`debt harvest`, separate from automatic obligations. | Parse one explicit marker grammar, exclude non-source/generated/vendor files, flag missing triggers, emit stable JSON fingerprints. | now |
-| Free CLI (P1) | Evidence-generated “impact” facts limited to observed/accepted deltas. | Render accepted finding closures, actual diff/dependency changes, and ratchet movements from one versioned fact artifact. | parked until audit/debt records exist |
+| Free CLI (P1) | Compose shipped dead-code, advisory structure, metrics, dependency, and mutation evidence into read-only scan/review/audit reports. | Implemented without a runtime dependency. | shipped |
+| Free CLI (P1) | Structured manual shortcut receipts under `debt markers`, separate from automatic obligations. | Implemented with explicit snapshot recording and coverage. | shipped |
+| Free CLI (P1) | Evidence-classed `impact` facts from simplification receipts, local history, and optional controlled manifests. | Implemented without a `gain` or savings claim. | shipped |
 | Agent CI (P4) | Full-repository and diff-scoped simplification specialist, deterministic-evidence grounding, synthesizer/adversary, structured findings, caching, and rereview. | §7. | next |
 | Agent CI (P5) | Candidate patch on a forked Artifact, type/build/test/security/mutation checks in a Cloudflare Sandbox, exact non-overlapping delta, then human approval. | Validate one `delete` and one `native` candidate end to end. | next after P4 |
 | Agent CI (P4–5) | Trigger-aware manual debt lifecycle and controlled impact experiments/team dashboards. | Evaluate one deterministic trigger; generate one benchmark card from a pinned result manifest. | parked |
@@ -177,8 +186,8 @@ There is intentionally **no Guardrails P2–3 row**. Repository-wide inference e
 
 **Compound verdict:**
 
-1. **Cloud-roadmap entry / RFC:** a dedicated Agent CI `simplification` specialist with `scope=diff|repository`, backed by existing deterministic evidence, the common structured findings corpus, an adversarial completeness/safety pass, and optional P5 Sandbox validation. The eventual CLI family should be `interlinked simplify scan|review|audit`, not aliases over the existing forensic `audit` command.
-2. **Free CLI PR candidates:** an explicit manual-debt marker grammar and parser; then a deterministic simplification evidence profile and changed/staged review scope if the prototype demonstrates value.
+1. **Cloud-roadmap entry / RFC:** a dedicated Agent CI `simplification` specialist with `scope=diff|repository`, backed by the now-shipped local evidence and internal contracts, an adversarial completeness/safety pass, and optional P5 Sandbox validation. Remote execution remains unimplemented.
+2. **Implemented Free CLI slice:** `interlinked simplify scan|review|audit|status`, `debt markers`, and `impact`, with explicit persistence and no new bare-command collision.
 3. **Memory/RFC constraint:** generated benchmark facts, paired-control methodology, and strict separation of potential, verified, observed, and causal impact.
 4. **Skip:** a new bare `audit` behavior, a raw `ponytail:` grep, a hard-coded `gain` card, subjective pre-blocking, “file exports one thing” as a smell, and global `lite/full/ultra` modes.
 
@@ -290,7 +299,8 @@ Adopt Ponytail’s separation of concerns:
 - semantic replacements run in Agent CI; and
 - applying a change is a separate action.
 
-A local `--changed`/`--staged` scope is a real gap because `interlinked verify` is whole-project while PostToolUse is introduced-only. That scope adapter is more valuable than copying Ponytail’s free-text slash command.
+The shipped local `--changed`/`--staged`/`--range` scope adapter closes this gap without copying
+Ponytail's free-text slash command.
 
 ### Debt: explicit receipts, not comment harvesting
 
@@ -298,13 +308,13 @@ The transferable invariant is:
 
 > A deliberate simplification that knowingly imposes a limit is not complete until it records both the limit and the measurable condition that justifies an upgrade.
 
-Use an Interlinked-owned grammar, for example:
+The shipped Interlinked-owned grammar is a source comment plus one JSON object:
 
 ```ts
-// interlinked-debt: in-memory scan; ceiling="10k records"; trigger="p95 > 100ms"; issue="ENG-123"
+// interlinked-debt: {"decision":"in-memory scan","ceiling":"10k records","trigger":"p95 > 100ms","issue":"ENG-123"}
 ```
 
-The exact grammar needs a design/test pass, but the requirements are clear:
+The implemented contract preserves the original requirements:
 
 - explicit opt-in prefix;
 - required shortcut/decision, ceiling, and trigger;
@@ -384,15 +394,15 @@ Ponytail documents broad host portability and has useful copy-parity machinery (
 
 | Priority | Build or decision | Product | Why |
 |----------|-------------------|---------|-----|
-| Critical | Simplification finding schema, prompt, adversarial fixtures, and judge/completeness canaries | Agent CI design spike | Tests the central idea before committing command/storage surfaces. |
-| Critical | Structured `interlinked-debt:` marker grammar and read-only parser | Free CLI | Small, deterministic, valuable independently, and does not need a model. |
+| Shipped | Simplification finding schema, eight adversarial fixtures, five positive fixtures, and deterministic scorers | CLI-side internal contracts | Makes future Agent CI evaluation inspectable without pretending a model ran. |
+| Shipped | Structured `interlinked-debt:` marker grammar, scanner, and snapshot lifecycle | Free CLI | Deterministic and separate from automatic obligations. |
 | High | Full-repository simplification specialist grounded in current deterministic evidence | Agent CI P4 | The largest capability gap and Ponytail’s best idea. |
 | High | P5 candidate patch plus independent validation and exact impact | Agent CI P5 | Converts advice into stronger evidence without auto-applying. |
-| High | Changed/staged simplification review scope and deterministic evidence composer | Free CLI | Reuses shipped machinery and closes a real scope gap. |
-| High | Findings-corpus integration, fingerprints, rereview, defer-to-debt action | Both | Prevents a one-shot prompt from becoming a parallel lifecycle. |
-| Later | Version-aware stdlib/native capability catalog | Agent CI first; local deterministic entries later | Valuable but semantic and maintenance-heavy. |
+| Shipped | Changed/staged/range simplification review scope and deterministic evidence composer | Free CLI | Reuses shipped machinery and closes the local scope gap. |
+| Partial | Common-corpus storage, stable repository/finding identity, run receipts, status, and impact projection | Both | Generic findings/reconciliation command parity and Cloud rereview remain. |
+| Contract shipped | Exact-version stdlib/native capability catalog | Agent CI first | A running semantic specialist and maintained catalog contents remain Cloud work. |
 | Later | Trigger evaluation and owner/age dashboard for manual debt | Interlinked MCP Server / Agent CI | Requires central state or telemetry for the useful lifecycle. |
-| Later | Generated observed-impact view | Both | Only after audit/debt facts exist. |
+| Shipped locally | Evidence-classed impact view | Free CLI | Potential, Sandbox-compatible, observed, and artifact-gated causal classes remain distinct. |
 | Skip | Static `gain` command or universal savings claim | — | No credible per-repository counterfactual; the source’s own card drift proves the risk. |
 
 ### Provenance and verification

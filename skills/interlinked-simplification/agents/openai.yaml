@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interlinked Simplification"
+  short_description: "Audit advisory code-removal evidence"
+  default_prompt: "Use $interlinked-simplification to review this scope for evidence-backed simplification opportunities without overstating validation."

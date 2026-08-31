@@ -1,6 +1,6 @@
 ---
 name: interlinked-observability
-description: "Inspect what AI agents did — the local, offline-first activity log and observability commands. Load this when you want to see what happened this session, tail activity live, review what the guard blocked/warned, find recurring mistakes, inspect a specific session/event, view the dependency graph, backfill external (Codex) sessions, verify the tamper-evident guard-decision log, or push buffered events to the server. Covers `status`, `activity`, `logs` (with `--type`/`--follow`), `explain`, `watch`, `telemetry`, `trace`, `search`, `recurrence`, `viz`, `audit`, `collect`, `compact`, `sync`, and the activity.jsonl / collection.jsonl / timeline.jsonl event-log model."
+description: "Inspect what AI agents did — the local, offline-first activity log, evidence-classed impact facts, and observability commands. Load this when you want to see what happened this session, separate observed change from potential or causal claims, tail activity live, review what the guard blocked/warned, find recurring mistakes, inspect a specific session/event, view the dependency graph, backfill external (Codex) sessions, verify the tamper-evident guard-decision log, or push buffered events to the server. Covers `status`, `activity`, `impact`, `logs` (with `--type`/`--follow`), `explain`, `watch`, `telemetry`, `trace`, `search`, `recurrence`, `viz`, `audit`, `collect`, `compact`, `sync`, and the activity.jsonl / collection.jsonl / timeline.jsonl event-log model."
 ---
 
 # interlinked-observability — inspect what agents did
@@ -15,6 +15,7 @@ recurring?* — **all without a server** (the server is optional enrichment).
 - "What did I / another agent do this session?" — or you want to tail activity live.
 - Reviewing what the guard blocked or warned.
 - Finding recurring mistakes to harden against.
+- Reporting recorded local changes without turning correlation into a savings or causal claim.
 - Inspecting a specific session, event, or the repo dependency graph.
 - Backfilling external (Codex) sessions, verifying the audit log, or syncing to the server.
 
@@ -27,6 +28,7 @@ strict: `\d+(s|m|h|d)` (e.g. `30m`, `2d`) — `15` or `1.5h` throw.
 |---|---|---|
 | `status` | Local-first dashboard: sessions, recent activity, sync + optional server health | `--watch [s]` · `--short --full --json` |
 | `activity` | Recent feed (local+server merged/deduped, token/cost totals) | `--agent --limit --since` · `--json` |
+| `impact` | Evidence-classed local git, dependency, baseline-fold, activity, and findings facts | `--base <ref>` (def `HEAD`) · `--short --full --json` |
 | `logs` | View/tail **local activity.jsonl** (offline, no server) | `-f/--follow --agent --tool --type --since --limit --raw` · `--json --short` |
 | `explain` | Narrative chronological timeline + agent/human line-attribution | `--agent --since` (def 1h) `--full` · `--json` |
 | `watch` | **Server** poll: unread messages, pending tasks, active agents (diffs between polls) | `--interval` (def 10s) · `--short --json` |
@@ -48,6 +50,30 @@ strict: `\d+(s|m|h|d)` (e.g. `30m`, `2d`) — `15` or `1.5h` throw.
 
 `interlinked metrics` (whole-repo code-quality scan) lives in **interlinked-quality-gates**;
 `interlinked context` (effective config) in **interlinked-setup**.
+
+## `interlinked impact` — facts, not attribution
+
+`interlinked impact [--base <ref>] [--experiment-manifest <path>] [--cwd <path>]
+[--short|--full|--json]` is local and read-only. It compares a verified commit (default `HEAD`)
+with the worktree and reports four evidence classes without promoting one into another:
+
+| Class | Current command contract |
+|---|---|
+| `potential` | Estimated deltas from valid explicitly recorded simplification receipts. Complete repository/selected-path receipts replace their authoritative scope; partial runs never imply disappearance. One strongest representative is selected per non-null overlap group. |
+| `sandbox-validated` | Exact deltas only from a latest recorded finding with a passed Sandbox receipt and non-null validated impact. It is still an unaccepted candidate. |
+| `observed` | Recorded facts from verified git/dependency deltas, baseline folds, retained sessions, legacy and simplification finding states, and manual debt-marker lifecycle. Observation is not causation. |
+| `causal` | Available only for a strict controlled manifest whose raw-results, analysis-output, safety-receipt, and completeness-coverage artifacts all match their declared SHA-256 values. |
+
+Every class/source is labeled `available`, `not-recorded`, or `unavailable`. An invalid `--base`
+makes git and dependency evidence unavailable rather than silently choosing another comparison.
+An explicitly named but unreadable experiment manifest is a command error; malformed manifests
+or artifact hash/read failures leave causal evidence unavailable. Untracked paths are counted
+without LOC; `.interlinked/` evidence files are excluded from that count.
+
+Keep the source scopes separate. Activity edit totals are gross retained events and can overlap
+the git delta. A baseline fold records tightened/refused water-lines, not why they changed.
+Finding `touched` or `acked` states are workflow facts, not proof that a defect was fixed. Never
+sum these sources into “saved LOC/time/money,” call them a gain, or say Interlinked caused them.
 
 ## The event-log model
 Data dir: `INTERLINKED_DATA_DIR` → `config.local.json.data_dir` → `INTERLINKED_HOME` →
@@ -195,6 +221,7 @@ interlinked logs -f --type tool_use_error # tail only failing tool calls, live
 interlinked logs --type guard_block --since 1h   # what the guard blocked
 interlinked recurrence list --kind harness_caught --top 10   # recurring mistakes
 interlinked status --full                # per-session tools + files + tokens
+interlinked impact --base HEAD --full    # scoped observed facts + explicit claim boundary
 interlinked viz snapshot                 # one-line dependency-graph summary
 interlinked sync --dry-run               # safe: pending count, no send
 ```
@@ -210,8 +237,13 @@ interlinked sync --dry-run               # safe: pending count, no send
   (`ERROR`). Passing an unsupported mode flag to a command errors (flags are per-command).
 - **Don't hand-truncate `activity.jsonl`** — the sync cursor is a byte offset; use
   `interlinked compact` (it respects the cursor and audit chain).
+- **`impact` does not create evidence.** It can project recorded potential/Sandbox receipts and
+  verify a supplied controlled experiment's artifact bindings, but it does not run or reproduce
+  an experiment. No class is a generic savings claim.
 
 ## Related skills
 - **interlinked-quality-gates** — `interlinked metrics` (code-quality hotspots) and `recurrence scan`.
 - **interlinked-harness** — the guard whose block/warn telemetry you're inspecting.
 - **interlinked-coordination** — the server-backed side (tasks, messages) `watch`/`sync` reach.
+- **interlinked-simplification** — advisory opportunities whose estimated and validated impact
+  must remain separate.

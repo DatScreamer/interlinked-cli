@@ -25,6 +25,10 @@ import type {
 	FindingStatus,
 } from "./corpus.js";
 import type { ProvenanceCompleteness, ProvenanceTier } from "./provenance.js";
+import {
+	parseFindingExtensions,
+	type FindingExtensions,
+} from "./simplification-extension.js";
 
 const SEVERITIES: ReadonlySet<string> = new Set<FindingSeverity>([
 	"critical",
@@ -285,6 +289,7 @@ interface OptionalScalars {
 	anchor_context?: string[];
 	anchor_tree?: string;
 	distilled?: FindingDistilled;
+	extensions?: FindingExtensions;
 }
 
 /** The remaining optional members, or null when any one fails to parse. Split
@@ -306,12 +311,15 @@ function parseOptionalScalars(value: JsonObject): OptionalScalars | null {
 	if (anchor_context === null) return null;
 	const distilled = parseDistilled(value.distilled);
 	if (distilled === null) return null;
+	const extensions = parseFindingExtensions(value.extensions);
+	if (extensions === null) return null;
 
 	return {
 		...(category !== undefined ? { category: category as FindingCategory } : {}),
 		...(fix_instruction !== undefined ? { fix_instruction } : {}),
 		...(approved_by !== undefined ? { approved_by } : {}),
 		...(distilled !== undefined ? { distilled } : {}),
+		...(extensions !== undefined ? { extensions } : {}),
 		...(anchor_span_sha256 !== undefined ? { anchor_span_sha256 } : {}),
 		...(anchor_context !== undefined ? { anchor_context } : {}),
 		...(anchor_tree !== undefined ? { anchor_tree } : {}),

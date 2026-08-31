@@ -13,7 +13,11 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
-import { checkDeadExports } from "../harness/checks/dead-exports-inline.js";
+import {
+	findDeadExports,
+	type DeadExportsRepo,
+} from "../harness/checks/dead-exports-inline.js";
+import { getGitSourceFiles } from "../harness/checks/export-ripple.js";
 import { ProjectGraph } from "../harness/project-graph.js";
 import { isJsonObject } from "../lib/json-types.js";
 import { findDeadImports } from "./check-dead-imports.js";
@@ -62,6 +66,8 @@ export interface DeadCodeReport {
 	testOnlyImporterFiles?: string[];
 	/** How many files the scan covered. */
 	scannedFiles: number;
+	/** Exact repository-relative files whose contents the scan inspected. */
+	scannedPaths: string[];
 }
 
 /** Entry points that are reachable by definition: package.json `bin` targets
@@ -135,11 +141,29 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 	const entries = entryPoints(cwd);
 
 	const files = walkSourceFiles(cwd);
+	const importerFiles = getGitSourceFiles(cwd);
+	const importerContent = new Map<string, string | null>();
+	const deadExportsRepo: DeadExportsRepo = {
+		listFiles: () => importerFiles,
+		readFile: (rel) => {
+			const cached = importerContent.get(rel);
+			if (cached !== undefined) return cached;
+			try {
+				const content = readFileSync(join(cwd, rel), "utf-8");
+				importerContent.set(rel, content);
+				return content;
+			} catch {
+				importerContent.set(rel, null);
+				return null;
+			}
+		},
+	};
 	const reExported = reExportTargets(cwd, files);
 	const unreachableFiles: string[] = [];
 	const deadImportBindings: DeadImportBinding[] = [];
 	const deadExports: DeadExportFinding[] = [];
 	const testOnlyImporterFiles: string[] = [];
+	const scannedPaths: string[] = [];
 
 	for (const relRaw of files) {
 		const rel = relRaw.split(sep).join("/");
@@ -147,6 +171,8 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 		const abs = join(cwd, rel);
 		if (!existsSync(abs)) continue;
 		const content = readFileSync(abs, "utf-8");
+		importerContent.set(rel, content);
+		scannedPaths.push(rel);
 
 		const importers = graph.getImporters(abs);
 		if (!entries.has(rel) && !reExported.has(rel) && importers.length === 0) {
@@ -161,7 +187,7 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 		for (const binding of findDeadImports(content)) {
 			deadImportBindings.push({ file: rel, binding });
 		}
-		for (const m of checkDeadExports(content, abs, cwd)) {
+		for (const m of findDeadExports({ content, filePath: abs, cwd }, deadExportsRepo)) {
 			deadExports.push({ file: rel, detail: m.text });
 		}
 	}
@@ -173,6 +199,7 @@ export function scanDeadCode(cwd: string): DeadCodeReport {
 		deadExports,
 		testOnlyImporterFiles,
 		scannedFiles: files.length,
+		scannedPaths,
 	};
 }
 

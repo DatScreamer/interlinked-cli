@@ -145,6 +145,7 @@ const KNOWN_FALSE_POSITIVES = new Set<string>([
 function fieldIsReadElsewhere(
 	field: InterfaceField,
 	allFiles: readonly string[],
+	contentByFile: ReadonlyMap<string, string | null>,
 ): boolean {
 	if (KNOWN_FALSE_POSITIVES.has(field.field)) return true;
 	const escaped = field.field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -157,20 +158,22 @@ function fieldIsReadElsewhere(
 		const isColocatedTest =
 			file.startsWith(declBase) && TEST_FILE_RE.test(file);
 		if (isColocatedTest) continue;
-		let content: string;
-		try {
-			content = readFileSync(file, "utf-8");
-		} catch (_) {
-			continue;
-		}
+		const content = contentByFile.get(file);
+		if (content === undefined || content === null) continue;
 		if (propRe.test(content)) return true;
 	}
 	return false;
 }
 
+export interface DeadInterfaceFieldOptions {
+	/** Restrict declarations before the cross-file read scan begins. */
+	containerFilter?: (containerName: string) => boolean;
+}
+
 export function findDeadInterfaceFields(
 	targetDir: string,
 	searchRoot: string,
+	options: DeadInterfaceFieldOptions = {},
 ): DeadFieldFinding[] {
 	// Walk separately so we control which directory we scan for declarations
 	// vs. which corpus we scan for reads. Test files are included in the
@@ -180,12 +183,21 @@ export function findDeadInterfaceFields(
 		if (!TEST_FILE_RE.test(f)) declaringFiles.push(f);
 	}
 	const allFiles = [...walkSourceFiles(searchRoot)];
+	const contentByFile = new Map<string, string | null>();
+	for (const file of allFiles) {
+		try {
+			contentByFile.set(file, readFileSync(file, "utf-8"));
+		} catch (_) {
+			contentByFile.set(file, null);
+		}
+	}
 
 	const findings: DeadFieldFinding[] = [];
 	for (const file of declaringFiles) {
-		const fields = extractInterfaceFields(file);
+		const fields = extractInterfaceFields(file).filter((field) =>
+			options.containerFilter?.(field.containerName) ?? true);
 		for (const field of fields) {
-			if (!fieldIsReadElsewhere(field, allFiles)) {
+			if (!fieldIsReadElsewhere(field, allFiles, contentByFile)) {
 				findings.push({
 					file: relative(searchRoot, field.file),
 					line: field.line,

@@ -26,6 +26,7 @@ import { registerAdoptCommands } from "./registrars/adopt.js";
 import { registerCapsCommands } from "./registrars/caps.js";
 import { registerCheckpointCommands } from "./registrars/checkpoints.js";
 import { registerCoordinationCommands } from "./registrars/coordination.js";
+import { registerDebtImpactCommands } from "./registrars/debt-impact.js";
 import { registerExperienceCommands } from "./registrars/experience.js";
 import { registerHarnessCommands } from "./registrars/harness.js";
 import { registerMcpCommands } from "./registrars/mcp.js";
@@ -33,6 +34,7 @@ import { registerObservabilityLogCommands } from "./registrars/observability-log
 import { registerQualityCommands } from "./registrars/quality.js";
 import { registerReplayCommands } from "./registrars/replay.js";
 import { registerScratchCommands } from "./registrars/scratch.js";
+import { registerSimplifyCommands } from "./registrars/simplification.js";
 import { registerSetupCommands } from "./registrars/setup.js";
 import { registerSponsorCommands } from "./registrars/sponsor.js";
 import { registerSupplyChainCommands } from "./registrars/supply-chain.js";
@@ -83,6 +85,7 @@ Quick start:
 // ===========================================
 registerActivityCommands(program);
 registerObservabilityLogCommands(program);
+registerDebtImpactCommands(program);
 registerSupplyChainCommands(program);
 registerHarnessCommands(program);
 registerMcpCommands(program);
@@ -91,6 +94,7 @@ registerCoordinationCommands(program);
 registerQualityCommands(program);
 registerCapsCommands(program);
 registerScratchCommands(program);
+registerSimplifyCommands(program);
 registerFindingsCommands(program);
 registerSpecCommands(program);
 registerAdoptCommands(program);
