@@ -80,6 +80,22 @@ Reservations are an **automatic side-effect of writing**, enforced in the daemon
   ~30s after that agent goes idle); escalates to a block only when the coordination story is
   fully known (≥2 known agents, not a parent↔child pair). Unknown → fails **open** to a warning.
 
+Codex subagents can share the root session id. When their stable `subagent_id` is present,
+Interlinked counts each sibling as a distinct local actor and targets activity/leave events by
+that id; root-session and thread-id aliases still resolve parent↔child lineage, so ordinary
+delegation keeps the lineage exemption instead of being mistaken for an unrelated conflict.
+
+For Codex/Copilot `apply_patch`, "each path" means every patch-section destination plus the
+source of every `*** Move to:` operation, de-duplicated in patch order. PreToolUse acquisition and
+PostToolUse idle-release scheduling share that exact target list, so a multi-file patch does not
+strand all but one lease until its 5-minute TTL.
+
+Multi-path acquisition preflights the whole set before making any new local grant or server
+request. If any conflict is blocking, none of the free paths are leased; warning-only sibling
+conflicts are skipped and the other free paths still lease. Reacquiring an owned path cancels its
+older idle timer before renewal, so an in-flight follow-up edit cannot lose its lease to the prior
+edit's 30-second timer.
+
 Auto-release fires ~30s after the last edit (idle) and at session end. **When you hit a
 reservation conflict, coordinate via `send`/`inbox` — don't force it**; leases self-heal. (Escape
 hatch for the local-lease block: `INTERLINKED_DISABLE_LOCAL_LEASE_BLOCK=1`.) Without an API
