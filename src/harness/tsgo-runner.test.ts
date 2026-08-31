@@ -85,6 +85,16 @@ function disposeRunner(runner: TsgoRunner): void {
 	runner.dispose?.();
 }
 
+/** A real cross-platform executable that exits zero and emits no diagnostics.
+ * `--` makes every compiler-shaped argument a script argument, not a Node flag. */
+function createNoOutputRunner(): TsgoRunner {
+	return createTsgoRunner({
+		executable: process.execPath,
+		extraArgs: ["-e", "", "--"],
+		timeoutMs: 200,
+	});
+}
+
 describe("parseTsgoOutput — form 1", () => {
 	it("parses parenthesized location format", () => {
 		const raw = `src/foo.ts(12,3): error TS2322: Type 'string' is not assignable to type 'number'.`;
@@ -415,9 +425,9 @@ describe("createTsgoRunner — simulateEdit edge paths", () => {
 	it("appends newString when oldString is empty (falsy) instead of doing a literal replace", async () => {
 		const path = join(tmp, "append.ts");
 		writeFileSync(path, "export const z = 1;\n");
-		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const runner = createNoOutputRunner();
 		const out = await runner.simulateEdit(path, "", "export const appended = 2;\n");
-		// /bin/true is not a real tsgo, so the one-shot spawn yields no
+		// The no-output child is not a real tsgo, so the one-shot spawn yields no
 		// diagnostics either way — the assertion pins that the falsy-oldString
 		// (append) branch completes without throwing and without diagnostics.
 		expect(out.new_diagnostics).toEqual([]);
@@ -427,7 +437,7 @@ describe("createTsgoRunner — simulateEdit edge paths", () => {
 	it("runs the full patch pipeline for a file with no extension (suffix fallback to .ts)", async () => {
 		const path = join(tmp, "noext");
 		writeFileSync(path, "hello world");
-		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const runner = createNoOutputRunner();
 		const out = await runner.simulateEdit(path, "hello", "goodbye");
 		expect(out.new_diagnostics).toEqual([]);
 		expect(out.elapsed_ms).toBeGreaterThanOrEqual(0);
@@ -436,12 +446,12 @@ describe("createTsgoRunner — simulateEdit edge paths", () => {
 
 	it("touches the warm watcher's idle timer when the edited file belongs to a tsgo project", async () => {
 		// tsconfig.json present ⇒ findTsconfigDir resolves a root ⇒ watcherFor()
-		// constructs a (non-null) WatchProcess even though /bin/true is not a
+		// constructs a (non-null) WatchProcess even though the no-output child is not a
 		// real tsgo — exercising the truthy `if (w) w.touchIdle()` branch.
 		writeFileSync(join(tmp, "tsconfig.json"), "{}");
 		const path = join(tmp, "proj.ts");
 		writeFileSync(path, "export const p = 1;\n");
-		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const runner = createNoOutputRunner();
 		const out = await runner.simulateEdit(path, "p = 1", "p = 2");
 		expect(out.new_diagnostics).toEqual([]);
 		disposeRunner(runner);
@@ -450,7 +460,7 @@ describe("createTsgoRunner — simulateEdit edge paths", () => {
 	it("skips touchIdle when the .ts file has no tsconfig project (watcherFor returns null)", async () => {
 		const path = join(tmp, "standalone.ts");
 		writeFileSync(path, "export const s = 1;\n");
-		const runner = createTsgoRunner({ executable: "/bin/true", timeoutMs: 200 });
+		const runner = createNoOutputRunner();
 		const out = await runner.simulateEdit(path, "s = 1", "s = 2");
 		expect(out.new_diagnostics).toEqual([]);
 		disposeRunner(runner);
