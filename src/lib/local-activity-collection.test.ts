@@ -661,6 +661,13 @@ describe("readRecentLines", () => {
 		expect(readRecentLines(file, 5)).toEqual(["e", "d", "c", "b", "a"]);
 	});
 
+	it("caps bytes and discards the oldest partial line at the budget boundary", () => {
+		writeFileSync(file, "outside\nmiddle\nnewest\n");
+		const midLineBudget = Buffer.byteLength("iddle\nnewest\n", "utf-8");
+		expect(readRecentLines(file, 10, midLineBudget)).toEqual(["newest"]);
+		expect(readRecentLines(file, 10, 0)).toEqual([]);
+	});
+
 	// test-contract: invariant — bounded tail reads never return more than the requested line count
 	it("does not append additional nonblank lines after reaching maxLines", () => {
 		writeFileSync(file, "head\n  middle  \n\n newest \n");

@@ -168,8 +168,8 @@ describe("bounded-walk: warnWalkTruncated", () => {
 // The oversized fixture tree: OVERSIZED_DIR_COUNT × OVERSIZED_FILES_PER_DIR
 // .ts files. The product is deliberately larger than MAX_WALK_ENTRIES, so a
 // complete walk would have to visit every file; the cap must stop well short.
-const OVERSIZED_DIR_COUNT = 28;
 const OVERSIZED_FILES_PER_DIR = 1_000;
+const OVERSIZED_DIR_COUNT = Math.floor(MAX_WALK_ENTRIES / OVERSIZED_FILES_PER_DIR) + 2;
 const OVERSIZED_FILE_COUNT = OVERSIZED_DIR_COUNT * OVERSIZED_FILES_PER_DIR;
 
 /** Builds a tree whose entry count comfortably exceeds MAX_WALK_ENTRIES. */

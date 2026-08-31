@@ -60,6 +60,13 @@ export const SHARED_SKIP_DIRS: ReadonlySet<string> = new Set([
 	"reference-repos",
 ]);
 
+/** Whether `absDir` is the repository-root scratch home provisioned by
+ * `interlinked scratch`. This is deliberately path-specific: a real nested
+ * package such as `src/scratch/` remains ordinary project source. */
+export function isRootScratchDir(repoRoot: string, absDir: string): boolean {
+	return absDir === join(repoRoot, "scratch");
+}
+
 // ── Gitignore-aware directory skipping ───────────────────────────────────────
 
 /** Runs the `git ls-files` ignored-directory listing and returns raw stdout,

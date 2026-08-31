@@ -112,14 +112,20 @@ export interface SessionTokens {
 
 /**
  * Public API — read cumulative token usage for a session by parsing the
- * Claude Code transcript JSONL. Returns null when the path is missing,
- * unreadable, or contains no usage rows. Tolerates malformed lines.
+ * Claude Code transcript JSONL. Returns null when the source is not Claude,
+ * the path is missing/unreadable, or the transcript contains no usage rows.
+ * Tolerates malformed lines.
  *
- * Called once at Stop time — not on every tool call — so a streaming /
- * cursored read isn't necessary. Synchronous to keep the Stop handler
- * simple; transcripts are typically <5MB even on long sessions.
+ * The source gate is deliberately before any filesystem call: Codex also
+ * supplies a transcript path, but its rollout uses an ordinal/payload schema
+ * this parser cannot consume and can be hundreds of megabytes. Reading that
+ * file only to return null caused large Stop-time RSS spikes.
  */
-export function readSessionTokens(transcriptPath: string | undefined): SessionTokens | null {
+export function readSessionTokens(
+	transcriptPath: string | undefined,
+	agentSource = "claude",
+): SessionTokens | null {
+	if (agentSource !== "claude") return null;
 	if (!transcriptPath) return null;
 	if (!existsSync(transcriptPath)) return null;
 	let raw: string;

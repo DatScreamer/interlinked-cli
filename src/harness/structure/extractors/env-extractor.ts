@@ -8,7 +8,7 @@ import { nonNull } from "../../../lib/non-null.js";
 import { makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
-import { resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import { isRootScratchDir, resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const SOURCE_EXTENSIONS = new Set([
 	".ts",
@@ -131,7 +131,7 @@ function walkDir(dir: string, ctx: WalkContext): void {
 		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			const sub = path.join(dir, entry.name);
-			if (SKIP_DIRS.has(entry.name) || ctx.ignoredDirs?.has(sub)) continue;
+			if (SKIP_DIRS.has(entry.name) || isRootScratchDir(ctx.repoRoot, sub) || ctx.ignoredDirs?.has(sub)) continue;
 			walkDir(sub, ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile()) {

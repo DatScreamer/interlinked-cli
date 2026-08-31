@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { makeEdgeId, makeGlobalRef } from "../artifact-graph.js";
 import type { ArtifactEdge, ArtifactNode, ExtractorMetadata, ExtractorResult } from "../types.js";
 import { consumeWalkEntry, createWalkBudget, type WalkBudget, warnWalkTruncated } from "./bounded-walk.js";
-import { resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import { isRootScratchDir, resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
 
 const PACKAGE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
 
@@ -66,7 +66,7 @@ function findPackages(dir: string, ctx: WalkContext): void {
 		if (!consumeWalkEntry(ctx.budget)) return;
 		if (entry.isDirectory()) {
 			const sub = path.join(dir, entry.name);
-			if (SKIP_DIRS.has(entry.name) || ctx.ignoredDirs?.has(sub)) continue;
+			if (SKIP_DIRS.has(entry.name) || isRootScratchDir(ctx.repoRoot, sub) || ctx.ignoredDirs?.has(sub)) continue;
 			findPackages(sub, ctx);
 			if (ctx.budget.truncated) return;
 		} else if (entry.isFile() && PACKAGE_MARKERS.includes(entry.name)) {

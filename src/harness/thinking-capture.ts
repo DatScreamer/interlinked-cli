@@ -5,11 +5,11 @@
 // since the last tool call — that's the thinking that preceded THIS tool — then
 // the activity writer attaches it to the tool_use_start record.
 //
-// Byte-offset cursor per transcript (.interlinked/thinking-cursor.json), so each
-// call returns only thinking appended since the previous one; a path change
-// (new session) resets to the transcript start. Thinking is SCRUBBED (secrets +
-// PII) before it is returned, since the active write path does not otherwise
-// scrub and reasoning is the one field we always redact.
+// Bounded byte-offset cursors per transcript
+// (.interlinked/thinking-cursor.json), so parallel sessions resume independently
+// and each call returns only thinking appended since the previous one. Thinking
+// is SCRUBBED (secrets + PII) before it is returned, since the active write path
+// does not otherwise scrub and reasoning is the one field we always redact.
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { isJsonObject, type JsonObject } from "../lib/json-types.js";
@@ -18,6 +18,23 @@ import { redactPii, scrubSecrets } from "../lib/secrets.js";
 interface ThinkingCursor {
 	path: string;
 	offset: number;
+	offsets: Record<string, number>;
+}
+
+const MAX_CURSOR_TRANSCRIPTS = 32;
+export const MAX_THINKING_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+
+function isValidOffset(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function numericOffsets(value: unknown): Record<string, number> {
+	if (!isJsonObject(value)) return {};
+	const entries: Array<[string, number]> = [];
+	for (const [path, offset] of Object.entries(value)) {
+		if (isValidOffset(offset)) entries.push([path, offset]);
+	}
+	return Object.fromEntries(entries);
 }
 
 /** Narrow a parsed `thinking-cursor.json` value to a `ThinkingCursor`.
@@ -26,8 +43,13 @@ interface ThinkingCursor {
 function parseThinkingCursor(value: unknown): ThinkingCursor | null {
 	if (!isJsonObject(value)) return null;
 	const { path, offset } = value;
-	if (typeof path !== "string" || typeof offset !== "number") return null;
-	return { path, offset };
+	if (typeof path !== "string" || !isValidOffset(offset)) return null;
+	const offsets = numericOffsets(value.offsets);
+	if (path) {
+		delete offsets[path];
+		offsets[path] = offset;
+	}
+	return { path, offset, offsets };
 }
 
 function readCursor(cursorPath: string): ThinkingCursor {
@@ -37,7 +59,35 @@ function readCursor(cursorPath: string): ThinkingCursor {
 	} catch (e) {
 		void e; // missing/corrupt cursor → start fresh
 	}
-	return { path: "", offset: 0 };
+	return { path: "", offset: 0, offsets: {} };
+}
+
+function updatedCursor(cursor: ThinkingCursor, transcriptPath: string, offset: number): ThinkingCursor {
+	const offsets = { ...cursor.offsets };
+	delete offsets[transcriptPath];
+	offsets[transcriptPath] = offset;
+	const paths = Object.keys(offsets);
+	for (let i = 0; i < paths.length - MAX_CURSOR_TRANSCRIPTS; i++) {
+		const oldest = paths[i];
+		if (oldest !== undefined) delete offsets[oldest];
+	}
+	return { path: transcriptPath, offset, offsets };
+}
+
+function readBytes(filePath: string, start: number, length: number): Buffer {
+	const fd = openSync(filePath, "r");
+	try {
+		const buf = Buffer.alloc(length);
+		let bytesRead = 0;
+		while (bytesRead < length) {
+			const count = readSync(fd, buf, bytesRead, length - bytesRead, start + bytesRead);
+			if (count === 0) break;
+			bytesRead += count;
+		}
+		return bytesRead === length ? buf : buf.subarray(0, bytesRead);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** Narrow a transcript JSONL line to an assistant record's `message` object,
@@ -88,18 +138,21 @@ export function extractNewThinking(transcriptPath: string, cursorPath: string): 
 	if (!transcriptPath || !existsSync(transcriptPath)) return null;
 	try {
 		const size = statSync(transcriptPath).size;
-		let cursor = readCursor(cursorPath);
-		// New session (or first run): re-read from the transcript start.
-		if (cursor.path !== transcriptPath) cursor = { path: transcriptPath, offset: 0 };
-		if (cursor.offset >= size) return null;
+		const cursor = readCursor(cursorPath);
+		let offset = cursor.offsets[transcriptPath] ?? 0;
+		if (offset > size) offset = 0;
+		if (offset === size) return null;
 
-		const fd = openSync(transcriptPath, "r");
-		const buf = Buffer.alloc(size - cursor.offset);
-		readSync(fd, buf, 0, buf.length, cursor.offset);
-		closeSync(fd);
+		const readStart = Math.max(offset, size - MAX_THINKING_TRANSCRIPT_BYTES);
+		const buf = readBytes(transcriptPath, readStart, size - readStart);
+		let text = buf.toString("utf-8");
+		if (readStart > offset) {
+			const firstNewline = text.indexOf("\n");
+			text = firstNewline === -1 ? "" : text.slice(firstNewline + 1);
+		}
 
 		const parts: string[] = [];
-		for (const line of buf.toString("utf-8").split("\n")) {
+		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
 			try {
 				const blocks = parseAssistantThinkingBlocks(JSON.parse(line));
@@ -110,7 +163,7 @@ export function extractNewThinking(transcriptPath: string, cursorPath: string): 
 		}
 
 		// Persist the cursor even when no thinking was found, so we don't re-scan.
-		writeFileSync(cursorPath, JSON.stringify({ path: transcriptPath, offset: size }));
+		writeFileSync(cursorPath, JSON.stringify(updatedCursor(cursor, transcriptPath, size)));
 		if (parts.length === 0) return null;
 
 		const combined = parts.join("\n---\n");
@@ -151,10 +204,7 @@ export function latestTranscriptModel(transcriptPath: string): string | null {
 	try {
 		const size = statSync(transcriptPath).size;
 		const start = Math.max(0, size - 256 * 1024);
-		const fd = openSync(transcriptPath, "r");
-		const buf = Buffer.alloc(size - start);
-		readSync(fd, buf, 0, buf.length, start);
-		closeSync(fd);
+		const buf = readBytes(transcriptPath, start, size - start);
 		let model: string | null = null;
 		for (const line of buf.toString("utf-8").split("\n")) {
 			if (!line.includes('"model"')) continue;

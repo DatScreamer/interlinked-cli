@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +58,19 @@ describe("test-extractor", () => {
 		writeFileSync(join(tmp, "node_modules", "lib", "a.test.ts"), "");
 		const { nodes } = extract(tmp);
 		expect(nodes).toEqual([]);
+	});
+
+	it("skips tests inside a gitignored directory", () => {
+		execFileSync("git", ["init", "-q", tmp]);
+		writeFileSync(join(tmp, ".gitignore"), "ignored-data/\n");
+		mkdirSync(join(tmp, "src"), { recursive: true });
+		mkdirSync(join(tmp, "ignored-data"), { recursive: true });
+		writeFileSync(join(tmp, "src", "kept.test.ts"), "");
+		writeFileSync(join(tmp, "ignored-data", "ignored.test.ts"), "");
+
+		const labels = extract(tmp).nodes.map((node) => node.label);
+		expect(labels).toContain("src/kept.test.ts");
+		expect(labels).not.toContain("ignored-data/ignored.test.ts");
 	});
 
 	it("returns empty for a missing/unreadable root (readdirSync catch)", () => {

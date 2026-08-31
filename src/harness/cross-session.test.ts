@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -34,6 +42,32 @@ describe("loadRecentWorkspaceEvents", () => {
 			{ hook_event: "PreToolUse", session_id: "s2", timestamp: "2026-05-27T00:00:02Z" },
 		]);
 		expect(loadRecentWorkspaceEvents(dir)).toHaveLength(2);
+	});
+
+	it("normalizes the v5 activity wire shape used by the real log", () => {
+		writeLog([
+			{
+				schema_version: 5,
+				ts: "2026-05-27T00:00:02Z",
+				agent: "worker-7",
+				type: "tool_use_start",
+				tool: "Edit",
+				tool_input: { file_path: "src/live.ts" },
+				session: "session-7",
+			},
+		]);
+
+		expect(loadRecentWorkspaceEvents(dir)).toEqual([
+			{
+				timestamp: "2026-05-27T00:00:02Z",
+				agent_name: "worker-7",
+				tool_name: "Edit",
+				tool_input: { file_path: "src/live.ts" },
+				session_id: "session-7",
+				hook_event: "PreToolUse",
+				cwd: dir,
+			},
+		]);
 	});
 
 	it("filters out events with timestamps below `sinceTimestamp`", () => {
@@ -126,6 +160,41 @@ describe("loadRecentWorkspaceEvents", () => {
 		// First retained event is s100 (600 total, last 500 kept => indices 100..599).
 		expect(got[0]?.session_id).toBe("s100");
 		expect(got[got.length - 1]?.session_id).toBe("s599");
+	});
+
+	it("uses the bounded reverse reader instead of materializing the whole activity log", () => {
+		const source = readFileSync(new URL("./cross-session.ts", import.meta.url), "utf-8");
+		expect(source).toContain(
+			"readRecentLines(logPath, MAX_TRAILING_EVENTS, MAX_TRAILING_BYTES)",
+		);
+		expect(source).not.toContain('readFileSync(logPath, "utf-8")');
+	});
+
+	it("reads a valid v5 tail from a sparse 1 GiB log without scanning the sparse prefix", () => {
+		const sub = join(dir, ".interlinked");
+		const log = join(sub, "activity.jsonl");
+		mkdirSync(sub, { recursive: true });
+		writeFileSync(log, "");
+		truncateSync(log, 1024 * 1024 * 1024);
+		appendFileSync(
+			log,
+			`\n${JSON.stringify({
+				schema_version: 5,
+				ts: "2026-05-27T00:00:02Z",
+				agent: "worker-tail",
+				type: "tool_use_start",
+				tool: "Edit",
+				tool_input: { file_path: "src/tail.ts" },
+			})}\n`,
+		);
+
+		expect(loadRecentWorkspaceEvents(dir)).toMatchObject([
+			{
+				timestamp: "2026-05-27T00:00:02Z",
+				agent_name: "worker-tail",
+				tool_name: "Edit",
+			},
+		]);
 	});
 
 	it("returns [] when activity.jsonl can be stat'd but not read (EISDIR)", () => {

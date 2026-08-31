@@ -17,14 +17,14 @@
 // to an uncapped walk. The cap only ever fires on a pathological root.
 
 /**
- * Maximum number of directory entries (files + subdirectories) any single
- * extractor walk will visit before stopping. ~25K is an order of magnitude
- * above any real project tree this harness analyses (interlinked-cli itself,
- * minus skip-dirs, is a few thousand entries) yet small enough that a
+ * Maximum number of directory entries the shared all-extractor pass will
+ * visit before stopping. Each extractor classifies a different artifact kind
+ * and therefore revisits the same normal project tree; 50K leaves room for
+ * seven passes over a several-thousand-entry repo while remaining small enough that a
  * mis-rooted walk over `$HOME` or a vendored monorepo aborts in well under
  * a second instead of taking 11-25s.
  */
-export const MAX_WALK_ENTRIES = 25_000;
+export const MAX_WALK_ENTRIES = 50_000;
 
 /**
  * Maximum wall-clock time (ms) any single extractor walk will spend before

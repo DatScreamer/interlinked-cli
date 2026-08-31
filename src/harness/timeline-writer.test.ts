@@ -1,4 +1,12 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +14,8 @@ import {
 	appendTimelineRecords,
 	dedupeTimeline,
 	existingTimelineKeys,
+	recentTimelineKeys,
+	RECENT_TIMELINE_KEY_BYTES,
 	recordKey,
 	sortTimeline,
 	timelinePath,
@@ -77,14 +87,32 @@ describe("timeline-writer file I/O", () => {
 	});
 
 	it("appendTimelineRecords appends; existingTimelineKeys reads the keys back", () => {
-		appendTimelineRecords([rec({ ts: "t", uuid: "x", seq: 0 }), rec({ ts: "t", uuid: "x", seq: 1 })], cwd);
-		appendTimelineRecords([rec({ ts: "t", uuid: "y", seq: 0 })], cwd);
+		expect(
+			appendTimelineRecords([rec({ ts: "t", uuid: "x", seq: 0 }), rec({ ts: "t", uuid: "x", seq: 1 })], cwd),
+		).toBe(true);
+		expect(appendTimelineRecords([rec({ ts: "t", uuid: "y", seq: 0 })], cwd)).toBe(true);
 		expect(existingTimelineKeys(cwd)).toEqual(new Set(["x#0", "x#1", "y#0"]));
 	});
 
 	it("appendTimelineRecords with an empty list is a no-op", () => {
-		appendTimelineRecords([], cwd);
+		expect(appendTimelineRecords([], cwd)).toBe(true);
 		expect(existingTimelineKeys(cwd).size).toBe(0);
+	});
+
+	it("appendTimelineRecords reports a filesystem append failure without throwing", () => {
+		mkdirSync(timelinePath(cwd), { recursive: true });
+		expect(appendTimelineRecords([rec({ ts: "t", uuid: "x", seq: 0 })], cwd)).toBe(false);
+	});
+
+	it("seeds live dedup from a byte-bounded tail while the backfill reader remains complete", () => {
+		const path = timelinePath(cwd);
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ uuid: "old", seq: 0 })}\n`);
+		truncateSync(path, RECENT_TIMELINE_KEY_BYTES + 1024);
+		appendFileSync(path, `\n${JSON.stringify({ uuid: "new", seq: 1 })}\n`);
+
+		expect(recentTimelineKeys(cwd, 20)).toEqual(new Set(["new#1"]));
+		expect(existingTimelineKeys(cwd)).toEqual(new Set(["old#0", "new#1"]));
 	});
 
 	describe("existingTimelineKeys — malformed rows (parseTimelineDedupKey)", () => {

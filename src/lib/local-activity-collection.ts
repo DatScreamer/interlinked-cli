@@ -295,8 +295,12 @@ export function readCollectionActivity(opts?: {
 	return events;
 }
 
-export function readRecentLines(path: string, maxLines: number): string[] {
-	if (maxLines <= 0) {
+export function readRecentLines(
+	path: string,
+	maxLines: number,
+	maxBytes: number = Number.POSITIVE_INFINITY,
+): string[] {
+	if (maxLines <= 0 || maxBytes <= 0) {
 		return [];
 	}
 
@@ -308,13 +312,15 @@ export function readRecentLines(path: string, maxLines: number): string[] {
 	const fd = openSync(path, "r");
 	const chunkSize = 64 * 1024;
 	let position = fileSize;
+	let bytesRemaining = Math.min(fileSize, Math.floor(maxBytes));
 	let carry = "";
 	const lines: string[] = [];
 
 	try {
-		while (position > 0 && lines.length < maxLines) {
-			const readSize = Math.min(chunkSize, position);
+		while (position > 0 && bytesRemaining > 0 && lines.length < maxLines) {
+			const readSize = Math.min(chunkSize, position, bytesRemaining);
 			position -= readSize;
+			bytesRemaining -= readSize;
 
 			const buffer = Buffer.alloc(readSize);
 			readSync(fd, buffer, 0, readSize, position);
@@ -331,7 +337,10 @@ export function readRecentLines(path: string, maxLines: number): string[] {
 			}
 		}
 
-		if (carry.trim() && lines.length < maxLines) {
+		// Only the file's actual first line is complete without a preceding
+		// newline. When a byte budget stopped the scan mid-file, `carry` is an
+		// incomplete prefix of the oldest retained line and must be discarded.
+		if (position === 0 && carry.trim() && lines.length < maxLines) {
 			lines.push(carry.trim());
 		}
 

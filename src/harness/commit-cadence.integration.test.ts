@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -66,6 +66,13 @@ describe("readSessionTokens", () => {
 	it("returns null when transcriptPath is missing or unreadable", () => {
 		expect(readSessionTokens(undefined)).toBeNull();
 		expect(readSessionTokens(join(tmp, "does-not-exist.jsonl"))).toBeNull();
+	});
+
+	it("skips a sparse large Codex rollout before attempting Claude JSONL parsing", () => {
+		const path = join(tmp, "codex-rollout.jsonl");
+		writeFileSync(path, "");
+		truncateSync(path, 1024 * 1024 * 1024);
+		expect(readSessionTokens(path, "codex")).toBeNull();
 	});
 
 	it("sums input + output tokens across assistant messages", () => {

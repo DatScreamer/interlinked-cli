@@ -7,20 +7,36 @@
 // are loaded, and the result is cached per Stop turn so multiple detectors
 // share the read cost.
 
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 
-import { isJsonObject } from "../lib/json-types.js";
-import type { HarnessEvent } from "./types.js";
+import { isJsonObject, type JsonObject } from "../lib/json-types.js";
+import {
+	parseLocalActivityEvent,
+	readRecentLines,
+} from "../lib/local-activity-collection.js";
 
-/** Maximum number of trailing events loaded per call. Bounds both memory
- *  use and read cost — at ~1 KB per event, a 500-event tail caps at ~500 KB. */
+/** Dual cap for each tail scan. The byte ceiling is the hard memory/I/O bound;
+ * the row ceiling keeps parsing and detector work bounded within that window. */
 const MAX_TRAILING_EVENTS = 500;
+const MAX_TRAILING_BYTES = 4 * 1024 * 1024;
+
+/** Narrow projection shared by the legacy HarnessEvent-shaped fixtures and
+ * the v5 LocalActivityEvent rows that activity.jsonl actually contains. */
+export interface WorkspaceActivityEvent {
+	timestamp: string;
+	agent_name?: string;
+	tool_name?: string;
+	tool_input?: JsonObject;
+	session_id?: string;
+	hook_event?: string;
+	cwd?: string;
+}
 
 interface CacheEntry {
 	mtime: number;
 	since: string;
-	events: HarnessEvent[];
+	events: WorkspaceActivityEvent[];
 }
 
 const CACHE_MAX_ENTRIES = 16;
@@ -57,7 +73,7 @@ function pruneCache(): void {
 export function loadRecentWorkspaceEvents(
 	cwd: string,
 	sinceTimestamp: string = "",
-): HarnessEvent[] {
+): WorkspaceActivityEvent[] {
 	const logPath = join(cwd, ".interlinked", "activity.jsonl");
 	let mtime: number;
 	try {
@@ -74,52 +90,66 @@ export function loadRecentWorkspaceEvents(
 		return cached.events;
 	}
 
-	let raw: string;
+	let lines: string[];
 	try {
-		raw = readFileSync(logPath, "utf-8");
+		// readRecentLines scans backward in fixed-size chunks and returns
+		// newest-first. Reverse the bounded result to preserve this reader's
+		// established chronological ordering without ever loading the full log.
+		lines = readRecentLines(logPath, MAX_TRAILING_EVENTS, MAX_TRAILING_BYTES).reverse();
 	} catch {
 		return [];
 	}
 
-	const lines = raw.split("\n").filter((l) => l.length > 0);
-	const tail = lines.slice(-MAX_TRAILING_EVENTS);
-	const events: HarnessEvent[] = [];
-	for (const line of tail) {
+	const events: WorkspaceActivityEvent[] = [];
+	for (const line of lines) {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
 		} catch {
 			continue; // malformed line — best-effort, skip silently
 		}
-		// Structural gate only: reject non-object JSON (arrays, bare strings/
-		// numbers, `null`). We deliberately do NOT validate HarnessEvent's own
-		// required fields (hook_event/session_id/agent_source/timestamp) here —
-		// `.interlinked/activity.jsonl` rows are actually written in the
-		// LocalActivityEvent wire shape (ts/agent/session/type; see
-		// local-activity-types.ts), confirmed by sampling the real file
-		// (0/20000 real rows carried hook_event/agent_source/session_id,
-		// 2026-08-10). A strict per-field validator would drop every real row.
-		// Every caller of this function already individually type-guards the
-		// fields it reads (see sequence-checks/cross-agent.ts), matching the
-		// `sinceTimestamp` guard immediately below — this cast documents an
-		// existing, pre-existing type/wire mismatch rather than introducing one.
-		// The `as unknown as` (rather than a direct `as HarnessEvent`) is not
-		// stylistic: tsc refuses the direct cast ("neither type sufficiently
-		// overlaps with the other"), independently confirming the mismatch.
 		if (!isJsonObject(parsed)) continue;
-		if (
-			sinceTimestamp &&
-			typeof parsed.timestamp === "string" &&
-			parsed.timestamp < sinceTimestamp
-		) {
-			continue;
-		}
-		events.push(parsed as unknown as HarnessEvent);
+		const event = normalizeActivityEvent(parsed, cwd);
+		if (!event) continue;
+		if (sinceTimestamp && event.timestamp < sinceTimestamp) continue;
+		events.push(event);
 	}
 
 	cache.set(key, { mtime, since: sinceTimestamp, events });
 	pruneCache();
 	return events;
+}
+
+function stringField(record: JsonObject, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function normalizeActivityEvent(record: JsonObject, cwd: string): WorkspaceActivityEvent | null {
+	const local = parseLocalActivityEvent(record);
+	const timestamp = stringField(record, "timestamp") ?? local?.ts;
+	if (!timestamp) return null;
+	const agentName = stringField(record, "agent_name") ?? local?.agent;
+	const toolName = stringField(record, "tool_name") ?? local?.tool ?? undefined;
+	const sessionId = stringField(record, "session_id") ?? local?.session ?? undefined;
+	const explicitHook = stringField(record, "hook_event") ?? local?.hook ?? undefined;
+	const inferredHook =
+		record.type === "tool_use_start"
+			? "PreToolUse"
+			: record.type === "tool_use"
+				? "PostToolUse"
+				: undefined;
+	const hookEvent = explicitHook ?? inferredHook;
+	const event: WorkspaceActivityEvent = {
+		timestamp,
+		cwd: typeof record.cwd === "string" ? record.cwd : cwd,
+	};
+	if (agentName) event.agent_name = agentName;
+	if (toolName) event.tool_name = toolName;
+	if (isJsonObject(record.tool_input)) event.tool_input = record.tool_input;
+	if (sessionId) event.session_id = sessionId;
+	if (hookEvent) event.hook_event = hookEvent;
+	return event;
 }
 
 /** Test helper — drop all cached entries. Exported only for vitest. */

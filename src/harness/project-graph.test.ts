@@ -22,6 +22,7 @@
 // calls in ./project-graph/resolve.ts, so a filesystem mock would need to
 // reproduce that resolution logic faithfully; real disk avoids that risk.
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -110,6 +111,39 @@ describe("module scope — SKIP_DIRS / TS_JS_EXTENSIONS / initialized default", 
 		pg.initialize();
 		const rels = pg.allFiles().map((f) => pg.toRelative(f));
 		expect(rels.some((r) => r.endsWith(".md") || r.endsWith(".json"))).toBe(false);
+	});
+});
+
+describe("full scan — repository-specific ignored directories", () => {
+	let root: string;
+
+	beforeAll(() => {
+		root = makeTempRoot("gitignore");
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		write(root, ".gitignore", "ignored-output/\nscratch/*\n!scratch/README.md\n");
+		write(root, "ignored-output/generated.ts", "export const ignoredOutput = 1;\n");
+		write(root, "scratch/generated-1.ts", "export const generated1 = 1;\n");
+		write(root, "scratch/nested/generated-2.mts", "export const generated2 = 2;\n");
+		write(root, "scratch/README.md", "# Generated scratch work\n");
+		write(root, "src/scratch/tracked.ts", "export const nestedScratch = 1;\n");
+		write(root, "src/tracked.ts", "export const tracked = 1;\n");
+		execFileSync(
+			"git",
+			["add", "--", ".gitignore", "scratch/README.md", "src/scratch/tracked.ts", "src/tracked.ts"],
+			{ cwd: root },
+		);
+	});
+
+	afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+	it("excludes ignored source trees, including root scratch with a README carve-out", () => {
+		const graph = new ProjectGraph(root);
+		graph.initialize();
+
+		expect(graph.allFiles().map((file) => graph.toRelative(file))).toEqual([
+			path.join("src", "scratch", "tracked.ts"),
+			path.join("src", "tracked.ts"),
+		]);
 	});
 });
 

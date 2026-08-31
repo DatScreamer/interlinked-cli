@@ -79,6 +79,8 @@ export interface TimelineRecord {
 	permission_mode?: string | undefined;
 	/** The runner's own attribution label for the acting agent. */
 	attribution_agent?: string | undefined;
+	/** Stable parent thread/agent identity for a spawned actor, when reported. */
+	parent_agent?: string | undefined;
 	/** Why a tool call was denied, when the runner refused one. */
 	tool_denial_kind?: string | undefined;
 	/** The runner's STRUCTURED tool result (diffs, exit codes, file metadata) —

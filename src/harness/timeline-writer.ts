@@ -16,9 +16,13 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isJsonObject } from "../lib/json-types.js";
+import { readRecentLines } from "../lib/local-activity-collection.js";
 import type { TimelineRecord } from "./transcript-record.js";
 
 export const TIMELINE_FILENAME = "timeline.jsonl";
+/** Live-capture seed bound. Backfill keeps the full reader below; the daemon
+ * only needs the same recent key window it retains in memory. */
+export const RECENT_TIMELINE_KEY_BYTES = 4 * 1024 * 1024;
 
 // Unicode line/paragraph separators, derived by code point so they never appear
 // as literal line terminators in this source file. `JSON.stringify` leaves them
@@ -47,16 +51,20 @@ export function serializeRecord(r: TimelineRecord): string {
 }
 
 /** Append records as JSONL to the timeline log (live path). Creates the dir if
- *  missing. Best-effort: never throws (fail-open, like the rest of capture). */
-export function appendTimelineRecords(records: TimelineRecord[], cwd: string): void {
-	if (records.length === 0) return;
+ *  missing. Best-effort: never throws (fail-open, like the rest of capture).
+ *  Returns whether every record was appended so callers can commit cursors and
+ *  in-memory dedup state only after durable-enough filesystem success. */
+export function appendTimelineRecords(records: TimelineRecord[], cwd: string): boolean {
+	if (records.length === 0) return true;
 	try {
 		const path = timelinePath(cwd);
 		mkdirSync(dirname(path), { recursive: true });
 		const body = records.map(serializeRecord).join("\n");
 		appendFileSync(path, `${body}\n`);
+		return true;
 	} catch (err) {
 		void err; // best-effort capture — a write hiccup must never break the pipeline
+		return false;
 	}
 }
 
@@ -84,6 +92,27 @@ export function existingTimelineKeys(cwd: string): Set<string> {
 	try {
 		for (const line of readFileSync(path, "utf-8").split("\n")) {
 			if (!line.trim()) continue;
+			const key = parseTimelineDedupKey(line);
+			if (key !== null) keys.add(key);
+		}
+	} catch (err) {
+		void err;
+	}
+	return keys;
+}
+
+/** Recent dedup keys for the daemon's bounded live-capture cache. Reads from
+ * the file tail directly; unlike {@link existingTimelineKeys}, it never
+ * materializes the full append-only timeline. Newest rows win. */
+export function recentTimelineKeys(
+	cwd: string,
+	maxKeys: number,
+	maxBytes: number = RECENT_TIMELINE_KEY_BYTES,
+): Set<string> {
+	const keys = new Set<string>();
+	if (maxKeys <= 0 || maxBytes <= 0) return keys;
+	try {
+		for (const line of readRecentLines(timelinePath(cwd), maxKeys, maxBytes)) {
 			const key = parseTimelineDedupKey(line);
 			if (key !== null) keys.add(key);
 		}

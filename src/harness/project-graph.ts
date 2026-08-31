@@ -20,6 +20,7 @@ import { parseImports } from "./project-graph/parser-imports.js";
 import { resolveImportPath } from "./project-graph/resolve.js";
 import { findCyclesThroughGraph } from "./project-graph-cycles.js";
 import { computeReachabilityVerdict } from "./project-graph-reachability.js";
+import { resolveIgnoredDirs } from "./structure/extractors/skip-dirs.js";
 import type {
 	ExportedSymbol,
 	ImportEdge,
@@ -86,6 +87,21 @@ export const SKIP_DIRS = new Set([
 ]);
 
 export const TS_JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+
+/** Root-local agent scratch is deliberately outside the shipped dependency
+ * graph. Its `.gitignore` has a README carve-out, so Git cannot collapse the
+ * directory to a single ignored marker even when it contains thousands of
+ * generated source probes. Keep this path-specific: a real `src/scratch/`
+ * package remains ordinary project source. */
+const ROOT_SCAN_SKIP_DIRS: ReadonlySet<string> = new Set(["scratch"]);
+
+interface ProjectWalkContext {
+	dir: string;
+	result: string[];
+	depth: number;
+	currentBoundary?: string;
+	ignoredDirs: ReadonlySet<string>;
+}
 
 // ===========================================
 // Project Graph
@@ -442,11 +458,16 @@ export class ProjectGraph {
 
 	private scanProjectFiles(): string[] {
 		const files: string[] = [];
-		this.walkDir(this.projectRoot, files, 0);
+		this.walkDir({
+			dir: this.projectRoot,
+			result: files,
+			depth: 0,
+			ignoredDirs: resolveIgnoredDirs(this.projectRoot),
+		});
 		return files;
 	}
 
-	private walkDir(dir: string, result: string[], depth: number, currentBoundary?: string): void {
+	private walkDir({ dir, result, depth, currentBoundary, ignoredDirs }: ProjectWalkContext): void {
 		if (depth > 20) return; // Safety limit
 		try {
 			// Determine the project boundary for this directory.
@@ -465,11 +486,17 @@ export class ProjectGraph {
 				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
 			);
 			for (const entry of entries) {
-				if (SKIP_DIRS.has(entry.name)) continue;
-
 				const fullPath = join(dir, entry.name);
 				if (entry.isDirectory()) {
-					this.walkDir(fullPath, result, depth + 1, boundary);
+					const isRootScratch = dir === this.projectRoot && ROOT_SCAN_SKIP_DIRS.has(entry.name);
+					if (SKIP_DIRS.has(entry.name) || isRootScratch || ignoredDirs.has(fullPath)) continue;
+					this.walkDir({
+						dir: fullPath,
+						result,
+						depth: depth + 1,
+						currentBoundary: boundary,
+						ignoredDirs,
+					});
 				} else if (entry.isFile()) {
 					const ext = extname(entry.name);
 					if (TS_JS_EXTENSIONS.has(ext)) {

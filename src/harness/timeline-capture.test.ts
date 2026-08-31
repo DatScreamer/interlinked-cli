@@ -1,4 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +15,7 @@ import {
 	boundKeySet,
 	captureAgentTranscript,
 	captureTimeline,
+	MAX_LIVE_TRANSCRIPT_BYTES,
 	MAX_SEEN_KEYS_PER_CWD,
 } from "./timeline-capture.js";
 import { timelinePath, writeTimeline } from "./timeline-writer.js";
@@ -78,6 +88,64 @@ describe("captureTimeline (live drain)", () => {
 		expect(timelineTexts(cwd)).toEqual(["first message", "second message", "third message"]);
 	});
 
+	it("waits for a split JSONL write to finish before advancing the cursor", () => {
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		const cursorPath = join(cwd, ".interlinked", "timeline-cursor.json");
+		const completeOffset = readFileSync(transcript).byteLength;
+		const third = assistantLine("u3", "2026-06-28T10:00:02.000Z", "split message");
+		const splitAt = third.length - 2;
+		appendFileSync(transcript, third.slice(0, splitAt));
+
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		const partialCursor: { offset?: number } = JSON.parse(readFileSync(cursorPath, "utf-8"));
+		expect(partialCursor.offset).toBe(completeOffset);
+		expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
+
+		appendFileSync(transcript, third.slice(splitAt));
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		expect(timelineTexts(cwd)).toEqual(["first message", "second message", "split message"]);
+	});
+
+	it("retries the same records after a timeline append failure", () => {
+		mkdirSync(timelinePath(cwd), { recursive: true });
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		expect(existsSync(join(cwd, ".interlinked", "timeline-cursor.json"))).toBe(false);
+
+		rmSync(timelinePath(cwd), { recursive: true, force: true });
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
+	});
+
+	it("keeps independent persisted offsets when parallel agents alternate transcripts", () => {
+		const other = join(cwd, "other.jsonl");
+		writeFileSync(other, assistantLine("other-1", "2026-06-28T10:00:03.000Z", "other"));
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		captureTimeline(stopEvent(cwd, other), cwd);
+		appendFileSync(transcript, assistantLine("u3", "2026-06-28T10:00:04.000Z", "third"));
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+
+		const cursor: { offsets?: Record<string, number> } = JSON.parse(
+			readFileSync(join(cwd, ".interlinked", "timeline-cursor.json"), "utf-8"),
+		);
+		expect(cursor.offsets).toMatchObject({
+			[transcript]: readFileSync(transcript).byteLength,
+			[other]: readFileSync(other).byteLength,
+		});
+		expect(timelineTexts(cwd)).toEqual(["first message", "second message", "other", "third"]);
+	});
+
+	it("reads only a bounded tail from a sparse 1 GiB transcript", () => {
+		writeFileSync(transcript, "");
+		truncateSync(transcript, 1024 * 1024 * 1024);
+		appendFileSync(
+			transcript,
+			`\n${assistantLine("tail", "2026-06-28T10:00:05.000Z", "bounded tail")}`,
+		);
+		captureTimeline(stopEvent(cwd, transcript), cwd);
+		expect(timelineTexts(cwd)).toEqual(["bounded tail"]);
+		expect(MAX_LIVE_TRANSCRIPT_BYTES).toBe(8 * 1024 * 1024);
+	});
+
 	it("dedups against a pre-existing timeline (backfill overlap)", () => {
 		// Pre-seed the timeline as if a backfill already captured u1, then let the
 		// live drain re-read the whole transcript (fresh cursor) — u1 must not dup.
@@ -116,6 +184,15 @@ describe("captureTimeline (live drain)", () => {
 		rmSync(bare, { recursive: true, force: true });
 	});
 
+	it("skips Codex rollouts that use a different transcript schema", () => {
+		captureTimeline(
+			{ ...stopEvent(cwd, transcript), agent_source: "codex" },
+			cwd,
+		);
+		expect(existsSync(timelinePath(cwd))).toBe(false);
+		expect(existsSync(join(cwd, ".interlinked", "timeline-cursor.json"))).toBe(false);
+	});
+
 	describe("readCursor (via captureTimeline) — malformed cursor file", () => {
 		function cursorPath(): string {
 			return join(cwd, ".interlinked", "timeline-cursor.json");
@@ -130,6 +207,38 @@ describe("captureTimeline (live drain)", () => {
 			appendFileSync(transcript, assistantLine("u3", "2026-06-28T10:00:02.000Z", "third message"));
 			captureTimeline(stopEvent(cwd, transcript), cwd);
 			expect(timelineTexts(cwd)).toEqual(["first message", "second message", "third message"]);
+		});
+
+		it("migrates a valid legacy cursor into the per-transcript offset map", () => {
+			const firstLineOffset = Buffer.byteLength(assistantLine("u1", "2026-06-28T10:00:00.000Z", "first message"));
+			seedCursor(JSON.stringify({ path: transcript, offset: firstLineOffset }));
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+
+			const migrated: { path?: string; offset?: number; offsets?: Record<string, number> } = JSON.parse(
+				readFileSync(cursorPath(), "utf-8"),
+			);
+			expect(migrated).toMatchObject({
+				path: transcript,
+				offset: readFileSync(transcript).byteLength,
+				offsets: { [transcript]: readFileSync(transcript).byteLength },
+			});
+			expect(timelineTexts(cwd)).toEqual(["second message"]);
+		});
+
+		it("rejects negative, fractional, and unsafe offsets before resuming", () => {
+			const fractionalPath = join(cwd, "fractional.jsonl");
+			seedCursor(
+				JSON.stringify({
+					path: transcript,
+					offset: Number.MAX_SAFE_INTEGER + 1,
+					offsets: { [transcript]: -1, [fractionalPath]: 1.5 },
+				}),
+			);
+			captureTimeline(stopEvent(cwd, transcript), cwd);
+
+			const repaired: { offsets?: Record<string, number> } = JSON.parse(readFileSync(cursorPath(), "utf-8"));
+			expect(repaired.offsets).toEqual({ [transcript]: readFileSync(transcript).byteLength });
+			expect(timelineTexts(cwd)).toEqual(["first message", "second message"]);
 		});
 
 		it("N1: a cursor whose fields carry the wrong type degrades to a fresh full read (no throw)", () => {

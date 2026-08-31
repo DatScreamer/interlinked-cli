@@ -97,6 +97,18 @@ describe("runAllExtractors", () => {
 		expect(result.nodes.some((n) => n.kind === "config_key" && n.label === "db.host")).toBe(true);
 	});
 
+	it("excludes root scratch while preserving a nested source package named scratch", () => {
+		writeFiles(tmp, {
+			"scratch/generated.test.ts": "export const ignored = 1;",
+			"src/scratch/tracked.test.ts": "export const kept = 1;",
+		});
+
+		const result = runAllExtractors(tmp);
+		const files = new Set(result.nodes.map((node) => node.file));
+		expect(files.has("scratch/generated.test.ts")).toBe(false);
+		expect(files.has("src/scratch/tracked.test.ts")).toBe(true);
+	});
+
 	// The shared budget is the whole point of runAllExtractors: ONE cap across all
 	// seven walks, not one cap each. Exhausting it must surface as truncated:true
 	// and a partial graph — callers are told not to treat it as complete.

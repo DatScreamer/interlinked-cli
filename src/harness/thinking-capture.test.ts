@@ -1,8 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { extractNewThinking, latestTranscriptModel, resolveTranscriptPath } from "./thinking-capture.js";
+import {
+	extractNewThinking,
+	latestTranscriptModel,
+	MAX_THINKING_TRANSCRIPT_BYTES,
+	resolveTranscriptPath,
+} from "./thinking-capture.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -66,7 +71,7 @@ describe("extractNewThinking", () => {
 		expect(out).not.toContain("old");
 	});
 
-	it("resets and re-reads from the start when the transcript path changes (new session)", () => {
+	it("captures a newly seen transcript when the session path changes", () => {
 		const d = tmp();
 		const tp1 = join(d, "s1.jsonl");
 		const tp2 = join(d, "s2.jsonl");
@@ -76,6 +81,57 @@ describe("extractNewThinking", () => {
 		writeFileSync(tp2, `${asstThinking("session two")}\n`);
 		expect(extractNewThinking(tp2, cp)).toContain("session two");
 		expect(JSON.parse(readFileSync(cp, "utf-8")).path).toBe(tp2);
+	});
+
+	it("keeps independent offsets when parallel sessions alternate A to B to A", () => {
+		const d = tmp();
+		const tp1 = join(d, "s1.jsonl");
+		const tp2 = join(d, "s2.jsonl");
+		const cp = join(d, "cursor.json");
+		writeFileSync(tp1, `${asstThinking("session one old")}\n`);
+		writeFileSync(tp2, `${asstThinking("session two")}\n`);
+
+		expect(extractNewThinking(tp1, cp)).toContain("session one old");
+		expect(extractNewThinking(tp2, cp)).toContain("session two");
+		appendFileSync(tp1, `${asstThinking("session one new")}\n`);
+		const resumed = extractNewThinking(tp1, cp) ?? "";
+
+		expect(resumed).toContain("session one new");
+		expect(resumed).not.toContain("session one old");
+		const cursor: { offsets?: Record<string, number> } = JSON.parse(readFileSync(cp, "utf-8"));
+		expect(cursor.offsets).toMatchObject({
+			[tp1]: readFileSync(tp1).byteLength,
+			[tp2]: readFileSync(tp2).byteLength,
+		});
+	});
+
+	it("bounds the persisted transcript offsets with least-recently-used eviction", () => {
+		const d = tmp();
+		const cp = join(d, "cursor.json");
+		const transcriptPaths: string[] = [];
+		for (let i = 0; i < 33; i++) {
+			const transcriptPath = join(d, `s${i}.jsonl`);
+			transcriptPaths.push(transcriptPath);
+			writeFileSync(transcriptPath, `${asstThinking(`session ${i}`)}\n`);
+			extractNewThinking(transcriptPath, cp);
+		}
+
+		const cursor: { offsets?: Record<string, number> } = JSON.parse(readFileSync(cp, "utf-8"));
+		expect(Object.keys(cursor.offsets ?? {})).toHaveLength(32);
+		expect(cursor.offsets).not.toHaveProperty(transcriptPaths[0] ?? "");
+		expect(cursor.offsets).toHaveProperty(transcriptPaths[32] ?? "");
+	});
+
+	it("reads only a bounded tail from a sparse 1 GiB transcript", () => {
+		const d = tmp();
+		const tp = join(d, "large.jsonl");
+		const cp = join(d, "cursor.json");
+		writeFileSync(tp, "");
+		truncateSync(tp, 1024 * 1024 * 1024);
+		appendFileSync(tp, `\n${asstThinking("bounded tail")}\n`);
+
+		expect(extractNewThinking(tp, cp)).toContain("bounded tail");
+		expect(MAX_THINKING_TRANSCRIPT_BYTES).toBe(8 * 1024 * 1024);
 	});
 
 	it("returns null for a missing transcript or a transcript with no thinking", () => {
@@ -102,7 +158,7 @@ describe("extractNewThinking", () => {
 });
 
 describe("extractNewThinking — parseThinkingCursor boundary parser", () => {
-	it("P1: resumes from a well-formed persisted cursor object at a nonzero offset", () => {
+	it("P1: resumes from and migrates a legacy path/offset cursor", () => {
 		const d = tmp();
 		const tp = join(d, "s.jsonl");
 		const cp = join(d, "cursor.json");
@@ -112,6 +168,11 @@ describe("extractNewThinking — parseThinkingCursor boundary parser", () => {
 		const out = extractNewThinking(tp, cp) ?? "";
 		expect(out).toContain("read me");
 		expect(out).not.toContain("skip me");
+		const migrated: { path?: string; offset?: number; offsets?: Record<string, number> } = JSON.parse(
+			readFileSync(cp, "utf-8"),
+		);
+		expect(migrated.path).toBe(tp);
+		expect(migrated.offsets?.[tp]).toBe(readFileSync(tp).byteLength);
 	});
 
 	it("N1: a cursor file that is a bare JSON array is ignored, re-reading from the start", () => {
@@ -130,6 +191,27 @@ describe("extractNewThinking — parseThinkingCursor boundary parser", () => {
 		writeFileSync(tp, `${asstThinking("also recovered")}\n`);
 		writeFileSync(cp, JSON.stringify({ path: tp, offset: "0" }));
 		expect(extractNewThinking(tp, cp)).toContain("also recovered");
+	});
+
+	it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+		"N3: rejects a non-safe legacy offset (%s) and re-reads from the start",
+		(offset) => {
+			const d = tmp();
+			const tp = join(d, "s.jsonl");
+			const cp = join(d, "cursor.json");
+			writeFileSync(tp, `${asstThinking("strict offset recovery")}\n`);
+			writeFileSync(cp, JSON.stringify({ path: tp, offset }));
+			expect(extractNewThinking(tp, cp)).toContain("strict offset recovery");
+		},
+	);
+
+	it("N4: ignores an invalid per-transcript offset instead of seeking from it", () => {
+		const d = tmp();
+		const tp = join(d, "s.jsonl");
+		const cp = join(d, "cursor.json");
+		writeFileSync(tp, `${asstThinking("map offset recovery")}\n`);
+		writeFileSync(cp, JSON.stringify({ path: "other", offset: 0, offsets: { [tp]: -1 } }));
+		expect(extractNewThinking(tp, cp)).toContain("map offset recovery");
 	});
 });
 

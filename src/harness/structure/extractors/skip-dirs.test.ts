@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveDirSkipper, resolveIgnoredDirs, SHARED_SKIP_DIRS } from "./skip-dirs.js";
+import {
+	isRootScratchDir,
+	resolveDirSkipper,
+	resolveIgnoredDirs,
+	SHARED_SKIP_DIRS,
+} from "./skip-dirs.js";
 
 describe("SHARED_SKIP_DIRS", () => {
 	it("includes the standard non-project directories", () => {
@@ -28,6 +33,12 @@ describe("SHARED_SKIP_DIRS", () => {
 
 	it("does NOT include test — test-extractor needs to walk it", () => {
 		expect(SHARED_SKIP_DIRS.has("test")).toBe(false);
+	});
+
+	it("skips only the sanctioned root scratch tree", () => {
+		expect(SHARED_SKIP_DIRS.has("scratch")).toBe(false);
+		expect(isRootScratchDir("/repo", "/repo/scratch")).toBe(true);
+		expect(isRootScratchDir("/repo", "/repo/src/scratch")).toBe(false);
 	});
 
 	it("includes universal framework/cache artefact dirs", () => {
