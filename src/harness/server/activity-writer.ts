@@ -105,7 +105,7 @@ export function writeActivityRecord(event: HarnessEvent, fallbackCwd: string): v
 		// preceded this tool call. The thin hook-entry path never replicated the
 		// old .mjs's extractNewThinking — this restores it daemon-side (the June-1
 		// regression). Scrubbed inside extractNewThinking; best-effort.
-		if (rec.type === "tool_use_start") {
+		if (rec.type === "tool_use_start" && event.agent_source !== "codex") {
 			const cwd = event.cwd ?? fallbackCwd;
 			const tp = resolveTranscriptPath(event.transcript_path, event.session_id, cwd, homedir());
 			if (tp) {

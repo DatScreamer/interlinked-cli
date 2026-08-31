@@ -466,7 +466,7 @@ function bCohort(over: Record<string, unknown> = {}) {
 		subagentJoined: vi.fn(),
 		subagentLeft: vi.fn(),
 		recordActivity: vi.fn(),
-		getAgent: vi.fn(() => undefined),
+		findAgentByIdentity: vi.fn(() => undefined),
 		...over,
 	};
 }
@@ -578,12 +578,12 @@ beforeEach(() => {
 // ───────────────────────────── resolveParentSessionId (extra branches) ────
 describe("resolveParentSessionId — branch coverage", () => {
 	it("derives subName from agent_name → parent via cohort, mapping back to a live session", () => {
-		const getAgent = vi.fn((name: string) => {
+		const findAgentByIdentity = vi.fn((name: string) => {
 			if (name === "sub") return { parent_agent: "parent" };
 			if (name === "parent") return { session_id: "psess" };
 			return undefined;
 		});
-		const cohort = bCohort({ getAgent });
+		const cohort = bCohort({ findAgentByIdentity });
 		const sessions = bSessions({
 			get: vi.fn((id: string) => (id === "psess" ? bSession() : undefined)),
 		});
@@ -593,8 +593,8 @@ describe("resolveParentSessionId — branch coverage", () => {
 	});
 
 	it("derives subName from tool_input.subagent_id and parent from tool_input.parent_agent_name", () => {
-		const getAgent = vi.fn((name: string) => (name === "pname" ? { session_id: "ps" } : undefined));
-		const cohort = bCohort({ getAgent });
+		const findAgentByIdentity = vi.fn((name: string) => (name === "pname" ? { session_id: "ps" } : undefined));
+		const cohort = bCohort({ findAgentByIdentity });
 		const sessions = bSessions({
 			get: vi.fn((id: string) => (id === "ps" ? bSession() : undefined)),
 		});
@@ -608,7 +608,7 @@ describe("resolveParentSessionId — branch coverage", () => {
 	});
 
 	it("derives subName from tool_input.agent_id and resolves parent via the direct-session arm", () => {
-		const cohort = bCohort({ getAgent: vi.fn(() => undefined) });
+		const cohort = bCohort({ findAgentByIdentity: vi.fn(() => undefined) });
 		const sessions = bSessions({
 			get: vi.fn((id: string) => (id === "pdirect" ? bSession() : undefined)),
 		});
@@ -622,7 +622,7 @@ describe("resolveParentSessionId — branch coverage", () => {
 	});
 
 	it("returns undefined when a parent name exists but no session matches either path", () => {
-		const cohort = bCohort({ getAgent: vi.fn(() => undefined) });
+		const cohort = bCohort({ findAgentByIdentity: vi.fn(() => undefined) });
 		const sessions = bSessions({ get: vi.fn(() => undefined) });
 		expect(
 			resolveParentSessionId(bEvent({ parent_agent: "ghost" }), cohort as never, sessions as never),
@@ -1432,7 +1432,7 @@ describe("SubagentStop handler — branch coverage", () => {
 			if (name === "parent") return { session_id: "psess" };
 			return undefined;
 		});
-		const ctx = bCtx({ sessions, cohort: bCohort({ getAgent }) });
+		const ctx = bCtx({ sessions, cohort: bCohort({ findAgentByIdentity: getAgent }) });
 		await subStop(ctx, { agent_name: "sub", session_id: "subsess" });
 		expect(fnOf(sessions.rollUpVerificationSignals)).toHaveBeenCalledWith("subsess", "psess");
 		expect(bLog.some((l) => l.includes("verification rolled up into parent session psess"))).toBe(true);
@@ -1445,7 +1445,7 @@ describe("SubagentStop handler — branch coverage", () => {
 			rollUpVerificationSignals: vi.fn(() => false),
 			rollUpFileTracking: vi.fn(() => false),
 		});
-		const ctx = bCtx({ sessions, cohort: bCohort({ getAgent: vi.fn(() => ({ session_id: "p" })) }) });
+		const ctx = bCtx({ sessions, cohort: bCohort({ findAgentByIdentity: vi.fn(() => ({ session_id: "p" })) }) });
 		await subStop(ctx, { agent_name: "sub" });
 		expect(bLog.some((l) => l.includes("rolled up into parent"))).toBe(false);
 	});

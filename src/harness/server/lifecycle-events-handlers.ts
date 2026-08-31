@@ -41,17 +41,18 @@ export function resolveParentSessionId(
 ): string | undefined {
 	const ti = event.tool_input;
 	const subName =
+		event.subagent_id ||
 		event.agent_name ||
 		(typeof ti?.subagent_id === "string" ? ti.subagent_id : undefined) ||
 		(typeof ti?.agent_id === "string" ? ti.agent_id : undefined);
 	const parentName =
-		(subName ? cohort.getAgent(subName)?.parent_agent : undefined) ??
+		(subName ? cohort.findAgentByIdentity(subName)?.parent_agent : undefined) ??
 		event.parent_agent ??
 		(typeof ti?.parent_agent_name === "string" ? ti.parent_agent_name : undefined) ??
 		(typeof ti?.parent_agent === "string" ? ti.parent_agent : undefined);
 	if (!parentName) return undefined;
 	// parentName is normally an agent name — map it back to a session_id.
-	const byAgent = cohort.getAgent(parentName)?.session_id;
+	const byAgent = cohort.findAgentByIdentity(parentName)?.session_id;
 	if (byAgent && sessions.get(byAgent)) return byAgent;
 	// Some runners pass the parent session_id directly as the linkage value.
 	if (sessions.get(parentName)) return parentName;

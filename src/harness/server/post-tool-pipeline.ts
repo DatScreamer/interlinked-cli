@@ -350,6 +350,7 @@ function attachObservedChangeSet(event: HarnessEvent, cwd: string): void {
 	const observed = consumeWorkspaceSnapshot({
 		toolUseId: event.tool_use_id,
 		sessionId: event.session_id,
+		subagentId: event.subagent_id,
 		root: cwd,
 	});
 	if (!observed) return;

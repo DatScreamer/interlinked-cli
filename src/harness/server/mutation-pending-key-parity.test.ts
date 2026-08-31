@@ -34,6 +34,7 @@ import { runMutationWriteGate } from "./pre-tool-coverage-gates.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
 const SOURCE = 'export function classify(n: number) {\n\treturn n > 0 ? "positive" : "other";\n}\n';
+const TEST_SOURCE = 'import { classify } from "./a.js";\nvoid classify(1);\n';
 /** What the Edit below produces — the bytes the gate measures and the harvest re-hashes. */
 const EDITED = SOURCE.replace("positive", "nonneg");
 
@@ -64,6 +65,10 @@ beforeEach(() => {
 	repo = mkdtempSync(join(tmpdir(), "il-pending-key-"));
 	mkdirSync(join(repo, "src"), { recursive: true });
 	writeFileSync(join(repo, "src", "a.ts"), SOURCE, "utf-8");
+	// The mutation gate requires a proven import-graph test scope before it
+	// contacts a runner. Keep this fixture real so the pending-run assertions
+	// exercise the production selector instead of bypassing it with a mock.
+	writeFileSync(join(repo, "src", "a.test.ts"), TEST_SOURCE, "utf-8");
 });
 
 afterEach(() => {
@@ -95,6 +100,8 @@ function stubHangingRunner(): void {
 function ctxFor(root: string): ServerRuntime {
 	return {
 		cwd: root,
+		graphCache: new Map(),
+		log: () => {},
 		rules: {
 			per_edit_mutation: {
 				enabled: true,
