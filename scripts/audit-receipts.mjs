@@ -50,11 +50,12 @@
 //   npm run docs:audit-receipts            # writes landing/receipts.json
 //   node scripts/audit-receipts.mjs --json # prints to stdout instead
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { gunzipSync } from "node:zlib";
+import { createGunzip } from "node:zlib";
 import { incompleteHistoryError } from "./receipts-completeness.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -190,7 +191,40 @@ function resolveRuleId(e) {
 	return "_unknown";
 }
 
-function loadActivityBlocks() {
+function parseActivityBlockLine(line) {
+	if (!line || !line.includes("guard_block")) return null;
+	let event;
+	try {
+		event = JSON.parse(line);
+	} catch {
+		return null;
+	}
+	return event?.type === "guard_block" ? event : null;
+}
+
+/** Stream one plain or gzip activity segment. The returned array contains only
+ * guard blocks, so memory scales with audit evidence rather than ledger bytes. */
+export async function readActivityBlockSource(path) {
+	const file = createReadStream(path);
+	const input = path.endsWith(".gz") ? file.pipe(createGunzip()) : file;
+	const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
+	const events = [];
+	let grepAccelAnswers = 0;
+	for await (const line of lines) {
+		const event = parseActivityBlockLine(line);
+		if (!event) continue;
+		// Grep-accelerator block-and-answer: the index answering a grep
+		// query, not an enforcement decision. Excluded from all counts.
+		if ("guard_grep_stats" in event) {
+			grepAccelAnswers++;
+			continue;
+		}
+		events.push(event);
+	}
+	return { events, grepAccelAnswers };
+}
+
+async function loadActivityBlocks() {
 	const events = [];
 	const sourceStats = [];
 	let grepAccelAnswers = 0;
@@ -203,29 +237,10 @@ function loadActivityBlocks() {
 			continue;
 		}
 		sawAny = true;
-		const raw = rel.endsWith(".gz")
-			? gunzipSync(readFileSync(path)).toString("utf8")
-			: readFileSync(path, "utf8");
-		let count = 0;
-		for (const line of raw.split("\n")) {
-			if (!line || !line.includes("guard_block")) continue;
-			let event;
-			try {
-				event = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (event.type !== "guard_block") continue;
-			// Grep-accelerator block-and-answer: the index answering a grep
-			// query, not an enforcement decision. Excluded from all counts.
-			if ("guard_grep_stats" in event) {
-				grepAccelAnswers++;
-				continue;
-			}
-			events.push(event);
-			count++;
-		}
-		sourceStats.push({ file: rel.split("/").pop(), blocks: count });
+		const source = await readActivityBlockSource(path);
+		for (const event of source.events) events.push(event);
+		grepAccelAnswers += source.grepAccelAnswers;
+		sourceStats.push({ file: rel.split("/").pop(), blocks: source.events.length });
 	}
 	if (!sawAny) {
 		throw new Error(
@@ -356,10 +371,7 @@ function classify(ruleId, command) {
 	return "needs_review";
 }
 
-function audit() {
-	const { events: rawEvents, sourceStats, grepAccelAnswers } = loadActivityBlocks();
-	const { kept: blocks, collapsed } = dedupe(rawEvents);
-
+function auditWindow(blocks) {
 	let windowStart = null;
 	let windowEnd = null;
 	for (const b of blocks) {
@@ -372,18 +384,21 @@ function audit() {
 		windowStart && windowEnd
 			? Math.floor((parseTs(windowEnd) - parseTs(windowStart)) / 86_400_000)
 			: 0;
+	return { windowStart, windowEnd, windowDays };
+}
 
-	// Bucket by resolved rule id.
+function blocksByRule(blocks) {
 	const byRule = new Map();
 	for (const b of blocks) {
 		const id = resolveRuleId(b);
 		if (!byRule.has(id)) byRule.set(id, []);
 		byRule.get(id).push(b);
 	}
+	return byRule;
+}
 
+function buildVerifiedRows(byRule) {
 	const verifiedRows = [];
-	const droppedRows = [];
-
 	for (const row of KEEP_ROWS) {
 		// For "keep" rows we trust the rule fired correctly; the verified
 		// count is the deduped raw count. (Rows were chosen because they're
@@ -399,7 +414,11 @@ function audit() {
 			count_verified: count,
 		});
 	}
+	return verifiedRows;
+}
 
+function buildDroppedRows(byRule) {
+	const droppedRows = [];
 	for (const ruleId of FP_HEAVY_RULES) {
 		const events = byRule.get(ruleId) || [];
 		const verdicts = {};
@@ -429,6 +448,16 @@ function audit() {
 			samples,
 		});
 	}
+	return droppedRows;
+}
+
+async function audit() {
+	const { events: rawEvents, sourceStats, grepAccelAnswers } = await loadActivityBlocks();
+	const { kept: blocks, collapsed } = dedupe(rawEvents);
+	const { windowStart, windowEnd, windowDays } = auditWindow(blocks);
+	const byRule = blocksByRule(blocks);
+	const verifiedRows = buildVerifiedRows(byRule);
+	const droppedRows = buildDroppedRows(byRule);
 
 	const totalLogged = blocks.length;
 	const totalVerified = verifiedRows.reduce((s, r) => s + r.count_verified, 0);
@@ -454,27 +483,31 @@ function audit() {
 	};
 }
 
-const wantStdout = process.argv.includes("--json");
-const allowPartial = process.argv.includes("--allow-partial");
-const result = audit();
-const payload = `${JSON.stringify(result, null, 2)}\n`;
+async function main() {
+	const wantStdout = process.argv.includes("--json");
+	const allowPartial = process.argv.includes("--allow-partial");
+	const result = await audit();
+	const payload = `${JSON.stringify(result, null, 2)}\n`;
 
-// Never overwrite the committed receipts from an incomplete history — a
-// missing segment understates the totals rather than updating them. See
-// receipts-completeness.mjs for the incident this guards against.
-if (!wantStdout && !allowPartial) {
-	const err = incompleteHistoryError(result);
-	if (err) {
-		process.stderr.write(err);
-		process.exit(1);
+	// Never overwrite the committed receipts from an incomplete history — a
+	// missing segment understates the totals rather than updating them. See
+	// receipts-completeness.mjs for the incident this guards against.
+	if (!wantStdout && !allowPartial) {
+		const err = incompleteHistoryError(result);
+		if (err) {
+			process.stderr.write(err);
+			process.exit(1);
+		}
+	}
+
+	if (wantStdout) {
+		process.stdout.write(payload);
+	} else {
+		writeFileSync(OUT_PATH, payload);
+		process.stdout.write(
+			`wrote landing/receipts.json (${result.total_verified} verified / ${result.total_logged} logged, window ${result.window_start?.slice(0, 10)} → ${result.window_end?.slice(0, 10)}, ${result.dedup_collapsed} duplicates collapsed, ${result.grep_accel_answers_excluded} grep-accel answers excluded)\n`,
+		);
 	}
 }
 
-if (wantStdout) {
-	process.stdout.write(payload);
-} else {
-	writeFileSync(OUT_PATH, payload);
-	process.stdout.write(
-		`wrote landing/receipts.json (${result.total_verified} verified / ${result.total_logged} logged, window ${result.window_start?.slice(0, 10)} → ${result.window_end?.slice(0, 10)}, ${result.dedup_collapsed} duplicates collapsed, ${result.grep_accel_answers_excluded} grep-accel answers excluded)\n`,
-	);
-}
+if (import.meta.main) await main();
