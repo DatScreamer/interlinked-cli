@@ -35,22 +35,17 @@ describe("Codex adapter survivor contracts", () => {
         expect(event.action).toMatchObject({ kind: "tool_call", tool_name: "unknown" });
     });
 
-    // test-contract: PermissionRequest is a tool action and maps allow to Codex permission output.
+    // test-contract: PermissionRequest is a tool action and allow abstains.
     it("keeps PermissionRequest in the tool-call branch", () => {
         const event = adapter.parseHookInput({ tool_name: "Bash", tool_input: {} }, "PermissionRequest");
         expect(event.action.kind).toBe("tool_call");
-        expect(JSON.parse(adapter.encodeDecision({ decision: "allow" }, event).stdout ?? "")).toEqual({
-            hookSpecificOutput: {
-                hookEventName: "PermissionRequest",
-                decision: { behavior: "allow" },
-            },
-        });
+        expect(adapter.encodeDecision({ decision: "allow" }, event)).toEqual({ exit_code: 0 });
     });
 
     // test-contract: known lifecycle events retain their distinct canonical phases.
     it("uses canonical lifecycle phases", () => {
         expect(adapter.parseHookInput({}, "SessionStart").phase).toBe("session-start");
-        expect(adapter.parseHookInput({}, "Stop").phase).toBe("session-end");
+        expect(adapter.parseHookInput({}, "Stop").phase).toBe("stop");
         expect(adapter.parseHookInput({}, "PreToolUse").phase).toBe("pre-tool");
     });
 
@@ -65,7 +60,11 @@ describe("Codex adapter survivor contracts", () => {
     it("renders one matcher entry for every native event", () => {
         const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
         const hooks = (fragment.fragment as { hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string }> }> | undefined> }).hooks;
-        const names = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"];
+        const names = [
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse",
+            "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
+			"SubagentStart", "SubagentStop", "Interrupt",
+        ];
         for (const name of names) {
             const entry = hooks[name]?.[0];
             expect(entry).toBeDefined();
@@ -74,12 +73,14 @@ describe("Codex adapter survivor contracts", () => {
         }
     });
 
-    // test-contract: allow diagnostics preserve warning text and append additional context with one newline.
+    // test-contract: allow diagnostics reach Codex through additionalContext.
     it("encodes allow diagnostics exactly", () => {
         const event = adapter.parseHookInput({}, "PreToolUse");
-        expect(adapter.encodeDecision({ decision: "allow", warnings: ["w1"] }, event).stderr).toBe("w1");
-        expect(adapter.encodeDecision({ decision: "allow", additional_context: "context" }, event).stderr).toBe("context");
-        expect(adapter.encodeDecision({ decision: "allow", warnings: ["w1"], additional_context: "context" }, event).stderr).toBe("w1\ncontext");
+        const context = (decision: Parameters<typeof adapter.encodeDecision>[0]) =>
+            JSON.parse(adapter.encodeDecision(decision, event).stdout ?? "{}").hookSpecificOutput.additionalContext;
+        expect(context({ decision: "allow", warnings: ["w1"] })).toBe("w1");
+        expect(context({ decision: "allow", additional_context: "context" })).toBe("context");
+        expect(context({ decision: "allow", warnings: ["w1"], additional_context: "context" })).toBe("context\nw1");
         expect(adapter.encodeDecision({ decision: "allow" }, event)).toEqual({ exit_code: 0 });
     });
 
@@ -87,12 +88,19 @@ describe("Codex adapter survivor contracts", () => {
     it("encodes block diagnostics exactly", () => {
         const event = adapter.parseHookInput({}, "PreToolUse");
         expect(adapter.encodeDecision({ decision: "block", reason: "no" }, event)).toEqual({
-            stdout: JSON.stringify({ decision: "block", reason: "no" }),
-            stderr: undefined,
+            stdout: JSON.stringify({ hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: "no",
+            } }),
             exit_code: 0,
         });
         expect(adapter.encodeDecision({ decision: "block", reason: "no", warnings: ["w1", "w2"] }, event)).toEqual({
-            stdout: JSON.stringify({ decision: "block", reason: "no" }),
+            stdout: JSON.stringify({ hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: "no",
+            } }),
             stderr: "w1\nw2",
             exit_code: 0,
         });

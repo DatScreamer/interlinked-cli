@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
-import { isInterlinkedHookCommand, isInterlinkedHookEntry } from "./hook-ownership.js";
+import { documentContainsInterlinkedHook, isInterlinkedHookEntry } from "./hook-ownership.js";
 import { readJsonObject } from "./json-file.js";
 import { hookTimeoutSecondsFor } from "./hook-timeouts.js";
 import {
@@ -64,7 +64,19 @@ export function isNonEmptyString(v: unknown): v is string {
 // Shared Hook Entry Helper
 // ===========================================
 
-export function installHookEntry(hooks: JsonObject, eventName: string, command: string): void {
+export interface InstallHookEntryOptions {
+	timeout?: number;
+	async?: boolean;
+	statusMessage?: string;
+	additionalContextLimit?: number;
+}
+
+export function installHookEntry(
+	hooks: JsonObject,
+	eventName: string,
+	command: string,
+	options: InstallHookEntryOptions = {},
+): void {
 	if (!hooks[eventName]) hooks[eventName] = [];
 	const entries = hooks[eventName] as HookEntry[];
 
@@ -73,16 +85,27 @@ export function installHookEntry(hooks: JsonObject, eventName: string, command: 
 		entry.hooks?.some((h) => h.command?.includes(INTERLINKED_MARKER)),
 	);
 
-	const timeout = hookTimeoutSecondsFor(eventName);
+	const timeout = options.timeout ?? hookTimeoutSecondsFor(eventName);
 	if (existing) {
-		reconcileExistingEntry(existing, eventName, command, timeout);
+		reconcileExistingEntry(existing, eventName, command, timeout, options);
 		return;
 	}
 
 	entries.push({
 		matcher: getHookMatcher(eventName),
-		hooks: [{ type: "command", command, ...(timeout !== undefined ? { timeout } : {}) }],
+		hooks: [buildInstalledHandler(command, timeout, options)],
 	});
+}
+
+function buildInstalledHandler(
+	command: string,
+	timeout: number | undefined,
+	options: InstallHookEntryOptions,
+): HookEntry["hooks"][number] {
+	const handler: HookEntry["hooks"][number] = { type: "command", command };
+	if (timeout !== undefined) handler.timeout = timeout;
+	applyHandlerMetadata(handler, options);
+	return handler;
 }
 
 /** Reconcile an already-installed entry in place: a stale command path, the
@@ -93,6 +116,7 @@ function reconcileExistingEntry(
 	eventName: string,
 	command: string,
 	timeout: number | undefined,
+	options: InstallHookEntryOptions,
 ): void {
 	// Update command if it points to a stale path (e.g. .claude/hooks/ → .interlinked/hooks/)
 	const hook = existing.hooks?.find((h) => h.command?.includes(INTERLINKED_MARKER));
@@ -102,10 +126,22 @@ function reconcileExistingEntry(
 	if (hook && timeout !== undefined && hook.timeout !== timeout) {
 		hook.timeout = timeout;
 	}
+	if (hook) applyHandlerMetadata(hook, options);
 	// Update the tool-event matcher when the install rules change.
 	const expectedMatcher = getHookMatcher(eventName);
 	if (existing.matcher !== expectedMatcher) {
 		existing.matcher = expectedMatcher;
+	}
+}
+
+function applyHandlerMetadata(
+	hook: HookEntry["hooks"][number],
+	options: InstallHookEntryOptions,
+): void {
+	if (options.async !== undefined) hook.async = options.async;
+	if (options.statusMessage) hook.statusMessage = options.statusMessage;
+	if (options.additionalContextLimit !== undefined) {
+		hook.additionalContextLimit = options.additionalContextLimit;
 	}
 }
 
@@ -271,12 +307,14 @@ export function findParentWithHooks(cwd: string, settingsSubpath: string): strin
 		const settingsPath = join(dir, settingsSubpath);
 		if (existsSync(settingsPath)) {
 			try {
-				const content = readFileSync(settingsPath, "utf-8");
-				if (isInterlinkedHookCommand(content)) {
+				// PARSE, then walk (review 2026-08-30 final pass): the command
+				// recognizer takes one shell command, never a JSON document.
+				const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf-8"));
+				if (documentContainsInterlinkedHook(parsed)) {
 					return dir;
 				}
 			} catch (_err) {
-				/* intentional: settings file unreadable — keep walking up */
+				/* intentional: settings file unreadable/unparseable — keep walking up */
 			}
 		}
 		const parent = dirname(dir);

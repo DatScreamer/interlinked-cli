@@ -298,6 +298,13 @@ describe("collection writer chunk — provider detection", () => {
 	it("detects cursor from cursor_version", () => {
 		expect(build(makeEditEvent({ cursor_version: "1.0" }))!.provider).toBe("cursor");
 	});
+
+	it.each(["copilot", "gemini-cli", "cursor", "opencode", "pi"])(
+		"detects %s from client_runner",
+		(provider) => {
+			expect(build(makeEditEvent({ client_runner: provider }))!.provider).toBe(provider);
+		},
+	);
 });
 
 describe("collection writer chunk — git context", () => {

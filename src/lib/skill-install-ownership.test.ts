@@ -1572,6 +1572,27 @@ describe("removeOwnedFilesForClients — canonical exclusion is a runtime guard,
 });
 
 describe("loadSkillInstallManifest — per-client skill-root string literals", () => {
+    it.each([
+        ["opencode", join(".opencode", "skills", "enforce", "SKILL.md")],
+        ["pi", join(".pi", "skills", "enforce", "SKILL.md")],
+    ] as const)("validates a %s-owned entry under its native skill root", (owner, relPath) => {
+        write(
+            join(tmpRoot, SKILL_INSTALL_MANIFEST),
+            JSON.stringify({
+                version: 1,
+                files: {
+                    [relPath]: {
+                        sha256: "a".repeat(64),
+                        skill: "enforce",
+                        owner,
+                        kind: "skill",
+                    },
+                },
+            }),
+        );
+        expect(loadSkillInstallManifest(tmpRoot).files[relPath]?.owner).toBe(owner);
+    });
+
     it("validates a gemini-owned entry under .gemini/skills/<skill>/", () => {
         const relPath = join(".gemini", "skills", "enforce", "SKILL.md");
         write(

@@ -34,6 +34,12 @@ describe("skill install templates", () => {
         expect(runnerTargets("copilot", "interlinked", config)).toEqual([
             { kind: "spec", relPath: ".github/skills/interlinked/SKILL.md" },
         ]);
+        expect(runnerTargets("opencode", "interlinked", config)).toEqual([
+            { kind: "spec", relPath: ".opencode/skills/interlinked/SKILL.md" },
+        ]);
+        expect(runnerTargets("pi", "interlinked", config)).toEqual([
+            { kind: "spec", relPath: ".pi/skills/interlinked/SKILL.md" },
+        ]);
     });
 
     it("adds only the intentional Copilot prompt alias", () => {
@@ -51,10 +57,18 @@ describe("skill install templates", () => {
         const config = buildSkillConfig("enforce");
         const [codexTarget] = runnerTargets("codex", "enforce", config);
         const [cursorTarget] = runnerTargets("cursor", "enforce", config);
+        const [opencodeTarget] = runnerTargets("opencode", "enforce", config);
+        const [piTarget] = runnerTargets("pi", "enforce", config);
         expect(renderTargetContent("codex", config, codexTarget!, SKILL)).toContain(
             `description: ${JSON.stringify(ENFORCE_SHORT_DESCRIPTION)}`,
         );
         expect(renderTargetContent("cursor", config, cursorTarget!, SKILL)).toContain(
+            `description: ${JSON.stringify(ENFORCE_SHORT_DESCRIPTION)}`,
+        );
+        expect(renderTargetContent("opencode", config, opencodeTarget!, SKILL)).toContain(
+            `description: ${JSON.stringify(ENFORCE_SHORT_DESCRIPTION)}`,
+        );
+        expect(renderTargetContent("pi", config, piTarget!, SKILL)).toContain(
             `description: ${JSON.stringify(ENFORCE_SHORT_DESCRIPTION)}`,
         );
     });

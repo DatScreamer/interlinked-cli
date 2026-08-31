@@ -43,32 +43,25 @@ import {
 	type ClassifierOverrides,
 	classifyFromToolName,
 } from "../tool-class-classifier.js";
-import type { UnifiedPhase } from "../unified-event.js";
-import { makeEventId } from "../unified-event.js";
 import { buildCursorAction } from "./cursor-actions.js";
 import { buildHookCommand } from "./hook-command.js";
+import { normalizeNativeHookEvent } from "./normalization.js";
+import { CURSOR_CAPABILITIES, installedEventNames } from "./provider-capabilities.js";
 import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
 
-const NATIVE_EVENTS = [
-	"sessionStart",
-	"sessionEnd",
-	"stop",
-	"preCompact",
-	"beforeSubmitPrompt",
-	"beforeShellExecution",
-	"afterShellExecution",
-	"beforeMCPExecution",
-	"beforeMcpToolExecution",
-	"afterMCPExecution",
-	"afterMcpToolExecution",
-	"beforeReadFile",
-	"afterFileEdit",
-	"preToolUse",
-	"postToolUse",
-	"postToolUseFailure",
-	"subagentStart",
-	"subagentStop",
-] as const;
+/** Missing-runtime policy per NATIVE event (review 2026-08-28 P0), derived
+ *  from GATED_EVENTS below — the ONE definition of "this event is an
+ *  allow/deny gate". A second hand-written list here silently disagreed with
+ *  it on `subagentStart` (second-pass review finding 2) — exactly the
+ *  duplicated-policy drift this module's own comments warn about. Gated ⇒ the
+ *  missing-binary fallback fails closed (exit 2); everything else stays
+ *  warn-open (blocking Stop risks a stop-hook loop, and a post-hook block
+ *  cannot un-run the tool). */
+function cursorMissingRuntimePolicy(event: string): "fail_closed" | "warn_open" {
+	return GATED_EVENTS.has(event) ? "fail_closed" : "warn_open";
+}
+
+const NATIVE_EVENTS = installedEventNames(CURSOR_CAPABILITIES);
 
 // Events that are gated (we can return permission: allow|deny). These are
 // `failClosed: true` in the settings fragment.
@@ -98,27 +91,6 @@ const ASK_CAPABLE_EVENTS = new Set<string>([
 // are observation-only.
 const POST_CONTEXT_EVENTS = new Set<string>(["postToolUse"]);
 
-const PHASE_MAP: Record<string, UnifiedPhase> = {
-	sessionStart: "other",
-	sessionEnd: "other",
-	stop: "other",
-	preCompact: "other",
-	beforeSubmitPrompt: "user-prompt",
-	beforeShellExecution: "pre-tool",
-	afterShellExecution: "post-tool",
-	beforeMCPExecution: "pre-tool",
-	beforeMcpToolExecution: "pre-tool",
-	afterMCPExecution: "post-tool",
-	afterMcpToolExecution: "post-tool",
-	beforeReadFile: "pre-tool",
-	afterFileEdit: "post-tool",
-	preToolUse: "pre-tool",
-	postToolUse: "post-tool",
-	postToolUseFailure: "post-tool",
-	subagentStart: "pre-tool",
-	subagentStop: "other",
-};
-
 export interface CursorAdapterOptions {
 	overrides?: ClassifierOverrides | undefined;
 }
@@ -127,6 +99,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): RunnerAdap
 	return {
 		id: "cursor",
 		label: "Cursor",
+		capabilities: CURSOR_CAPABILITIES,
 		nativeEventNames: NATIVE_EVENTS,
 
 		detectFromEnv(env) {
@@ -134,26 +107,14 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): RunnerAdap
 		},
 
 		parseHookInput(nativeJson, nativeEventName) {
-			const raw = isObject(nativeJson) ? nativeJson : {};
-			const phase = PHASE_MAP[nativeEventName] ?? "other";
-			const session_id = readString(raw.session_id) ?? readString(raw.sessionId) ?? "unknown";
-			const cwd = readString(raw.cwd) ?? readString(raw.workspace_root) ?? process.cwd();
-			const ts = new Date().toISOString();
-
-			const action = buildCursorAction(nativeEventName, raw, opts.overrides);
-
-			return {
-				schema_version: "1",
-				event_id: makeEventId(),
-				session_id,
-				ts,
+			return normalizeNativeHookEvent({
 				runner: "cursor",
-				runner_native_event: nativeEventName,
-				phase,
-				action,
-				context: { cwd },
-				raw,
-			};
+				capabilities: CURSOR_CAPABILITIES,
+				nativeEventName,
+				nativeJson,
+				aliases: { cwd: ["cwd", "workspace_root"] },
+				buildAction: ({ raw }) => buildCursorAction(nativeEventName, raw, opts.overrides),
+			});
 		},
 
 		classifyToolClass(toolName, toolInput) {
@@ -171,7 +132,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): RunnerAdap
 			const path = scope === "user" ? "~/.cursor/hooks.json" : ".cursor/hooks.json";
 			const hooks: Record<string, unknown[]> = {};
 			for (const event of NATIVE_EVENTS) {
-				const hookCommand = buildHookCommand(binaryPath, "cursor", event);
+				const hookCommand = buildHookCommand(binaryPath, "cursor", event, cursorMissingRuntimePolicy(event));
 				const entry: JsonObject = { command: hookCommand, type: "command" };
 				if (GATED_EVENTS.has(event)) {
 					entry.failClosed = true;
@@ -328,12 +289,4 @@ function stderrOut(stderr: string | undefined): AdapterOutput {
 
 function joinWarnings(warnings: string[] | undefined): string {
 	return (warnings ?? []).join("\n");
-}
-
-function isObject(v: unknown): v is JsonObject {
-	return v != null && typeof v === "object" && !Array.isArray(v);
-}
-
-function readString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
 }

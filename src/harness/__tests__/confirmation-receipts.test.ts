@@ -332,7 +332,7 @@ describe("cursor adapter — ask reason+user_message include Targets section", (
 	});
 });
 
-describe("codex adapter — ask→deny includes Targets", () => {
+describe("codex adapter — ask→native deny includes Targets", () => {
 	const adapter = createCodexAdapter();
 	const event = adapter.parseHookInput(
 		{ session_id: "c", tool_name: "Bash", tool_input: { command: "rm x" } },
@@ -344,17 +344,26 @@ describe("codex adapter — ask→deny includes Targets", () => {
 			{ decision: "ask", reason: "confirm?", resolved_targets: TARGETS_TWO_FILES },
 			event,
 		);
-		const parsed = JSON.parse(out.stdout || "{}") as { decision: string; reason: string };
-		expect(parsed.decision).toBe("block");
-		expect(parsed.reason).toContain("confirm?");
-		expect(parsed.reason).toContain("Targets:");
-		expect(parsed.reason).toContain("• file: src/legacy.ts");
+		expect(JSON.parse(out.stdout || "{}")).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: expect.stringMatching(
+					/confirm\?[\s\S]*Targets:[\s\S]*• file: src\/legacy\.ts/,
+				),
+			},
+		});
 	});
 
 	it("ask without resolved_targets renders unchanged from baseline (regression)", () => {
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
-		const parsed = JSON.parse(out.stdout || "{}") as { decision: string; reason: string };
-		expect(parsed).toEqual({ decision: "block", reason: "confirm?" });
+		expect(JSON.parse(out.stdout || "{}")).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "confirm?",
+			},
+		});
 	});
 });
 

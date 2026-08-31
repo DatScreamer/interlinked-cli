@@ -23,6 +23,7 @@ import type { RouteMap } from "./route-map.js";
 import { baselineCallKey, consumeBaselineSnapshot } from "./evaluator/baseline-effect-guard.js";
 import type { SessionTracker } from "./session-state.js";
 import type {
+	AgentSource,
 	CheckResultEntry,
 	GuardRulesConfig,
 	HarnessDecision,
@@ -317,8 +318,18 @@ function unifiedToNativeEventName(event: UnifiedHookEvent): string {
 	}
 }
 
-function mapAgentSource(runner: string): "claude" | "copilot" {
-	return runner === "copilot-cli" ? "copilot" : "claude";
+const AGENT_SOURCE_BY_RUNNER: Readonly<Record<string, AgentSource>> = {
+	"claude-code": "claude",
+	"copilot-cli": "copilot",
+	codex: "codex",
+	"gemini-cli": "gemini",
+	cursor: "cursor",
+	opencode: "opencode",
+	pi: "pi",
+};
+
+function mapAgentSource(runner: string): AgentSource {
+	return AGENT_SOURCE_BY_RUNNER[runner] ?? "claude";
 }
 
 function nativeToolName(runner: string, normalized: string): string {

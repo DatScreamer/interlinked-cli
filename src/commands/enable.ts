@@ -16,6 +16,7 @@ import {
 } from "../lib/config.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getAdapter } from "../harness/adapters/index.js";
 import { TrigramIndex } from "../harness/trigram-index.js";
 import { c } from "../lib/formatter.js";
 import { clearGuardDisable } from "../lib/guard-state.js";
@@ -27,7 +28,7 @@ import {
 	installStatusLine,
 	writeHookScript,
 } from "../lib/hooks.js";
-import { type ClientName, detectClients } from "../lib/settings.js";
+import { type ClientName, CLIENT_TO_RUNNER, detectClients } from "../lib/settings.js";
 import { installSkills } from "../lib/skill-installers.js";
 import { harnessStartCommand, isHarnessRunning } from "./harness.js";
 
@@ -57,6 +58,8 @@ const ALL_CLIENTS: readonly ClientName[] = [
 	"gemini",
 	"codex",
 	"cursor",
+	"opencode",
+	"pi",
 ] as const;
 
 interface ClientSummary {
@@ -64,20 +67,41 @@ interface ClientSummary {
 	eventCountText: string;
 }
 
-const CLIENT_SUMMARIES: Record<ClientName, ClientSummary> = {
-	claude: { label: "claude", eventCountText: "13 events (all Claude Code hooks)" },
-	copilot: { label: "copilot", eventCountText: "6 events (Copilot CLI hooks)" },
-	gemini: { label: "gemini", eventCountText: "8 events (Gemini CLI hooks)" },
-	codex: {
-		label: "codex",
-		eventCountText: "6 events (.codex/hooks.json + [features] hooks=true flag)",
-	},
-	cursor: {
-		label: "cursor",
-		eventCountText:
-			"15 events (.cursor/hooks.json — gates + subagent + postToolUseFailure + preCompact)",
-	},
+/** Where each client's hooks land, and what else the install touches. The
+ *  COUNT is deliberately absent — see `clientSummary`. */
+const CLIENT_DESTINATIONS: Record<ClientName, string> = {
+	claude: ".claude/settings.json",
+	copilot: ".github/hooks/hooks.json",
+	gemini: ".gemini/settings.json",
+	codex: ".codex/hooks.json + [features] hooks=true flag",
+	cursor: ".cursor/hooks.json",
+	opencode: ".opencode/plugins/interlinked.ts",
+	pi: ".pi/extensions/interlinked.js",
 };
+
+/**
+ * Describe what `enable` will install for one client.
+ *
+ * The event count is COMPUTED from the adapter that performs the install, never
+ * written down here. The hardcoded numbers this replaces (claude 13, gemini 8,
+ * cursor 15) had drifted from what the adapters actually register (12, 4, 18
+ * as of 2026-08-28 — REGISTERED events; the parsers handle more):
+ * a dry run promised one thing and the install did another, which is the worst
+ * failure mode for a preview flag. Same drift class the repo's own
+ * `duplicated_policy_constant` check exists to catch — the cure is one source
+ * of truth, so a new event in an adapter updates this line for free.
+ */
+function clientSummary(client: ClientName): ClientSummary | null {
+	const destination = CLIENT_DESTINATIONS[client];
+	if (!destination) return null;
+	const adapter = getAdapter(CLIENT_TO_RUNNER[client]);
+	if (!adapter) return null;
+	const count = adapter.nativeEventNames.length;
+	return {
+		label: client,
+		eventCountText: `${count} event${count === 1 ? "" : "s"} (${destination})`,
+	};
+}
 
 export async function enableCommand(options: EnableOptions): Promise<void> {
 	const cwd = process.cwd();
@@ -257,12 +281,12 @@ function printInstallResults(results: InstallResultLike[], detected: ClientName[
 		if (detected.length === 0) {
 			console.log(
 				c.dim(
-					"  No client directories (.claude/, .github/hooks/, .gemini/, .codex/, .cursor/) found.",
+					"  No client directories (.claude/, .github/hooks/, .gemini/, .codex/, .cursor/, .opencode/, .pi/) found.",
 				),
 			);
 			console.log(
 				c.dim(
-					"  Use --clients claude,copilot,gemini,codex,cursor to force installation.",
+					"  Use --clients claude,copilot,gemini,codex,cursor,opencode,pi to force installation.",
 				),
 			);
 		}
@@ -377,7 +401,7 @@ function printSummary(
 		}
 	} else {
 		console.log(
-			`\n${c.yellow("Hooks are not active.")} No hook entries were installed. Re-run with ${c.cyan("--clients claude,copilot,gemini,codex,cursor")} or check client settings paths.`,
+			`\n${c.yellow("Hooks are not active.")} No hook entries were installed. Re-run with ${c.cyan("--clients claude,copilot,gemini,codex,cursor,opencode,pi")} or check client settings paths.`,
 		);
 	}
 }
@@ -389,6 +413,14 @@ export function buildPostEnableNotes(targetClients: readonly ClientName[]): stri
 	}
 	if (targetClients.includes("codex")) {
 		notes.push("Restart Codex or open a new Codex session to load updated hooks.");
+	}
+	if (targetClients.includes("opencode")) {
+		notes.push("Restart OpenCode or open a new OpenCode session to load the Interlinked plugin.");
+	}
+	if (targetClients.includes("pi")) {
+		notes.push(
+			"Run `/reload` in Pi (or restart it) and trust the Interlinked project extension when prompted.",
+		);
 	}
 	return notes;
 }
@@ -427,7 +459,7 @@ function printDryRun(
 	for (const client of targetClients) {
 		const isDetected = detectedNames.includes(client);
 		const suffix = isDetected ? c.dim(" (detected)") : c.dim(" (forced)");
-		const summary = CLIENT_SUMMARIES[client];
+		const summary = clientSummary(client);
 		if (summary) {
 			console.log(`  ${c.bold(summary.label)} — ${summary.eventCountText}${suffix}`);
 		}

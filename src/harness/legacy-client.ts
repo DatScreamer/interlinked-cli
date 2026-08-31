@@ -28,6 +28,7 @@ const LEGACY_NATIVE_EVENTS = new Set<HarnessEvent["hook_event"]>([
 	"SubagentStop",
 	"Notification",
 	"PreCompact",
+	"PostCompact",
 	"TaskCompleted",
 	"TeammateIdle",
 	"PermissionRequest",
@@ -159,9 +160,7 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 
 	const agentName = event.context.agent?.id ?? readString(raw.agent_name);
 	if (agentName) out.agent_name = agentName;
-	copyString(raw, out, "model");
-	copyString(raw, out, "transcript_path");
-	copyString(raw, out, "tool_use_id");
+	copyNormalizedContext(event, raw, out);
 	copyDeliveryId(event, out);
 	copySubagentContext(raw, out);
 	const filesModified = readStringArray(raw.files_modified);
@@ -171,6 +170,20 @@ export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	applyLegacyFieldFallbacks(raw, out);
 
 	return out;
+}
+
+function copyNormalizedContext(
+	event: UnifiedHookEvent,
+	raw: JsonObject,
+	out: HarnessEvent,
+): void {
+	if (event.context.model) out.model = event.context.model;
+	else copyString(raw, out, "model");
+	if (event.context.transcript_path) out.transcript_path = event.context.transcript_path;
+	else copyString(raw, out, "transcript_path");
+	if (event.tool_use_id) out.tool_use_id = event.tool_use_id;
+	else copyString(raw, out, "tool_use_id");
+	if (event.turn_id) out.prompt_id = event.turn_id;
 }
 
 /** Derive `tool_name` / `tool_input` / `tool_response` / `prompt` from the
@@ -252,6 +265,8 @@ function legacyHookEventName(event: UnifiedHookEvent): HarnessEvent["hook_event"
 			return "UserPromptSubmit";
 		case "pre-compact":
 			return "PreCompact";
+		case "post-compact":
+			return "PostCompact";
 		case "stop":
 			return "Stop";
 		case "subagent-start":
@@ -263,21 +278,18 @@ function legacyHookEventName(event: UnifiedHookEvent): HarnessEvent["hook_event"
 	}
 }
 
+const AGENT_SOURCE_BY_RUNNER: Partial<Record<UnifiedHookEvent["runner"], AgentSource>> = {
+	"claude-code": "claude",
+	"copilot-cli": "copilot",
+	codex: "codex",
+	"gemini-cli": "gemini",
+	cursor: "cursor",
+	opencode: "opencode",
+	pi: "pi",
+};
+
 function mapAgentSource(runner: UnifiedHookEvent["runner"]): AgentSource {
-	switch (runner) {
-		case "claude-code":
-			return "claude";
-		case "copilot-cli":
-			return "copilot";
-		case "codex":
-			return "codex";
-		case "gemini-cli":
-			return "gemini";
-		case "cursor":
-			return "cursor";
-		default:
-			return "claude";
-	}
+	return AGENT_SOURCE_BY_RUNNER[runner] ?? "claude";
 }
 
 function legacyToolName(

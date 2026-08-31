@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	documentContainsInterlinkedHook,
 	hookEntryCommands,
+	isHookEntryInvokingBinary,
 	isInterlinkedHookCommand,
 	isInterlinkedHookEntry,
 	isProjectOwnedHookEntry,
+	ownedInvocations,
 } from "./hook-ownership.js";
 
 // The real command shapes the two install systems write.
@@ -31,6 +34,65 @@ describe("isInterlinkedHookCommand", () => {
 	});
 	it("does not match an empty command", () => {
 		expect(isInterlinkedHookCommand("")).toBe(false);
+	});
+
+	// test-contract: security — review 2026-08-30: the substring recognizer
+	// CLAIMED these user commands, and a claimed entry is a REMOVED entry on
+	// the purge/uninstall paths. Ownership is shape-parsed now.
+	describe("shape parsing — must NOT claim user commands (review repros)", () => {
+		it("N: `echo hook-entry.js` is not an Interlinked hook", () => {
+			expect(isInterlinkedHookCommand("echo hook-entry.js")).toBe(false);
+		});
+		it("N: a similarly named executable is not claimed", () => {
+			expect(isInterlinkedHookCommand("node /home/u/my-hook-entry.js.sh --fast")).toBe(false);
+			expect(isInterlinkedHookCommand("/usr/bin/not-interlinked-hookish --runner 'x' --event 'y'")).toBe(false);
+		});
+		it("N: the marker appearing only as an ARGUMENT is not claimed", () => {
+			expect(isInterlinkedHookCommand("node build.js hook-entry.js")).toBe(false);
+			expect(isInterlinkedHookCommand("mytool --config hook-entry.js --verbose")).toBe(false);
+		});
+		it("N: the marker inside prose/comment text is not claimed", () => {
+			expect(isInterlinkedHookCommand("echo 'see docs about hook-entry.js' # interlinked-hook note")).toBe(false);
+		});
+		it("P: the args-less legacy enable shape IS still claimed", () => {
+			expect(
+				isInterlinkedHookCommand('test -f "/repo/dist/hook-entry.js" && node "/repo/dist/hook-entry.js" || true'),
+			).toBe(true);
+		});
+		// test-contract: invariant — the recognizer takes ONE command string,
+		// never a serialized document; a raw JSON blob is NOT a hook command.
+		// Document scanning is the parsed-walk helper's job.
+		it("N: a raw JSON document is not itself a hook command; the parsed walk finds the entry", () => {
+			const raw = '{"hooks":{"PreToolUse":[{"command":"test -f \\"/r/dist/hook-entry.js\\" && node \\"/r/dist/hook-entry.js\\" || true"}]}}';
+			expect(isInterlinkedHookCommand(raw)).toBe(false);
+			expect(documentContainsInterlinkedHook(JSON.parse(raw))).toBe(true);
+		});
+
+		// test-contract: security — the review's four executable-position
+		// repros: printing or commenting on an invocation is not an invocation.
+		it("N: echo/printf/comment forms containing a full node invocation are NOT claimed", () => {
+			expect(isInterlinkedHookCommand("echo node /repo/dist/hook-entry.js")).toBe(false);
+			expect(isInterlinkedHookCommand("echo ok # node /repo/dist/hook-entry.js")).toBe(false);
+			expect(isInterlinkedHookCommand("printf '%s\\n' 'node /repo/dist/hook-entry.js'")).toBe(false);
+			expect(isInterlinkedHookCommand("echo node .interlinked/hooks/interlinked-activity.mjs")).toBe(false);
+		});
+
+		// test-contract: security — review 2026-08-31 probes 1+2: identity is
+		// the EXACT basename; a user's look-alike script whose name merely ends
+		// with ours is not Interlinked's (a claimed entry is a removed entry).
+		it("N: look-alike basenames (my-hook-entry.js, myinterlinked-activity.mjs) are NOT claimed", () => {
+			expect(isInterlinkedHookCommand("node /home/u/my-hook-entry.js")).toBe(false);
+			expect(isInterlinkedHookCommand("node /home/u/myinterlinked-activity.mjs")).toBe(false);
+			expect(isInterlinkedHookCommand("/usr/local/bin/my-interlinked-hook --event pre")).toBe(false);
+		});
+
+		// test-contract: public-api — the exact basenames still match at any
+		// directory depth, quoted or bare.
+		it("P: exact basenames keep matching at any path depth", () => {
+			expect(isInterlinkedHookCommand('node "/deep/a b/dist/hook-entry.js" --runner x')).toBe(true);
+			expect(isInterlinkedHookCommand("node /abs/.interlinked/hooks/interlinked-activity.mjs")).toBe(true);
+			expect(isInterlinkedHookCommand("/opt/bin/interlinked-hook --event pre")).toBe(true);
+		});
 	});
 });
 
@@ -103,5 +165,83 @@ describe("isProjectOwnedHookEntry", () => {
 	it("rejects junk entries", () => {
 		expect(isProjectOwnedHookEntry(null, "/repo")).toBe(false);
 		expect(isProjectOwnedHookEntry({ matcher: "" }, "/repo")).toBe(false);
+	});
+
+	// test-contract: security — review 2026-08-31 probe 4: attribution reads
+	// the INVOKED path only; a FOREIGN repo's hook whose echo argument
+	// mentions this project's root stays foreign.
+	it("N: a foreign hook mentioning the current root in an argument stays foreign", () => {
+		const foreign = {
+			command: "node '/other/repo/dist/hook-entry.js' --runner x ; echo /repo/notes",
+		};
+		expect(isProjectOwnedHookEntry(foreign, "/repo")).toBe(false);
+		expect(isProjectOwnedHookEntry(foreign, "/other/repo")).toBe(true);
+	});
+});
+
+describe("ownedInvocations", () => {
+	// test-contract: public-api — the enumerator returns each owned
+	// invocation with its classified kind and invoked path, in order.
+	it("P: returns kind + script for every owned invocation in one command", () => {
+		const invocations = ownedInvocations(ADAPTER_CMD);
+		expect(invocations).toEqual([
+			expect.objectContaining({ kind: "hook-entry", script: "/repo/dist/hook-entry.js" }),
+		]);
+		expect(ownedInvocations(ADAPTER_BIN_CMD)[0]?.kind).toBe("interlinked-hook");
+	});
+
+	// test-contract: boundary — non-invocations yield an empty list.
+	it("N: mentions and look-alikes yield no invocations", () => {
+		expect(ownedInvocations("echo node /repo/dist/hook-entry.js")).toEqual([]);
+		expect(ownedInvocations("node /home/u/my-hook-entry.js")).toEqual([]);
+	});
+});
+
+describe("isHookEntryInvokingBinary", () => {
+	// test-contract: public-api — the entry invokes the exact recorded
+	// binary in the script (or executable) position.
+	it("P: matches the recorded binary in the invocation position", () => {
+		expect(isHookEntryInvokingBinary({ command: ADAPTER_CMD }, "/repo/dist/hook-entry.js")).toBe(true);
+		expect(
+			isHookEntryInvokingBinary({ command: ADAPTER_BIN_CMD }, "/usr/local/bin/interlinked-hook"),
+		).toBe(true);
+	});
+
+	// test-contract: security — echoing the recorded binary is not invoking
+	// it (the removed substring fallback's failure mode), a different binary
+	// does not match, and an empty recorded path matches nothing.
+	it("N: mentions, other binaries, and empty paths do not match", () => {
+		expect(
+			isHookEntryInvokingBinary({ command: "echo /repo/dist/hook-entry.js" }, "/repo/dist/hook-entry.js"),
+		).toBe(false);
+		expect(isHookEntryInvokingBinary({ command: ADAPTER_CMD }, "/other/dist/hook-entry.js")).toBe(false);
+		expect(isHookEntryInvokingBinary({ command: ADAPTER_CMD }, "")).toBe(false);
+	});
+});
+
+describe("documentContainsInterlinkedHook — hook containers only", () => {
+	const CMD = "node '/repo/dist/hook-entry.js' --runner 'claude-code' --event 'PreToolUse'";
+
+	// test-contract: security — review 2026-08-31 probe 3: a hook-shaped
+	// command inside unrelated metadata is a mention, not a registration.
+	it("N: an Interlinked-looking command outside the hooks container is unrelated", () => {
+		expect(documentContainsInterlinkedHook({ unrelated_note: CMD })).toBe(false);
+		expect(documentContainsInterlinkedHook({ notes: [{ command: CMD }] })).toBe(false);
+	});
+
+	// test-contract: public-api — every runner's native container shape is
+	// found: event-map of flat entries (gemini/cursor/copilot) and the Claude
+	// nested entry shape.
+	it("P: native container shapes across runners are recognized", () => {
+		expect(documentContainsInterlinkedHook({ hooks: { PreToolUse: [{ command: CMD }] } })).toBe(true);
+		expect(
+			documentContainsInterlinkedHook({
+				hooks: { PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: CMD }] }] },
+			}),
+		).toBe(true);
+		expect(
+			documentContainsInterlinkedHook({ version: 1, hooks: { afterEdit: [{ type: "command", bash: CMD }] } }),
+		).toBe(true);
+		expect(documentContainsInterlinkedHook({ hooks: { PreToolUse: [{ command: "npx lint-staged" }] } })).toBe(false);
 	});
 });

@@ -226,6 +226,19 @@ describe("dispatchRpc — lifecycle acks", () => {
 		if (isError(result)) throw new Error("unexpected error");
 		expect((result.result as { decision: string }).decision).toBe("allow");
 	});
+
+	it.each([
+		"hook.permission_request",
+		"hook.post_compact",
+		"hook.lifecycle",
+	] as const)("%s acks without applying a tool evaluator", async (method) => {
+		const result = await dispatchRpc(
+			{ schema_version: "1", id: `r-${method}`, method, params: event },
+			makeState(),
+		);
+		if (isError(result)) throw new Error("unexpected error");
+		expect((result.result as { decision: string }).decision).toBe("allow");
+	});
 });
 
 describe("dispatchRpc — hook runtime bridge", () => {

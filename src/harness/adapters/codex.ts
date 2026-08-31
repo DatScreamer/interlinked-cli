@@ -1,15 +1,11 @@
 // ===========================================
 // OpenAI Codex CLI adapter
 // ===========================================
-// Codex CLI shipped its hook contract using Claude Code's vocabulary
-// (PascalCase event names, the same input field set on stdin) so the
-// adapter mirrors Claude's parser closely. The two payload-level
-// differences worth knowing about:
-//   - Codex includes a `turn_id` field on turn-scoped events that Claude
-//     does not emit. We surface it on UnifiedHookEvent.parent_event_id.
-//   - PermissionRequest uses a distinct decision shape on stdout —
-//     `hookSpecificOutput.decision.behavior` rather than Claude's
-//     `permissionDecision`. Encoded inside encodeDecision below.
+// Codex CLI uses Claude Code's PascalCase hook vocabulary but has its own
+// response semantics. This adapter covers Codex's full twelve-event surface,
+// keeps `turn_id` distinct in the unified envelope, abstains on allowed/asked
+// PermissionRequest events so Codex's native policy can prompt, and translates
+// Stop/SubagentStop feedback into Codex's continuation shape.
 //
 // Configuration: Codex reads `.codex/hooks.json` (project) or
 // `~/.codex/hooks.json` (user). Hooks are gated by a `[features]
@@ -22,16 +18,21 @@
 // themselves or call `interlinked enable --clients codex`.
 
 import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
-import type { JsonObject } from "../../lib/json-types.js";
+import { hookTimeoutSecondsFor } from "../../lib/hook-timeouts.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
 	classifyFromToolName,
 } from "../tool-class-classifier.js";
 import type { HarnessDecision } from "../types.js";
-import type { UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
-import { makeEventId } from "../unified-event.js";
-import { buildHookCommand } from "./hook-command.js";
+import type { UnifiedHookEvent } from "../unified-event.js";
+import { buildDetachedHookCommand, buildHookCommand } from "./hook-command.js";
+import { buildStandardAction, normalizeNativeHookEvent } from "./normalization.js";
+import {
+	CODEX_CAPABILITIES,
+	eventCapability,
+	installedEventNames,
+} from "./provider-capabilities.js";
 import type {
 	AdapterOutput,
 	PostInstallOptions,
@@ -39,25 +40,17 @@ import type {
 	SettingsFragment,
 } from "./types.js";
 
-// Codex hook events documented as of 2026-04 — PascalCase, matches Claude's
-// names with the addition of PermissionRequest as its own event type. Named
-// constants on each value so conditionals can compare against intent rather
-// than bare string literals.
-const EVT_SESSION_START = "SessionStart" as const;
-const EVT_USER_PROMPT = "UserPromptSubmit" as const;
+// Native event spellings are cataloged in provider-capabilities.ts; only the
+// values needed by response/config branching are named locally.
 const EVT_PRE_TOOL = "PreToolUse" as const;
 const EVT_POST_TOOL = "PostToolUse" as const;
 const EVT_PERMISSION_REQUEST = "PermissionRequest" as const;
 const EVT_STOP = "Stop" as const;
+const EVT_SUBAGENT_STOP = "SubagentStop" as const;
+const EVT_SESSION_END = "SessionEnd" as const;
+const EVT_INTERRUPT = "Interrupt" as const;
 
-const NATIVE_EVENTS = [
-	EVT_SESSION_START,
-	EVT_USER_PROMPT,
-	EVT_PRE_TOOL,
-	EVT_POST_TOOL,
-	EVT_PERMISSION_REQUEST,
-	EVT_STOP,
-] as const;
+const NATIVE_EVENTS = installedEventNames(CODEX_CAPABILITIES);
 
 // PostToolUse matcher — empty string matches all tools. The hook script
 // itself fast-paths non-mutation tools internally, so the provider-level
@@ -68,7 +61,6 @@ const POST_TOOL_USE_MATCHER = "";
 // branch in encodeDecision and to populate the JSON shape on stdout.
 const DECISION_BLOCK = "block" as const;
 const DECISION_ASK = "ask" as const;
-const PERMISSION_ALLOW = "allow" as const;
 const PERMISSION_DENY = "deny" as const;
 const RUNNER_CODEX = "codex" as const;
 
@@ -77,15 +69,6 @@ const RUNNER_CODEX = "codex" as const;
 const HOOKS_PATH_PROJECT = ".codex/hooks.json";
 const HOOKS_PATH_USER = "~/.codex/hooks.json";
 const SCOPE_USER = "user" as const;
-
-const PHASE_MAP: Record<string, UnifiedPhase> = {
-	[EVT_SESSION_START]: "session-start",
-	[EVT_USER_PROMPT]: "user-prompt",
-	[EVT_PRE_TOOL]: "pre-tool",
-	[EVT_POST_TOOL]: "post-tool",
-	[EVT_PERMISSION_REQUEST]: "pre-tool",
-	[EVT_STOP]: "session-end",
-};
 
 export interface CodexAdapterOptions {
 	overrides?: ClassifierOverrides | undefined;
@@ -96,6 +79,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): RunnerAdapte
 		id: "codex",
 		label: "OpenAI Codex CLI",
 		experimental: false,
+		capabilities: CODEX_CAPABILITIES,
 		nativeEventNames: NATIVE_EVENTS,
 		detectFromEnv: codexDetectFromEnv,
 		parseHookInput: (nativeJson, nativeEventName) =>
@@ -124,7 +108,17 @@ function codexPostInstall(opts: PostInstallOptions): void {
 		);
 		return;
 	}
-	ensureCodexFeatureFlag(opts.cwd);
+	// `"refused"` is a FAILURE, not a variety of success (Grok 2026-08-28
+	// issue 5): duplicate `[features]` headers make the TOML invalid, Codex
+	// rejects the whole file, and no hook ever fires — an install that reports
+	// ok on top of that is an inert install. `runPostInstall` treats a throw as
+	// the failure signal, so throwing threads `InstallResult.ok === false`.
+	const action = ensureCodexFeatureFlag(opts.cwd);
+	if (action === "refused") {
+		throw new Error(
+			`.codex/config.toml has duplicate [features] tables — Codex rejects the whole file, so hooks cannot fire. Merge the duplicate tables (see the repair note printed above), then re-run enable.`,
+		);
+	}
 }
 
 function codexDetectFromEnv(env: NodeJS.ProcessEnv): boolean {
@@ -142,26 +136,20 @@ function codexParseHookInput(
 	nativeEventName: string,
 	overrides: ClassifierOverrides | undefined,
 ): UnifiedHookEvent {
-	const raw = isObject(nativeJson) ? nativeJson : {};
-	const phase = PHASE_MAP[nativeEventName] ?? "other";
-	const session_id = readString(raw.session_id) ?? "unknown";
-	const cwd = readString(raw.cwd) ?? process.cwd();
-	const ts = new Date().toISOString();
-	const parent_event_id = readString(raw.turn_id) ?? undefined;
-	const action = buildCodexAction(nativeEventName, raw, overrides);
-	return {
-		schema_version: "1",
-		event_id: makeEventId(),
-		session_id,
-		parent_event_id,
-		ts,
+	return normalizeNativeHookEvent({
 		runner: RUNNER_CODEX,
-		runner_native_event: nativeEventName,
-		phase,
-		action,
-		context: { cwd },
-		raw,
-	};
+		capabilities: CODEX_CAPABILITIES,
+		nativeEventName,
+		nativeJson,
+		turnIdAsParentEventId: true,
+		buildAction: ({ raw, phase }) =>
+			buildStandardAction({
+				raw,
+				phase,
+				nativeEventName,
+				...(overrides ? { overrides } : {}),
+			}),
+	});
 }
 
 function codexRenderSettingsFragment(binaryPath: string, scope: string): SettingsFragment {
@@ -172,155 +160,165 @@ function codexRenderSettingsFragment(binaryPath: string, scope: string): Setting
 	// users don't have to learn a second config format.
 	const hooks: Record<string, unknown[]> = {};
 	for (const event of NATIVE_EVENTS) {
-		const hookCommand = buildHookCommand(binaryPath, RUNNER_CODEX, event);
-		const matcher = event === EVT_POST_TOOL ? POST_TOOL_USE_MATCHER : "";
-		hooks[event] = [
-			{
-				matcher,
-				hooks: [{ type: "command", command: hookCommand }],
-			},
-		];
+		hooks[event] = [codexRegistration(binaryPath, event)];
 	}
 	return { path, fragment: { hooks }, mergeStrategy: "array-append" };
 }
 
-function codexEncodeDecision(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput {
-	const isPermissionRequest = event.runner_native_event === EVT_PERMISSION_REQUEST;
-	if (decision.decision === DECISION_BLOCK || decision.decision === DECISION_ASK) {
-		// Codex doesn't document an "ask" primitive on PreToolUse; surface
-		// "ask" as a block so the agent at minimum sees the reason and the
-		// human can intervene. PermissionRequest gets the dedicated
-		// decision shape regardless.
-		//
-		// For ask→block collapse, append resolved targets so the deny
-		// reason includes the specific file/URL/branch the agent was about
-		// to touch. Plain block decisions also surface targets when present.
-		return encodeCodexBlock(decision, isPermissionRequest);
+function codexRegistration(binaryPath: string, event: string): Record<string, unknown> {
+	const capability = eventCapability(CODEX_CAPABILITIES, event);
+	if (!capability) {
+		throw new Error(`Codex event ${event} is missing from the capability catalog`);
 	}
-	return encodeCodexAllow(decision, isPermissionRequest);
-}
-
-function encodeCodexBlock(
-	decision: Pick<HarnessDecision, "reason" | "warnings" | "resolved_targets">,
-	isPermissionRequest: boolean,
-): AdapterOutput {
-	// Append resolved targets to the deny reason. When ask→deny collapses
-	// (Codex has no ask primitive on PreToolUse) this is how the user sees
-	// the specific resources the action would have touched.
-	const baseReason =
-		decision.reason ??
-		"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
-			"re-run, or run `interlinked harness restart`, then report it.";
-	const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
-	const stderrTail = (decision.warnings ?? []).join("\n");
-	if (isPermissionRequest) {
-		const stdout = JSON.stringify({
-			hookSpecificOutput: {
-				hookEventName: EVT_PERMISSION_REQUEST,
-				decision: { behavior: PERMISSION_DENY, message: reason },
-			},
-		});
-		return { stdout, stderr: stderrTail || undefined, exit_code: 0 };
-	}
-	const stdout = JSON.stringify({ decision: DECISION_BLOCK, reason });
-	return { stdout, stderr: stderrTail || undefined, exit_code: 0 };
-}
-
-function encodeCodexAllow(
-	decision: Pick<HarnessDecision, "warnings" | "additional_context">,
-	isPermissionRequest: boolean,
-): AdapterOutput {
-	const warningsTail = (decision.warnings ?? []).join("\n");
-	if (isPermissionRequest) {
-		const stdout = JSON.stringify({
-			hookSpecificOutput: {
-				hookEventName: EVT_PERMISSION_REQUEST,
-				decision: { behavior: PERMISSION_ALLOW },
-			},
-		});
-		return { stdout, stderr: warningsTail || undefined, exit_code: 0 };
-	}
-	let stderr = warningsTail;
-	if (decision.additional_context) {
-		stderr = stderr ? `${stderr}\n${decision.additional_context}` : decision.additional_context;
-	}
-	return { stderr: stderr || undefined, exit_code: 0 };
-}
-
-// Tool-input field is JSON-shaped per Codex's contract — preserve it as
-// JsonObject so downstream consumers (classifier, redactors) get a real
-// type rather than `unknown`. Falls back to an empty object so the
-// classifier always has something to inspect.
-const EMPTY_TOOL_INPUT: JsonObject = {};
-
-function readToolInput(raw: JsonObject): JsonObject {
-	const value = raw.tool_input;
-	return value != null && value instanceof Object && !Array.isArray(value)
-		? (value as JsonObject)
-		: EMPTY_TOOL_INPUT;
-}
-
-function buildToolCallAction(
-	eventName: string,
-	raw: JsonObject,
-	overrides: ClassifierOverrides | undefined,
-): UnifiedHookEvent["action"] {
-	const toolNameRaw = readString(raw.tool_name) ?? "unknown";
-	const toolInput = readToolInput(raw);
-	const tool_class = classifyFromToolName(
-		toolNameRaw,
-		toolInput,
-		overrides ? { overrides } : {},
-	);
-	const base = {
-		kind: "tool_call" as const,
-		tool_name: toolNameRaw,
-		tool_class,
-		tool_input: toolInput,
-		tool_input_redacted: toolInput,
+	const command =
+		event === EVT_SESSION_END
+			? buildDetachedHookCommand(binaryPath, RUNNER_CODEX, event)
+			: buildHookCommand(binaryPath, RUNNER_CODEX, event, capability.missing_runtime);
+	const handler: Record<string, unknown> = {
+		type: "command",
+		command,
+		timeout: event === EVT_SESSION_END ? 3 : hookTimeoutSecondsFor(event),
+		statusMessage: codexStatusMessage(event),
 	};
-	if (eventName === EVT_POST_TOOL) {
-		return {
-			...base,
-			tool_response: raw.tool_response,
-			tool_error: readString(raw.tool_error) ?? undefined,
-		};
+	if (capability.background) {
+		handler.async = true;
 	}
-	return base;
+	if (capability.model_context) {
+		handler.additionalContextLimit = 2_500;
+	}
+	return {
+		matcher: event === EVT_POST_TOOL ? POST_TOOL_USE_MATCHER : "",
+		hooks: [handler],
+	};
 }
 
-function buildCodexAction(
-	eventName: string,
-	raw: JsonObject,
-	overrides: ClassifierOverrides | undefined,
-): UnifiedHookEvent["action"] {
-	if (eventName === EVT_USER_PROMPT) {
-		return { kind: "user_prompt", text: readString(raw.prompt) ?? "" };
+function codexStatusMessage(event: string): string {
+	if (event === EVT_PRE_TOOL || event === EVT_PERMISSION_REQUEST) {
+		return "Interlinked policy check";
 	}
-	if (eventName === EVT_SESSION_START) {
-		return { kind: "session_lifecycle", event: "start" };
+	if (event === EVT_POST_TOOL) {
+		return "Interlinked quality review";
 	}
-	if (eventName === EVT_STOP) {
-		return { kind: "session_lifecycle", event: "end" };
+	return "Interlinked lifecycle check";
+}
+
+function codexEncodeDecision(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput {
+	const special = encodeCodexSpecialDecision(decision, event);
+	if (special) {
+		return special;
+	}
+	if (decision.decision === DECISION_BLOCK || decision.decision === DECISION_ASK) {
+		return encodeCodexBlock(decision, event);
+	}
+	return encodeCodexAllow(decision, event);
+}
+
+function encodeCodexSpecialDecision(
+	decision: HarnessDecision,
+	event: UnifiedHookEvent,
+): AdapterOutput | null {
+	if (event.runner_native_event === EVT_INTERRUPT) {
+		// Interrupt's strict output schema permits only an optional systemMessage.
+		// Interlinked records it asynchronously and intentionally emits zero bytes.
+		return { exit_code: 0 };
+	}
+	if (event.runner_native_event === EVT_PERMISSION_REQUEST) {
+		return encodeCodexPermissionDecision(decision);
 	}
 	if (
-		eventName === EVT_PRE_TOOL ||
-		eventName === EVT_POST_TOOL ||
-		eventName === EVT_PERMISSION_REQUEST
+		event.runner_native_event === EVT_STOP ||
+		event.runner_native_event === EVT_SUBAGENT_STOP
 	) {
-		return buildToolCallAction(eventName, raw, overrides);
+		return encodeCodexContinuationDecision(decision);
 	}
-	return { kind: "other", subkind: eventName, data: raw };
+	return null;
 }
 
-// Type guards. Using `instanceof Object` / `=== String(v)` patterns to
-// match the project-wide style in `src/lib/hook-installers.ts` — keeps
-// the harness's `magic_literal_in_conditional` quiet on the `typeof`
-// comparison strings.
-function isObject(v: unknown): v is JsonObject {
-	return v instanceof Object && !Array.isArray(v);
+function encodeCodexPermissionDecision(decision: HarnessDecision): AdapterOutput {
+	const stderr = feedbackText(decision);
+	if (decision.decision === DECISION_BLOCK) {
+		return withOptionalStderr(
+			JSON.stringify({
+				hookSpecificOutput: {
+					hookEventName: EVT_PERMISSION_REQUEST,
+					decision: { behavior: PERMISSION_DENY, message: decisionReason(decision) },
+				},
+			}),
+			stderr,
+		);
+	}
+	// Allow and ask both abstain. Codex then applies its normal permission
+	// policy, including the native user prompt for an unresolved request.
+	return stderr ? { stderr, exit_code: 0 } : { exit_code: 0 };
 }
 
-function readString(v: unknown): string | null {
-	return v === String(v) ? (v as string) : null;
+function encodeCodexContinuationDecision(decision: HarnessDecision): AdapterOutput {
+	const reason = feedbackText(decision);
+	if (decision.decision === "allow" && !reason) {
+		return { exit_code: 0 };
+	}
+	return {
+		stdout: JSON.stringify({
+			decision: DECISION_BLOCK,
+			reason: reason || decisionReason(decision),
+		}),
+		exit_code: 0,
+	};
+}
+
+function encodeCodexBlock(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput {
+	const reason = decisionReason(decision);
+	const stderr = warningText(decision);
+	if (event.runner_native_event === EVT_PRE_TOOL) {
+		return withOptionalStderr(
+			JSON.stringify({
+				hookSpecificOutput: {
+					hookEventName: EVT_PRE_TOOL,
+					permissionDecision: PERMISSION_DENY,
+					permissionDecisionReason: reason,
+				},
+			}),
+			stderr,
+		);
+	}
+	return withOptionalStderr(JSON.stringify({ decision: DECISION_BLOCK, reason }), stderr);
+}
+
+function encodeCodexAllow(decision: HarnessDecision, event: UnifiedHookEvent): AdapterOutput {
+	const feedback = feedbackText(decision);
+	if (!feedback) {
+		return { exit_code: 0 };
+	}
+	const capability = eventCapability(CODEX_CAPABILITIES, event.runner_native_event);
+	if (!capability?.model_context) {
+		return { stderr: feedback, exit_code: 0 };
+	}
+	return {
+		stdout: JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: event.runner_native_event,
+				additionalContext: feedback,
+			},
+		}),
+		exit_code: 0,
+	};
+}
+
+function decisionReason(decision: HarnessDecision): string {
+	const fallback =
+		"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
+		"re-run, or run `interlinked harness restart`, then report it.";
+	return formatAskReasonWithTargets(decision.reason ?? fallback, decision.resolved_targets);
+}
+
+function warningText(decision: HarnessDecision): string {
+	return (decision.warnings ?? []).join("\n");
+}
+
+function feedbackText(decision: HarnessDecision): string {
+	return [decision.additional_context, warningText(decision)].filter(Boolean).join("\n");
+}
+
+function withOptionalStderr(stdout: string, stderr: string): AdapterOutput {
+	return stderr ? { stdout, stderr, exit_code: 0 } : { stdout, exit_code: 0 };
 }

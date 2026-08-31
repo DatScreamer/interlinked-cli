@@ -35,7 +35,15 @@ interface DisableOptions {
 	by?: string;
 }
 
-const ALL_CLIENTS: ClientName[] = ["claude", "copilot", "gemini", "codex", "cursor"];
+const ALL_CLIENTS: ClientName[] = [
+	"claude",
+	"copilot",
+	"gemini",
+	"codex",
+	"cursor",
+	"opencode",
+	"pi",
+];
 
 export async function disableCommand(options: DisableOptions): Promise<void> {
 	if (options.uninstall) {
@@ -124,6 +132,26 @@ function resolveExpiry(until: string | undefined): string | undefined {
 
 // ── Destructive teardown (--uninstall) ───────────────────────────────────────
 
+function reportHookRemovalResults(results: ReturnType<typeof uninstallAllHooks>): {
+	removedCount: number;
+	failed: boolean;
+} {
+	let removedCount = 0;
+	let failed = false;
+	for (const result of results) {
+		if (result.events.length > 0) {
+			console.log(`  ${c.red("-")} ${c.bold(result.client)} — removed ${result.events.length} hook event(s)`);
+			removedCount++;
+		} else if (result.error) {
+			console.log(`  ${c.red("x")} ${c.bold(result.client)} — ${c.red(result.error)}`);
+			failed = true;
+		} else {
+			console.log(`  ${c.dim("-")} ${c.bold(result.client)} — no hooks found`);
+		}
+	}
+	return { removedCount, failed };
+}
+
 async function uninstallEverything(cwd: string, options: DisableOptions): Promise<void> {
 	console.log(c.bold("Interlinked CLI — Disable (uninstall)"));
 	console.log(c.dim("─".repeat(40)));
@@ -135,25 +163,18 @@ async function uninstallEverything(cwd: string, options: DisableOptions): Promis
 
 	console.log(c.bold("Removing hooks:"));
 	const results = uninstallAllHooks(cwd, ALL_CLIENTS);
-	let removedCount = 0;
-	for (const r of results) {
-		if (r.events.length > 0) {
-			console.log(`  ${c.red("-")} ${c.bold(r.client)} — removed ${r.events.length} hook event(s)`);
-			removedCount++;
-		} else if (r.error) {
-			console.log(`  ${c.red("x")} ${c.bold(r.client)} — ${c.red(r.error)}`);
-		} else {
-			console.log(`  ${c.dim("-")} ${c.bold(r.client)} — no hooks found`);
-		}
-	}
+	const { removedCount, failed: uninstallFailed } = reportHookRemovalResults(results);
 
 	if (deleteHookScript(cwd)) console.log(`\n${c.red("Deleted")} hook script`);
 	if (uninstallSkills(cwd, ALL_CLIENTS)) {
 		console.log(`${c.red("Removed")} Interlinked skills from ${ALL_CLIENTS.join(", ")}`);
 	}
 
-	if (options.keepConfig) {
-		console.log(`\n${c.dim("Kept")} .interlinked/ config (--keep-config)`);
+	if (options.keepConfig || uninstallFailed) {
+		const reason = uninstallFailed
+			? "because at least one hook could not be safely removed"
+			: "(--keep-config)";
+		console.log(`\n${c.dim("Kept")} .interlinked/ config ${reason}`);
 	} else {
 		const configDir = getConfigDir(cwd);
 		if (deleteConfigDir(cwd)) {
@@ -165,6 +186,11 @@ async function uninstallEverything(cwd: string, options: DisableOptions): Promis
 		console.log(`\n${c.green("Done.")} Removed hooks from ${removedCount} client(s).`);
 	} else {
 		console.log(`\n${c.dim("Done.")} No hooks were found to remove.`);
+	}
+	if (uninstallFailed) {
+		process.exitCode = 1;
+		console.log(c.yellow("Some hooks remain active; resolve the errors above, then run disable --uninstall again."));
+		return;
 	}
 	console.log(c.dim("Agent activity will no longer be captured."));
 	if (options.keepConfig) {

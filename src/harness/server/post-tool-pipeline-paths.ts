@@ -8,40 +8,14 @@
 // of a Bash command). No module-private state — depends only on its argument
 // + imports.
 
-import { nonNull } from "../../lib/non-null.js";
+import { isReadOnlyToolName } from "../../lib/hook-read-only-tools.js";
+import { isDirectFileEditTool } from "../../lib/write-tool-registry.js";
+import { detectBashCodeFileWrite } from "../pre-checks-bash-write-detect.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import type { HarnessEvent } from "../types.js";
 
-/** Tool names that write a file to disk (direct dirty-layer + index update). */
-const FILE_WRITE_TOOLS = [
-	"Write",
-	"Edit",
-	"Update",
-	"WriteFile",
-	"EditFile",
-	"write_file",
-	"edit_file",
-	"NotebookEdit",
-];
-
-/** Tool names treated as a direct single-file edit by the quality pipeline.
- *  Superset of {@link FILE_WRITE_TOOLS} plus the Copilot-CLI patch verbs. */
-const DIRECT_FILE_EDIT_TOOLS = [
-	...FILE_WRITE_TOOLS,
-	// Copilot CLI
-	"apply_patch",
-	"str_replace",
-	"create",
-];
-
 /** Tool names whose payload is a shell command that may edit files. */
 const SHELL_TOOLS = ["Bash", "Shell", "shell", "run_command"];
-
-/** Match an edited source-file path inside a Bash command (sed -i, awk >, tee,
- *  cat >, …) across the languages the pipeline knows how to check. Global so
- *  the resolver can skip PAST a generated artifact to a real source path. */
-const BASH_EDITED_FILE_RE =
-	/\b([\w./-]+\.(?:tsx?|jsx?|mjs|cjs|py|pyi|rs|go|java|c|cpp|cc|cxx|h|hpp|hxx|rb|php|swift|kt|kts|scala|lua|zig|nim|ex|exs|clj|cljs|ml|mli|hs|lhs|erl|hrl|dart|r|R|jl|v|sv|vhd|vhdl|pro|pl|pm|sh|bash|zsh|fish))\b/g;
 
 /** Directory segments whose contents are GENERATED — never worth analyzing. */
 const GENERATED_DIR_SEGMENTS = [
@@ -102,15 +76,34 @@ function resolveDeclaredPaths(event: HarnessEvent, isDirectFileEdit: boolean): s
 	}
 	if (!event.tool_name || !SHELL_TOOLS.includes(event.tool_name)) return [];
 	const cmd = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
-	BASH_EDITED_FILE_RE.lastIndex = 0;
-	for (const match of cmd.matchAll(BASH_EDITED_FILE_RE)) {
-		const candidate = nonNull(match[1]);
-		if (!isGeneratedArtifactPath(candidate)) return [candidate];
-	}
-	return [];
+	// Reuse the deterministic write detector. The old fallback matched the
+	// first source-looking token in ANY shell command, so read-only inspection
+	// such as `sed -n ... cloud-runner.ts` entered the full post-edit pipeline
+	// and emitted capacity-deferral warnings while another agent held the
+	// compiler lease. Mentioning a file is not evidence of writing it.
+	const write = detectBashCodeFileWrite(cmd);
+	if (write === null || isGeneratedArtifactPath(write.target)) return [];
+	return [write.target];
 }
 
+/**
+ * Paths the post-call filesystem comparison observed, ATTRIBUTED to this call.
+ *
+ * A tool with no write capability contributes NONE of them. The ChangeSet is a
+ * diff of the window the call occupied, not a record of what the call did — so
+ * on a Read / Grep / WebFetch every path in it was written by somebody else
+ * (another agent on the same tree, a background test run, a watcher). Charging
+ * those to the reader ran the whole per-file pipeline — `affected_tests` shells
+ * out to vitest — on a call that changed nothing: measured as a ~21s `rg` that
+ * reported a test failure it did not cause.
+ *
+ * Bash is NOT read-only and keeps its ChangeSet: a shell command's effects are
+ * only knowable post-call, and the bash-edit obligation gate is built on it.
+ * The read-only set lives in `lib/hook-read-only-tools.ts`, shared with the
+ * generated `.mjs` runtime's fast path.
+ */
 function observedPaths(event: HarnessEvent): string[] {
+	if (isReadOnlyToolName(event.tool_name)) return [];
 	return (event.change_set?.files ?? [])
 		.map((effect) => effect.path)
 		.filter((path) => !isGeneratedArtifactPath(path));
@@ -120,11 +113,17 @@ function observedPaths(event: HarnessEvent): string[] {
  * Resolve which file(s) this PostToolUse edited. Direct edits use the tool's
  * declared paths (Codex `apply_patch` may carry several); Bash/shell commands
  * are scanned for an edited source path so sed/awk/tee edits still get checked.
+ *
+ * Which tools count as a direct edit comes from `lib/write-tool-registry.ts`,
+ * the SAME table the Claude Code adapter builds its PostToolUse matcher from.
+ * Two hand-maintained lists is what let `MultiEdit` be registered by the adapter
+ * and then dropped here: no ChangeSet meant zero paths and `shouldRunChecks:
+ * false` (the whole per-file pass skipped), and a ChangeSet meant
+ * `isDirectFileEdit: false`, which handed a pre-write-GATED edit to the
+ * bash-channel obligation gate.
  */
 export function resolveEditedPaths(event: HarnessEvent): EditedPathResolution {
-	const isDirectFileEdit = Boolean(
-		event.tool_name && DIRECT_FILE_EDIT_TOOLS.includes(event.tool_name),
-	);
+	const isDirectFileEdit = isDirectFileEditTool(event.tool_name);
 	const effects = observedPaths(event);
 	const editedFilePaths = effects.length > 0
 		? effects

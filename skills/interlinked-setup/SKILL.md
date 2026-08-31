@@ -1,6 +1,6 @@
 ---
 name: interlinked-setup
-description: "Install, operate, and troubleshoot the Interlinked CLI harness in a repo — install/uninstall agent hooks, connect runners (Claude Code, Codex, Copilot CLI, Gemini, Cursor), start/stop/restart the local guard daemon, run `interlinked doctor`, switch server / sync-mode / check-policy, log in, and manage the two-tier `.interlinked/` config. Load when setting up Interlinked, when `interlinked doctor` reports problems, when the guard daemon is down or stale, when hooks are not firing, or when configuring or disabling Interlinked."
+description: "Install, operate, and troubleshoot the Interlinked CLI harness in a repo — install/uninstall agent hooks, connect runners (Claude Code, Codex, Copilot CLI, Gemini, Cursor, OpenCode, Pi), start/stop/restart the local guard daemon, run `interlinked doctor`, switch server / sync-mode / check-policy, log in, and manage the two-tier `.interlinked/` config. Load when setting up Interlinked, when `interlinked doctor` reports problems, when the guard daemon is down or stale, when hooks are not firing, or when configuring or disabling Interlinked."
 ---
 
 # interlinked-setup — install, operate & troubleshoot the harness
@@ -12,7 +12,7 @@ daemon healthy, configuring it, and turning it off. The remote server is **optio
 hooks, guard, and activity capture work with zero network.
 
 ## Load this when
-- Installing Interlinked or connecting a runner (Claude Code / Codex / Copilot CLI / Gemini / Cursor).
+- Installing Interlinked or connecting a runner (Claude Code / Codex / Copilot CLI / Gemini / Cursor / OpenCode / Pi).
 - `interlinked doctor` reports failures, or hooks are not firing / not capturing events.
 - The guard daemon is down, stale, a **zombie**, or tool calls are blocked with a "daemon unreachable" reason.
 - Changing the server URL, sync mode, or check-policy/operational tier.
@@ -23,8 +23,8 @@ hooks, guard, and activity capture work with zero network.
   `config.json` (committed, shared) + `config.local.json` (gitignored, personal).
 - **A daemon does the work.** `harness start` runs a background Unix-socket server. When it
   is up you get the full check set; when it is down the hook falls back to a small inline
-  subset and **fails closed on the dangerous stuff** (destructive commands, package installs,
-  line-cap, merge conflicts).
+	subset and **fails closed on the dangerous stuff** (destructive commands, agent-created
+	worktrees, package installs, line-cap, merge conflicts).
 - **The server is optional.** Auth / sync only matter for server-backed coordination
   (see `interlinked-coordination`). Skip it entirely for local-only use.
 - **Semantic search is optional and local.** Setup never downloads model weights. The explicit
@@ -63,9 +63,9 @@ prompts on genuinely NEW packages.
 > the gate.
 
 Key `enable` flags: `--server <url>` · `--agent <name>` · `--clients <list>`
-(`claude,copilot,gemini,codex,cursor`) · `--sync-mode <realtime|local|manual>` ·
+(`claude,copilot,gemini,codex,cursor,opencode,pi`) · `--sync-mode <realtime|local|manual>` ·
 `--data-dir <path>` · `--structure <mode>` · `--dry-run`.
-`install-hooks` uses different vocabulary: `--runner <claude-code,copilot-cli,cursor,gemini-cli,codex>`
+`install-hooks` uses different vocabulary: `--runner <claude-code,copilot-cli,cursor,gemini-cli,codex,opencode,pi>`
 · `--scope <user|project|local>` · `--mode <balanced|strict|lenient>`.
 
 ```bash
@@ -74,9 +74,10 @@ interlinked enable --clients claude --dry-run      # preview without writing
 interlinked install-hooks --runner claude-code --scope project
 ```
 
-> Client detection = presence of the config **directory** (`.claude/`, `.codex/`, …), not the
-> binary. Codex automatically detects skill changes; if an active session does not, restart it.
-> Copilot needs `/skills reload` to pick up skill changes.
+> Client detection uses the registry's project directory/config markers and process environment,
+> not a PATH probe for the binary. Codex automatically detects skill changes; if an active session
+> does not, restart it. Copilot needs `/skills reload` to pick up skill changes. OpenCode/Pi native
+> skill copies live under `.opencode/skills/` and `.pi/skills/`.
 
 ## Native shell sandbox posture
 
@@ -154,11 +155,47 @@ interlinked context --json    # show the effective merged config
 interlinked env               # list supported env vars + current values
 ```
 
+**What doctor's client rows do and do not prove (2026-08-30).** Doctor checks the hook-config
+location for **every** client in the settings registry — Claude Code, Codex, Copilot, Gemini,
+Cursor, OpenCode, and Pi — reading each path from that one registry instead of restating it (the hardcoded copy it
+replaced pointed Codex at `.codex/config.toml`, which holds only the feature flag, so doctor
+warned that every CORRECT Codex install was missing its hooks). Consequences worth knowing:
+
+- **Codex gets three rows, deliberately.** The hooks row reads `.codex/hooks.json`; a second row
+  reads the `[features] hooks = true` gate in `config.toml`, **table-aware** — a `hooks = true`
+  under some other table does not count. Installed hooks with the flag off are reported as
+  INERT, not missing, because those are different repairs. The third row checks
+  `.interlinked/hook-runtime.json`: it passes only after Codex executes the current
+  `hooks.json` definition hash. If it warns, open `/hooks`, review the definition, and run a
+  hooked action.
+- **The flag writer canonicalizes to a single `hooks` key.** Whatever mix of `hooks` /
+  `codex_hooks`, true / false, duplicated or commented, `[features]` already holds, the writer
+  leaves a single `hooks = true` — comments, unrelated tables and the file's line endings intact.
+  Duplicate TOML keys are a parse error, so the old "add a canonical key beside what we found"
+  behavior could report a successful migration for a config Codex then refused.
+- **A failed post-install now fails the install.** Codex is the one runner whose hooks.json is
+  inert without a second write, so when that write throws, `install-hooks` reports `ok: false`,
+  lists the runner under `post_install_failures`, marks the manifest entry `post_install:
+  "failed"`, exits non-zero, and `enable` reports the client as not installed. It used to log one
+  stderr line and report success.
+- **A passing hooks row means the config is present, not that execution is verified.** The
+  Codex execution row is the stronger live proof for the current definition. Codex installs all
+  twelve native events from the shared capability catalog. Copilot and Gemini adapter
+  normalization and the Cursor duplicate-invocation question are open work; treat those three
+  runners as unproven. OpenCode/Pi have managed-bridge execution tests, but their narrower native
+  APIs still make them experimental rather than Claude/Codex-equivalent.
+
+Likewise `enable --dry-run`'s per-client **event counts are computed from the adapter that
+performs the install** (they were prose literals that had drifted, so the preview promised
+numbers the install did not deliver). They count REGISTRATIONS, not verified provider
+capabilities.
+
 What "healthy" looks like in `doctor`: config dir + both config files present, hook script
 present, per-client "Hooks installed", and **Harness server: Running (PID …) -- socket
 answering**. A zombie is a **`fail`** here, never a pass. Hook detection shares one ownership
 predicate with the installers, so an adapter (`hook-entry.js`) install is recognised as
-installed rather than reported missing. A missing token on a non-localhost server is a `fail`;
+installed rather than reported missing. A manifest-tracked hook binary that no longer exists is
+a **`fail`**, even when the settings document still has the expected entries. A missing token on a non-localhost server is a `fail`;
 on localhost it is only a `warn` (dev mode allows unauthenticated).
 
 ### When the daemon will not stay up
@@ -239,13 +276,29 @@ interlinked logout [--all]
 - **`disable` is non-destructive by default now** — bare `disable` just stands down; use
   `--uninstall` (or `reset --force`) for real teardown.
 - **`clean` defaults to dry-run**; `reset` requires `--force`.
-- **Two install paths, non-interchangeable uninstall.** `uninstall-hooks` only cleans an
+- **Install paths have non-interchangeable uninstall semantics.** `uninstall-hooks` only cleans an
   `install-hooks`-style install; use `disable --uninstall` / `reset` to clean an `enable` install.
 - **Claude Code merge-up dedup:** `enable` refuses to install Claude hooks when an ancestor
   `.claude/settings.json` already has them (would double-fire) — run `enable` from that ancestor.
+- **Daemon discovery stops at a Git boundary.** A hook invoked in a linked worktree or submodule
+  uses that worktree's `.interlinked/` runtime and never borrows a daemon socket from the parent
+  checkout. Ordinary monorepo subdirectories still discover the nearest ancestor daemon.
 - **Gemini is a compatibility lane, not the Antigravity adapter.** Consumer Gemini CLI service
   ended in June 2026, while enterprise and paid API-key Gemini CLI use remain supported. The
   current `gemini` client installs Gemini CLI hooks/skills; do not treat it as Antigravity.
+- **OpenCode and Pi installs are managed source bridges.** Project scope writes
+  `.opencode/plugins/interlinked.ts` or `.pi/extensions/interlinked.js` as an Interlinked-owned
+  whole file; user scope uses `~/.config/opencode/plugins/interlinked.ts` and
+  `~/.pi/agent/extensions/interlinked.js`. Install refuses to overwrite a foreign file at that
+  path, and uninstall preserves a bridge whose bytes changed after install. A loaded bridge writes
+  its provider row to `.interlinked/hook-runtime.json`, but only Codex currently has a dedicated
+  doctor trust-verification row. Restart OpenCode after install (its plugin trust is implicit). In
+  Pi, run `/reload` or restart and approve the project-extension trust prompt.
+- **Their native parity is intentionally bounded.** OpenCode's stable tool-before hook cannot
+  open confirmation, so `ask` denies; permission bus and `session.idle`/Stop are observation-only.
+  Pi prompts through `ctx.ui.confirm` when interactive and denies headless; `user_bash` gates
+  direct shell commands as well as model tool calls. Neither exposes dedicated native MCP,
+  subagent, or worktree lifecycle hooks. The shared shell rule still blocks `git worktree add`.
 - **`reload` needs a source checkout** — it rebuilds the CLI checkout the running binary
   resolves to (typically a `~/.local/bin` symlink), not the current repo.
 - `--json` support is per-command; unknown flags error. `doctor` takes only `--fix`/`--json`.

@@ -14,6 +14,13 @@ const dummyEvent: UnifiedHookEvent = adapter.parseHookInput(
 	"preToolUse",
 );
 
+function copilotDenyPayload(out: ReturnType<typeof adapter.encodeDecision>): {
+	permissionDecision: string;
+	permissionDecisionReason: string;
+} {
+	return JSON.parse(out.stdout ?? "");
+}
+
 describe("Copilot CLI adapter identity", () => {
 	it("has the expected id", () => {
 		expect(adapter.id).toBe("copilot-cli");
@@ -66,6 +73,47 @@ describe("Copilot CLI parseHookInput — shell via command classifier", () => {
 	});
 });
 
+describe("Copilot CLI parseHookInput — documented JSON-string toolArgs", () => {
+	it("decodes toolArgs before command classification", () => {
+		const event = adapter.parseHookInput(
+			{ sessionId: "args-1", toolName: "shell", toolArgs: JSON.stringify({ command: "git push" }) },
+			"preToolUse",
+		);
+		if (event.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(event.action.tool_input).toEqual({ command: "git push" });
+		expect(event.action.tool_class).toBe("side-effect");
+	});
+
+	it("documented toolArgs wins over a conflicting legacy toolInput field", () => {
+		const event = adapter.parseHookInput(
+			{
+				sessionId: "args-2",
+				toolName: "shell",
+				toolArgs: JSON.stringify({ command: "git push" }),
+				toolInput: { command: "git status" },
+			},
+			"preToolUse",
+		);
+		if (event.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(event.action.tool_input).toEqual({ command: "git push" });
+	});
+
+	it("malformed toolArgs cannot fall through to a read-looking legacy field", () => {
+		const event = adapter.parseHookInput(
+			{
+				sessionId: "args-3",
+				toolName: "shell",
+				toolArgs: "{not-json",
+				toolInput: { command: "git status" },
+			},
+			"preToolUse",
+		);
+		if (event.action.kind !== "tool_call") throw new Error("expected tool_call");
+		expect(event.action.tool_input).toEqual({});
+		expect(event.action.tool_class).not.toBe("read");
+	});
+});
+
 describe("Copilot CLI renderSettingsFragment", () => {
 	const frag = adapter.renderSettingsFragment("/bin/hook", "project");
 	it("writes to .github/hooks/hooks.json", () => {
@@ -95,10 +143,13 @@ describe("Copilot CLI encodeDecision", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, event);
 		expect(out.exit_code).toBe(0);
 	});
-	it("block exits 2 and emits reason on stderr", () => {
+	it("block emits Copilot's deny JSON on stdout", () => {
 		const out = adapter.encodeDecision({ decision: "block", reason: "nope" }, event);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toContain("nope");
+		expect(out.exit_code).toBe(0);
+		expect(copilotDenyPayload(out)).toEqual({
+			permissionDecision: "deny",
+			permissionDecisionReason: "nope",
+		});
 	});
 	it("ask collapses to deny since Copilot has no ask primitive", () => {
 		// Regression guard: previously this returned exit 0 with a stderr note,
@@ -108,8 +159,11 @@ describe("Copilot CLI encodeDecision", () => {
 		// Mirrors the .mjs formatCopilotResponse path that downgrades pre_ask
 		// to permissionDecision:"deny".
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toContain("confirm?");
+		expect(out.exit_code).toBe(0);
+		expect(copilotDenyPayload(out)).toEqual({
+			permissionDecision: "deny",
+			permissionDecisionReason: "confirm?",
+		});
 	});
 });
 
@@ -370,12 +424,12 @@ describe("Copilot CLI renderSettingsFragment — full shape", () => {
 describe("Copilot CLI encodeDecision — block branches", () => {
 	it("uses an actionable default reason when block carries none", () => {
 		const out = adapter.encodeDecision({ decision: "block" }, dummyEvent);
-		expect(out.exit_code).toBe(2);
+		expect(out.exit_code).toBe(0);
 		// A reason-less block falls back to an actionable message (finding 2026-06:
 		// agents reported opaque "no detail" blocks). Pin the stable anchor + the
 		// actionable hint, not the exact wording.
-		expect(out.stderr).toContain("interlinked harness");
-		expect(out.stderr).toContain("no reason");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("interlinked harness");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("no reason");
 	});
 
 	it("prefixes warnings before the reason on a block", () => {
@@ -385,8 +439,9 @@ describe("Copilot CLI encodeDecision — block branches", () => {
 			warnings: ["w1", "w2"],
 		};
 		const out = adapter.encodeDecision(decision, dummyEvent);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toBe("w1\nw2\ndenied");
+		expect(out.exit_code).toBe(0);
+		expect(out.stderr).toBe("w1\nw2");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toBe("denied");
 	});
 
 	it("appends resolved targets as a bullet list after the block reason", () => {
@@ -396,18 +451,18 @@ describe("Copilot CLI encodeDecision — block branches", () => {
 			resolved_targets: [{ kind: "branch", value: "main" }],
 		};
 		const out = adapter.encodeDecision(decision, dummyEvent);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toContain("no force push");
-		expect(out.stderr).toContain("Targets:");
-		expect(out.stderr).toContain("branch: main");
+		expect(out.exit_code).toBe(0);
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("no force push");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("Targets:");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("branch: main");
 	});
 });
 
 describe("Copilot CLI encodeDecision — ask branches", () => {
 	it("uses a default reason when ask carries none", () => {
 		const out = adapter.encodeDecision({ decision: "ask" }, dummyEvent);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toBe("Confirmation required");
+		expect(out.exit_code).toBe(0);
+		expect(copilotDenyPayload(out).permissionDecisionReason).toBe("Confirmation required");
 	});
 
 	it("prefixes warnings and appends resolved targets on an ask-as-deny", () => {
@@ -418,11 +473,10 @@ describe("Copilot CLI encodeDecision — ask branches", () => {
 			resolved_targets: [{ kind: "file", value: "/repo/danger.ts" }],
 		};
 		const out = adapter.encodeDecision(decision, dummyEvent);
-		expect(out.exit_code).toBe(2);
-		// warnings come first, then the reason, then the Targets block.
-		expect(out.stderr?.startsWith("heads up\n")).toBe(true);
-		expect(out.stderr).toContain("delete this file?");
-		expect(out.stderr).toContain("file: /repo/danger.ts");
+		expect(out.exit_code).toBe(0);
+		expect(out.stderr).toBe("heads up");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("delete this file?");
+		expect(copilotDenyPayload(out).permissionDecisionReason).toContain("file: /repo/danger.ts");
 	});
 });
 

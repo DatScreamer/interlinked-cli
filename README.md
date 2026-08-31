@@ -1,13 +1,13 @@
 # interlinked-cli
 
 **The harness for your harness.** A local guard layer for AI coding agents —
-hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates
+hooks into Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, OpenCode, and Pi; evaluates
 every tool call against deterministic rules; blocks the dangerous ones in
 milliseconds; keeps a local activity log you can grep.
 
 **The exit ramp, up front:** `interlinked disable` stands the guard down and
-`interlinked uninstall-hooks` removes every hook entry this CLI installed —
-manifest-driven, restoring your runners' settings files to their prior state.
+`interlinked uninstall-hooks` removes every unchanged hook, plugin, or extension this CLI installed —
+manifest-driven, restoring settings files and preserving a managed bridge if somebody changed its bytes.
 Nothing phones home, everything lives in `.interlinked/` in your repo, and
 removal is one command. Try it on a throwaway repo first if you like; the
 whole setup is `interlinked` (the wizard) and the whole teardown is those two
@@ -37,7 +37,7 @@ That is the triad every responsible-AI program is built on — **evaluation,
 observability, and enforceable guardrails** — implemented at the one layer
 where it can't be skipped: the point where an agent's intent becomes a
 real-world action. Policy is shared through version control and enforced
-identically across <!-- gen:runner_count -->5<!-- /gen:runner_count --> agent
+identically across <!-- gen:runner_count -->7<!-- /gen:runner_count --> agent
 runners and a fleet of agents working in parallel — with no cloud dependency
 and no required cloud or remote telemetry. Optional authenticated sync is explicit.
 
@@ -141,7 +141,7 @@ workspace steps they add.
 ## What you get
 
 - **Guard harness.** A local Unix-socket server evaluates every agent
-  action against <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count -->
+  action against <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count -->
   deterministic safety rules (destructive commands, secrets in writes,
   sensitive-file reads, lockfile drift, etc.) and returns block/allow
   decisions in about 1–5 ms for cheap rules; content-checking rules
@@ -179,6 +179,22 @@ interlinked status            # show what's configured
 Then restart or reload your agent so it picks up the new skills. Run it as
 usual and tool-use events flow through the harness.
 
+OpenCode and Pi use managed source bridges instead of hook arrays. Project installs write
+`.opencode/plugins/interlinked.ts` and `.pi/extensions/interlinked.js`; their native skill copies
+live under `.opencode/skills/` and `.pi/skills/`. Interlinked refuses to overwrite a foreign file
+at either bridge path, and uninstall preserves a bridge modified after install. Restart OpenCode
+after installation. In Pi, run `/reload` (or restart) and approve the project-extension trust
+prompt.
+
+The supported runner list does not imply identical upstream APIs. OpenCode's stable plugin surface gates
+generic tool execution and observes session lifecycle, but cannot open native confirmation from
+`tool.execute.before`; an Interlinked `ask` therefore denies with a retry explanation. Its
+`session.idle` signal cannot continue or veto Stop, and the stable surface has no dedicated MCP,
+subagent, or worktree lifecycle hook. Pi gates `tool_call` and the separate `user_bash` path;
+interactive sessions use `ctx.ui.confirm` for `ask`, while headless sessions deny. Pi's
+`agent_settled` is observation-only and Pi likewise exposes no dedicated MCP, subagent, or worktree
+hook. The shared shell rule still blocks `git worktree add` for every runner.
+
 **Use `enable`, not `install-hooks`, unless you know you want the adapter
 path.** Both wire the hooks, but `enable` also installs the skills that teach
 your agent *how to work with the harness* — how to read a `BLOCKED: …
@@ -195,7 +211,7 @@ when you point the CLI at an Interlinked MCP Server.
 ### `/enforce` — turn AGENTS.md prose into deterministic rules
 
 `interlinked enable` also installs the `/enforce` skill across every detected
-agent runner (Claude Code, Codex, Gemini, Copilot, Cursor). Use it when you want
+agent runner (Claude Code, Codex, Gemini, Copilot, Cursor, OpenCode, Pi). Use it when you want
 the imperatives in your `AGENTS.md` / `CLAUDE.md` / `.clinerules/` to become
 rules the harness actually enforces, instead of prose the model may or may not
 follow.
@@ -245,7 +261,7 @@ Run `interlinked --help` for the full command list, or `interlinked
 ## How it fits together
 
 ```
-agent (Claude/Copilot/Gemini/Cursor/Codex) ──► interlinked-hook
+agent (Claude/Copilot/Gemini/Cursor/Codex/OpenCode/Pi) ──► interlinked-hook
                                         │
                                         ├─► harness Unix socket
                                         │     └─► guard eval (block/allow) in ~1–5 ms

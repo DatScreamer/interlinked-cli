@@ -1,5 +1,5 @@
 // ===========================================
-// Adapter registry — dispatcher + factory for the five supported runners
+// Adapter registry — dispatcher + factory for the supported runners
 // ===========================================
 
 import type { ClassifierOverrides } from "../tool-class-classifier.js";
@@ -9,6 +9,8 @@ import { createCodexAdapter } from "./codex.js";
 import { createCopilotCliAdapter } from "./copilot-cli.js";
 import { createCursorAdapter } from "./cursor.js";
 import { createGeminiCliAdapter } from "./gemini-cli.js";
+import { createOpenCodeAdapter } from "./opencode.js";
+import { createPiAdapter } from "./pi.js";
 import type { RunnerAdapter } from "./types.js";
 
 export interface AdapterRegistryOptions {
@@ -23,12 +25,14 @@ export function buildAllAdapters(opts: AdapterRegistryOptions = {}): RunnerAdapt
 		createCursorAdapter({ overrides: opts.overrides }),
 		createGeminiCliAdapter({ overrides: opts.overrides }),
 		createCodexAdapter({ overrides: opts.overrides }),
+		createOpenCodeAdapter({ overrides: opts.overrides }),
+		createPiAdapter({ overrides: opts.overrides }),
 	];
 }
 
 /** Detect which adapter the current process environment best matches. The
  *  first adapter whose `detectFromEnv` returns true wins. Stable ordering:
- *  claude-code → copilot-cli → cursor → gemini-cli → codex. */
+ *  claude-code → copilot-cli → cursor → gemini-cli → codex → opencode → pi. */
 export function detectAdapter(
 	env: NodeJS.ProcessEnv,
 	adapters: RunnerAdapter[] = buildAllAdapters(),
@@ -52,10 +56,42 @@ export { createCodexAdapter } from "./codex.js";
 export { createCopilotCliAdapter } from "./copilot-cli.js";
 export { createCursorAdapter } from "./cursor.js";
 export { createGeminiCliAdapter } from "./gemini-cli.js";
+export { createOpenCodeAdapter, renderOpenCodeBridgeSource } from "./opencode.js";
+export { createPiAdapter, renderPiBridgeSource } from "./pi.js";
+export {
+	buildStandardAction,
+	DEFAULT_NATIVE_FIELD_ALIASES,
+	normalizeNativeHookEvent,
+	normalizeToolName,
+} from "./normalization.js";
+export {
+	CLAUDE_CODE_CAPABILITIES,
+	CODEX_CAPABILITIES,
+	COPILOT_CLI_CAPABILITIES,
+	CURSOR_CAPABILITIES,
+	eventCapability,
+	GEMINI_CLI_CAPABILITIES,
+	installedEventNames,
+	OPENCODE_CAPABILITIES,
+	PI_CAPABILITIES,
+} from "./provider-capabilities.js";
+export {
+	encodeProviderBridgeDecision,
+	PROVIDER_BRIDGE_MARKER,
+	renderProviderBridgePrelude,
+} from "./provider-bridge-source.js";
 export type {
 	AdapterOutput,
 	InstallerManifestEntry,
 	MergeStrategy,
+	NativeDecisionControl,
+	NativeHookEventCapability,
 	RunnerAdapter,
+	RunnerCapabilities,
 	SettingsFragment,
 } from "./types.js";
+export type {
+	NativeFieldAliases,
+	NormalizeNativeHookOptions,
+	StandardActionOptions,
+} from "./normalization.js";

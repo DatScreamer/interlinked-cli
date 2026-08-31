@@ -387,6 +387,12 @@ const CLAUDE_DISPATCH = {
         hook_event: "SessionEnd", tokens,
         reason: input.reason || null, duration_ms, ...env,
     }),
+	Interrupt: ({ input, env }) => ({
+		event_type: "interrupt", tool_name: null, tool_input_summary: null,
+		hook_event: "Interrupt", model: input.model || null,
+		permission_mode: input.permission_mode || null,
+		...env,
+	}),
     Stop: ({ input, env, tokens }) => ({
         event_type: "agent_stop", tool_name: null, tool_input_summary: null,
         hook_event: "Stop", tokens,
@@ -502,6 +508,13 @@ const CLAUDE_DISPATCH = {
         context_size_hint: input.context_size || input.token_count || null,
         ...env,
     }),
+    PostCompact: ({ input, env }) => ({
+        event_type: "context_compacted", tool_name: null, tool_input_summary: null,
+        hook_event: "PostCompact",
+        trigger: input.trigger || null,
+        context_size_hint: input.context_size || input.token_count || null,
+        ...env,
+    }),
     TaskCompleted: ({ input, env }) => ({
         event_type: "task_completed", tool_name: null,
         tool_input_summary: truncate(input.task_subject || input.task_id || "", 200),
@@ -517,7 +530,7 @@ const CLAUDE_DISPATCH = {
         teammate_name: input.teammate_name || null, team_name: input.team_name || null,
         ...env,
     }),
-    PermissionRequest: ({ input, env }) => {
+	PermissionRequest: ({ input, env }) => {
         const permToolName = input.tool_name || null;
         const permToolInput = input.tool_input || {};
         return {
@@ -528,8 +541,14 @@ const CLAUDE_DISPATCH = {
             permission_suggestions: input.permission_suggestions || null,
             permission_mode: input.permission_mode || null,
             ...env,
-        };
-    },
+		};
+	},
+	WorktreeCreate: ({ input, env }) => ({
+		event_type: "worktree_create", tool_name: null,
+		tool_input_summary: truncate(input.name || "", 200),
+		hook_event: "WorktreeCreate", worktree_name: input.name || null,
+		...env,
+	}),
 };
 
 function normalizeClaudeUnknown(hookEvent, ctx) {
@@ -551,10 +570,9 @@ function normalizeClaudeEvent(input) {
     return handler ? handler(ctx) : normalizeClaudeUnknown(hookEvent, ctx);
 }
 
-// Codex CLI shipped its hook contract using Claude Code's payload shape:
-// PascalCase event names (PreToolUse, PostToolUse, PermissionRequest, ...),
-// the same field set on stdin (tool_name, tool_input, tool_response, prompt,
-// session_id, transcript_path, model, ...). We delegate to the Claude
+// Codex CLI shipped its hook contract using Claude Code's envelope shape:
+// PascalCase event names (PreToolUse, PostToolUse, PermissionRequest, ...)
+// and mostly overlapping stdin fields. We delegate to the Claude
 // normalizer rather than maintain a parallel switch — both clients map to
 // the same canonical record. Two small Codex-specific touches:
 //   - tag with client_runner so provider-responses can format decisions

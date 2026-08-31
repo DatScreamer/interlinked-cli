@@ -19,6 +19,8 @@ const VALID_RUNNERS = new Set<RunnerId>([
 	"cursor",
 	"gemini-cli",
 	"codex",
+	"opencode",
+	"pi",
 ]);
 
 export async function uninstallHooksCommand(options: UninstallHooksOptions): Promise<void> {

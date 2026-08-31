@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { isReadOnlyToolName } from "../../lib/hook-read-only-tools.js";
 import { nonNull } from "../../lib/non-null.js";
-import { createClaudeCodeAdapter } from "./claude-code.js";
+import { CLAUDE_HOOK_EVENTS } from "../../lib/hook-installers-claude.js";
+import { CLAUDE_CODE_WRITE_TOOLS, writeToolEntry } from "../../lib/write-tool-registry.js";
+import { resolveEditedPaths } from "../server/post-tool-pipeline-paths.js";
+import type { HarnessEvent } from "../types.js";
+import { CLAUDE_POST_TOOL_USE_MATCHER, createClaudeCodeAdapter } from "./claude-code.js";
 
 const adapter = createClaudeCodeAdapter();
 
@@ -102,12 +107,84 @@ describe("Claude Code renderSettingsFragment", () => {
 	it("uses array-append for hook merge", () => {
 		expect(frag.mergeStrategy).toBe("array-append");
 	});
-	it("includes PostToolUse with an empty matcher (match all tools)", () => {
+	// Pin the SHIPPED fragment, not the event list. The omission was pinned on
+	// the legacy installer's `CLAUDE_HOOK_EVENTS`, which no longer performs the
+	// install — so the adapter re-registered the event and every live settings
+	// file got "2 PostToolUse hooks ran" while the test stayed green.
+	it("N: does NOT register PostToolUseFailure (Claude counts it as a second PostToolUse)", () => {
+		const fragment = frag.fragment as { hooks: Record<string, unknown> };
+		expect(Object.keys(fragment.hooks)).not.toContain("PostToolUseFailure");
+	});
+
+	it("registers PermissionRequest now that its native response contract is implemented", () => {
+		const fragment = frag.fragment as { hooks: Record<string, unknown> };
+		expect(Object.keys(fragment.hooks)).toContain("PermissionRequest");
+		expect(adapter.nativeEventNames).toContain("PermissionRequest");
+	});
+
+	it("registers WorktreeCreate as a native hard-stop", () => {
+		const fragment = frag.fragment as { hooks: Record<string, unknown> };
+		expect(Object.keys(fragment.hooks)).toContain("WorktreeCreate");
+		expect(adapter.nativeEventNames).toContain("WorktreeCreate");
+		expect(CLAUDE_HOOK_EVENTS).toContain("WorktreeCreate");
+	});
+
+	it("the legacy install/reporting list agrees on PermissionRequest", () => {
+		// The legacy list feeds successful-install reporting; drift here made
+		// preview and success text disagree and would re-register on the legacy
+		// install path.
+		expect(CLAUDE_HOOK_EVENTS).toContain("PermissionRequest");
+	});
+
+	// Review 2026-08-28 (final round, P1): absence checks alone let the lists
+	// drift on ANY OTHER event (deleting TaskCompleted from one list passed
+	// every prior assertion). Full equality, order included — until the
+	// duplicate list is deleted and reporting derives from the adapter.
+	it("P: CLAUDE_HOOK_EVENTS and the adapter's nativeEventNames are the SAME list", () => {
+		expect([...CLAUDE_HOOK_EVENTS]).toEqual([...adapter.nativeEventNames]);
+	});
+
+	it("parses a registered PermissionRequest into the normalized permission phase", () => {
+		const parsed = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: { command: "ls" } },
+			"PermissionRequest",
+		);
+		expect(parsed).not.toBeNull();
+		expect(parsed.phase).toBe("permission-request");
+	});
+
+	it("parses WorktreeCreate into the provider-neutral worktree phase", () => {
+		const parsed = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", name: "feature" },
+			"WorktreeCreate",
+		);
+		expect(parsed.phase).toBe("worktree-create");
+		expect(parsed.action).toMatchObject({ kind: "other", subkind: "WorktreeCreate" });
+	});
+
+	it("P: still PARSES a PostToolUseFailure payload it did not register", () => {
+		// Handling and registering are separate decisions: another runner (or a
+		// future Claude version) can still deliver the event.
+		const parsed = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: { command: "ls" } },
+			"PostToolUseFailure",
+		);
+		expect(parsed).not.toBeNull();
+	});
+
+	// PostToolUse is SCOPED to the mutating tools. Registering for every tool
+	// fired the post-tool pipeline on reads and searches, and the daemon builds
+	// the edited-file list from a post-call filesystem diff — so a read-only call
+	// in a busy tree picked up somebody ELSE's writes and ran the whole per-file
+	// pass (including `affected_tests`, which shells out to vitest) over them.
+	// Codex is the deliberate exception and keeps matcher "" for `apply_patch`.
+	it("scopes PostToolUse to the mutating tools (NOT the all-tools matcher)", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
 		};
 		const post = nonNull(nonNull(fragment.hooks.PostToolUse)[0]);
-		expect(post.matcher).toBe("");
+		expect(post.matcher).toBe("Write|Edit|MultiEdit|NotebookEdit|Bash");
+		expect(post.matcher).toBe(CLAUDE_POST_TOOL_USE_MATCHER);
 		expect(nonNull(post.hooks[0]).command).toContain("--runner 'claude-code'");
 		expect(nonNull(post.hooks[0]).command).toContain("--event 'PostToolUse'");
 		expect(nonNull(post.hooks[0]).command).toContain("if test -f");
@@ -146,12 +223,110 @@ describe("Claude Code renderSettingsFragment", () => {
 		expect(nonNull(nonNull(fragment.hooks.PreToolUse)[0]).matcher).toBe("");
 	});
 
-	it("uses empty matcher for all events", () => {
+	it("uses empty matcher for every event EXCEPT PostToolUse", () => {
 		const fragment = frag.fragment as {
 			hooks: Record<string, Array<{ matcher: string }>>;
 		};
 		for (const eventName of Object.keys(fragment.hooks)) {
+			if (eventName === "PostToolUse") continue;
 			expect(nonNull(nonNull(fragment.hooks[eventName])[0]).matcher).toBe("");
+		}
+	});
+
+	it("N: the PostToolUse matcher names no read-only tool", () => {
+		// The whole point of scoping it. A read/search must never reach the
+		// per-file pipeline, whose path list comes from a post-call filesystem
+		// diff it did not cause.
+		for (const readOnly of ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite"]) {
+			expect(CLAUDE_POST_TOOL_USE_MATCHER.split("|")).not.toContain(readOnly);
+		}
+	});
+
+	it("P: the PostToolUse matcher keeps Bash (the bash-edit obligation channel)", () => {
+		expect(CLAUDE_POST_TOOL_USE_MATCHER.split("|")).toContain("Bash");
+	});
+});
+
+// ===========================================
+// Matcher ↔ pipeline drift
+// ===========================================
+// Two hand-maintained lists answered "which tools can change a file": the
+// matcher above, and `DIRECT_FILE_EDIT_TOOLS` in the quality pipeline. They
+// drifted — `MultiEdit` was in the matcher and not in the pipeline, so a
+// MultiEdit was registered, delivered to the daemon, and then treated as
+// editing nothing (no ChangeSet ⇒ zero paths and `shouldRunChecks: false`; a
+// ChangeSet ⇒ `isDirectFileEdit: false`, which hands a pre-write-GATED edit to
+// the bash-channel obligation gate).
+//
+// Both now derive from `lib/write-tool-registry.ts`. These tests assert the
+// end-to-end consequence — what the pipeline actually DOES with each tool the
+// matcher admits — so they still fail if someone reintroduces a local list.
+
+const MATCHER_TOOLS = CLAUDE_POST_TOOL_USE_MATCHER.split("|");
+
+function toolEvent(tool_name: string, tool_input: Record<string, unknown>): HarnessEvent {
+	// SAFETY: resolveEditedPaths reads only tool_name + tool_input.
+	return { tool_name, tool_input } as unknown as HarnessEvent;
+}
+
+describe("PostToolUse matcher and the pipeline's direct-edit list cannot drift", () => {
+	it("P1: every tool the matcher admits is a registered write tool", () => {
+		for (const name of MATCHER_TOOLS) {
+			expect({ name, entry: Boolean(writeToolEntry(name)) }).toEqual({ name, entry: true });
+		}
+	});
+
+	it("P2: the matcher is exactly the registry's Claude-native write tools", () => {
+		expect(MATCHER_TOOLS).toEqual([...CLAUDE_CODE_WRITE_TOOLS]);
+	});
+
+	it("P3: every DIRECT-channel matcher tool is a direct edit in the pipeline", () => {
+		const direct = MATCHER_TOOLS.filter((n) => writeToolEntry(n)?.channel === "direct");
+		expect(direct.length).toBeGreaterThan(0);
+		for (const name of direct) {
+			const r = resolveEditedPaths(toolEvent(name, { file_path: "src/foo.ts" }));
+			expect({
+				name,
+				isDirectFileEdit: r.isDirectFileEdit,
+				paths: r.editedFilePaths,
+				shouldRunChecks: r.shouldRunChecks,
+			}).toEqual({
+				name,
+				isDirectFileEdit: true,
+				paths: ["src/foo.ts"],
+				shouldRunChecks: true,
+			});
+		}
+	});
+
+	it("P4: every SHELL-channel matcher tool resolves through the command scan", () => {
+		const shell = MATCHER_TOOLS.filter((n) => writeToolEntry(n)?.channel === "shell");
+		expect(shell).toEqual(["Bash"]);
+		for (const name of shell) {
+			const r = resolveEditedPaths(
+				toolEvent(name, { command: "sed -i '' 's/a/b/' src/foo.ts" }),
+			);
+			expect({ name, isDirectFileEdit: r.isDirectFileEdit, paths: r.editedFilePaths }).toEqual({
+				name,
+				isDirectFileEdit: false,
+				paths: ["src/foo.ts"],
+			});
+		}
+	});
+
+	it("N1: the matcher admits no read-only tool", () => {
+		for (const name of MATCHER_TOOLS) {
+			expect({ name, readOnly: isReadOnlyToolName(name) }).toEqual({ name, readOnly: false });
+		}
+	});
+
+	it("N2: a tool outside the matcher is not promoted to a direct edit", () => {
+		for (const name of ["Read", "Grep", "WebFetch", "TodoWrite"]) {
+			const r = resolveEditedPaths(toolEvent(name, { file_path: "src/foo.ts" }));
+			expect({ name, isDirectFileEdit: r.isDirectFileEdit }).toEqual({
+				name,
+				isDirectFileEdit: false,
+			});
 		}
 	});
 });
@@ -206,6 +381,45 @@ describe("Claude Code encodeDecision", () => {
 				permissionDecisionReason: "confirm?",
 			},
 		});
+	});
+	it("PermissionRequest block — emits the permission-specific deny envelope", () => {
+		const permissionEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
+			"PermissionRequest",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "block", reason: "policy denied" },
+			permissionEvent,
+		);
+		expect(JSON.parse(out.stdout as string)).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PermissionRequest",
+				permissionDecision: "deny",
+				permissionDecisionReason: "policy denied",
+			},
+		});
+	});
+	it("PermissionRequest ask — abstains so Claude keeps the native prompt", () => {
+		const permissionEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
+			"PermissionRequest",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "ask", reason: "please confirm" },
+			permissionEvent,
+		);
+		expect(out.stdout).toBeUndefined();
+		expect(out.exit_code).toBe(0);
+	});
+	it("WorktreeCreate always fails without returning a replacement path", () => {
+		const worktreeEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", name: "feature" },
+			"WorktreeCreate",
+		);
+		const out = adapter.encodeDecision({ decision: "allow" }, worktreeEvent);
+		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toContain("Agent-created Git worktrees are disabled");
+		expect(out.exit_code).toBe(2);
 	});
 	it("routes warnings to stderr", () => {
 		const out = adapter.encodeDecision(

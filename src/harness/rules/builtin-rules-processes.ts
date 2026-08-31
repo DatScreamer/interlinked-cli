@@ -6,6 +6,7 @@
 // system-level operations (sudo rm, chmod 777, shutdown, LVM), and inline
 // shell-level destructive commands.
 
+import { AGENT_WORKTREE_CREATE_COMMAND_PATTERN } from "../../lib/hook-template-chunks/destructive-command-guard.js";
 import type { GuardRule } from "../types.js";
 import {
 	PROCESS_RULES_GIT_FS_INLINE,
@@ -176,6 +177,26 @@ export const PROCESS_AND_FILESYSTEM_RULES: GuardRule[] = [
 	},
 
 	// --- Git force operations ---
+	{
+		id: "builtin-git-worktree-add",
+		enabled: true,
+		trigger: "PreToolUse",
+		tool_match: ["Bash", "Shell", "run_command"],
+		action: "block",
+		patterns: [
+			{
+				field: "command",
+				regex: AGENT_WORKTREE_CREATE_COMMAND_PATTERN,
+				flags: "i",
+				executed_only: true,
+			},
+		],
+		reason: "Agent-created Git worktrees are disabled by default",
+		suggestion:
+			"Use the existing workspace; a human operator may provision an approved worktree outside the agent session",
+		severity: "high",
+		category: "git-operations",
+	},
 	{
 		id: "builtin-git-force-push",
 		enabled: true,

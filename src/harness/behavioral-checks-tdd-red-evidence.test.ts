@@ -4,6 +4,7 @@
 // whole-suite failure fanned out across unrelated files, and a red from
 // hundreds of steps earlier kept blocking commits against a green suite.
 
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	isSoftenedRed,
@@ -58,7 +59,7 @@ describe("isSuiteSourcedRed", () => {
 		expect(isSuiteSourcedRed(s, { ...live, test_file: null })).toBe(true);
 	});
 
-	it("is false when a targeted run for this file's own tests exists", () => {
+	it("is false when a targeted failure for this file occurred in the same run", () => {
 		const s = session({
 			step: 120,
 			runs: [
@@ -67,6 +68,31 @@ describe("isSuiteSourcedRed", () => {
 			],
 		});
 		expect(isSuiteSourcedRed(s, live)).toBe(false);
+	});
+
+	it("ignores a historical targeted pass when a newer suite run set the red", () => {
+		const s = session({
+			step: 980,
+			runs: [
+				[ALL_TESTS_SENTINEL, { status: "fail", at_step: 974 }],
+				["/r/a.test.ts", { status: "pass", at_step: 736 }],
+			],
+		});
+		expect(isSuiteSourcedRed(s, { ...live, red_at: 974 })).toBe(true);
+	});
+
+	it("matches a same-step targeted failure across relative and absolute paths", () => {
+		const relativeTest = "src/a.test.ts";
+		const s = session({
+			step: 980,
+			runs: [
+				[ALL_TESTS_SENTINEL, { status: "fail", at_step: 974 }],
+				[resolve(relativeTest), { status: "fail", at_step: 974 }],
+			],
+		});
+		expect(
+			isSuiteSourcedRed(s, { ...live, red_at: 974, test_file: relativeTest }),
+		).toBe(false);
 	});
 
 	it("is false when the suite passed", () => {

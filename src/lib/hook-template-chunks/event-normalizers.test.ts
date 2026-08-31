@@ -37,6 +37,7 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 		for (const ev of [
 			"SessionStart",
 			"SessionEnd",
+			"Interrupt",
 			"Stop",
 			"UserPromptSubmit",
 			"PreToolUse",
@@ -46,15 +47,25 @@ describe("EVENT_NORMALIZERS_CHUNK — shape", () => {
 			"SubagentStop",
 			"Notification",
 			"PreCompact",
+			"PostCompact",
 			"TaskCompleted",
 			"TeammateIdle",
 			"PermissionRequest",
+			"WorktreeCreate",
 		]) {
 			// Each event is a key in CLAUDE_DISPATCH (e.g. `SessionStart: (`)
 			// AND its handler emits hook_event: "<EventName>" in the record.
 			expect(EVENT_NORMALIZERS_CHUNK).toContain(`${ev}: (`);
 			expect(EVENT_NORMALIZERS_CHUNK).toContain(`hook_event: "${ev}"`);
 		}
+	});
+
+	it("preserves Codex Interrupt metadata without inventing control fields", () => {
+		expect(CLAUDE_NORMALIZERS).toContain('event_type: "interrupt"');
+		expect(CLAUDE_NORMALIZERS).toContain('hook_event: "Interrupt"');
+		expect(CLAUDE_NORMALIZERS).toContain("model: input.model");
+		expect(CLAUDE_NORMALIZERS).toContain("permission_mode: input.permission_mode");
+		expect(CLAUDE_NORMALIZERS).not.toMatch(/Interrupt:[\s\S]{0,300}last_assistant_message/);
 	});
 
 	it("handles every Gemini CLI hook event we subscribe to", () => {
@@ -234,9 +245,9 @@ describe("EVENT_NORMALIZERS_CHUNK — byte-identical composition", () => {
 	// SHA-256 + length of the pre-split single-literal value. Captured at split
 	// time. Do NOT update these casually: if a sub-chunk edit changes them, it
 	// changed the emitted hook bytes — confirm that was intended.
-	const PINNED_LENGTH = 50217;
+	const PINNED_LENGTH = 50873;
 	const PINNED_SHA256 =
-		"775ebc884fa41205be9dadfd9d21ae7334a6221684fb4ae596b56e3f51de5138";
+		"8f2938311083842e89d35e6fa4481153d071a182ef558cfa0098f6930e71503f";
 
 	it("composes exactly from the four per-client sub-chunks (direct join)", () => {
 		const composed =

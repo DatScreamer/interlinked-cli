@@ -24,6 +24,11 @@ interface ViewOpts extends JsonOpts {
 	full?: boolean;
 }
 
+const CLIENT_LIST_HELP =
+	"Comma-separated client list (claude,copilot,gemini,codex,cursor,opencode,pi)";
+const RUNNER_LIST_HELP =
+	"Comma-separated runners (claude-code,copilot-cli,cursor,gemini-cli,codex,opencode,pi); defaults to auto-detect";
+
 export function registerSetupCommands(program: Command): void {
 	program
 		.command("reload")
@@ -88,7 +93,7 @@ export function registerSetupCommands(program: Command): void {
 		.description("Install hooks + create .interlinked/ config")
 		.option("--server <url>", "Server URL")
 		.option("--agent <name>", "Default agent name")
-		.option("--clients <list>", "Comma-separated client list (claude,copilot,gemini,codex,cursor)")
+		.option("--clients <list>", CLIENT_LIST_HELP)
 		.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
 		.option("--data-dir <path>", "Override data directory for activity logs and sessions")
 		.option("--dry-run", "Show what would change without modifying files")
@@ -142,7 +147,7 @@ export function registerSetupCommands(program: Command): void {
 		.description("One-command setup: install hooks, configure server, authenticate")
 		.option("--server <url>", "Server URL")
 		.option("--agent <name>", "Default agent name")
-		.option("--clients <list>", "Comma-separated client list (claude,copilot,gemini,codex,cursor)")
+		.option("--clients <list>", CLIENT_LIST_HELP)
 		.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
 		.option("--token <token>", "Manual token for CI/headless use")
 		.option("--dry-run", "Show what would change without modifying files")
@@ -199,11 +204,16 @@ export function registerSetupCommands(program: Command): void {
 		.description("Install agent hooks for detected runners (adapter-based, manifest-driven)")
 		.option(
 			"--runner <list>",
-			"Comma-separated runners (claude-code,copilot-cli,cursor,gemini-cli,codex); defaults to auto-detect",
+			RUNNER_LIST_HELP,
 		)
 		.option("--scope <scope>", "Install scope: user, project, or local", "project")
 		.option("--mode <mode>", "Enforcement preset: balanced, strict, lenient", "balanced")
 		.option("--binary <path>", "Override path to the interlinked binary")
+		.option(
+			"--refresh",
+			"Re-render already-installed hooks from the manifest (snapshot + rollback; implies --preserve-mode)",
+		)
+		.option("--preserve-mode", "Never write the enforcement mode or cloud config — hooks only")
 		.option("--dry-run", "Show what would change without writing")
 		.option("--json", "Machine-readable output")
 		.action(async (opts: OptionValues) => {

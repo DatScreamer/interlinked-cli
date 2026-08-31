@@ -24,8 +24,8 @@
 // authoring exactly one normalizer and a detector entry in CLIENT_HANDLERS.
 //
 // Per-client status:
-//   - Claude Code:  PascalCase events, full 14-event vocabulary
-//   - Codex CLI:    PascalCase events, Claude-compatible payloads, 6 events
+//   - Claude Code:  PascalCase events, 14 installed plus parse-only compatibility
+//   - Codex CLI:    PascalCase events, Claude-compatible payloads, all 11 events
 //                   (delegates to normalizeClaudeEvent, tagged client_runner)
 //   - Gemini CLI:   PascalCase BeforeTool/AfterTool variant
 //   - Copilot CLI:  camelCase, no `hook_event_name`, shape inferred from payload

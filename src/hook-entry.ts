@@ -40,6 +40,7 @@ import { coldDaemonUnreachableBlockReasonFresh } from "./hook-entry-daemon-probe
 import { defaultTimeoutForPhase, isCodeEditEvent } from "./hook-entry-deadlines.js";
 import { attemptSelfHealOnStop } from "./hook-entry-stop-self-heal.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
+import { recordHookRuntime } from "./lib/hook-runtime-receipt.js";
 import { nonNull } from "./lib/non-null.js";
 
 // Re-export for back-compat: tests import these from "./hook-entry.js".
@@ -97,6 +98,7 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	// (a parent shell, a test harness), but `event.context.cwd` is the project
 	// whose harness should be guarding this action.
 	const gateCwd = event.context?.cwd ?? resolvedCwd;
+	recordAdapterExecution(adapter, event, gateCwd);
 	// Discover the socket in the SAME project the daemon gate keys on (the event's
 	// cwd), not the hook process's cwd: a client that launches the hook binary
 	// from outside the repo would otherwise miss the healthy daemon under the
@@ -144,6 +146,21 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 		exit_code: output.exit_code,
 		fell_back: fellBack,
 	};
+}
+
+function recordAdapterExecution(
+	adapter: RunnerAdapter,
+	event: UnifiedHookEvent,
+	gateCwd: string,
+): void {
+	const root = findRepoRoot(gateCwd);
+	if (!root) return;
+	recordHookRuntime({
+		dataDir: join(root, ".interlinked"),
+		provider: adapter.id,
+		nativeEvent: event.runner_native_event,
+		definitionPath: join(root, adapter.capabilities.project_hook_path),
+	});
 }
 
 /** Entry point for CLI invocation — reads stdin, detects runner + event,
@@ -240,7 +257,7 @@ async function safeCallDaemon(
 	let decision: HarnessDecision | null = null;
 	let reason = "";
 	const done = await client
-		.call(args.method as "hook.pre_tool_use", args.event, { timeout_ms: args.timeoutMs })
+		.call(args.method, args.event, { timeout_ms: args.timeoutMs })
 		.then((d) => {
 			decision = d as HarnessDecision;
 			return true;

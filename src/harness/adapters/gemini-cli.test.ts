@@ -130,7 +130,17 @@ describe("Gemini CLI renderSettingsFragment", () => {
 		expect(frag.mergeStrategy).toBe("array-append");
 		const hooks = (frag.fragment as { hooks: Record<string, unknown[]> }).hooks;
 		expect(Object.keys(hooks).sort()).toEqual(
-			["AfterModel", "AfterTool", "BeforeTool", "PreCompress"].sort(),
+			[
+				"SessionStart",
+				"SessionEnd",
+				"BeforeAgent",
+				"AfterAgent",
+				"AfterModel",
+				"BeforeTool",
+				"AfterTool",
+				"PreCompress",
+				"Notification",
+			].sort(),
 		);
 	});
 	it("targets the project-scope settings path for a non-user scope", () => {

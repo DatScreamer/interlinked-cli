@@ -263,10 +263,10 @@ describe("mutation-kill w29 — PHASE_MAP string literals", () => {
 		);
 		expect(event.phase).toBe("post-tool");
 	});
-	// test-contract: invariant — PHASE_MAP module StringLiteral "other" -> "" (PermissionRequest site)
-	it("PermissionRequest maps to phase 'other'", () => {
+	// test-contract: invariant — permission requests remain distinct from tool execution.
+	it("PermissionRequest maps to phase 'permission-request'", () => {
 		const event = adapter.parseHookInput({ session_id: "s", cwd: "/repo" }, "PermissionRequest");
-		expect(event.phase).toBe("other");
+		expect(event.phase).toBe("permission-request");
 	});
 	// test-contract: invariant — PHASE_MAP module StringLiteral "other" -> "" (TaskCompleted site)
 	it("TaskCompleted maps to phase 'other'", () => {

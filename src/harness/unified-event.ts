@@ -16,6 +16,8 @@ export type RunnerId =
 	| "codex"
 	| "gemini-cli"
 	| "cursor"
+	| "opencode"
+	| "pi"
 	| "unknown";
 
 /** User-perception latency class. Drives per-event budgets and which checks run.
@@ -29,7 +31,10 @@ export type UnifiedPhase =
 	| "session-start"
 	| "session-end"
 	| "user-prompt"
+	| "permission-request"
+	| "worktree-create"
 	| "pre-compact"
+	| "post-compact"
 	| "stop"
 	| "subagent-start"
 	| "subagent-stop"
@@ -81,7 +86,7 @@ export interface UserPromptAction {
 
 export interface SessionLifecycleAction {
 	kind: "session_lifecycle";
-	event: "start" | "end";
+	event: "start" | "end" | "stop";
 }
 
 export interface OtherAction {
@@ -108,6 +113,9 @@ export interface UnifiedHookContext {
 	workspace_root?: string | undefined;
 	git_head?: string | undefined;
 	branch?: string | undefined;
+	model?: string | undefined;
+	transcript_path?: string | undefined;
+	permission_mode?: string | undefined;
 	agent?:
 		| { id?: string | undefined; handle?: string | undefined; role?: string | undefined }
 		| undefined;
@@ -121,6 +129,8 @@ export interface UnifiedHookEvent {
 	session_id: string;
 	/** For causality; set by adapters when a pre/post pair is emitted. */
 	parent_event_id?: string | undefined;
+	/** Provider turn/prompt identifier, distinct from causal parentage. */
+	turn_id?: string | undefined;
 	/** The runner's own id for the tool invocation, when it supplies one
 	 *  (Claude Code's `tool_use_id`). Stable across the PreToolUse/PostToolUse
 	 *  pair and across duplicate hook deliveries of the same call — so it is

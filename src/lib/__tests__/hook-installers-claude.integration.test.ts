@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CLAUDE_HOOK_EVENTS, installAllClaudeHooks } from "../hook-installers-claude.js";
 
 describe("Claude hook event list", () => {
-	it("includes PostToolUse and SessionStart", () => {
+	it("includes the supported lifecycle, tool, and permission events", () => {
 		expect(CLAUDE_HOOK_EVENTS).toContain("SessionStart");
 		expect(CLAUDE_HOOK_EVENTS).toContain("PostToolUse");
+		expect(CLAUDE_HOOK_EVENTS).toContain("PermissionRequest");
+		expect(CLAUDE_HOOK_EVENTS).toContain("WorktreeCreate");
 		// PostToolUseFailure is intentionally omitted (see comment on CLAUDE_HOOK_EVENTS).
 		expect(CLAUDE_HOOK_EVENTS).not.toContain("PostToolUseFailure");
 	});

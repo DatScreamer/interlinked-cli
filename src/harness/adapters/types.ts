@@ -2,13 +2,18 @@
 // RunnerAdapter contract
 // ===========================================
 // Every supported coding-agent CLI (Claude Code, Copilot CLI, Cursor, Gemini
-// CLI, Codex) provides an implementation of this interface. The adapter's job
+// CLI, Codex, OpenCode, and Pi) provides an implementation of this interface. The adapter's job
 // is to normalize native hook events into a UnifiedHookEvent and translate
 // HarnessDecision back into the runner's expected stdout/stderr/exit-code
 // format. See docs/design/cli-hook-normalization.md §"Per-runner adapters".
 
 import type { HarnessDecision } from "../types.js";
-import type { RunnerId, ToolClass, UnifiedHookEvent } from "../unified-event.js";
+import type {
+	RunnerId,
+	ToolClass,
+	UnifiedHookEvent,
+	UnifiedPhase,
+} from "../unified-event.js";
 
 export type MergeStrategy = "deep-merge" | "array-append" | "replace-key";
 
@@ -21,6 +26,9 @@ export interface SettingsFragment {
 	/** How to merge. `array-append` is essential for hook arrays so we never
 	 *  clobber user-owned entries. */
 	mergeStrategy: MergeStrategy;
+	/** Exact provider-owned plugin/extension source. When present, installers
+	 *  manage this file as a whole instead of treating `fragment` as JSON. */
+	fileContent?: string;
 }
 
 export interface AdapterOutput {
@@ -32,6 +40,39 @@ export interface AdapterOutput {
 	exit_code: number;
 }
 
+/** What a native hook event can do on its provider. */
+export type NativeDecisionControl =
+	| "observe"
+	| "deny"
+	| "ask"
+	| "permission"
+	| "replace"
+	| "continue";
+
+export interface NativeHookEventCapability {
+	name: string;
+	phase: UnifiedPhase;
+	/** False for events an adapter can parse but deliberately does not install. */
+	install: boolean;
+	control: NativeDecisionControl;
+	/** Whether non-blocking feedback can be delivered to the model. */
+	model_context: boolean;
+	/** Whether the provider should launch this observational hook in the background. */
+	background?: boolean;
+	missing_runtime: "fail_closed" | "warn_open";
+}
+
+/** Provider semantics shared by normalization, installation, diagnostics, and
+ * conformance tests. Provider-specific settings syntax stays in the adapter. */
+export interface RunnerCapabilities {
+	events: readonly NativeHookEventCapability[];
+	/** Project-relative native hook definition used by installers and runtime
+	 * receipt verification. */
+	project_hook_path: string;
+	hook_trust: "implicit" | "definition-review" | "provider-managed";
+	status_line: "custom-command" | "built-in-only" | "none";
+}
+
 export interface InstallerManifestEntry {
 	runner: RunnerId;
 	scope: "user" | "project" | "local";
@@ -40,8 +81,28 @@ export interface InstallerManifestEntry {
 	added_paths: string[];
 	/** Binary path or script path referenced from the hook entry. */
 	binary_path: string;
+	/** How the installed artifact is owned and verified. Older manifests omit
+	 *  this and are interpreted as JSON settings entries. */
+	artifact_kind?: "json-settings" | "managed-file";
+	/** SHA-256 of an exact managed file, used to detect user edits safely. */
+	artifact_sha256?: string;
 	/** ISO timestamp of install. */
 	installed_at: string;
+	/** Did the adapter's out-of-band `postInstall` side-effects complete?
+	 *
+	 *  An adapter only declares `postInstall` when the JSON fragment alone
+	 *  leaves the install INERT — Codex ignores its hooks.json entirely until
+	 *  `[features] hooks = true` is in `.codex/config.toml`. So a failure here
+	 *  is not cosmetic, and it used to be swallowed: the installer wrote one
+	 *  stderr line and still recorded `ok: true`, producing a successful
+	 *  manifest for an installation that fires no hooks. Recorded per entry so
+	 *  the failure survives into the manifest a later run reads.
+	 *
+	 *  Manifests written before this field existed have no value; the reader
+	 *  coerces those to `"ok"`. */
+	post_install: "ok" | "failed";
+	/** Why `postInstall` failed. Present only when `post_install` is `"failed"`. */
+	post_install_error?: string;
 	/** Schema version of the manifest record. */
 	schema_version: "1";
 }
@@ -54,6 +115,7 @@ export interface RunnerAdapter {
 
 	/** When true we may flag this adapter as experimental in the installer UI. */
 	readonly experimental?: boolean;
+	readonly capabilities: RunnerCapabilities;
 
 	/** Heuristic detection. True if the current process environment suggests
 	 *  this adapter is the caller. Used by install-hooks when the user passes

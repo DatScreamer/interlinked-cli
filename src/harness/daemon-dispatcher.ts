@@ -28,7 +28,31 @@ type HookDecisionMethod =
 	| "hook.user_prompt"
 	| "hook.session_start"
 	| "hook.session_end"
-	| "hook.pre_compact";
+	| "hook.pre_compact"
+	| "hook.permission_request"
+	| "hook.post_compact"
+	| "hook.lifecycle";
+
+const HOOK_DECISION_METHODS = new Set<HookDecisionMethod>([
+	"hook.pre_tool_use",
+	"hook.post_tool_use",
+	"hook.user_prompt",
+	"hook.session_start",
+	"hook.session_end",
+	"hook.pre_compact",
+	"hook.permission_request",
+	"hook.post_compact",
+	"hook.lifecycle",
+]);
+
+const OBSERVATION_ONLY_HOOK_METHODS = new Set<HookDecisionMethod>([
+	"hook.session_start",
+	"hook.session_end",
+	"hook.pre_compact",
+	"hook.permission_request",
+	"hook.post_compact",
+	"hook.lifecycle",
+]);
 
 export interface DispatcherState {
 	/** Wall-clock ms at daemon start. */
@@ -62,14 +86,10 @@ export async function dispatchRpc(
 			false,
 		);
 	}
+	if (isHookDecisionRequest(request)) {
+		return dispatchHookDecision(request, state);
+	}
 	switch (request.method) {
-		case "hook.pre_tool_use":
-		case "hook.post_tool_use":
-		case "hook.user_prompt":
-		case "hook.session_start":
-		case "hook.session_end":
-		case "hook.pre_compact":
-			return dispatchHookDecision(request as RpcRequest<HookDecisionMethod>, state);
 		case "daemon.health":
 			return {
 				id: request.id,
@@ -99,6 +119,12 @@ export async function dispatchRpc(
 				true,
 			);
 	}
+}
+
+function isHookDecisionRequest(
+	request: RpcRequest,
+): request is RpcRequest<HookDecisionMethod> {
+	return HOOK_DECISION_METHODS.has(request.method as HookDecisionMethod);
 }
 
 // -----------------------------------------------------------------------------
@@ -136,11 +162,7 @@ async function dispatchHookDecision<M extends HookDecisionMethod>(
 }
 
 function isLifecycleHookMethod(method: HookDecisionMethod): boolean {
-	return (
-		method === "hook.session_start" ||
-		method === "hook.session_end" ||
-		method === "hook.pre_compact"
-	);
+	return OBSERVATION_ONLY_HOOK_METHODS.has(method);
 }
 
 async function dispatchTsgoCheck(

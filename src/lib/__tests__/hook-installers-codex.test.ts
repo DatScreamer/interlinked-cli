@@ -13,12 +13,20 @@ describe("Codex hook event list", () => {
 		// Codex CLI shipped its hook contract using Claude Code's
 		// vocabulary, so we keep PascalCase event names. PermissionRequest
 		// is its own event type, separate from PreToolUse.
-		expect(CODEX_HOOK_EVENTS).toContain("SessionStart");
-		expect(CODEX_HOOK_EVENTS).toContain("UserPromptSubmit");
-		expect(CODEX_HOOK_EVENTS).toContain("PreToolUse");
-		expect(CODEX_HOOK_EVENTS).toContain("PostToolUse");
-		expect(CODEX_HOOK_EVENTS).toContain("PermissionRequest");
-		expect(CODEX_HOOK_EVENTS).toContain("Stop");
+		expect(CODEX_HOOK_EVENTS).toEqual([
+			"SessionStart",
+			"SessionEnd",
+			"UserPromptSubmit",
+			"Stop",
+			"PreToolUse",
+			"PermissionRequest",
+			"PostToolUse",
+			"PreCompact",
+			"PostCompact",
+			"SubagentStart",
+			"SubagentStop",
+			"Interrupt",
+		]);
 	});
 });
 
@@ -33,7 +41,7 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	it("writes .codex/hooks.json with all six PascalCase events", () => {
+	it("writes .codex/hooks.json with all twelve PascalCase events", () => {
 		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
 		const hooksPath = join(tmp, ".codex", "hooks.json");
 		expect(existsSync(hooksPath)).toBe(true);
@@ -77,6 +85,29 @@ describe("installCodexHooks / uninstallCodexHooks", () => {
 		const reg = postToolUse[0];
 		const matcher = "matcher" in reg ? reg.matcher : "";
 		expect(matcher).toBe("");
+	});
+
+	it("sets Codex status, context, and SessionEnd deadline metadata", () => {
+		installCodexHooks(tmp, ".interlinked/hooks/interlinked-activity.mjs");
+		const hooks = JSON.parse(readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8")).hooks;
+		const preHandler = hooks.PreToolUse[0].hooks[0];
+		expect(preHandler).toMatchObject({
+			statusMessage: "Interlinked policy check",
+			additionalContextLimit: 2_500,
+		});
+		const endHandler = hooks.SessionEnd[0].hooks[0];
+		expect(endHandler).toMatchObject({
+			timeout: 3,
+			statusMessage: "Interlinked lifecycle check",
+		});
+		expect(endHandler.additionalContextLimit).toBeUndefined();
+		const interruptHandler = hooks.Interrupt[0].hooks[0];
+		expect(interruptHandler).toMatchObject({
+			async: true,
+			timeout: 3,
+			statusMessage: "Interlinked lifecycle check",
+		});
+		expect(interruptHandler.additionalContextLimit).toBeUndefined();
 	});
 
 	it("creates .codex/config.toml with canonical `hooks = true` when absent", () => {

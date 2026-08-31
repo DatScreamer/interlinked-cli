@@ -255,7 +255,16 @@ describe("mergeConfig — validation", () => {
 
 	it("keeps every known runner, ignores invalid entries, and falls back for empty results", () => {
 		const base = distinctBase();
-		const known = ["claude-code", "copilot-cli", "codex", "gemini-cli", "cursor", "unknown"];
+		const known = [
+			"claude-code",
+			"copilot-cli",
+			"codex",
+			"gemini-cli",
+			"cursor",
+			"opencode",
+			"pi",
+			"unknown",
+		];
 		expect(mergeConfig(base, { runners_enabled: known }).runners_enabled).toEqual(known);
 		expect(mergeConfig(base, { runners_enabled: ["not-a-runner", 3, null] }).runners_enabled).toBe(
 			base.runners_enabled,

@@ -46,6 +46,16 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain("askResp.systemMessage");
 	});
 
+	it("Claude PermissionRequest ask abstains for the native prompt", () => {
+		const claudeBlock = PROVIDER_RESPONSES_CHUNK.match(
+			/function formatClaudeResponse[\s\S]*?function formatCopilotResponse/,
+		);
+		expect(claudeBlock?.[0]).toContain(
+			'const isPermissionRequest = preEventEcho === "PermissionRequest"',
+		);
+		expect(claudeBlock?.[0]).toMatch(/pre_ask[\s\S]*isPermissionRequest[\s\S]*return \{\};/);
+	});
+
 	it("Copilot collapses ask → deny (no ask primitive)", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain("Copilot has no");
 		expect(PROVIDER_RESPONSES_CHUNK).toMatch(/Copilot[\s\S]*permissionDecision: "deny"/);
@@ -75,15 +85,24 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain('behavior: "deny"');
 	});
 
-	it("Codex PreToolUse/PostToolUse use the legacy {decision: 'block'} shape", () => {
-		// Codex documents acceptance of both new and legacy shapes for
-		// Pre/PostToolUse; we use legacy for simplicity. Specifically check
-		// the codex formatter contains the legacy block emit.
+	it("Codex PreToolUse uses permissionDecision while PostToolUse uses continuation", () => {
 		const codexBlock = PROVIDER_RESPONSES_CHUNK.match(
 			/function formatCodexResponse[\s\S]*?function formatProviderResponse/,
 		);
 		expect(codexBlock).not.toBeNull();
+		expect(codexBlock?.[0]).toContain('hookEventName: "PreToolUse"');
+		expect(codexBlock?.[0]).toContain('permissionDecision: "deny"');
 		expect(codexBlock?.[0]).toContain('decision: "block"');
+	});
+
+	it("Codex PermissionRequest ask abstains for the native prompt", () => {
+		const codexBlock = PROVIDER_RESPONSES_CHUNK.match(
+			/function formatCodexResponse[\s\S]*?function formatProviderResponse/,
+		);
+		expect(codexBlock?.[0]).toContain(
+			'if (responseType === "pre_ask" && isPermissionRequest)',
+		);
+		expect(codexBlock?.[0]).toContain("return {};");
 	});
 
 	it("Codex post_success surfaces additionalContext on the canonical event echo", () => {

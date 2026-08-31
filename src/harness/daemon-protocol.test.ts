@@ -157,8 +157,12 @@ describe("methodForPhase", () => {
 		expect(methodForPhase("session-end")).toBe("hook.session_end");
 		expect(methodForPhase("user-prompt")).toBe("hook.user_prompt");
 		expect(methodForPhase("pre-compact")).toBe("hook.pre_compact");
+		expect(methodForPhase("permission-request")).toBe("hook.permission_request");
+		expect(methodForPhase("post-compact")).toBe("hook.post_compact");
 	});
-	it("falls back to pre_tool_use for unmapped phases", () => {
-		expect(methodForPhase("other")).toBe("hook.pre_tool_use");
+	it("routes lifecycle and unknown phases to the observation-only method", () => {
+		expect(methodForPhase("stop")).toBe("hook.lifecycle");
+		expect(methodForPhase("subagent-start")).toBe("hook.lifecycle");
+		expect(methodForPhase("other")).toBe("hook.lifecycle");
 	});
 });

@@ -11,12 +11,13 @@
 // write, then appends exactly one canonical entry. Re-running install (or
 // running it after the legacy `interlinked enable` path) therefore converges
 // to one hook per event per runner instead of stacking duplicates. The shared
-// recogniser lives in `../lib/hook-ownership.ts`.
+// recogniser lives in `../lib/hook-ownership.ts`; the purge cluster itself
+// lives in `./installer-purge.ts`.
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { isInterlinkedHookEntry, isProjectOwnedHookEntry, withoutIncomingDuplicates } from "../lib/hook-ownership.js";
+import { isHookEntryInvokingBinary } from "../lib/hook-ownership.js";
 import type { JsonObject } from "../lib/json-types.js";
 import {
 	buildAllAdapters,
@@ -29,17 +30,37 @@ import {
 	mergeSettings,
 	readJson,
 	removeJsonPath,
+	resolveSettingsPath,
 	writeAtomic,
+	writeTextAtomic,
 } from "./installer-merge-engine.js";
+import {
+	cleanProjectOwnedHooks,
+	type InstallScope,
+	makePurgeVerdict,
+	type PurgeReport,
+	purgePriorEntries,
+	SCOPE_USER,
+} from "./installer-purge.js";
+import { MANIFEST_SCHEMA_VERSION, readManifestState, writeManifest } from "./installer-manifest.js";
+import {
+	isManagedProviderFile,
+	managedProviderFileHash,
+	removeManagedProviderFile,
+} from "./managed-provider-file.js";
 import type { RunnerId } from "./unified-event.js";
 
 export { mergeSettings, removeJsonPath } from "./installer-merge-engine.js";
-
-export type InstallScope = "user" | "project" | "local";
+// Re-exported so this module stays the one public entry point for the
+// installer, even though the scope identity is declared alongside the
+// scope-aware purge verdict.
+export type { InstallScope };
 
 // Scope identities as named constants — `as const` keeps their literal types
 // so equality checks narrow correctly (e.g. in `coerceManifestEntry`).
-const SCOPE_USER = "user" as const;
+// `SCOPE_USER` is imported from `./installer-purge.ts` rather than declared
+// here: the purge verdict keys off it, and re-importing it from this module
+// would make the two files cyclic.
 const SCOPE_PROJECT = "project" as const;
 const SCOPE_LOCAL = "local" as const;
 
@@ -57,7 +78,26 @@ export interface InstallOptions {
 	dryRun?: boolean;
 }
 
+/**
+ * The events a successful install ACTUALLY registered — the adapter's
+ * `nativeEventNames`, never a legacy per-client list (review 2026-08-28 P1:
+ * the legacy lists had drifted, so `enable` reported Gemini 8/installed 4 and
+ * Cursor 15/installed 18 — success text describing an install that did not
+ * happen, while dry-run already derived from the adapter). Empty array on a
+ * resolve miss so a caller can fall back explicitly rather than silently.
+ */
+export function installedEventsFor(runner: RunnerId): string[] {
+	return [...(getAdapter(runner)?.nativeEventNames ?? [])];
+}
+
 export interface InstallResult {
+	/** Did the whole install complete? False when any adapter's required
+	 *  `postInstall` threw — the JSON fragment landed but the runner will not
+	 *  honor it, so reporting success would describe an inert installation. */
+	ok: boolean;
+	/** One row per adapter whose `postInstall` failed, with the reason. Empty
+	 *  when `ok` is true. */
+	post_install_failures: Array<{ runner: RunnerId; reason: string }>;
 	entries: InstallerManifestEntry[];
 	skipped: Array<{ runner: RunnerId; reason: string }>;
 	manifest_path: string;
@@ -74,7 +114,6 @@ export interface InstallResult {
 }
 
 const MANIFEST_FILENAME = "installer-manifest.json";
-const MANIFEST_SCHEMA_VERSION = "1" as const;
 
 // -----------------------------------------------------------------------------
 // Paths
@@ -84,15 +123,9 @@ export function manifestPath(cwd: string): string {
 	return join(cwd, ".interlinked", MANIFEST_FILENAME);
 }
 
-function resolveSettingsPath(cwd: string, relPath: string): string {
-	// env-first: os.homedir() reads the process environ via libuv, which
-	// per-thread process.env.HOME writes never reach — under Stryker's
-	// worker-threads pool a test HOME redirect resolved to the REAL home.
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
-	if (relPath.startsWith("~/")) return join(home, relPath.slice(2));
-	if (relPath.startsWith("/")) return relPath;
-	return join(cwd, relPath);
-}
+// Moved to installer-merge-engine.ts (2026-08-30) so the manifest validator
+// can bind stored paths without an import cycle; re-exported for callers.
+export { resolveSettingsPath } from "./installer-merge-engine.js";
 
 // -----------------------------------------------------------------------------
 // Install
@@ -112,11 +145,22 @@ export function installHooks(opts: InstallOptions): InstallResult {
 	// Snapshot the manifest before this run rewrites it. Used to (a) retain
 	// entries for runners this run does not touch and (b) clean a prior
 	// install of a reinstalled runner that landed in a *different* file.
-	const priorManifest = readManifest(mfPath);
+	// A CORRUPT manifest REFUSES the install outright: proceeding would
+	// overwrite the evidence and orphan whatever the damaged rows recorded.
+	const priorState = readManifestState(mfPath);
+	if (priorState.kind === "corrupt") {
+		throw new Error(`installer manifest is corrupt (${priorState.reason}) — fix or remove ${mfPath} before installing`);
+	}
+	const priorManifest = priorState.kind === "valid" ? priorState.entries : [];
 
 	let purged = 0;
 	let foreign = 0;
 	for (const adapter of selected) {
+		const priorConflict = priorManagedArtifactConflict(priorManifest, adapter.id);
+		if (priorConflict !== null) {
+			skipped.push({ runner: adapter.id, reason: priorConflict });
+			continue;
+		}
 		const outcome = installSingle(adapter, binaryAbs, scope, opts.cwd, nowIso, dryRun);
 		if (outcome.ok) {
 			entries.push(outcome.entry);
@@ -127,19 +171,21 @@ export function installHooks(opts: InstallOptions): InstallResult {
 		}
 	}
 
-	// Stale-install cleanup: a prior install of a runner we just (re)installed
-	// may have written a *different* settings file — e.g. a user→project scope
+	// Stale-install cleanup: a prior install of a runner we just REPLACED may
+	// have written a *different* settings file — e.g. a user→project scope
 	// switch. The in-place purge in `installSingle` only reached the file this
-	// run rewrote, so clear the old one here. Runners not in this run are left
-	// untouched; the user installed those deliberately.
-	const selectedIds = new Set(selected.map((a) => a.id));
+	// run rewrote, so clear the old one here. Keyed on REPLACED runners, not
+	// merely selected ones (review 2026-08-30): a selected runner that was
+	// SKIPPED (malformed settings, missing target) produced no replacement, so
+	// its prior install must survive untouched — cleaning it while dropping its
+	// manifest entry silently destroyed working installs.
+	const replacedIds = new Set(entries.map((e) => e.runner));
 	const newFiles = new Set(entries.map((e) => e.settings_path));
 	const orphansCleaned: string[] = [];
 	for (const prior of priorManifest) {
-		if (!selectedIds.has(prior.runner)) continue;
+		if (!replacedIds.has(prior.runner)) continue;
 		if (newFiles.has(prior.settings_path)) continue;
-		const verdict = makePurgeVerdict(prior.scope, opts.cwd);
-		const removed = cleanProjectOwnedHooks(prior.settings_path, verdict, dryRun);
+		const removed = cleanPriorArtifact(prior, opts.cwd, dryRun);
 		if (removed > 0) orphansCleaned.push(prior.settings_path);
 	}
 
@@ -155,22 +201,32 @@ export function installHooks(opts: InstallOptions): InstallResult {
 			const userFragment = adapter.renderSettingsFragment(binaryAbs, SCOPE_USER);
 			const userTarget = resolveSettingsPath(opts.cwd, userFragment.path);
 			if (newFiles.has(userTarget)) continue;
-			const removed = cleanProjectOwnedHooks(userTarget, verdict, dryRun);
+			const removed = cleanUserScopeArtifact(userFragment.fileContent, userTarget, verdict, dryRun);
 			if (removed > 0 && !orphansCleaned.includes(userTarget)) {
 				orphansCleaned.push(userTarget);
 			}
 		}
 	}
 
-	// Non-clobbering manifest: keep prior entries for runners this run did not
-	// touch, then add this run's entries. The previous code overwrote the whole
-	// manifest with only the latest run — orphaning every other runner's
-	// install (left in settings with no manifest record, so `uninstall` could
-	// never find it again).
-	const retained = priorManifest.filter((e) => !selectedIds.has(e.runner));
+	// Non-clobbering manifest: keep prior entries for every runner this run
+	// did not successfully REPLACE, then add this run's entries. Filtering on
+	// selection instead of replacement (pre-2026-08-30) meant a selected-but-
+	// SKIPPED runner lost its manifest entry while its hooks stayed installed —
+	// unfindable by uninstall and invisible to refresh.
+	const retained = priorManifest.filter((e) => !replacedIds.has(e.runner));
 	if (!dryRun) writeManifest(mfPath, [...retained, ...entries]);
 
+	// A postInstall failure is recorded on its entry by `installSingle`; lift
+	// it here so the CALLER cannot miss it. Before this, the throw was caught,
+	// logged to stderr and dropped — an install whose hooks never fire was
+	// reported as a success and written to the manifest as one.
+	const postInstallFailures = entries
+		.filter((e) => e.post_install === "failed")
+		.map((e) => ({ runner: e.runner, reason: e.post_install_error ?? "postInstall failed" }));
+
 	return {
+		ok: postInstallFailures.length === 0,
+		post_install_failures: postInstallFailures,
 		entries,
 		skipped,
 		manifest_path: mfPath,
@@ -178,6 +234,22 @@ export function installHooks(opts: InstallOptions): InstallResult {
 		foreign,
 		orphans_cleaned: orphansCleaned,
 	};
+}
+
+function priorManagedArtifactConflict(
+	manifest: InstallerManifestEntry[],
+	runner: RunnerId,
+): string | null {
+	const prior = manifest.find((entry) => entry.runner === runner);
+	if (prior?.artifact_kind !== "managed-file") return null;
+	const outcome = removeManagedProviderFile(prior.settings_path, prior.artifact_sha256, true);
+	if (outcome === "modified") {
+		return `managed provider file changed after installation; preserving ${prior.settings_path}`;
+	}
+	if (outcome === "foreign") {
+		return `managed provider path is now user-owned; preserving ${prior.settings_path}`;
+	}
+	return null;
 }
 
 interface InstallSingleSuccess {
@@ -203,6 +275,9 @@ function installSingle(
 ): InstallSingleSuccess | InstallSingleFailure {
 	const fragment = adapter.renderSettingsFragment(binaryAbs, scope);
 	const target = resolveSettingsPath(cwd, fragment.path);
+	if (fragment.fileContent !== undefined) {
+		return installManagedFile(adapter, binaryAbs, scope, cwd, installedAt, dryRun, target, fragment.fileContent);
+	}
 	const existing = readJson(target);
 	if (existing === null && existsSync(target)) {
 		return { ok: false, reason: `malformed JSON at ${target}` };
@@ -213,7 +288,9 @@ function installSingle(
 	// adapter) from the arrays this fragment writes, *before* the append-merge
 	// below — so a re-run converges to exactly one canonical entry per event
 	// rather than stacking duplicates. Scope-aware: a shared user-scope file
-	// keeps other repos' Interlinked hooks (tallied as `foreign`).
+	// keeps other repos' Interlinked hooks (tallied as `foreign`). Events the
+	// fragment no longer declares are swept too, so a de-registered event does
+	// not keep its stale entry forever.
 	const report: PurgeReport = { removed: 0, foreign: 0 };
 	purgePriorEntries(base, fragment.fragment, makePurgeVerdict(scope, cwd), report);
 
@@ -228,168 +305,112 @@ function installSingle(
 	// Adapter-specific post-install side-effects — e.g. Codex's
 	// `[features] hooks = true` feature flag in `.codex/config.toml`
 	// (legacy `codex_hooks` is auto-migrated by the writer). Adapters
-	// that don't implement postInstall are no-ops here. Errors are caught
-	// so a failed flag-write doesn't bubble up as a full install failure;
-	// the caller still gets a manifest entry for the JSON fragment that
-	// did land.
-	if (adapter.postInstall) {
-		const postInstallBase = scope === SCOPE_USER ? resolveSettingsPath(cwd, "~/") : cwd;
-		try {
-			adapter.postInstall({ cwd: postInstallBase, scope, dryRun });
-		} catch (err) {
-			process.stderr.write(
-				`[interlinked] ${adapter.id} postInstall failed: ${err instanceof Error ? err.message : String(err)}\n`,
-			);
-		}
-	}
+	// that don't implement postInstall are no-ops here.
+	//
+	// A throw here is NOT cosmetic. An adapter declares postInstall precisely
+	// because the JSON fragment alone leaves the install inert — Codex ignores
+	// its hooks.json until the feature flag is set. This used to write one
+	// stderr line and return `ok: true` anyway, so an installation that fires
+	// no hooks was recorded as a success. The failure is now carried on the
+	// entry and lifts to `InstallResult.ok`. The manifest entry is still
+	// produced: the JSON fragment DID land, and uninstall needs its record to
+	// remove it again.
+	const postInstallError = runPostInstall(adapter, scope, cwd, dryRun);
 
-	return {
-		ok: true,
-		entry: {
-			runner: adapter.id,
-			scope,
-			settings_path: target,
-			added_paths: addedPaths,
-			binary_path: binaryAbs,
-			installed_at: installedAt,
-			schema_version: MANIFEST_SCHEMA_VERSION,
-		},
-		purged: report.removed,
-		foreign: report.foreign,
+	const entry: InstallerManifestEntry = {
+		runner: adapter.id,
+		scope,
+		settings_path: target,
+		added_paths: addedPaths,
+		binary_path: binaryAbs,
+		installed_at: installedAt,
+		post_install: postInstallError === null ? "ok" : "failed",
+		schema_version: MANIFEST_SCHEMA_VERSION,
 	};
+	if (postInstallError !== null) entry.post_install_error = postInstallError;
+
+	return { ok: true, entry, purged: report.removed, foreign: report.foreign };
 }
 
-// -----------------------------------------------------------------------------
-// Idempotent purge — drop prior Interlinked registrations before insert
-// -----------------------------------------------------------------------------
-
-/** Per-entry verdict for the pre-merge purge. */
-type PurgeVerdict = "remove" | "foreign" | "keep";
-const VERDICT_REMOVE: PurgeVerdict = "remove";
-const VERDICT_FOREIGN: PurgeVerdict = "foreign";
-const VERDICT_KEEP: PurgeVerdict = "keep";
-
-interface PurgeReport {
-	/** Interlinked entries removed (owned by this project). */
-	removed: number;
-	/** Interlinked entries left in place (owned by another project). */
-	foreign: number;
-}
-
-/** Build the per-entry verdict for an install at `scope`. At project/local
- *  scope the settings file lives inside the repo, so every Interlinked entry
- *  in it belongs to this project and is replaced. At user scope the file is
- *  shared across repos: only entries this project registered are replaced;
- *  another repo's Interlinked hooks are left in place (reported as foreign)
- *  rather than silently uninstalled. */
-function makePurgeVerdict(
+/** Install an auto-loaded provider plugin/extension without ever treating it
+ * as JSON or overwriting a user-owned file at the managed path. */
+function installManagedFile(
+	adapter: RunnerAdapter,
+	binaryAbs: string,
 	scope: InstallScope,
-	projectRoot: string,
-): (entry: unknown) => PurgeVerdict {
-	if (scope === SCOPE_USER) {
-		return (entry) => {
-			if (!isInterlinkedHookEntry(entry)) return VERDICT_KEEP;
-			return isProjectOwnedHookEntry(entry, projectRoot) ? VERDICT_REMOVE : VERDICT_FOREIGN;
-		};
-	}
-	return (entry) => (isInterlinkedHookEntry(entry) ? VERDICT_REMOVE : VERDICT_KEEP);
-}
-
-/** Walk the fragment's structure and, for every hook array it will write,
- *  drop pre-existing Interlinked-owned entries from the matching array in
- *  `base`. Runs before `mergeSettings`, so the subsequent append converges to
- *  exactly the fragment's entries. Mutates `base` in place. */
-function purgePriorEntries(
-	base: JsonObject,
-	fragment: unknown,
-	verdict: (entry: unknown) => PurgeVerdict,
-	report: PurgeReport,
-): void {
-	if (fragment == null || typeof fragment !== "object" || Array.isArray(fragment)) return;
-	const frag = fragment as JsonObject;
-	for (const key of Object.keys(frag)) {
-		const fragValue = frag[key];
-		if (Array.isArray(fragValue)) {
-			const existing = base[key];
-			if (Array.isArray(existing)) {
-				// Duplicates first: sparing one re-adds it every install.
-				const deduped = withoutIncomingDuplicates(existing, fragValue);
-				report.removed += existing.length - deduped.length;
-				base[key] = filterEntries(deduped, verdict, report);
-			}
-			continue;
-		}
-		if (fragValue != null && typeof fragValue === "object") {
-			const childBase = base[key];
-			if (childBase != null && typeof childBase === "object" && !Array.isArray(childBase)) {
-				purgePriorEntries(childBase as JsonObject, fragValue, verdict, report);
-			}
-		}
-	}
-}
-
-/** Filter one hook array by `verdict`, tallying removals/foreign hits. */
-function filterEntries(
-	existing: unknown[],
-	verdict: (entry: unknown) => PurgeVerdict,
-	report: PurgeReport,
-): unknown[] {
-	const kept: unknown[] = [];
-	for (const item of existing) {
-		const v = verdict(item);
-		if (v === VERDICT_REMOVE) {
-			report.removed++;
-			continue;
-		}
-		if (v === VERDICT_FOREIGN) report.foreign++;
-		kept.push(item);
-	}
-	return kept;
-}
-
-/** Remove this project's Interlinked hook entries from every hook array in the
- *  settings file at `settingsPath`, using a pre-built `verdict` (carries scope
- *  + project root). Used to clear a prior install that landed in a different
- *  file than the current run writes — the in-place purge can only reach the
- *  file being rewritten. At user scope the verdict spares other repos' hooks.
- *  Returns the number of entries removed. */
-function cleanProjectOwnedHooks(
-	settingsPath: string,
-	verdict: (entry: unknown) => PurgeVerdict,
+	cwd: string,
+	installedAt: string,
 	dryRun: boolean,
-): number {
-	if (!existsSync(settingsPath)) return 0;
-	const settings = readJson(settingsPath);
-	// `null` = malformed JSON — leave a file we can't safely rewrite alone.
-	if (settings === null) return 0;
-	const hooks = settings.hooks;
-	if (hooks == null || typeof hooks !== "object" || Array.isArray(hooks)) return 0;
-	const hooksObj = hooks as JsonObject;
-	let removed = 0;
-	for (const event of Object.keys(hooksObj)) {
-		const arr = hooksObj[event];
-		if (!Array.isArray(arr)) continue;
-		const kept = arr.filter((entry) => {
-			if (verdict(entry) === VERDICT_REMOVE) {
-				removed++;
-				return false;
+	target: string,
+	content: string,
+): InstallSingleSuccess | InstallSingleFailure {
+	let purged = 0;
+	if (existsSync(target)) {
+		let existing: string;
+		try {
+			existing = readFileSync(target, "utf-8");
+		} catch (readError) {
+			return { ok: false, reason: `cannot read managed provider file ${target}: ${String(readError)}` };
+		}
+		if (existing !== content && !isManagedProviderFile(existing)) {
+			return { ok: false, reason: `refusing to overwrite non-Interlinked provider file at ${target}` };
+		}
+		if (existing !== content) {
+			const prior = readManifestState(manifestPath(cwd));
+			const owned =
+				prior.kind === "valid" &&
+				prior.entries.some(
+					(entry) =>
+						entry.runner === adapter.id &&
+						entry.settings_path === target &&
+						entry.artifact_kind === "managed-file" &&
+						entry.artifact_sha256 === managedProviderFileHash(existing),
+				);
+			if (!owned) {
+				return {
+					ok: false,
+					reason: `managed provider file differs without matching manifest ownership; preserving ${target}`,
+				};
 			}
-			return true;
-		});
-		if (kept.length === arr.length) continue;
-		// Drop an event key emptied entirely by the cleanup so the file does
-		// not accrue `"PreToolUse": []` litter; otherwise write the survivors.
-		if (kept.length === 0) {
-			delete hooksObj[event];
-		} else {
-			hooksObj[event] = kept;
+			purged = 1;
 		}
 	}
-	if (removed > 0) {
-		if (Object.keys(hooksObj).length === 0) delete settings.hooks;
-		if (!dryRun) writeAtomic(settingsPath, settings);
+	if (!dryRun) writeTextAtomic(target, content);
+	const postInstallError = runPostInstall(adapter, scope, cwd, dryRun);
+	const entry: InstallerManifestEntry = {
+		runner: adapter.id,
+		scope,
+		settings_path: target,
+		added_paths: ["$file"],
+		binary_path: binaryAbs,
+		installed_at: installedAt,
+		post_install: postInstallError === null ? "ok" : "failed",
+		schema_version: MANIFEST_SCHEMA_VERSION,
+		artifact_kind: "managed-file",
+		artifact_sha256: managedProviderFileHash(content),
+	};
+	if (postInstallError !== null) entry.post_install_error = postInstallError;
+	return { ok: true, entry, purged, foreign: 0 };
+}
+
+/** Run the adapter's post-install side-effects. Returns null on success (or
+ *  when the adapter declares none), else the failure reason. */
+function runPostInstall(
+	adapter: RunnerAdapter,
+	scope: InstallScope,
+	cwd: string,
+	dryRun: boolean,
+): string | null {
+	if (!adapter.postInstall) return null;
+	const postInstallBase = scope === SCOPE_USER ? resolveSettingsPath(cwd, "~/") : cwd;
+	try {
+		adapter.postInstall({ cwd: postInstallBase, scope, dryRun });
+		return null;
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		process.stderr.write(`[interlinked] ${adapter.id} postInstall failed: ${reason}\n`);
+		return reason;
 	}
-	return removed;
 }
 
 // -----------------------------------------------------------------------------
@@ -411,7 +432,14 @@ export interface UninstallResult {
 
 export function uninstallHooks(opts: UninstallOptions): UninstallResult {
 	const mfPath = manifestPath(opts.cwd);
-	const manifest = readManifest(mfPath);
+	// A CORRUPT manifest REFUSES the uninstall and writes NOTHING (review
+	// 2026-08-30: the permissive reader turned corrupt bytes into an empty
+	// manifest, then wrote `{entries: []}` over the evidence).
+	const state = readManifestState(mfPath);
+	if (state.kind === "corrupt") {
+		throw new Error(`installer manifest is corrupt (${state.reason}) — fix or remove ${mfPath} before uninstalling`);
+	}
+	const manifest = state.kind === "valid" ? state.entries : [];
 	const filter = new Set(opts.runners ?? []);
 	const removed: InstallerManifestEntry[] = [];
 	const remaining: InstallerManifestEntry[] = [];
@@ -422,7 +450,10 @@ export function uninstallHooks(opts: UninstallOptions): UninstallResult {
 			remaining.push(entry);
 			continue;
 		}
-		if (!opts.dryRun) removeEntry(entry);
+		if (!opts.dryRun && !removeEntry(entry, opts.cwd)) {
+			remaining.push(entry);
+			continue;
+		}
 		removed.push(entry);
 	}
 
@@ -431,58 +462,66 @@ export function uninstallHooks(opts: UninstallOptions): UninstallResult {
 	return { removed, remaining, manifest_path: mfPath };
 }
 
-function removeEntry(entry: InstallerManifestEntry): void {
-	const settings = readJson(entry.settings_path);
-	if (settings === null) return;
-	for (const path of entry.added_paths) {
-		removeJsonPath(settings, path);
+/** Remove this runner's hooks by OWNED-ENTRY RECOGNITION, never by the
+ *  stored array indexes (review 2026-08-30, release-blocking: a user hook
+ *  prepended after install shifted every index, so positional removal
+ *  deleted the USER's hook and left ours behind). The purge machinery is
+ *  the ONE recognizer-based cleaner; its scope verdict spares foreign
+ *  projects' hooks in shared user-scope files. An entry that INVOKES this
+ *  manifest row's recorded binary (executable/script position, via
+ *  isHookEntryInvokingBinary — never a substring: a user hook that merely
+ *  ECHOED the recorded path was deleted by the old
+ *  JSON.stringify(...).includes fallback) is also owned. */
+function removeEntry(entry: InstallerManifestEntry, cwd: string): boolean {
+	if (entry.artifact_kind === "managed-file") {
+		const outcome = removeManagedProviderFile(entry.settings_path, entry.artifact_sha256, false);
+		return outcome === "removed" || outcome === "missing";
 	}
-	writeAtomic(entry.settings_path, settings);
-}
-
-// -----------------------------------------------------------------------------
-// Manifest IO
-// -----------------------------------------------------------------------------
-
-export function readManifest(path: string): InstallerManifestEntry[] {
-	if (!existsSync(path)) return [];
-	const parsed = readJson(path);
-	if (parsed === null) return [];
-	if (parsed == null || typeof parsed !== "object") return [];
-	const wrapper = parsed as { entries?: unknown };
-	if (!Array.isArray(wrapper.entries)) return [];
-	const rows: readonly unknown[] = wrapper.entries;
-	const out: InstallerManifestEntry[] = [];
-	for (const row of rows) {
-		const entry = coerceManifestEntry(row);
-		if (entry) out.push(entry);
-	}
-	return out;
-}
-
-function writeManifest(path: string, entries: InstallerManifestEntry[]): void {
-	ensureDir(dirname(path));
-	const payload = { schema_version: MANIFEST_SCHEMA_VERSION, entries };
-	writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`);
-}
-
-function coerceManifestEntry(row: unknown): InstallerManifestEntry | null {
-	if (row == null || typeof row !== "object") return null;
-	const r = row as JsonObject;
-	if (typeof r.runner !== "string") return null;
-	if (typeof r.settings_path !== "string") return null;
-	if (!Array.isArray(r.added_paths)) return null;
-	const scope = r.scope === SCOPE_USER || r.scope === SCOPE_LOCAL ? r.scope : SCOPE_PROJECT;
-	return {
-		runner: r.runner as RunnerId,
-		scope,
-		settings_path: r.settings_path,
-		added_paths: r.added_paths.filter((x): x is string => typeof x === "string"),
-		binary_path: typeof r.binary_path === "string" ? r.binary_path : "",
-		installed_at: typeof r.installed_at === "string" ? r.installed_at : "",
-		schema_version: MANIFEST_SCHEMA_VERSION,
+	const base = makePurgeVerdict(entry.scope, cwd);
+	const verdict = (candidate: unknown): ReturnType<typeof base> => {
+		const baseVerdict = base(candidate);
+		if (baseVerdict !== "keep") return baseVerdict;
+		return isHookEntryInvokingBinary(candidate, entry.binary_path) ? "remove" : "keep";
 	};
+	cleanProjectOwnedHooks(entry.settings_path, verdict, false);
+	return true;
 }
+
+function cleanPriorArtifact(entry: InstallerManifestEntry, cwd: string, dryRun: boolean): number {
+	if (entry.artifact_kind === "managed-file") {
+		return removeManagedProviderFile(entry.settings_path, entry.artifact_sha256, dryRun) === "removed" ? 1 : 0;
+	}
+	const verdict = makePurgeVerdict(entry.scope, cwd);
+	return cleanProjectOwnedHooks(entry.settings_path, verdict, dryRun);
+}
+
+function cleanUserScopeArtifact(
+	fileContent: string | undefined,
+	target: string,
+	verdict: ReturnType<typeof makePurgeVerdict>,
+	dryRun: boolean,
+): number {
+	if (fileContent === undefined) return cleanProjectOwnedHooks(target, verdict, dryRun);
+	// A marker proves that Interlinked created the file at some point, but it
+	// does not prove that the user has not customized it since. Historical
+	// user-scope bridges may have no manifest row, so require an exact match to
+	// the source this adapter would render before cross-scope cleanup removes
+	// them. A differing managed file is deliberately preserved.
+	return removeManagedProviderFile(
+		target,
+		managedProviderFileHash(fileContent),
+		dryRun,
+	) === "removed"
+		? 1
+		: 0;
+}
+
+// -----------------------------------------------------------------------------
+// Manifest IO — extracted to installer-manifest.ts (2026-08-30, line cap);
+// re-exported so this module stays the installer's one public entry point.
+// -----------------------------------------------------------------------------
+
+export { type ManifestState, readManifest, readManifestState } from "./installer-manifest.js";
 
 // -----------------------------------------------------------------------------
 // Adapter selection

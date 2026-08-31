@@ -6,7 +6,6 @@
 // See docs/design/free-cli-architecture.md §"Daemon architecture".
 
 import type { JsonObject } from "../lib/json-types.js";
-import { nonNull } from "../lib/non-null.js";
 import type { HarnessDecision } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
 
@@ -55,6 +54,9 @@ export type RpcMethod =
 	| "hook.session_end"
 	| "hook.user_prompt"
 	| "hook.pre_compact"
+	| "hook.permission_request"
+	| "hook.post_compact"
+	| "hook.lifecycle"
 	| "daemon.health"
 	| "daemon.shutdown"
 	| "daemon.invalidate"
@@ -94,6 +96,9 @@ export interface RpcParams {
 	"hook.session_end": UnifiedHookEvent;
 	"hook.user_prompt": UnifiedHookEvent;
 	"hook.pre_compact": UnifiedHookEvent;
+	"hook.permission_request": UnifiedHookEvent;
+	"hook.post_compact": UnifiedHookEvent;
+	"hook.lifecycle": UnifiedHookEvent;
 	"daemon.health": Record<string, never>;
 	"daemon.shutdown": { reason?: string };
 	"daemon.invalidate": { path: string };
@@ -108,6 +113,9 @@ export interface RpcResult {
 	"hook.session_end": HarnessDecision;
 	"hook.user_prompt": HarnessDecision;
 	"hook.pre_compact": HarnessDecision;
+	"hook.permission_request": HarnessDecision;
+	"hook.post_compact": HarnessDecision;
+	"hook.lifecycle": HarnessDecision;
 	"daemon.health": DaemonHealth;
 	"daemon.shutdown": HookSessionAck;
 	"daemon.invalidate": HookSessionAck;
@@ -131,15 +139,29 @@ export function encodeFrame(message: RpcMessage): string {
  *  remainder (everything after the last newline). Callers persist the
  *  remainder between reads. */
 export function splitFrames(chunk: string, pending = ""): { frames: string[]; remainder: string } {
-	const combined = pending + chunk;
-	const parts = combined.split("\n");
-	const remainder = parts[parts.length - 1] ?? "";
-	const frames: string[] = [];
-	for (let i = 0; i < parts.length - 1; i++) {
-		const part = nonNull(parts[i]);
-		if (part.length > 0) frames.push(part);
+	// PERFORMANCE CONSTRAINT (2026-08-27 daemon-melt root cause): scan ONLY
+	// the incoming chunk for newlines. The prior `(pending + chunk).split("\n")`
+	// flattened (memmove) the whole accumulated buffer on every chunk, so one
+	// large partial frame cost O(n²) copying and stalled the event loop. When
+	// the chunk carries no newline, the returned remainder is a lazy V8 cons
+	// string (no flatten); the accumulated text is only materialized when its
+	// terminating newline finally arrives.
+	let idx = chunk.indexOf("\n");
+	if (idx === -1) {
+		return { frames: [], remainder: pending.length > 0 ? pending + chunk : chunk };
 	}
-	return { frames, remainder };
+	const frames: string[] = [];
+	const first = pending + chunk.slice(0, idx);
+	if (first.length > 0) frames.push(first);
+	let start = idx + 1;
+	idx = chunk.indexOf("\n", start);
+	while (idx !== -1) {
+		const part = chunk.slice(start, idx);
+		if (part.length > 0) frames.push(part);
+		start = idx + 1;
+		idx = chunk.indexOf("\n", start);
+	}
+	return { frames, remainder: chunk.slice(start) };
 }
 
 /** Decode a single JSON frame into an RpcMessage. Throws when the shape is
@@ -223,7 +245,14 @@ export function methodForPhase(phase: UnifiedHookEvent["phase"]): RpcMethod {
 			return "hook.user_prompt";
 		case "pre-compact":
 			return "hook.pre_compact";
+		case "permission-request":
+			return "hook.permission_request";
+		case "post-compact":
+			return "hook.post_compact";
 		default:
-			return "hook.pre_tool_use";
+			// Unknown and lifecycle-style phases must never be mistaken for a
+			// pre-tool gate. The generic method records them without applying a
+			// tool policy to a payload that has no tool semantics.
+			return "hook.lifecycle";
 	}
 }

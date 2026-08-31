@@ -160,6 +160,8 @@ const VALID_RUNNERS: readonly RunnerId[] = [
 	"codex",
 	"gemini-cli",
 	"cursor",
+	"opencode",
+	"pi",
 	"unknown",
 ];
 

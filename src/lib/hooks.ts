@@ -5,11 +5,9 @@
 // install/uninstall it into each detected client, manage `.gitignore`,
 // and detect colocated git-hook managers.
 //
-// Per-client install/uninstall logic lives in `./hook-installers.ts` —
-// this module just orchestrates and re-exports the public API. Adding a
-// new client means editing `./hook-installers.ts` (events list +
-// install/uninstall functions) and wiring it into CLIENT_INSTALL_REGISTRY
-// below; nothing else in this file should need to change.
+// JSON-settings client cleanup lives in `./hook-installers.ts`; managed
+// plugin/extension clients use the adapter installer manifest below. This
+// module orchestrates both lifecycle shapes through CLIENT_INSTALL_REGISTRY.
 
 import {
 	chmodSync,
@@ -22,7 +20,18 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { installHooks, manifestPath, readManifest } from "../harness/installer.js";
+import {
+	installedEventNames as installedCapabilityEventNames,
+	OPENCODE_CAPABILITIES,
+	PI_CAPABILITIES,
+} from "../harness/adapters/provider-capabilities.js";
+import {
+	installHooks,
+	installedEventsFor,
+	manifestPath,
+	readManifest,
+	uninstallHooks as uninstallInstalledHooks,
+} from "../harness/installer.js";
 import {
 	getModePreset,
 	type HarnessModePreset,
@@ -38,11 +47,6 @@ import {
 	CURSOR_HOOK_EVENTS,
 	findParentWithHooks,
 	GEMINI_HOOK_EVENTS,
-	installAllClaudeHooks,
-	installCodexHooks,
-	installCopilotHooks,
-	installCursorHooks,
-	installGeminiHooks,
 	installStatusLine as installStatusLineImpl,
 	uninstallAllClaudeHooks,
 	uninstallCodexHooks,
@@ -54,7 +58,7 @@ import { CLIENT_CLAUDE } from "./hook-types.js";
 import { buildHookScript } from "./hooks-template.js";
 import type { JsonObject } from "./json-types.js";
 import { nonNull } from "./non-null.js";
-import type { ClientName } from "./settings.js";
+import { type ClientName, CLIENT_TO_RUNNER } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
 export { ensureGitignore } from "./hooks-gitignore.js";
@@ -248,8 +252,23 @@ interface InstallResult {
 
 interface ClientInstallEntry {
 	events: readonly string[];
-	install: (cwd: string, hookScriptPath: string) => void;
 	uninstall: (cwd: string) => boolean;
+}
+
+type ManagedClientRunner = "opencode" | "pi";
+const OPENCODE_HOOK_EVENTS = installedCapabilityEventNames(OPENCODE_CAPABILITIES);
+const PI_HOOK_EVENTS = installedCapabilityEventNames(PI_CAPABILITIES);
+
+/** Managed provider bridges have no legacy settings-file cleanup path. Their
+ * install and ownership hashes live in the canonical installer manifest, so
+ * lifecycle removal must go through that same hash-aware uninstaller. */
+function uninstallManagedClientHooks(cwd: string, runner: ManagedClientRunner): boolean {
+	const result = uninstallInstalledHooks({ cwd, runners: [runner] });
+	const preserved = result.remaining.find((entry) => entry.runner === runner);
+	if (preserved !== undefined) {
+		throw new Error(`managed bridge was modified; preserved ${preserved.settings_path} and its installer manifest row`);
+	}
+	return result.removed.some((entry) => entry.runner === runner);
 }
 
 /**
@@ -257,53 +276,46 @@ interface ClientInstallEntry {
  * clients Interlinked knows how to wire up — their event lists and uninstall
  * closures.
  *
- * Note on `install`: the canonical install path is now the adapter installer
- * (`installHooks` in `src/harness/installer.ts`), reached via `installAllHooks`
- * below. The legacy per-client `.install` closures are retained here pending
- * full retirement of the legacy install path; `uninstall` is still the live
- * uninstall path. Adding a new client still means a matching pair in
- * `./hook-installers.ts` plus a `CLIENT_TO_RUNNER` entry.
+ * Installation always uses the adapter installer (`installHooks` in
+ * `src/harness/installer.ts`), reached via `installAllHooks` below. JSON-based
+ * legacy clients retain their recognizer-based cleanup functions; managed
+ * plugin/extension clients use the manifest's hash-aware uninstaller.
  */
 const CLIENT_INSTALL_REGISTRY: Record<ClientName, ClientInstallEntry> = {
 	claude: {
 		events: CLAUDE_HOOK_EVENTS,
-		install: installAllClaudeHooks,
 		uninstall: uninstallAllClaudeHooks,
 	},
 	copilot: {
 		events: COPILOT_HOOK_EVENTS,
-		install: installCopilotHooks,
 		uninstall: uninstallCopilotHooks,
 	},
 	gemini: {
 		events: GEMINI_HOOK_EVENTS,
-		install: installGeminiHooks,
 		uninstall: uninstallGeminiHooks,
 	},
 	codex: {
 		events: CODEX_HOOK_EVENTS,
-		install: installCodexHooks,
 		uninstall: uninstallCodexHooks,
 	},
 	cursor: {
 		events: CURSOR_HOOK_EVENTS,
-		install: installCursorHooks,
 		uninstall: uninstallCursorHooks,
+	},
+	opencode: {
+		events: OPENCODE_HOOK_EVENTS,
+		uninstall: (cwd) => uninstallManagedClientHooks(cwd, "opencode"),
+	},
+	pi: {
+		events: PI_HOOK_EVENTS,
+		uninstall: (cwd) => uninstallManagedClientHooks(cwd, "pi"),
 	},
 };
 
-// Maps a legacy `ClientName` id to the adapter `RunnerId` vocabulary. The two
-// id sets diverge: the adapter layer uses `claude-code` / `copilot-cli` /
-// `gemini-cli` where the legacy client layer uses `claude` / `copilot` /
-// `gemini`. `installAllHooks` translates here before calling the adapter
-// installer.
-const CLIENT_TO_RUNNER: Record<ClientName, RunnerId> = {
-	claude: "claude-code",
-	copilot: "copilot-cli",
-	gemini: "gemini-cli",
-	codex: "codex",
-	cursor: "cursor",
-};
+// The ClientName → RunnerId table now lives beside the client registry in
+// `settings.ts`; `installAllHooks` translates through it before calling the
+// adapter installer. Re-exported here for existing importers.
+export { CLIENT_TO_RUNNER };
 
 /**
  * Install hooks into all specified clients.
@@ -351,10 +363,11 @@ export function installAllHooks(cwd: string, clients: ClientName[]): InstallResu
 		const skip = skipReason.get(client);
 		if (skip) return { client, installed: false, events: [], error: skip };
 		const runner = CLIENT_TO_RUNNER[client];
-		if (installed?.entries.some((e) => e.runner === runner)) {
-			return { client, installed: true, events: [...CLIENT_INSTALL_REGISTRY[client].events] };
-		}
-		const reason = installed?.skipped.find((s) => s.runner === runner)?.reason;
+		// `post_install === "failed"` is NOT an install: Codex ignores the hooks.json this run merged until `[features] hooks = true` reaches its config.toml, so reporting success would describe a runner that fires no hooks.
+		const entry = installed?.entries.find((e) => e.runner === runner);
+		// Adapter events, never the legacy list — see installedEventsFor (2026-08-28 P1).
+		if (entry?.post_install === "ok") return { client, installed: true, events: installedEventsFor(runner) };
+		const reason = entry?.post_install_error ?? installed?.skipped.find((s) => s.runner === runner)?.reason;
 		return { client, installed: false, events: [], error: reason ?? "install failed" };
 	});
 }

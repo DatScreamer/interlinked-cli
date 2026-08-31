@@ -24,6 +24,12 @@ describe("RunnerAdapter contract", () => {
 			id: "unknown",
 			label: "Fake",
 			experimental: true,
+			capabilities: {
+				events: [],
+				project_hook_path: ".fake/hooks.json",
+				hook_trust: "implicit",
+				status_line: "none",
+			},
 			nativeEventNames: ["Fake"],
 			detectFromEnv: () => false,
 			parseHookInput: () => ({
@@ -63,10 +69,31 @@ describe("RunnerAdapter contract", () => {
 			added_paths: ["/hooks/PreToolUse/0"],
 			binary_path: "/usr/local/bin/interlinked-hook",
 			installed_at: "2026-04-23T00:00:00.000Z",
+			post_install: "ok",
 			schema_version: "1",
 		};
 		expect(entry.runner).toBe("claude-code");
 		expect(entry.scope).toBe("project");
 		expect(entry.added_paths.length).toBe(1);
+		expect(entry.post_install).toBe("ok");
+	});
+
+	it("InstallerManifestEntry can record a FAILED postInstall with its reason", () => {
+		// An adapter only declares postInstall when the JSON fragment alone
+		// leaves the install inert, so the failure has to survive into the
+		// manifest rather than being logged and dropped.
+		const entry: InstallerManifestEntry = {
+			runner: "codex",
+			scope: "project",
+			settings_path: ".codex/hooks.json",
+			added_paths: ["/hooks/PreToolUse/0"],
+			binary_path: "/usr/local/bin/interlinked-hook",
+			installed_at: "2026-04-23T00:00:00.000Z",
+			post_install: "failed",
+			post_install_error: "EACCES: permission denied, open '.codex/config.toml'",
+			schema_version: "1",
+		};
+		expect(entry.post_install).toBe("failed");
+		expect(entry.post_install_error).toContain("EACCES");
 	});
 });

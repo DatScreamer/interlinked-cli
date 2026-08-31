@@ -2,7 +2,7 @@
 
 ## What Is The Harness?
 
-The Interlinked Harness is a local server that runs on each developer's machine. It intercepts AI coding agent actions (Claude Code, Gemini CLI, Codex) via hook events, evaluates them against guard rules, manages file reservations, and enforces agent lifecycle policies.
+The Interlinked Harness is a local server that runs on each developer's machine. It intercepts AI coding agent actions across Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, OpenCode, and Pi, evaluates normalized events against guard rules, manages file reservations, and enforces the lifecycle policies each provider can expose.
 
 It is the **third component** of the Interlinked platform:
 
@@ -20,6 +20,7 @@ The CLI and harness are shipped together from the `QuentinCody/interlinked-cli` 
 
 AI coding agents can:
 - Run destructive shell commands (`rm -rf /`, `git push --force`, `DROP DATABASE`)
+- Create unbounded Git worktrees that consume disk and fragment shared-agent state
 - Write secrets into source files
 - Go to "sleep" in the terminal instead of staying in their MCP work loop
 - Ask the human for input via the terminal instead of via MCP messages
@@ -35,7 +36,7 @@ The original approach was a standalone `command-guard-hook.ts` file that pattern
 2. **No coordination** — couldn't check file reservations from the server
 3. **No quality checks** — couldn't run `tsc` or linters after file edits
 4. **No cohort awareness** — couldn't distinguish "my other agent" from "someone else's agent"
-5. **Single agent only** — was Claude Code-specific, didn't work for Gemini or Codex
+5. **Single agent only** — was Claude Code-specific and did not generalize across runner protocols
 
 ### Why Not Call the Remote Server for Every Check?
 
@@ -73,7 +74,7 @@ The harness runs on Node.js using `node:net` for Unix socket IPC. The server is 
 ## Architecture
 
 ```
-Coding Agent (Claude Code / Gemini / Codex)
+Coding Agent (Claude / Codex / Copilot / Gemini / Cursor / OpenCode / Pi)
     │
     │ Hook event (stdin JSON)
     ▼
@@ -199,6 +200,7 @@ PostToolUse is better because:
 - A primary Claude Code session
 - Subagents spawned by the primary (researcher, test-writer)
 - A secondary Gemini CLI for quick tasks
+- An OpenCode or Pi session using the same normalized policy and reservation state
 
 The cohort model lets the harness:
 - **Warn** when two of the developer's own agents conflict (instead of blocking)
@@ -230,14 +232,41 @@ The harness enforces this by:
 
 ### 5. Multi-Agent Provider Support
 
-**Decision:** All guard rules work identically across Claude Code, Gemini CLI, and Codex.
+**Decision:** Guard semantics are provider-neutral after hook normalization.
 
 **How:** The hook script normalizes events from all agents into a common format (`HarnessEvent`) before sending to the harness. The evaluator doesn't know or care which agent produced the event. Tool names are matched flexibly:
 - Claude Code: `Bash`, `Read`, `Write`, `Edit`
 - Gemini CLI: `Shell`, `ReadFile`, `WriteFile`, `EditFile`
+- OpenCode: generic `tool.execute.before` / `tool.execute.after` payloads
+- Pi: `tool_call` / `tool_result`, plus direct `user_bash` commands
 - Both: matched by the evaluator's helper functions (`isBash`, `isFileWrite`, etc.)
 
-**Limitation:** Codex currently only has `notify` hooks (post-execution). PreToolUse blocking is not available for Codex until they add a pre-execution hook. The harness still processes Codex events for activity tracking and quality checks.
+Codex has full Interlinked coverage across its twelve native hook events,
+including pre-tool blocking, the distinct permission-request path,
+model-visible post-tool context, compaction, subagents, stop continuation, and
+session end. The observation-only `Interrupt` hook records top-level turn cancellation
+asynchronously with no control output or terminal cleanup. Claude and Codex use different native decision objects, but both
+translate to the same `HarnessDecision` internally. See
+[`design/cli-hook-normalization.md`](design/cli-hook-normalization.md).
+
+Codex does not expose a custom status-line command slot comparable to Claude
+Code. Interlinked uses hook `statusMessage`, `interlinked status`, and the
+definition-hash runtime receipt instead of claiming UI parity the provider
+cannot supply.
+
+OpenCode and Pi use manifest-owned JavaScript bridges at
+`.opencode/plugins/interlinked.ts` and `.pi/extensions/interlinked.js`. OpenCode's stable plugin
+API provides a hard generic tool gate but no native confirmation call there, so `ask` denies;
+its `session.idle` event records Stop but cannot veto or continue it. Pi uses `ctx.ui.confirm` for
+`ask` when a UI is present and denies in headless mode. Its separate `user_bash` event closes the
+gap between model tool calls and shell commands the user launches directly. Pi's
+`agent_settled` Stop signal is observation-only. Neither provider exposes dedicated native MCP,
+subagent, or worktree lifecycle hooks, so Interlinked does not claim those parts of
+Claude/Codex parity. Command-driven `git worktree add` remains blocked by the shared shell rule.
+
+Runtime activation is provider-owned: restart OpenCode after installation; Pi requires `/reload`
+or restart plus its project-extension trust approval. Interlinked refuses to overwrite a foreign
+bridge and preserves a bridge modified after installation.
 
 ### 6. Rules Configuration — Team-Shared + Personal Overrides
 
@@ -250,7 +279,7 @@ The harness enforces this by:
 
 **Why:** Teams need shared safety policies (everyone should be blocked from `rm -rf /`), but individual developers may need exceptions (e.g., a DevOps engineer who legitimately uses `terraform destroy`).
 
-The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
+The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
 
 ### 7. Server Bridge — Coordination Without Dependency
 
@@ -274,7 +303,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 | `cli/src/harness/types.ts` | All type definitions: events, decisions, rules, cohort, reservations, config |
 | `cli/src/harness/server.ts` | Node.js Unix socket server — the main entry point (`node:net`) |
 | `cli/src/harness/evaluator.ts` | Guard evaluation — PreToolUse blocking + PostToolUse feedback |
-| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
+| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
 | `cli/src/harness/session-state.ts` | Per-session trajectory tracking (files, commands, tool counts) |
 | `cli/src/harness/cohort.ts` | Agent cohort manager (join/leave/lost detection, file tracking) |
 | `cli/src/harness/reservations.ts` | Auto file reservation (optimistic lock, 30s release, server sync) |
@@ -314,7 +343,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> built-in guard rules by category |
+| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> built-in guard rules by category |
 | `cli/docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
 | `cli/docs/generated/structural-checks.md` | All 25 structural checks by tier |
 | `cli/docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
@@ -409,7 +438,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 
 ## Guard Rules — Overview
 
-> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
+> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
 
 ### Lifecycle Enforcement
 
@@ -419,7 +448,7 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 | AskUserQuestion redirect | Yes | Warn | Tool name is `AskUserQuestion` |
 | Curl-to-MCP detection | Yes | Warn → Block | `curl localhost:PORT` (escalates after 5 calls) |
 
-### Built-in Rule Categories (<!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
+### Built-in Rule Categories (<!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
 
 Category counts below are derived from `docs/generated/guard-rules.md` (the
 auto-generated source of truth — regenerate with `npm run docs` after adding
@@ -430,7 +459,7 @@ or removing a rule).
 | Process Killing | 9 | `pkill -f`, `killall`, `kill -9`, multi-PID kill |
 | Process Safety | 5 | `sleep` in agent commands, infinite-retry loops |
 | File Deletion | 3 | `rm -rf /`, `rm .wrangler`, `rm node_modules` |
-| Git Operations | 9 | `--force` push, `reset --hard`, `clean -f`, `filter-branch`, `stash drop` |
+| Git Operations | 10 | `--force` push, `reset --hard`, `clean -f`, `filter-branch`, `stash drop`, `worktree add` |
 | Database | 5 | `DROP DATABASE/TABLE`, `TRUNCATE`, `DELETE` without WHERE, MongoDB drop, Redis flush |
 | Cloud Providers | 5 | AWS destructive ops, S3 recursive, GCP/Azure destructive |
 | Containers | 8 | Docker prune/rm -f/volume rm, kubectl mass delete/drain, helm uninstall |
@@ -569,7 +598,7 @@ See `docs/generated/configuration.md` for the full default configuration referen
 
 ## ML Content Scanner — Bidirectional PII/Secret Exfil Guard
 
-A detector-style layer that scans tool-call content with a learned token classifier (default: OpenAI's [privacy-filter](https://huggingface.co/openai/privacy-filter)) and routes detections through Claude Code's `ask` confirmation UI so a human approves or denies each potentially-sensitive call. This is distinct from the generative policy classifier (`src/harness/policy-classifier.ts`) — that one emits free-form verdicts; this one emits structured spans.
+A detector-style layer that scans tool-call content with a learned token classifier (default: OpenAI's [privacy-filter](https://huggingface.co/openai/privacy-filter)) and returns canonical `ask` so an ask-capable interactive runner can request human confirmation. Provider rendering is explicit: Claude and supported Cursor gates use native ask; interactive Pi uses `ctx.ui.confirm`; headless Pi and OpenCode's stable tool gate deny, as do other ask-incapable pre-tool surfaces. This is distinct from the generative policy classifier (`src/harness/policy-classifier.ts`) — that one emits free-form verdicts; this one emits structured spans.
 
 **Off by default.** Requires a one-time `pip install opf`. Enable with:
 
@@ -584,7 +613,7 @@ The scanner guards exfiltration in both directions:
 
 | Direction | Trigger | What happens | Exfil risk mitigated |
 |---|---|---|---|
-| **Outbound** (PreToolUse) | Write / Edit / MultiEdit / NotebookEdit content; Bash command body; WebFetch URL + prompt; external MCP tool string args | Scanner runs on each text part; if any span is detected the server converts the decision to `ask` so the human sees `[category(count), …]` and approves or denies | PII being committed to disk, piped to curl, or sent to external services |
+| **Outbound** (PreToolUse) | Write / Edit / MultiEdit / NotebookEdit content; Bash command body; WebFetch URL + prompt; external MCP tool string args | Scanner runs on each text part; if any span is detected the server returns `ask`. Ask-capable interactive runners prompt; ask-incapable or headless surfaces deny with the categorized reason. | PII being committed to disk, piped to curl, or sent to external services |
 | **Inbound** (PostToolUse) | `Read` / `Grep` / `Glob` return payloads | Scanner runs on `tool_response`; detections ratchet `session.sensitivity_level` to `Confidential` (or `HighlyConfidential` for `secret` / `account_number` labels) and push the step index into `pii_detected_steps` | Sensitive data read into agent context → subsequent outbound actions blocked by the existing taint-tracking rules (`network_block_at: Confidential`) without needing the scanner to re-detect anything |
 
 The inbound→outbound chain is the load-bearing integration: once a session reads PII, *every* subsequent network command is blocked by taint tracking even if the outbound command itself has been stripped of PII before send.
@@ -612,7 +641,7 @@ See `docs/design/content-scanner-remote-hosting.md` for the deployment playbook 
 
 ### Policy: `ask`, not `block`
 
-The scanner emits `decision: "ask"` (not `"block"`) for any finding above `min_score` — Claude Code's native per-call confirmation UI then surfaces the reason and the human decides. This is deliberate: OPF is probabilistic and false-positives on:
+The scanner emits `decision: "ask"` (not `"block"`) for any finding above `min_score`. Claude Code, supported Cursor gates, and interactive Pi can surface native confirmation; OpenCode's stable tool gate, headless Pi, and other ask-incapable pre-tool surfaces safely render the same decision as deny. This is deliberate: OPF is probabilistic and false-positives on:
 
 - `example.com` and RFC 5322 test addresses in test fixtures
 - Code variable names that happen to look like personal names (`alice`, `bob`, `jane_doe`)

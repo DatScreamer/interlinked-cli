@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureCodexFeatureFlag } from "./codex-feature-flag.js";
+import {
+	ensureCodexFeatureFlag,
+	findFeaturesTableHeaderLines,
+	readCodexHooksFlag,
+} from "./codex-feature-flag.js";
 
 describe("ensureCodexFeatureFlag", () => {
 	let tmp: string;
@@ -683,15 +687,551 @@ describe("ensureCodexFeatureFlag", () => {
 		expect(toml.replace(/\r\n/g, "")).not.toContain("\n");
 	});
 
-	it("inserts into the FIRST [features] block when duplicate headers exist", () => {
-		const tomlPath = join(tmp, ".codex", "config.toml");
-		const existing = "[features]\nfoo = true\n[features]\nbar = true\n";
-		mkdirSync(join(tmp, ".codex"), { recursive: true });
-		writeFileSync(tomlPath, existing);
+});
 
-		const result = ensureCodexFeatureFlag(tmp);
-		expect(result).toBe("appended");
+// ===========================================
+// Duplicate `[features]` TABLE headers
+// ===========================================
+// TOML forbids defining the same table twice, so a config with two `[features]`
+// headers is REJECTED WHOLE by Codex's parser — every hook is off, silently.
+//
+// The writer used to canonicalize duplicate ASSIGNMENTS while leaving duplicate
+// HEADERS in place: it inserted `hooks = true` into the first block and returned
+// "appended", so `interlinked enable` reported a successful Codex install over a
+// file no strict parser accepts. That is the worst shape a failure can take —
+// green output, dead hooks, and now our edit in the middle of the evidence.
+//
+// The writer therefore REFUSES: it must not write, must not report a success
+// action, and must say exactly how to repair the file. Merging the tables was
+// the alternative and is not safe — the two blocks can hold the same key, so the
+// merge would trade a duplicate-table error for a duplicate-key error.
+describe("ensureCodexFeatureFlag — duplicate [features] tables are refused, never silently written", () => {
+	let tmp: string;
+	let stderr: string[];
+	let restoreStderr: (() => void) | undefined;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "codex-duptable-"));
+		stderr = [];
+		const original = process.stderr.write.bind(process.stderr);
+		process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+			stderr.push(String(chunk));
+			return true;
+			// SAFETY: the spy matches the single-argument overload the writer uses;
+			// the wider `write` signature is restored in afterEach.
+		}) as typeof process.stderr.write;
+		restoreStderr = () => {
+			process.stderr.write = original;
+		};
+	});
+
+	afterEach(() => {
+		restoreStderr?.();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function writeToml(body: string): string {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, body);
+		return tomlPath;
+	}
+
+	/** One `[features]` header per line of output — the property a TOML parser
+	 *  actually enforces. Counts headers, not the substring, so `# [features]`
+	 *  and `hooks = "[features]"` do not inflate it. */
+	function featuresHeaderCount(toml: string): number {
+		return toml
+			.split("\n")
+			.map((line) => line.replace(/#[^\n]*/, "").trim())
+			.filter((line) => line === "[features]").length;
+	}
+
+	it("P1: two [features] tables with assignments in each are refused, file untouched", () => {
+		const existing = "[features]\nhooks = false\nfoo = 1\n\n[features]\ncodex_hooks = true\n";
+		const tomlPath = writeToml(existing);
+
+		const action = ensureCodexFeatureFlag(tmp);
+
+		expect(action).toBe("refused");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+		expect(stderr.join("")).toContain("duplicate [features]");
+	});
+
+	it("P2: duplicate headers with comments on them are still detected", () => {
+		// `[features] # config` is a header. The comment strip is what makes it
+		// visible — the same strip whose absence used to APPEND a second table.
+		const existing = "[features] # first\nfoo = 1\n\n[features] #\nbar = 2\n";
+		const tomlPath = writeToml(existing);
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("refused");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+	});
+
+	it("P3: CRLF duplicate headers are refused too", () => {
+		// Splitting on "\n" leaves a trailing "\r" on every line; the header
+		// regex must tolerate it or a Windows config slips through unchecked.
+		const existing = "[features]\r\nhooks = false\r\n\r\n[features]\r\ncodex_hooks = true\r\n";
+		const tomlPath = writeToml(existing);
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("refused");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+	});
+
+	it("P4: duplicates with NO hooks assignment anywhere are refused (the old insert path)", () => {
+		// This is the exact input the retired test pinned as a success: the
+		// writer inserted into the first block and returned "appended", leaving
+		// two headers behind.
+		const existing = "[features]\nfoo = true\n[features]\nbar = true\n";
+		const tomlPath = writeToml(existing);
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("refused");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+	});
+
+	it("P5: the refusal message names the file and the duplicate line numbers", () => {
+		const tomlPath = writeToml("[features]\nfoo = 1\n[other]\nx = 1\n[features]\nbar = 2\n");
+		ensureCodexFeatureFlag(tmp);
+		const message = stderr.join("");
+		expect(message).toContain(tomlPath);
+		// 1-based line numbers of both headers, so the repair is mechanical.
+		expect(message).toContain("1");
+		expect(message).toContain("5");
+		expect(message).toContain("hooks = true");
+	});
+
+	it("P6: three [features] tables are refused as well", () => {
+		const existing = "[features]\na = 1\n[features]\nb = 2\n[features]\nc = 3\n";
+		const tomlPath = writeToml(existing);
+
+		expect(ensureCodexFeatureFlag(tmp)).toBe("refused");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(existing);
+	});
+
+	it("N1: a single [features] table still installs, leaving exactly one header", () => {
+		const tomlPath = writeToml('[model]\nname = "x"\n\n[features]\nfoo = true\n');
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
 		const toml = readFileSync(tomlPath, "utf-8");
-		expect(toml).toBe("[features]\nfoo = true\nhooks = true\n[features]\nbar = true\n");
+		expect(featuresHeaderCount(toml)).toBe(1);
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N2: [features] alongside its dotted sub-tables is not a duplicate", () => {
+		// `[features]` and `[features.nested]` are DIFFERENT tables; TOML allows
+		// both. Refusing here would break legitimate configs.
+		const tomlPath = writeToml("[features]\nfoo = 1\n[features.nested]\nbar = 2\n");
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(featuresHeaderCount(toml)).toBe(1);
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N3: a COMMENTED-OUT second header is documentation, not a duplicate table", () => {
+		const tomlPath = writeToml("[features]\nfoo = 1\n# [features]\n# bar = 2\n");
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readCodexHooksFlag(readFileSync(tomlPath, "utf-8"))).toBe("enabled");
+	});
+
+	it("N4: a config with no [features] table at all is created normally", () => {
+		const tomlPath = writeToml('[model]\nname = "x"\n');
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(featuresHeaderCount(toml)).toBe(1);
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N5: an unrelated table repeated is none of this writer's business", () => {
+		// Also invalid TOML, but not a class we can speak to — refusing on it
+		// would block installs over a defect the user did not ask us about.
+		const tomlPath = writeToml("[other]\na = 1\n[other]\nb = 2\n");
+		expect(ensureCodexFeatureFlag(tmp)).toBe("appended");
+		expect(readCodexHooksFlag(readFileSync(tomlPath, "utf-8"))).toBe("enabled");
+	});
+
+	it("N6: writing a fresh config emits no refusal", () => {
+		expect(ensureCodexFeatureFlag(tmp)).toBe("created");
+		expect(stderr.join("")).not.toContain("duplicate [features]");
+	});
+});
+
+// Direct surface for the detector the refusal is built on — exported so a
+// reporting surface can name the same condition without a second scan.
+describe("findFeaturesTableHeaderLines — positive (must report a header)", () => {
+	it("P1: two plain headers report both 1-based line numbers", () => {
+		expect(findFeaturesTableHeaderLines("[features]\na = 1\n[features]\nb = 2\n")).toEqual([1, 3]);
+	});
+
+	it("P2: headers carrying comments still count", () => {
+		expect(findFeaturesTableHeaderLines("[features] # one\n[features] #\n")).toEqual([1, 2]);
+	});
+
+	it("P3: CRLF and surrounding whitespace do not hide a header", () => {
+		expect(findFeaturesTableHeaderLines("  [features]  \r\nx = 1\r\n[features]\r\n")).toEqual([
+			1, 3,
+		]);
+	});
+
+	it("P4: a single header reports exactly one line", () => {
+		expect(findFeaturesTableHeaderLines('[model]\nname = "x"\n[features]\n')).toEqual([3]);
+	});
+});
+
+describe("findFeaturesTableHeaderLines — negative (must not report a header)", () => {
+	it("N1: dotted sub-tables are a different table", () => {
+		expect(findFeaturesTableHeaderLines("[features.nested]\n[features.other]\n")).toEqual([]);
+	});
+
+	it("N2: a commented-out header is documentation", () => {
+		expect(findFeaturesTableHeaderLines("# [features]\n")).toEqual([]);
+	});
+
+	it("N3: unrelated tables and an empty document report nothing", () => {
+		expect(findFeaturesTableHeaderLines("[other]\n[model]\n")).toEqual([]);
+		expect(findFeaturesTableHeaderLines("")).toEqual([]);
+	});
+
+	it("N4: an array-of-tables header is not the `[features]` table", () => {
+		expect(findFeaturesTableHeaderLines("[[features]]\n")).toEqual([]);
+	});
+});
+
+// The WRITER's half of the wrong-table class. Reading the legacy key
+// document-wide let `enable` rename `[other] codex_hooks = true` into
+// `[other] hooks = true`, report "migrated", and leave `[features] hooks =
+// false` untouched — a successful-looking migration that left hooks off, plus
+// an edit to a table that was never ours.
+describe("ensureCodexFeatureFlag — wrong-table legacy key", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "codex-legacy-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function writeToml(body: string): string {
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		writeFileSync(tomlPath, body);
+		return tomlPath;
+	}
+
+	it("P1: a legacy key under [other] is left alone and [features] is actually enabled", () => {
+		const tomlPath = writeToml("[other]\ncodex_hooks = true\n\n[features]\nhooks = false\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		// The unrelated table is untouched...
+		expect(toml).toContain("[other]\ncodex_hooks = true");
+		// ...and the flag Codex actually reads now enables hooks.
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("P2: a legacy key under [features] still migrates to the canonical spelling", () => {
+		const tomlPath = writeToml("[features]\ncodex_hooks = true\n");
+		expect(ensureCodexFeatureFlag(tmp)).toBe("migrated");
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toContain("hooks = true");
+		expect(toml).not.toContain("codex_hooks");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("P3: a legacy FALSE is not reported as a successful migration", () => {
+		const tomlPath = writeToml("[features]\ncodex_hooks = false\n");
+		const action = ensureCodexFeatureFlag(tmp);
+		// Renaming it faithfully would leave hooks OFF, so the writer must not
+		// stop at "migrated" — the end state has to actually enable hooks.
+		expect(action).not.toBe("migrated");
+		expect(readCodexHooksFlag(readFileSync(tomlPath, "utf-8"))).toBe("enabled");
+	});
+
+	// The reviewer's reproduction: matching only `= true` left the deprecated
+	// assignment in the file. Hooks became enabled, but Codex kept warning —
+	// so the "migration" had migrated nothing.
+	it("P4: a legacy FALSE is REMOVED, not left behind", () => {
+		const tomlPath = writeToml("[features]\ncodex_hooks = false\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).not.toContain("codex_hooks");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("P5: legacy FALSE alongside canonical TRUE removes only the legacy key", () => {
+		const tomlPath = writeToml("[features]\ncodex_hooks = false\nhooks = true\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).not.toContain("codex_hooks");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("P6: duplicate legacy keys (true then false) all go, and hooks end enabled", () => {
+		const tomlPath = writeToml("[features]\ncodex_hooks = true\ncodex_hooks = false\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).not.toContain("codex_hooks");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N2: a COMMENTED legacy line is left untouched (it is documentation, not config)", () => {
+		const tomlPath = writeToml("[features]\n# codex_hooks = false is deprecated\nhooks = true\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toContain("# codex_hooks = false is deprecated");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N3: a legacy FALSE under [other] is not touched, and [features] still ends enabled", () => {
+		const tomlPath = writeToml("[other]\ncodex_hooks = false\n\n[features]\nhooks = false\n");
+		ensureCodexFeatureFlag(tmp);
+		const toml = readFileSync(tomlPath, "utf-8");
+		expect(toml).toContain("[other]\ncodex_hooks = false");
+		expect(readCodexHooksFlag(toml)).toBe("enabled");
+	});
+
+	it("N1: a canonical key under [other] does not count as already-enabled", () => {
+		const tomlPath = writeToml("[other]\nhooks = true\n");
+		ensureCodexFeatureFlag(tmp);
+		expect(readCodexHooksFlag(readFileSync(tomlPath, "utf-8"))).toBe("enabled");
+	});
+});
+
+// The document-wide regex this reader replaces answered "does the text contain
+// `hooks = true` anywhere?", so a flag set under an unrelated table reported a
+// green doctor row for an install whose hooks never fire.
+describe("readCodexHooksFlag — positive (must report enabled)", () => {
+	it("P1: canonical key inside [features]", () => {
+		expect(readCodexHooksFlag("[features]\nhooks = true\n")).toBe("enabled");
+	});
+
+	it("P2: legacy codex_hooks inside [features] (Codex still honors it)", () => {
+		expect(readCodexHooksFlag("[features]\ncodex_hooks = true\n")).toBe("enabled");
+	});
+
+	it("P3: a later [features] table re-enables what an earlier one disabled", () => {
+		expect(readCodexHooksFlag("[features]\nhooks = false\n\n[features]\nhooks = true\n")).toBe(
+			"enabled",
+		);
+	});
+});
+
+describe("readCodexHooksFlag — negative (must not report enabled)", () => {
+	it("N1: the reviewer's wrong-table case — true under [other], false under [features]", () => {
+		expect(readCodexHooksFlag("[other]\nhooks = true\n\n[features]\nhooks = false\n")).toBe(
+			"disabled",
+		);
+	});
+
+	it("N2: true under an unrelated table only is ABSENT, not enabled", () => {
+		expect(readCodexHooksFlag("[other]\nhooks = true\n")).toBe("absent");
+	});
+
+	it("N3: a commented-out flag does not count", () => {
+		expect(readCodexHooksFlag("[features]\n# hooks = true\n")).toBe("absent");
+	});
+
+	it("N4: an explicit false is disabled, not absent — the message differs", () => {
+		expect(readCodexHooksFlag("[features]\nhooks = false\n")).toBe("disabled");
+	});
+
+	it("N5: a dotted sub-table is not [features]", () => {
+		expect(readCodexHooksFlag("[features.nested]\nhooks = true\n")).toBe("absent");
+	});
+
+	it("N6: an empty document is absent", () => {
+		expect(readCodexHooksFlag("")).toBe("absent");
+	});
+});
+
+// ===========================================
+// Exactly-one-`hooks` canonicalization matrix
+// ===========================================
+// The defect this pins: input
+//
+//     [features]
+//     hooks = false
+//     codex_hooks = true
+//
+// used to produce `hooks = false` AND `hooks = true` in the same table while
+// reporting "migrated". Strict TOML parsers REJECT a duplicate key, so a
+// "successful" migration could disable Codex hooks outright.
+//
+// The matrix crosses canonical true/false/absent/duplicate against legacy
+// true/false/absent/duplicate, in both orderings, with comments and unrelated
+// tables present, over LF and CRLF. Every case asserts the same things: exactly
+// one `hooks =` assignment inside `[features]`, valued `true`, no active
+// `codex_hooks` left inside `[features]`, and unrelated tables byte-identical.
+
+/** Table-aware scan of the OUTPUT — the semantic a TOML parser would apply. */
+function featuresAssignmentsOf(toml: string): Array<{ key: string; value: string }> {
+	const found: Array<{ key: string; value: string }> = [];
+	let table = "";
+	for (const rawLine of toml.split("\n")) {
+		const line = rawLine.replace(/#[^\n]*/, "");
+		const header = /^\s*\[([^\][]+)\]\s*$/.exec(line);
+		if (header) {
+			table = (header[1] ?? "").trim();
+			continue;
+		}
+		if (table !== "features") continue;
+		const assignment = /^\s*(hooks|codex_hooks)\s*=\s*(\S+)/.exec(line);
+		if (assignment) found.push({ key: assignment[1] ?? "", value: assignment[2] ?? "" });
+	}
+	return found;
+}
+
+const CANONICAL_CASES: Record<string, string[]> = {
+	"canonical-absent": [],
+	"canonical-true": ["hooks = true"],
+	"canonical-false": ["hooks = false"],
+	"canonical-duplicate-true": ["hooks = true", "hooks = true"],
+	"canonical-duplicate-mixed": ["hooks = true", "hooks = false"],
+};
+
+const LEGACY_CASES: Record<string, string[]> = {
+	"legacy-absent": [],
+	"legacy-true": ["codex_hooks = true"],
+	"legacy-false": ["codex_hooks = false"],
+	"legacy-duplicate-mixed": ["codex_hooks = true", "codex_hooks = false"],
+};
+
+const EOL_CASES = [
+	["LF", "\n"],
+	["CRLF", "\r\n"],
+] as const;
+
+/** Fixture with comments, an unrelated table that carries BOTH spellings of the
+ *  key (it must survive untouched — Codex never reads it), and a table after
+ *  `[features]` so the block is bounded. */
+function buildFixture(assignments: string[], eol: string): string {
+	return [
+		"# Generated by interlinked enable — do not remove the codex_hooks flag",
+		"# unless you intend to disable Interlinked CLI hooks for Codex.",
+		"",
+		"[model]",
+		'name = "synthetic-model-v5"',
+		"",
+		"[other]",
+		"hooks = true",
+		"codex_hooks = false",
+		"",
+		"[features]",
+		"# hooks = true (documentation only)",
+		"foo = 42 # keep me",
+		...assignments,
+		"",
+		"[profiles.default]",
+		'approval_policy = "never"',
+		"",
+	].join(eol);
+}
+
+describe("ensureCodexFeatureFlag — canonicalization leaves EXACTLY ONE hooks key", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "codex-matrix-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function run(body: string): string {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, body);
+		ensureCodexFeatureFlag(tmp);
+		return readFileSync(tomlPath, "utf-8");
+	}
+
+	for (const [canonicalName, canonicalLines] of Object.entries(CANONICAL_CASES)) {
+		for (const [legacyName, legacyLines] of Object.entries(LEGACY_CASES)) {
+			for (const order of ["canonical-first", "legacy-first"]) {
+				for (const [eolName, eol] of EOL_CASES) {
+					const assignments =
+						order === "canonical-first"
+							? [...canonicalLines, ...legacyLines]
+							: [...legacyLines, ...canonicalLines];
+					const label = `${canonicalName} x ${legacyName} x ${order} x ${eolName}`;
+
+					it(`P: ${label} — one canonical hooks = true, no codex_hooks left`, () => {
+						const out = run(buildFixture(assignments, eol));
+						expect(featuresAssignmentsOf(out)).toEqual([{ key: "hooks", value: "true" }]);
+						expect(readCodexHooksFlag(out)).toBe("enabled");
+					});
+
+					it(`N: ${label} — unrelated tables and comments untouched`, () => {
+						const out = run(buildFixture(assignments, eol));
+						expect(out).toContain(`[model]${eol}name = "synthetic-model-v5"`);
+						expect(out).toContain(`[other]${eol}hooks = true${eol}codex_hooks = false`);
+						expect(out).toContain(`[profiles.default]${eol}approval_policy = "never"`);
+						expect(out).toContain("# hooks = true (documentation only)");
+						expect(out).toContain("foo = 42 # keep me");
+					});
+
+					it(`N: ${label} — line endings stay uniform`, () => {
+						const out = run(buildFixture(assignments, eol));
+						const crlfCount = out.split("\r\n").length - 1;
+						const bareLf = out.split("\n").length - 1 - crlfCount;
+						expect(eolName === "CRLF" ? bareLf : crlfCount).toBe(0);
+					});
+				}
+			}
+		}
+	}
+});
+
+describe("ensureCodexFeatureFlag — the reported duplicate-key defect, minimal repro", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "codex-dupe-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	function run(body: string): string {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		writeFileSync(tomlPath, body);
+		ensureCodexFeatureFlag(tmp);
+		return readFileSync(tomlPath, "utf-8");
+	}
+
+	it("P1: `hooks = false` + `codex_hooks = true` collapses to one `hooks = true`", () => {
+		// The exact input that produced `hooks = false` then `hooks = true`.
+		expect(run("[features]\nhooks = false\ncodex_hooks = true\n")).toBe(
+			"[features]\nhooks = true\n",
+		);
+	});
+
+	it("P2: `codex_hooks = true` + `hooks = false` (reverse order) collapses too", () => {
+		expect(run("[features]\ncodex_hooks = true\nhooks = false\n")).toBe(
+			"[features]\nhooks = true\n",
+		);
+	});
+
+	it("P3: a lone canonical `hooks = false` is flipped, not duplicated", () => {
+		// The old writer appended a second `hooks = true` after it.
+		expect(run("[features]\nhooks = false\n")).toBe("[features]\nhooks = true\n");
+	});
+
+	it("P4: duplicate canonical keys collapse to one", () => {
+		expect(run("[features]\nhooks = true\nhooks = true\nfoo = 1\n")).toBe(
+			"[features]\nhooks = true\nfoo = 1\n",
+		);
+	});
+
+	it("P5: a non-boolean value is replaced wholesale rather than left ambiguous", () => {
+		expect(run('[features]\nhooks = "yes"\n')).toBe("[features]\nhooks = true\n");
+	});
+
+	it("P6: CRLF — `hooks = false` + `codex_hooks = true` collapses and stays CRLF", () => {
+		expect(run("[features]\r\nhooks = false\r\ncodex_hooks = true\r\n")).toBe(
+			"[features]\r\nhooks = true\r\n",
+		);
 	});
 });

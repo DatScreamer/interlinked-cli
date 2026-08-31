@@ -96,7 +96,15 @@ afterEach(() => {
 	process.exitCode = 0; // standDown sets a non-zero exit when the daemon survives
 });
 
-const ALL_CLIENTS: ClientName[] = ["claude", "copilot", "gemini", "codex", "cursor"];
+const ALL_CLIENTS: ClientName[] = [
+	"claude",
+	"copilot",
+	"gemini",
+	"codex",
+	"cursor",
+	"opencode",
+	"pi",
+];
 
 // --------------------------------------------------------------------------
 

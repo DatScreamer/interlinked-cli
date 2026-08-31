@@ -24,6 +24,7 @@
 
 import { basename } from "node:path";
 import { ALL_TESTS_SENTINEL } from "./server-tdd-cycle.js";
+import { normalizeCycleKey } from "./tdd-cycle-admission.js";
 import type { SessionTrajectory } from "./types.js";
 
 /** The cycle fields the commit gate reads. */
@@ -49,7 +50,8 @@ export const STALE_RED_AGE_STEPS = 50;
  * sessions persisted before this check existed: the suite result is recorded
  * under `ALL_TESTS_SENTINEL`, and the fan-out stamps every cycle it touches with
  * that run's step. A cycle whose `red_at` matches a FAILING suite run, with no
- * targeted run recorded for its own test file, was reddened by the fan-out.
+ * targeted failure recorded for its own test file at that same step, was
+ * reddened by the fan-out.
  */
 export function isSuiteSourcedRed(
 	session: SessionTrajectory,
@@ -58,9 +60,25 @@ export function isSuiteSourcedRed(
 	const suite = session.test_runs?.get(ALL_TESTS_SENTINEL);
 	if (!suite || suite.status !== "fail") return false;
 	if (cycle.red_at === undefined || cycle.red_at !== suite.at_step) return false;
-	// A targeted run for this file's own tests is sound per-file evidence and
-	// overrides the fan-out attribution.
-	return !(cycle.test_file && session.test_runs?.has(cycle.test_file));
+	// Only a targeted FAILURE recorded by the same run is sound per-file
+	// evidence. A historical targeted pass must not override a newer suite
+	// fan-out: that stale map entry is exactly what made unrelated, currently
+	// green files appear as regressions after a later full-suite failure.
+	return !hasTargetedFailureAtRedStep(session, cycle);
+}
+
+function hasTargetedFailureAtRedStep(
+	session: SessionTrajectory,
+	cycle: { red_at?: number | undefined; test_file: string | null },
+): boolean {
+	if (!cycle.test_file || cycle.red_at === undefined) return false;
+	const cycleTestKey = normalizeCycleKey(cycle.test_file);
+	for (const [testFile, result] of session.test_runs ?? []) {
+		if (testFile === ALL_TESTS_SENTINEL) continue;
+		if (normalizeCycleKey(testFile) !== cycleTestKey) continue;
+		if (result.status === "fail" && result.at_step === cycle.red_at) return true;
+	}
+	return false;
 }
 
 /** True when the red is old enough to prompt a re-run rather than block. A red

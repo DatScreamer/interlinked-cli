@@ -46,7 +46,17 @@ export function findProjectRoot(startDir: string): string | null {
 export interface HookEntry {
 	matcher: string;
 	/** `timeout` is Claude Code's per-hook ceiling in SECONDS (default 60). */
-	hooks: Array<{ type: string; command: string; timeout?: number }>;
+	hooks: Array<{
+		type: string;
+		command: string;
+		timeout?: number;
+		/** Codex may launch observation-only handlers without blocking the event. */
+		async?: boolean;
+		/** Codex renders this while the hook is running. */
+		statusMessage?: string;
+		/** Maximum model-visible `additionalContext` accepted from this hook. */
+		additionalContextLimit?: number;
+	}>;
 }
 
 /**

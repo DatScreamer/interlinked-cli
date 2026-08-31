@@ -14,6 +14,7 @@ import { ALL_PRESETS, isKnownMode, type ModeName } from "../harness/modes.js";
 import type { RunnerId } from "../harness/unified-event.js";
 import { resolveHookBinaryPath } from "../lib/hooks.js";
 import { nonNull } from "../lib/non-null.js";
+import { refreshInstalledHooks, reportRefresh } from "./install-hooks-refresh.js";
 import { writeMode } from "./mode.js";
 
 export interface InstallHooksOptions {
@@ -26,6 +27,11 @@ export interface InstallHooksOptions {
 	json?: boolean;
 	/** balanced | strict | lenient — skips the interactive prompt when set. */
 	mode?: string;
+	/** Re-render already-installed hooks from the manifest; implies
+	 *  --preserve-mode. See install-hooks-refresh.ts. */
+	refresh?: boolean;
+	/** Never write the enforcement mode (or cloud config) — hooks only. */
+	preserveMode?: boolean;
 }
 
 const VALID_RUNNERS = new Set<RunnerId>([
@@ -34,6 +40,8 @@ const VALID_RUNNERS = new Set<RunnerId>([
 	"cursor",
 	"gemini-cli",
 	"codex",
+	"opencode",
+	"pi",
 ]);
 const VALID_SCOPES = new Set(["user", "project", "local"]);
 const VALID_CLOUD_PRODUCTS = new Set(["guardrails", "agent-ci"]);
@@ -47,30 +55,57 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 		options.binary ?? resolveHookBinaryPath(cwd, { writeFallback: !dryRun }),
 	);
 
+	// --refresh: the hooks-only repair path (manifest-scoped, snapshot +
+	// rollback, never touches mode/cloud). Owned by install-hooks-refresh.ts.
+	if (options.refresh === true) {
+		reportRefresh(
+			refreshInstalledHooks({ cwd, binaryPath, runners, dryRun }),
+			options.json === true,
+		);
+		return;
+	}
+	const preserveMode = options.preserveMode === true;
+
 	// Resolve enforcement mode: explicit flag > interactive prompt > balanced.
-	const resolvedMode = resolveMode(options);
+	// null = --preserve-mode: hooks only, the mode file is never written.
+	const resolvedMode = preserveMode ? null : resolveMode(options);
 
 	const result = installHooks({ cwd, binaryPath, runners, scope, dryRun });
 
-	if (!dryRun) {
+	if (!dryRun && resolvedMode !== null) {
 		writeMode(cwd, resolvedMode, false);
 	}
 
-	if (options.cloud && !dryRun) {
+	if (options.cloud && !dryRun && !preserveMode) {
 		writeCloudConfig(cwd, options.cloud, options.tokenEnv);
+	}
+
+	// `ok` used to be the literal `true` — it described the command reaching its
+	// end, not the install working. A Codex `postInstall` throw was caught,
+	// logged and dropped, so an installation whose hooks never fire reported
+	// success. It now mirrors `InstallResult.ok`, and the process exits non-zero
+	// so a script or CI step sees the failure too.
+	if (!result.ok) {
+		for (const failure of result.post_install_failures) {
+			process.stderr.write(
+				`[interlinked] ${failure.runner}: hooks are NOT active — post-install step failed: ${failure.reason}\n`,
+			);
+		}
+		process.exitCode = 1;
 	}
 
 	if (options.json) {
 		const payload = {
-			ok: true,
+			ok: result.ok,
 			dry_run: dryRun,
 			entries: result.entries,
 			skipped: result.skipped,
+			post_install_failures: result.post_install_failures,
 			manifest_path: result.manifest_path,
 			purged: result.purged,
 			foreign: result.foreign,
 			orphans_cleaned: result.orphans_cleaned,
-			mode: resolvedMode,
+			mode: resolvedMode ?? "preserved",
 			cloud: options.cloud ?? null,
 		};
 		process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -176,6 +211,8 @@ function writeCloudConfig(cwd: string, product: string, tokenEnv: string | undef
 
 function printHuman(
 	result: {
+		ok: boolean;
+		post_install_failures: Array<{ runner: string; reason: string }>;
 		entries: Array<{ runner: string; settings_path: string; added_paths: string[] }>;
 		skipped: Array<{ runner: string; reason: string }>;
 		manifest_path: string;
@@ -184,7 +221,7 @@ function printHuman(
 		orphans_cleaned: string[];
 	},
 	dryRun: boolean,
-	mode: ModeName,
+	mode: ModeName | null,
 ): void {
 	const verb = dryRun ? "would install" : "installed";
 	process.stdout.write(`[interlinked] ${verb} hooks for ${result.entries.length} runner(s)\n`);
@@ -192,6 +229,12 @@ function printHuman(
 		process.stdout.write(
 			`  ${e.runner.padEnd(14)} → ${e.settings_path} (${e.added_paths.length} path(s))\n`,
 		);
+	}
+	// An entry whose post-install step failed is NOT a working install: the
+	// settings fragment landed, but the runner ignores it. Say so on the same
+	// listing rather than letting the count above imply success.
+	for (const f of result.post_install_failures) {
+		process.stdout.write(`  ${f.runner.padEnd(14)} INCOMPLETE — hooks inactive: ${f.reason}\n`);
 	}
 	for (const s of result.skipped) {
 		process.stdout.write(`  ${s.runner.padEnd(14)} skipped: ${s.reason}\n`);
@@ -212,6 +255,10 @@ function printHuman(
 	}
 	process.stdout.write(`manifest: ${manifestPath(process.cwd())}\n`);
 	if (!dryRun) {
-		process.stdout.write(`mode: ${mode}  (change anytime: interlinked mode <name>)\n`);
+		process.stdout.write(
+			mode === null
+				? "mode: preserved (not written \u2014 --preserve-mode)\n"
+				: `mode: ${mode}  (change anytime: interlinked mode <name>)\n`,
+		);
 	}
 }

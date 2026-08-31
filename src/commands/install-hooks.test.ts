@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,40 @@ vi.mock("node:fs", async (importOriginal) => {
 
 import { nonNull } from "../lib/non-null.js";
 import { installHooksCommand, parseModeChoice } from "./install-hooks.js";
+
+// ─────────────────────────────────────────────────────────────────
+// --preserve-mode / --refresh: the hooks-only contract (2026-08-29)
+// ─────────────────────────────────────────────────────────────────
+describe("installHooksCommand — preserve-mode and refresh never write enforcement mode", () => {
+	// test-contract: bug — the reason plain repairs were unsafe: without the
+	// flag, every run rewrites check-policy.json (the --mode default is
+	// "balanced"). The pair below pins BOTH directions.
+	it("P: a plain non-TTY install writes check-policy.json; --preserve-mode does not", async () => {
+		setStdinTTY(false);
+		await captureStdout(() =>
+			installHooksCommand({ runner: "gemini-cli", binary: "/usr/bin/ih-pm" }),
+		);
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(true);
+
+		rmSync(join(tmp, ".interlinked", "check-policy.json"));
+		await captureStdout(() =>
+			installHooksCommand({ runner: "gemini-cli", binary: "/usr/bin/ih-pm", preserveMode: true }),
+		);
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+	});
+
+	// test-contract: invariant — --refresh implies mode preservation and, on
+	// an empty manifest, refreshes nothing and installs nothing.
+	it("P: --refresh writes no mode file and reports the preserved mode", async () => {
+		setStdinTTY(false);
+		const out = await captureStdout(() =>
+			installHooksCommand({ binary: "/usr/bin/ih-refresh", refresh: true }),
+		);
+		expect(out).toContain("refreshed 0 installed runner(s)");
+		expect(out).toContain("mode: preserved");
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+	});
+});
 
 let tmp = "";
 // SPY, not process.chdir(): chdir THROWS in a worker thread ("process.chdir()
@@ -67,6 +101,10 @@ function setStdinTTY(value: boolean): void {
 
 /** Result shape `printHuman` consumes; mirror of installer.InstallResult. */
 interface StubInstallResult {
+	/** False when an adapter's required postInstall threw — the hooks JSON
+	 *  landed but the runner will not honor it. */
+	ok: boolean;
+	post_install_failures: Array<{ runner: string; reason: string }>;
 	entries: Array<{ runner: string; settings_path: string; added_paths: string[] }>;
 	skipped: Array<{ runner: string; reason: string }>;
 	manifest_path: string;
@@ -126,7 +164,7 @@ describe("install-hooks command", () => {
 		const manifest = JSON.parse(
 			readFileSync(join(tmp, ".interlinked", "installer-manifest.json"), "utf-8"),
 		) as { entries: Array<{ runner: string }> };
-		expect(manifest.entries.length).toBe(5);
+		expect(manifest.entries.length).toBe(7);
 	});
 
 	it("respects --dry-run", async () => {
@@ -223,6 +261,76 @@ describe("install-hooks command", () => {
 		expect(payload.entries.length).toBe(1);
 	});
 });
+
+/**
+ * `ok` used to be the literal `true` — it reported that the command reached its
+ * end, not that the install worked. A Codex `postInstall` throw was caught,
+ * logged to stderr and dropped, so a manifest describing an installation whose
+ * hooks never fire was emitted as a success.
+ *
+ * The failure is forced for real, not mocked: `config.toml` is created as a
+ * DIRECTORY, so the feature-flag writer throws EISDIR while `.codex/hooks.json`
+ * still lands.
+ */
+describe("install-hooks — a failed postInstall is not reported as success", () => {
+	function breakCodexConfigToml(): void {
+		mkdirSync(join(tmp, ".codex", "config.toml"), { recursive: true });
+	}
+
+	it("P1: --json reports ok:false and names the failure", async () => {
+		breakCodexConfigToml();
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "codex", binary: "/usr/bin/ih-broken", json: true }),
+		);
+		const payload = JSON.parse(out) as {
+			ok: boolean;
+			post_install_failures: Array<{ runner: string; reason: string }>;
+			entries: Array<{ post_install: string }>;
+		};
+		expect(payload.ok).toBe(false);
+		expect(nonNullRow(payload.post_install_failures[0]).runner).toBe("codex");
+		expect(nonNullRow(payload.entries[0]).post_install).toBe("failed");
+	});
+
+	it("P2: the process exit code is non-zero so a script or CI step sees it", async () => {
+		breakCodexConfigToml();
+		process.exitCode = 0;
+		await captureStdout(() =>
+			installHooksCommand({ runner: "codex", binary: "/usr/bin/ih-broken2", json: true }),
+		);
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+	});
+
+	it("P3: the human output says the hooks are inactive", async () => {
+		breakCodexConfigToml();
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "codex", binary: "/usr/bin/ih-broken3", mode: "balanced" }),
+		);
+		process.exitCode = 0;
+		expect(out).toContain("INCOMPLETE — hooks inactive");
+	});
+
+	it("N1: a healthy Codex install still reports ok:true and leaves the exit code alone", async () => {
+		process.exitCode = 0;
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "codex", binary: "/usr/bin/ih-healthy", json: true }),
+		);
+		const payload = JSON.parse(out) as {
+			ok: boolean;
+			post_install_failures: unknown[];
+		};
+		expect(payload.ok).toBe(true);
+		expect(payload.post_install_failures).toEqual([]);
+		expect(process.exitCode).toBe(0);
+	});
+});
+
+/** Narrow an indexed row without `!` — the tests above always produce one. */
+function nonNullRow<T>(row: T | undefined): T {
+	if (row === undefined) throw new Error("expected a row");
+	return row;
+}
 
 describe("parseModeChoice", () => {
 	it("returns balanced for empty input", () => {
@@ -448,6 +556,8 @@ describe("install-hooks — cloud config branches", () => {
 		// Stub installHooks so the .interlinked dir is NOT pre-created by the
 		// manifest write — forcing writeCloudConfig down the mkdirSync branch.
 		const mod = await importWithStubbedInstaller({
+			ok: true,
+			post_install_failures: [],
 			entries: [],
 			skipped: [],
 			manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
@@ -484,6 +594,8 @@ describe("install-hooks — cloud config branches", () => {
 		vi.resetModules();
 		vi.doMock("../harness/installer.js", () => ({
 			installHooks: (): StubInstallResult => ({
+				ok: true,
+				post_install_failures: [],
 				entries: [],
 				skipped: [],
 				manifest_path: join(tmp, ".interlinked", "installer-manifest.json"),
@@ -534,6 +646,8 @@ describe("install-hooks — cloud config branches", () => {
 describe("install-hooks — human-readable accounting (printHuman)", () => {
 	it("renders dry-run verb, skipped, purged, orphans and foreign lines", async () => {
 		const mod = await importWithStubbedInstaller({
+			ok: true,
+			post_install_failures: [],
 			entries: [
 				{
 					runner: "claude-code",
@@ -568,6 +682,8 @@ describe("install-hooks — human-readable accounting (printHuman)", () => {
 
 	it("renders the installed verb and mode footer on a real (non-dry) install with clean accounting", async () => {
 		const mod = await importWithStubbedInstaller({
+			ok: true,
+			post_install_failures: [],
 			entries: [
 				{
 					runner: "claude-code",

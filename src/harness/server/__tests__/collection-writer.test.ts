@@ -62,6 +62,15 @@ describe("mapEventToCollectionInput — client runner detection", () => {
 		expect(m.client_runner).toBe("copilot");
 	});
 
+	it.each([
+		["gemini", "gemini-cli"],
+		["opencode", "opencode"],
+		["pi", "pi"],
+	] as const)("detects %s from agent_source", (agentSource, clientRunner) => {
+		const m = mapEventToCollectionInput(harnessEvent({ agent_source: agentSource }), "/repo");
+		expect(m.client_runner).toBe(clientRunner);
+	});
+
 	it("detects cursor and sets cursor_version instead of client_runner", () => {
 		const m = mapEventToCollectionInput(harnessEvent({ agent_source: "cursor" }), "/repo");
 		expect(m.cursor_version).toBe("1");
@@ -124,7 +133,7 @@ describe("mapEventToCollectionInput — field carryover and cwd fallback", () =>
 					session_id: "parent-session",
 					subagent_id: "sub-thread",
 					parent_agent: "parent-thread",
-					model: "gpt-5.6-luna",
+					model: "vendor-model-luna",
 				}),
 				"/repo",
 			),
@@ -132,7 +141,7 @@ describe("mapEventToCollectionInput — field carryover and cwd fallback", () =>
 			session: "parent-session",
 			subagent_id: "sub-thread",
 			parent_agent: "parent-thread",
-			model: "gpt-5.6-luna",
+			model: "vendor-model-luna",
 		});
 	});
 });

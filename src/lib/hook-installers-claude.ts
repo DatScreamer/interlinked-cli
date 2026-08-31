@@ -31,7 +31,12 @@ export const CLAUDE_HOOK_EVENTS = [
 	"Stop",
 	"PreToolUse",
 	"PostToolUse",
+	// PermissionRequest denies use its native permission envelope. Clean and
+	// ask outcomes abstain so Claude's policy/user prompt remains authoritative.
 	"PermissionRequest",
+	// A failing WorktreeCreate hook replaces Claude's default Git creation and
+	// enforces Interlinked's no-agent-created-worktrees policy.
+	"WorktreeCreate",
 	"SubagentStart",
 	"SubagentStop",
 	"Notification",

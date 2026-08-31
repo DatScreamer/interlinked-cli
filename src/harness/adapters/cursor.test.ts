@@ -149,7 +149,7 @@ describe("Cursor parseHookInput — new event surface (2026-04-30)", () => {
 			{ session_id: "s2", subagent_type: "explore", status: "completed", summary: "done" },
 			"subagentStop",
 		);
-		expect(e.phase).toBe("other");
+		expect(e.phase).toBe("subagent-stop");
 		if (e.action.kind !== "other") throw new Error("expected other");
 		expect(e.action.subkind).toBe("subagentStop");
 	});
@@ -159,7 +159,7 @@ describe("Cursor parseHookInput — new event surface (2026-04-30)", () => {
 			{ session_id: "c1", trigger: "auto", context_usage_percent: 87 },
 			"preCompact",
 		);
-		expect(e.phase).toBe("other");
+		expect(e.phase).toBe("pre-compact");
 		if (e.action.kind !== "other") throw new Error("expected other");
 		expect((e.action.data as { trigger: string }).trigger).toBe("auto");
 		expect((e.action.data as { context_usage_percent: number }).context_usage_percent).toBe(87);

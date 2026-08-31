@@ -341,13 +341,63 @@ describe("clientHookChecks", () => {
 		expect(clientHookChecks(dir)).toEqual([]);
 	});
 
-	it("checks Codex config.toml and recognizes the installed hook", () => {
+	// The predecessor of these cases wrote the hook command into
+	// `.codex/config.toml` and expected a pass — it pinned the DEFECT. Codex
+	// reads hook commands from `.codex/hooks.json`; config.toml only carries
+	// the `[features] hooks = true` gate. Against a real install (hooks.json
+	// present, no command in config.toml) doctor therefore warned that hooks
+	// were missing and told the user to re-run `enable`, which could not
+	// change the outcome — the same false-negative class as audit F3, one
+	// layer over.
+	it("P: recognizes the hook command in .codex/hooks.json (the real location)", () => {
+		mkdirSync(join(dir, ".codex"), { recursive: true });
+		writeFileSync(join(dir, ".codex", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }] }] } }));
+		writeFileSync(join(dir, ".codex", "config.toml"), "[features]\nhooks = true\n");
+
+		expect(clientHookChecks(dir)).toEqual([
+			{ name: "OpenAI Codex CLI hooks", status: "pass", message: "Hooks installed" },
+			{ name: "OpenAI Codex CLI feature flag", status: "pass", message: "[features] hooks = true" },
+			{
+				name: "OpenAI Codex CLI hook execution",
+				status: "warn",
+				message:
+					"No verified execution for current hooks.json -- open /hooks in Codex, review the definition, then run any hooked action",
+			},
+		]);
+	});
+
+	it("N: a hook command in config.toml alone is NOT an install (hooks.json is the contract)", () => {
 		mkdirSync(join(dir, ".codex"), { recursive: true });
 		writeFileSync(join(dir, ".codex", "config.toml"), "notify = 'interlinked-activity'\n");
 
-		expect(clientHookChecks(dir)).toEqual([
-			{ name: "Codex CLI hooks", status: "pass", message: "Hooks installed" },
-		]);
+		const rows = clientHookChecks(dir);
+		expect(rows[0]).toEqual({
+			name: "OpenAI Codex CLI hooks",
+			status: "warn",
+			message: "hooks.json not found",
+		});
+	});
+
+	it("N: installed hooks with the feature flag off are named as inert, not as missing", () => {
+		mkdirSync(join(dir, ".codex"), { recursive: true });
+		writeFileSync(join(dir, ".codex", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "node .interlinked/hooks/interlinked-activity.mjs" }] }] } }));
+		writeFileSync(join(dir, ".codex", "config.toml"), "[features]\nhooks = false\n");
+
+		const rows = clientHookChecks(dir);
+		expect(rows[0]?.status).toBe("pass");
+		expect(rows[1]?.status).toBe("warn");
+		expect(rows[1]?.message).toContain("never fire");
+	});
+
+	it("P: covers every registry client, not a hardcoded three", () => {
+		for (const d of [".claude", ".gemini", ".cursor", join(".github", "hooks")]) {
+			mkdirSync(join(dir, d), { recursive: true });
+		}
+		const names = clientHookChecks(dir).map((r) => r.name);
+		expect(names).toContain("Claude Code hooks");
+		expect(names).toContain("Google Gemini CLI hooks");
+		expect(names).toContain("Cursor IDE hooks");
+		expect(names).toContain("GitHub Copilot CLI hooks");
 	});
 
 	// -----------------------------------------------------------------------

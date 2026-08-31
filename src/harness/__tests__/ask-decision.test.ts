@@ -41,6 +41,7 @@ describe("agentSupportsAsk", () => {
 	it("returns true for Claude Code and Cursor (the two ask-capable runtimes)", () => {
 		expect(agentSupportsAsk("claude")).toBe(true);
 		expect(agentSupportsAsk("cursor")).toBe(true);
+		expect(agentSupportsAsk("pi")).toBe(true);
 	});
 	it("returns false for runtimes without an ask primitive", () => {
 		expect(agentSupportsAsk("copilot")).toBe(false);
@@ -52,10 +53,11 @@ describe("agentSupportsAsk", () => {
 		expect(agentSupportsAsk("")).toBe(false);
 		expect(agentSupportsAsk("anthropic-cli")).toBe(false);
 	});
-	it("the ASK_CAPABLE_AGENTS set is exactly {claude, cursor}", () => {
-		expect(ASK_CAPABLE_AGENTS.size).toBe(2);
+	it("the ASK_CAPABLE_AGENTS set is exactly {claude, cursor, pi}", () => {
+		expect(ASK_CAPABLE_AGENTS.size).toBe(3);
 		expect(ASK_CAPABLE_AGENTS.has("claude")).toBe(true);
 		expect(ASK_CAPABLE_AGENTS.has("cursor")).toBe(true);
+		expect(ASK_CAPABLE_AGENTS.has("pi")).toBe(true);
 	});
 });
 

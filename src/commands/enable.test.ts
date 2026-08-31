@@ -70,6 +70,18 @@ vi.mock("../lib/hooks.js", () => ({
 
 vi.mock("../lib/settings.js", () => ({
 	detectClients: vi.fn(),
+	// The id-translation table is a pure constant, not a seam: mock it with the
+	// real values so the dry-run summary resolves the same adapters production
+	// does. Faking it would make the event counts meaningless.
+	CLIENT_TO_RUNNER: {
+		claude: "claude-code",
+		copilot: "copilot-cli",
+		gemini: "gemini-cli",
+		codex: "codex",
+		cursor: "cursor",
+		opencode: "opencode",
+		pi: "pi",
+	},
 }));
 
 vi.mock("../lib/skill-installers.js", () => ({
@@ -102,6 +114,7 @@ import {
 	resolveConfig,
 	updateLocalConfig,
 } from "../lib/config.js";
+import { getAdapter } from "../harness/adapters/index.js";
 import { stripAnsi } from "../lib/formatter.js";
 import {
 	detectHookManagers,
@@ -136,6 +149,29 @@ function install(client: ClientName, over: Partial<InstallResult> = {}): Install
 
 function detected(name: ClientName, exists: boolean) {
 	return { name, settingsPath: `${CWD}/.${name}/settings.json`, exists };
+}
+
+/** The number of hook events the REAL adapter registers for a client.
+ *
+ *  These assertions previously hardcoded the counts (claude 13, gemini 8,
+ *  cursor 15) — the same literals the source held, so when the adapters grew
+ *  to 14 / 4 / 18 the tests kept passing and `enable --dry-run` kept promising
+ *  numbers the install did not deliver. Deriving from the adapter turns the
+ *  assertion into a drift DETECTOR: if the printed count ever stops matching
+ *  what gets installed, these fail. */
+function eventCount(client: ClientName): number {
+	const runner = {
+		claude: "claude-code",
+		copilot: "copilot-cli",
+		gemini: "gemini-cli",
+		codex: "codex",
+		cursor: "cursor",
+		opencode: "opencode",
+		pi: "pi",
+	} as const;
+	const adapter = getAdapter(runner[client]);
+	if (!adapter) throw new Error(`no adapter registered for ${client}`);
+	return adapter.nativeEventNames.length;
 }
 
 function skill(client: ClientName, over: Partial<SkillInstallResult> = {}): SkillInstallResult {
@@ -213,7 +249,7 @@ describe("enableCommand — dry run", () => {
 		// Hook path printed repo-relative (cwd prefix stripped).
 		expect(out).toContain("Write:      .interlinked/hooks/interlinked-activity.mjs");
 		// Detected client → "(detected)" suffix + its event summary.
-		expect(out).toContain("claude — 13 events (all Claude Code hooks) (detected)");
+		expect(out).toContain(`claude — ${eventCount("claude")} events (.claude/settings.json) (detected)`);
 		expect(out).toContain(".interlinked/config.local.json");
 		expect(out).toContain(".interlinked/sessions/");
 		// Default server URL when no --server.
@@ -241,7 +277,7 @@ describe("enableCommand — dry run", () => {
 		const out = logged(logSpy);
 		expect(out).toContain(`Config:     Already exists at ${CWD}/.interlinked/`);
 		expect(out).toContain("Migrate:    .claude/interlinked-session.json -> .interlinked/");
-		expect(out).toContain("claude — 13 events (all Claude Code hooks) (forced)");
+		expect(out).toContain(`claude — ${eventCount("claude")} events (.claude/settings.json) (forced)`);
 		// Custom --server overrides the default URL; --agent line appears.
 		expect(out).toContain("Server: https://example.test");
 		expect(out).toContain("Agent:  scout");
@@ -250,13 +286,19 @@ describe("enableCommand — dry run", () => {
 	it("renders every requested client's event summary via --clients", async () => {
 		vi.mocked(detectClients).mockReturnValue([]);
 
-		await enableCommand({ dryRun: true, clients: "copilot,gemini,codex,cursor" });
+		await enableCommand({ dryRun: true, clients: "copilot,gemini,codex,cursor,opencode,pi" });
 
 		const out = logged(logSpy);
-		expect(out).toContain("copilot — 6 events (Copilot CLI hooks) (forced)");
-		expect(out).toContain("gemini — 8 events (Gemini CLI hooks) (forced)");
-		expect(out).toContain("codex — 6 events (.codex/hooks.json + [features] hooks=true flag)");
-		expect(out).toContain("cursor — 15 events");
+		expect(out).toContain(`copilot — ${eventCount("copilot")} events (.github/hooks/hooks.json) (forced)`);
+		expect(out).toContain(`gemini — ${eventCount("gemini")} events (.gemini/settings.json) (forced)`);
+		expect(out).toContain(`codex — ${eventCount("codex")} events (.codex/hooks.json + [features] hooks=true flag)`);
+		expect(out).toContain(`cursor — ${eventCount("cursor")} events (.cursor/hooks.json)`);
+		expect(out).toContain(
+			`opencode — ${eventCount("opencode")} events (.opencode/plugins/interlinked.ts)`,
+		);
+		expect(out).toContain(
+			`pi — ${eventCount("pi")} events (.pi/extensions/interlinked.js)`,
+		);
 	});
 
 	it("skips clients with no summary entry (guards the CLIENT_SUMMARIES lookup)", async () => {
@@ -524,7 +566,7 @@ describe("enableCommand — hook managers + install results", () => {
 		const out = logged(logSpy);
 		expect(out).toContain("Warning: No hooks were installed.");
 		expect(out).toContain("No client directories");
-		expect(out).toContain("Use --clients claude,copilot,gemini,codex,cursor");
+		expect(out).toContain("Use --clients claude,copilot,gemini,codex,cursor,opencode,pi");
 	});
 
 	it("warns WITHOUT the directory hint when clients were detected but none installed", async () => {
@@ -719,7 +761,7 @@ describe("enableCommand — harness autostart", () => {
 
 describe("enableCommand — undetected client hint", () => {
 	it("lists undetected clients when relying on auto-detection", async () => {
-		// Only claude detected → the other four are undetected.
+		// Only Claude detected → every other supported client is undetected.
 		vi.mocked(detectClients).mockReturnValue([detected("claude", true)]);
 		vi.mocked(installAllHooks).mockReturnValue([
 			install("claude", { installed: true, events: ["PreToolUse"] }),
@@ -728,7 +770,7 @@ describe("enableCommand — undetected client hint", () => {
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(out).toContain("Not detected: copilot, gemini, codex, cursor");
+		expect(out).toContain("Not detected: copilot, gemini, codex, cursor, opencode, pi");
 		expect(out).toContain("(add with --clients)");
 	});
 
@@ -745,6 +787,8 @@ describe("enableCommand — undetected client hint", () => {
 			detected("gemini", true),
 			detected("codex", true),
 			detected("cursor", true),
+			detected("opencode", true),
+			detected("pi", true),
 		]);
 		vi.mocked(installAllHooks).mockReturnValue([
 			install("claude", { installed: true, events: ["PreToolUse"] }),
@@ -857,14 +901,18 @@ describe("enableCommand — summary block", () => {
 		expect(out).not.toContain("Hooks are active.");
 	});
 
-	it("appends copilot + codex post-enable notes when those clients install", async () => {
+	it("appends provider reload and trust notes when those clients install", async () => {
 		vi.mocked(detectClients).mockReturnValue([
 			detected("copilot", true),
 			detected("codex", true),
+			detected("opencode", true),
+			detected("pi", true),
 		]);
 		vi.mocked(installAllHooks).mockReturnValue([
 			install("copilot", { installed: true, events: ["PreToolUse"] }),
 			install("codex", { installed: true, events: ["PreToolUse"] }),
+			install("opencode", { installed: true, events: ["ToolExecuteBefore"] }),
+			install("pi", { installed: true, events: ["tool_call"] }),
 		]);
 
 		await enableCommand({});
@@ -872,6 +920,9 @@ describe("enableCommand — summary block", () => {
 		const out = logged(logSpy);
 		expect(out).toContain("Run `/skills reload` or restart Copilot CLI");
 		expect(out).toContain("Restart Codex or open a new Codex session");
+		expect(out).toContain("Restart OpenCode or open a new OpenCode session");
+		expect(out).toContain("Run `/reload` in Pi (or restart it)");
+		expect(out).toContain("trust the Interlinked project extension");
 	});
 });
 
@@ -896,6 +947,13 @@ describe("buildPostEnableNotes", () => {
 		expect(buildPostEnableNotes(["copilot", "codex"])).toEqual([
 			"Run `/skills reload` or restart Copilot CLI to load the newly installed repository skill.",
 			"Restart Codex or open a new Codex session to load updated hooks.",
+		]);
+	});
+
+	it("returns OpenCode reload and Pi reload/trust notes", () => {
+		expect(buildPostEnableNotes(["opencode", "pi"])).toEqual([
+			"Restart OpenCode or open a new OpenCode session to load the Interlinked plugin.",
+			"Run `/reload` in Pi (or restart it) and trust the Interlinked project extension when prompted.",
 		]);
 	});
 

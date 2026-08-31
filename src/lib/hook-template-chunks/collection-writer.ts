@@ -37,6 +37,15 @@ function collectionClassifyTool(toolName) {
 const COLLECTION_PRE_EVENTS = new Set(["tool_use_start", "permission_request"]);
 const COLLECTION_POST_EVENTS = new Set(["tool_use", "tool_use_error"]);
 const COLLECTION_TOOL_EVENTS = new Set([...COLLECTION_PRE_EVENTS, ...COLLECTION_POST_EVENTS]);
+const COLLECTION_DIRECT_PROVIDER_RUNNERS = new Set([
+    "mcp-proxy",
+    "codex",
+    "copilot",
+    "gemini-cli",
+    "cursor",
+    "opencode",
+    "pi",
+]);
 
 function collectionDetectPhase(eventType) {
     if (COLLECTION_PRE_EVENTS.has(eventType)) return "pre";
@@ -45,8 +54,9 @@ function collectionDetectPhase(eventType) {
 }
 
 function collectionDetectProvider(event) {
-    if (event.client_runner === "mcp-proxy") return "mcp-proxy";
-    if (event.client_runner === "codex") return "codex";
+    if (typeof event.client_runner === "string" && COLLECTION_DIRECT_PROVIDER_RUNNERS.has(event.client_runner)) {
+        return event.client_runner;
+    }
     const hookEvt = String(event.hook_event || "");
     if (hookEvt === "BeforeTool" || hookEvt === "AfterTool") return "gemini-cli";
     if (event.cursor_version || event.conversation_id) return "cursor";

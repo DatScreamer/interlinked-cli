@@ -85,7 +85,7 @@ function getEnvVars(): EnvVarDoc[] {
 		{
 			name: "INTERLINKED_CLIENTS",
 			description: "Comma-separated list of clients for non-interactive bootstrap",
-			example: "claude,copilot,gemini,codex,cursor",
+			example: "claude,copilot,gemini,codex,cursor,opencode,pi",
 			currentValue: process.env.INTERLINKED_CLIENTS,
 		},
 	];

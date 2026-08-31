@@ -5,7 +5,8 @@ description: "Inspect what AI agents did — the local, offline-first activity l
 
 # interlinked-observability — inspect what agents did
 
-Interlinked captures **every AI-agent tool call locally** via hooks, offline-first, into
+Interlinked captures normalized tool calls from Claude Code, Codex, Copilot CLI,
+Gemini CLI, Cursor, OpenCode, and Pi — locally via hooks, offline-first, into
 append-only JSONL under `.interlinked/`. The hook writes synchronously (~0.1ms), so the log is
 current the moment a tool returns. You can answer *what did I (or a parallel agent) just do?
 what ran, on what files, with what tokens? what did the guard block? what mistakes keep
@@ -38,7 +39,7 @@ strict: `\d+(s|m|h|d)` (e.g. `30m`, `2d`) — `15` or `1.5h` throw.
 |---|---|
 | `telemetry [-f] [--limit] [--spool <p>]` | Tail the raw guard telemetry spool (`offline-spool.jsonl`: `hook_decision` rows). |
 | `trace export [--since --agent --output --format json\|jsonl]` / `trace import <file>` | Export/import a portable agent-trace (dedups). |
-| `collect [--provider codex --since --dir --dry-run]` | Fold external Codex sessions (`~/.codex/sessions/`) into `timeline.jsonl` (Claude is captured live). |
+| `collect [--provider codex --since --dir --dry-run]` | Fold Codex rollout history (`~/.codex/sessions/`) into `timeline.jsonl`; live Codex hooks capture the twelve native lifecycle/tool events. |
 | `search <query> [--path --glob --type --limit --context --engine]` | Local codebase search (ripgrep, native fallback; multi-term → OR + density rank). |
 
 **Audit & maintenance**
@@ -86,6 +87,9 @@ Data dir: `INTERLINKED_DATA_DIR` → `config.local.json.data_dir` → `INTERLINK
 | `timeline.jsonl` | Unified time-sorted records of everything an agent did (incl. thinking/text); cross-model. `collect` target. |
 | `sessions/<id>.json` | Per-session state: agent, phase, tool_count, files, tokens. |
 | `sync-state.json` | Sync cursor = **byte offset** into activity.jsonl. |
+| `costs.jsonl` | Incremental per-call token rows read from provider transcripts at Stop/SessionEnd. |
+| `costs-cursor.json` | Per-provider, per-actor transcript offsets; prevents replay and keeps sibling Codex subagents independent. |
+| `hook-runtime.json` | Payload-free provider execution receipt: event, timestamp, and current hook-definition hash. All adapter runners write provider rows; `doctor` currently uses the Codex row to detect unreviewed/stale project hooks. |
 
 `activity.jsonl` and `collection.jsonl` **overlap on tool events by design**; readers dedup by
 event identity (`tool_use_id` + projected type), not by type — no double-counting, no lost
@@ -141,6 +145,10 @@ scratchpad policy sanctions — still reported by `interlinked verify
 Two consequences worth knowing:
 - **The rescan reports introduced-only.** A whole-file scan still runs, but a
   finding your session did not introduce is spooled, not printed.
+- **Suite failures are not multiplied into per-file regressions.** A cycle
+  reddened only by a whole-suite failure is excluded from the green→red Stop
+  list; the unresolved `test-suite` outcome remains one check-level signal
+  until a targeted test run supplies file-level evidence.
 - **A repeat Stop prints only what is new**, plus one `R resolved, S unchanged
   (suppressed)` line. Per-session state lives in
   `.interlinked/.stop-digest-state.json` (daemon bookkeeping — do not hand-edit).

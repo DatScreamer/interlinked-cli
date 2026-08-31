@@ -5,12 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../lib/non-null.js";
 import {
 	installHooks,
+	installedEventsFor,
 	manifestPath,
 	mergeSettings,
 	readManifest,
+	readManifestState,
 	removeJsonPath,
 	uninstallHooks,
 } from "./installer.js";
+import { getAdapter } from "./adapters/index.js";
 
 let tmp = "";
 beforeEach(() => {
@@ -145,6 +148,121 @@ describe("uninstallHooks — round-trip", () => {
 		expect(after).not.toContain("interlinked-hook-round");
 	});
 
+	// test-contract: bug — review 2026-08-30, release-blocking repro: install
+	// recorded index 0, the user PREPENDED their own hook, and positional
+	// uninstall deleted the USER's hook while leaving ours behind. Removal is
+	// now owned-entry recognition; the user's hook must survive verbatim.
+	it("a user hook prepended after install survives uninstall; ours is removed", () => {
+		installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook-prepend",
+			runners: ["gemini-cli"],
+		});
+		const settingsPath = join(tmp, ".gemini", "settings.json");
+		const doc = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks: Record<string, unknown[]>;
+		};
+		const userHook = { command: "/home/user/my-precious-hook.sh" };
+		for (const key of Object.keys(doc.hooks)) doc.hooks[key] = [userHook, ...(doc.hooks[key] ?? [])];
+		writeFileSync(settingsPath, JSON.stringify(doc, null, 2));
+
+		uninstallHooks({ cwd: tmp, runners: ["gemini-cli"] });
+
+		const after = readFileSync(settingsPath, "utf-8");
+		expect(after).toContain("my-precious-hook.sh");
+		expect(after).not.toContain("interlinked-hook-prepend");
+	});
+
+	// test-contract: security — review 2026-08-30 final pass: user hooks
+	// whose text merely PRINTS or comments on an Interlinked invocation (or
+	// echoes the exact recorded binary — the removed substring fallback) must
+	// survive uninstall; real current AND stale Interlinked hooks must go.
+	it("user hooks that mention (but do not invoke) our binary survive uninstall", () => {
+		const binary = "/usr/bin/interlinked-hook-mention";
+		installHooks({ cwd: tmp, binaryPath: binary, runners: ["gemini-cli"] });
+		const settingsPath = join(tmp, ".gemini", "settings.json");
+		const doc = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks: Record<string, unknown[]>;
+		};
+		const userHooks = [
+			{ command: "echo node /repo/dist/hook-entry.js" },
+			{ command: "echo ok # node /repo/dist/hook-entry.js" },
+			{ command: "printf '%s\\n' 'node /repo/dist/hook-entry.js'" },
+			{ command: `echo ${binary}` }, // the exact recorded binary, echoed
+		];
+		// A stale REAL Interlinked hook (old binary, invocation position).
+		const stale = { command: "node '/old/dist/hook-entry.js' --runner 'gemini-cli' --event 'BeforeTool'" };
+		for (const key of Object.keys(doc.hooks)) {
+			doc.hooks[key] = [...userHooks, stale, ...(doc.hooks[key] ?? [])];
+		}
+		writeFileSync(settingsPath, JSON.stringify(doc, null, 2));
+
+		uninstallHooks({ cwd: tmp, runners: ["gemini-cli"] });
+
+		const after = readFileSync(settingsPath, "utf-8");
+		expect(after).toContain("echo node /repo/dist/hook-entry.js");
+		expect(after).toContain("echo ok # node /repo/dist/hook-entry.js");
+		expect(after).toContain("printf");
+		expect(after).toContain(`echo ${binary}`);
+		// The current install and the stale invocation are both gone.
+		expect(after).not.toContain(`'${binary}'`);
+		expect(after).not.toContain("/old/dist/hook-entry.js");
+	});
+
+	// test-contract: security — review 2026-08-31: identity is the EXACT
+	// basename. A user's look-alike scripts whose names merely end with ours
+	// must survive uninstall while the real install is removed.
+	it("look-alike user hooks (my-hook-entry.js et al.) survive uninstall", () => {
+		const binary = "/usr/bin/interlinked-hook-lookalike";
+		installHooks({ cwd: tmp, binaryPath: binary, runners: ["gemini-cli"] });
+		const settingsPath = join(tmp, ".gemini", "settings.json");
+		const doc = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks: Record<string, unknown[]>;
+		};
+		const lookalikes = [
+			{ command: "node /home/u/my-hook-entry.js" },
+			{ command: "node /home/u/myinterlinked-activity.mjs" },
+			{ command: "/usr/local/bin/my-interlinked-hook --event pre" },
+		];
+		for (const key of Object.keys(doc.hooks)) {
+			doc.hooks[key] = [...lookalikes, ...(doc.hooks[key] ?? [])];
+		}
+		writeFileSync(settingsPath, JSON.stringify(doc, null, 2));
+
+		uninstallHooks({ cwd: tmp, runners: ["gemini-cli"] });
+
+		const after = readFileSync(settingsPath, "utf-8");
+		expect(after).toContain("my-hook-entry.js");
+		expect(after).toContain("myinterlinked-activity.mjs");
+		expect(after).toContain("my-interlinked-hook");
+		expect(after).not.toContain(`'${binary}'`);
+	});
+
+	// test-contract: invariant — an entry already removed by hand makes
+	// uninstall a no-op for that array, never an adjacent-element deletion.
+	it("uninstall of an already-removed hook deletes nothing else", () => {
+		installHooks({ cwd: tmp, binaryPath: "/usr/bin/ih-gone", runners: ["gemini-cli"] });
+		const settingsPath = join(tmp, ".gemini", "settings.json");
+		const doc = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks: Record<string, unknown[]>;
+		};
+		// Hand-remove ours everywhere; leave one user hook per event.
+		for (const key of Object.keys(doc.hooks)) doc.hooks[key] = [{ command: "user-kept.sh" }];
+		writeFileSync(settingsPath, JSON.stringify(doc, null, 2));
+		uninstallHooks({ cwd: tmp, runners: ["gemini-cli"] });
+		expect(readFileSync(settingsPath, "utf-8")).toContain("user-kept.sh");
+	});
+
+	// test-contract: bug — review 2026-08-30: uninstall over a CORRUPT
+	// manifest used to write `{entries: []}` over the evidence. It must
+	// refuse and preserve the exact bytes.
+	it("uninstall refuses a corrupt manifest and preserves its bytes", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(manifestPath(tmp), "{ corrupt bytes");
+		expect(() => uninstallHooks({ cwd: tmp, runners: [] })).toThrow(/corrupt/);
+		expect(readFileSync(manifestPath(tmp), "utf-8")).toBe("{ corrupt bytes");
+	});
+
 	it("does not disturb other runners", () => {
 		installHooks({
 			cwd: tmp,
@@ -208,7 +326,10 @@ describe("installHooks — skips a runner whose settings file is malformed JSON"
 	});
 });
 
-describe("installHooks — postInstall failure does not fail the install", () => {
+// NOTE: the CONTRACT is `ok: false` on postInstall failure (see the describes
+// at the bottom of this file). This block pins only the narrower property that
+// the hooks-file fragment still lands — partial artifacts are not rolled back.
+describe("installHooks — postInstall failure still writes the hooks fragment (ok:false is pinned below)", () => {
 	it("codex postInstall error is caught and the JSON-fragment entry still lands", () => {
 		// `.codex/config.toml` exists as a DIRECTORY (not a file), so
 		// `ensureCodexFeatureFlag`'s `readFileSync(tomlPath, ...)` throws
@@ -274,6 +395,22 @@ describe("installHooks — cross-scope stale cleanup keeps unrelated entries", (
 		};
 		expect(after.hooks.UserPromptSubmit.length).toBe(1);
 		expect(after.hooks.UserPromptSubmit[0]?.hooks?.[0]?.command).toBe("echo third-party-hook");
+	});
+
+	it("preserves a customized user-scope managed provider bridge without a manifest hash", () => {
+		const binaryPath = join(tmp, "dist", "hook-entry.js");
+		const userFragment = nonNull(getAdapter("opencode")).renderSettingsFragment(
+			binaryPath,
+			"user",
+		);
+		const userPlugin = join(homeDir, ".config", "opencode", "plugins", "interlinked.ts");
+		mkdirSync(join(homeDir, ".config", "opencode", "plugins"), { recursive: true });
+		const customized = `${userFragment.fileContent}\n// user customization\n`;
+		writeFileSync(userPlugin, customized);
+
+		installHooks({ cwd: tmp, binaryPath, runners: ["opencode"] });
+
+		expect(readFileSync(userPlugin, "utf-8")).toBe(customized);
 	});
 });
 
@@ -582,35 +719,95 @@ describe("readManifest — malformed manifest content", () => {
 		expect(readManifest(manifestPath(tmp))).toEqual([]);
 	});
 
-	it("filters out malformed rows and coerces missing optional fields to defaults", () => {
+	// test-contract: bug — review 2026-08-30: the lenient coercer silently
+	// dropped malformed rows and returned a smaller VALID manifest, so a
+	// damaged manifest could read as empty and later writes clobbered the
+	// evidence. STRICT contract: one bad row corrupts the whole manifest.
+	it("a malformed row makes the WHOLE manifest corrupt (strict parsing)", () => {
 		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
 		writeFileSync(
 			join(tmp, ".interlinked", "installer-manifest.json"),
 			JSON.stringify({
 				schema_version: "1",
 				entries: [
-					null, // not an object => dropped
-					"a string row", // not an object => dropped
-					{ runner: "claude-code" }, // missing settings_path => dropped
-					{ runner: "claude-code", settings_path: "/x" }, // missing added_paths array => dropped
 					{
-						// valid minimal row: binary_path/installed_at omitted => defaulted to ""
 						runner: "claude-code",
-						settings_path: "/valid/settings.json",
+						scope: "project",
+						settings_path: join(tmp, ".claude", "settings.json"),
 						added_paths: ["hooks.PreToolUse[0]"],
+						binary_path: "/b.js",
+						installed_at: "2026-08-30T00:00:00.000Z",
+					},
+					{ runner: "claude-code" }, // missing settings_path
+				],
+			}),
+		);
+		const state = readManifestState(manifestPath(tmp));
+		expect(state).toMatchObject({ kind: "corrupt" });
+		expect(readManifest(manifestPath(tmp))).toEqual([]);
+	});
+
+	// test-contract: invariant — strict validation rejects unknown runners,
+	// invalid scopes (no silent rewrite to "project"), wrong schema versions,
+	// duplicate runner/scope rows, and invalid post_install values.
+	it("rejects unknown runner, invalid scope, bad schema version, and duplicates", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		const p = join(tmp, ".interlinked", "installer-manifest.json");
+		const valid = {
+			runner: "claude-code",
+			scope: "project",
+			// Adapter-derived path for claude-code at project scope: anything
+			// else is corrupt under the 2026-08-30 binding rule.
+			settings_path: join(tmp, ".claude", "settings.json"),
+			added_paths: [],
+			binary_path: "/b.js",
+			installed_at: "2026-08-30T00:00:00.000Z",
+		};
+		const cases: Array<[object, string]> = [
+			[{ schema_version: "2", entries: [valid] }, "schema_version"],
+			[{ schema_version: "1", entries: [{ ...valid, runner: "not-a-runner" }] }, "unknown runner"],
+			[{ schema_version: "1", entries: [{ ...valid, scope: "global" }] }, "invalid scope"],
+			[{ schema_version: "1", entries: [valid, valid] }, "duplicate"],
+			[{ schema_version: "1", entries: [{ ...valid, post_install: "maybe" }] }, "post_install"],
+		];
+		for (const [body, reasonPart] of cases) {
+			writeFileSync(p, JSON.stringify(body));
+			const state = readManifestState(p);
+			expect(state.kind).toBe("corrupt");
+			// SAFETY: asserted corrupt on the previous line.
+			expect((state as { reason: string }).reason).toContain(reasonPart);
+		}
+	});
+
+	// test-contract: public-api — a fully valid manifest still round-trips; a
+	// pre-post_install row (field absent) stays readable as "ok".
+	it("a valid manifest parses; absent post_install reads as ok", () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".interlinked", "installer-manifest.json"),
+			JSON.stringify({
+				schema_version: "1",
+				entries: [
+					{
+						runner: "claude-code",
+						scope: "project",
+						settings_path: join(tmp, ".claude", "settings.json"),
+						added_paths: ["hooks.PreToolUse[0]"],
+						binary_path: "/b.js",
+						installed_at: "2026-08-30T00:00:00.000Z",
 					},
 				],
 			}),
 		);
-		const manifest = readManifest(manifestPath(tmp));
-		expect(manifest).toEqual([
+		expect(readManifest(manifestPath(tmp))).toEqual([
 			{
 				runner: "claude-code",
 				scope: "project",
-				settings_path: "/valid/settings.json",
+				settings_path: join(tmp, ".claude", "settings.json"),
 				added_paths: ["hooks.PreToolUse[0]"],
-				binary_path: "",
-				installed_at: "",
+				binary_path: "/b.js",
+				installed_at: "2026-08-30T00:00:00.000Z",
+				post_install: "ok",
 				schema_version: "1",
 			},
 		]);
@@ -632,5 +829,187 @@ describe("removeJsonPath — targeted removal", () => {
 
 	it("returns false for missing paths", () => {
 		expect(removeJsonPath({ a: 1 }, "b.c")).toBe(false);
+	});
+});
+
+/**
+ * A failed `postInstall` must not report success.
+ *
+ * An adapter declares `postInstall` only when the JSON fragment alone leaves
+ * the install INERT — Codex ignores `.codex/hooks.json` until `[features]
+ * hooks = true` sits in `.codex/config.toml`. The installer used to catch that
+ * throw, write one stderr line and return `ok: true`, so an installation that
+ * fires no hooks was recorded in the manifest as a healthy one.
+ *
+ * The failure is forced for real rather than mocked: `config.toml` is created
+ * as a DIRECTORY, so the feature-flag writer's read throws EISDIR while the
+ * `.codex/hooks.json` fragment still lands normally.
+ */
+// Review 2026-08-28 (final round, P1): success reporting must come from the
+// adapter that performed the install — the legacy per-client lists drifted
+// (Gemini reported 8/installed 4, Cursor 15/18). One parity case per client,
+// with the measured counts pinned so silent list growth/shrink is visible.
+describe("installedEventsFor — five-client parity with the adapters", () => {
+	const EXPECTED: Array<[Parameters<typeof installedEventsFor>[0], number]> = [
+		["claude-code", 14],
+		["codex", 12],
+		["cursor", 18],
+		["copilot-cli", 6],
+		["gemini-cli", 9],
+	];
+
+	for (const [runner, count] of EXPECTED) {
+		it(`P: ${runner} reports exactly the adapter's ${count} registered events`, () => {
+			const events = installedEventsFor(runner);
+			expect(events).toEqual([...nonNull(getAdapter(runner)).nativeEventNames]);
+			expect(events).toHaveLength(count);
+		});
+	}
+
+	it("N: an unknown runner id yields an empty list, never a fabricated one", () => {
+		// SAFETY: deliberately invalid id to exercise the resolve-miss branch.
+		expect(installedEventsFor("no-such-runner" as Parameters<typeof installedEventsFor>[0])).toEqual([]);
+	});
+});
+
+describe("installHooks — failed postInstall (must not report success)", () => {
+	function breakCodexConfigToml(): void {
+		mkdirSync(join(tmp, ".codex", "config.toml"), { recursive: true });
+	}
+
+	// test-contract: invariant — Grok 2026-08-28 issue 5: a `"refused"`
+	// feature-flag write (duplicate [features] tables → Codex rejects the whole
+	// TOML, no hook fires) is an install FAILURE, and the poisoned file is left
+	// for the human to merge, not "repaired" into a still-broken shape.
+	it("P0: duplicate [features] tables ⇒ ok:false and the file is untouched", () => {
+		const tomlPath = join(tmp, ".codex", "config.toml");
+		mkdirSync(join(tmp, ".codex"), { recursive: true });
+		const poisoned = "[features]\nhooks = false\n\n[features]\nother = 1\n";
+		writeFileSync(tomlPath, poisoned);
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		expect(result.ok).toBe(false);
+		expect(nonNull(result.post_install_failures[0]).reason).toContain("duplicate [features]");
+		expect(readFileSync(tomlPath, "utf-8")).toBe(poisoned);
+	});
+
+	it("P1: reports ok:false and names the runner + reason", () => {
+		breakCodexConfigToml();
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		expect(result.ok).toBe(false);
+		expect(result.post_install_failures.length).toBe(1);
+		expect(nonNull(result.post_install_failures[0]).runner).toBe("codex");
+		expect(nonNull(result.post_install_failures[0]).reason.length).toBeGreaterThan(0);
+	});
+
+	it("P2: marks the entry post_install: failed and records the error", () => {
+		breakCodexConfigToml();
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		expect(nonNull(result.entries[0]).post_install).toBe("failed");
+		expect(nonNull(result.entries[0]).post_install_error).toBeDefined();
+	});
+
+	it("P3: the failure survives into the manifest a later run reads", () => {
+		breakCodexConfigToml();
+		installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		const manifest = readManifest(manifestPath(tmp));
+		expect(nonNull(manifest[0]).post_install).toBe("failed");
+	});
+
+	it("P4: the settings fragment that DID land is still recorded (uninstall needs it)", () => {
+		breakCodexConfigToml();
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		expect(result.entries.length).toBe(1);
+		expect(nonNull(result.entries[0]).added_paths.length).toBeGreaterThan(0);
+		const hooks = JSON.parse(readFileSync(join(tmp, ".codex", "hooks.json"), "utf-8")) as {
+			hooks: Record<string, unknown[]>;
+		};
+		expect(Array.isArray(hooks.hooks.PreToolUse)).toBe(true);
+	});
+
+	it("N1: a healthy Codex install reports ok:true with no failures", () => {
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["codex"],
+			scope: "project",
+		});
+		expect(result.ok).toBe(true);
+		expect(result.post_install_failures).toEqual([]);
+		expect(nonNull(result.entries[0]).post_install).toBe("ok");
+		expect(nonNull(result.entries[0]).post_install_error).toBeUndefined();
+	});
+
+	it("N2: an adapter with no postInstall at all is 'ok', never 'failed'", () => {
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["claude-code"],
+			scope: "project",
+		});
+		expect(result.ok).toBe(true);
+		expect(nonNull(result.entries[0]).post_install).toBe("ok");
+	});
+
+	it("N3: a broken Codex does not drag a healthy sibling runner's entry down", () => {
+		breakCodexConfigToml();
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["claude-code", "codex"],
+			scope: "project",
+		});
+		// The overall result is not ok, but per-entry accounting stays honest.
+		expect(result.ok).toBe(false);
+		const claude = result.entries.find((e) => e.runner === "claude-code");
+		expect(nonNull(claude).post_install).toBe("ok");
+	});
+
+	it("N4: a manifest written before the field existed reads as 'ok', not 'failed'", () => {
+		// Inventing a failure for every historical entry would make every
+		// pre-existing install look broken.
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(
+			manifestPath(tmp),
+			JSON.stringify({
+				schema_version: "1",
+				entries: [
+					{
+						runner: "codex",
+						scope: "project",
+						settings_path: join(tmp, ".codex", "hooks.json"),
+						added_paths: ["hooks.PreToolUse[0]"],
+						binary_path: "/usr/bin/interlinked-hook",
+						installed_at: "2026-04-23T00:00:00.000Z",
+						schema_version: "1",
+					},
+				],
+			}),
+		);
+		expect(nonNull(readManifest(manifestPath(tmp))[0]).post_install).toBe("ok");
 	});
 });

@@ -22,8 +22,10 @@ defeat the pattern.
 ## Mental model
 - A hook ships each tool call to the daemon over a Unix socket. The daemon runs an ordered set of
   phases; **the first phase that returns a terminal decision wins**.
-- Decisions: `block` (tool refused, you see the reason), `ask` (human confirmation — on
-  runners without an ask primitive, like Codex/Copilot/Gemini, **ask downgrades to deny**),
+- Decisions: `block` (tool refused, you see the reason), `ask` (human confirmation — Claude and
+  supported Cursor gates can ask natively; interactive Pi calls `ctx.ui.confirm`; headless Pi,
+  OpenCode's stable tool gate, Codex `PreToolUse`, Copilot, and Gemini deny instead;
+  Claude/Codex `PermissionRequest` allow/ask abstain so the provider retains authority),
   or `allow` (may still carry non-blocking `warnings`, or an `updated_input` rewrite).
 - Built-in rules are regex patterns on the command/tool-input. Use `interlinked harness checks`
   for the authoritative current inventory. Patterns are **ORed over positive entries;
@@ -43,7 +45,7 @@ defeat the pattern.
 |---|---|---|
 | **Destructive fs** | `rm -rf /`, `rm -rf *`, `rm node_modules`, `sudo rm …`, `dd`, `mkfs`, `shred`, `chmod 777` | `rm -rf /tmp/x`, `rm -rf dist/`, `rm -rf .wrangler/cache` |
 | **Process killing** | `pkill node`, `killall wrangler`, `kill -9 1234`, `kill $(pgrep …)`, `… \| xargs kill` | `pkill -f 'wrangler dev'`, `grep -rn "kill -9" src/` |
-| **Git** | `git push --force`/`-f`, `git reset --hard`, `git clean -fd`, `git checkout -- .`, `git branch -D`, `git stash drop`/`clear` | `git push --force-with-lease` |
+| **Git** | `git push --force`/`-f`, `git reset --hard`, `git clean -fd`, `git checkout -- .`, `git branch -D`, `git stash drop`/`clear`, agent-created worktrees (`git worktree add`; Claude `WorktreeCreate`) | `git push --force-with-lease`; `git worktree list/remove/prune` |
 | **DB / cloud / IaC / containers** | `DROP DATABASE`/`TRUNCATE`/`DELETE`-without-WHERE, `docker … prune`/`rm -f`, `kubectl delete`, `terraform destroy`, `pulumi destroy` | — |
 | **Info-flow / persistence** | env exfil (`env \| curl …`, `printenv \| nc …`), `.npmrc`/`.yarnrc` writes, `nohup curl … &`, `crontab -e`, `systemctl enable`, writes to `/etc/cron.d/`, `*.service` | — |
 | **Protected files** | Read/Write of `*.pem`/`*.key`; Write of `*.env*` **only if secrets detected**; **Delete** of CI configs, `migrations/**`, `.gitignore`, lockfiles, `Dockerfile` | `.env.example` / `.sample` |
@@ -89,7 +91,11 @@ defeat the pattern.
    any destructive/security **guard-rule** block. Suppression directives affect **checks**, not
    **rules** — you cannot `// interlinked-ignore` a `git push --force` block. If a *rule* is
    wrong for your repo, the fix is config (below), not a comment. Don't add
-   `@ts-ignore`/`biome-ignore` to silence a `[proven]` check — that trips `suppressions-unjustified`.
+	`@ts-ignore`/`biome-ignore` to silence a `[proven]` check — that trips `suppressions-unjustified`.
+
+An agent must not create a Git worktree to route around shared-workspace policy. Use the
+current workspace. If isolation is genuinely required, ask a human operator to provision an
+approved worktree; listing and cleanup of existing worktrees remain allowed.
 
 ## Warnings: `[proven]` vs `[heuristic]`
 Every warning is tagged. `[proven]` = a real compiler/linter/scanner/parser/test-runner
@@ -173,8 +179,18 @@ The block reason names which case it is. `interlinked harness status` confirms i
   and trajectory detectors reset. A restart mid-task can change guard behavior.
 - **`[interlinked:trajectory] …(shadow — would block)`** warnings are advisory only (shadow
   mode) — they preview a future gate; treat as signal, not a block.
-- **All five runners get PreToolUse blocking** (Claude Code, Codex, Copilot CLI, Gemini,
-  Cursor). Runners without an `ask` primitive (Codex/Copilot/Gemini) collapse `ask` → deny.
+- **PreToolUse blocking**: Claude Code and Codex are supported. Claude also registers
+  PermissionRequest; Codex registers all twelve native lifecycle/tool events. Codex
+  PreToolUse `ask` becomes deny, while both providers' PermissionRequest `ask` preserves the
+  native user prompt. Codex `Interrupt` is asynchronous observation only: it emits zero stdout
+  and never runs Stop/SessionEnd cleanup. Cursor, Copilot, and Gemini
+  adapters can register and parse events, but their end-to-end provider enforcement remains
+  experimental (no provider-level contract test). Copilot/Gemini collapse `ask` → deny.
+  OpenCode and Pi are experimental managed bridges: OpenCode hard-gates generic tool execution
+  but `ask` denies and its permission/Stop signals cannot control the provider; Pi gates both
+  `tool_call` and direct `user_bash`, asks through an interactive UI, and denies headless.
+  Neither has dedicated native MCP, subagent, or worktree lifecycle events. Do not infer an
+  absent event from silence; the shared `git worktree add` shell block still applies.
 - **PII content scanner** is separate and opt-in: `interlinked scanner on|off|toggle|status|review`.
 - Env bypasses (logged, documented-flows only): `INTERLINKED_DISABLE_PACKAGE_GUARD=1`,
   `INTERLINKED_DISABLE_BASELINE_GUARD=1`, `INTERLINKED_DISABLE_SCRATCH_GUARD=1`.

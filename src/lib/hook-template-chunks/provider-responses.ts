@@ -19,14 +19,15 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
     // (PostToolUse vs PostToolUseFailure, PreToolUse vs PermissionRequest)
     // or Claude Code rejects them with "Hook returned incorrect event name".
     //
-    // Codex CLI shipped its hook contract using Claude Code's vocabulary, so
-    // for PreToolUse/PostToolUse blocks the legacy {decision:"block", reason}
-    // shape works for both. Advisory PostToolUse feedback travels as
+    // Codex CLI uses Claude Code's event vocabulary but has its own current
+    // response contract. PreToolUse denies use permissionDecision; advisory
+    // feedback travels as
     // hookSpecificOutput.additionalContext so the tool result stands and the
     // agent gets follow-up guidance. Codex's PermissionRequest uses a distinct
     // hookSpecificOutput.decision.behavior shape — handled in formatCodexResponse.
 
     function formatClaudeResponse(responseType, data, preEventEcho, postEventEcho) {
+		const isPermissionRequest = preEventEcho === "PermissionRequest";
         if (responseType === "pre_block_grep") {
             return { hookSpecificOutput: {
                 hookEventName: preEventEcho,
@@ -46,6 +47,11 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             }};
         }
         if (responseType === "pre_ask") {
+			if (isPermissionRequest) {
+				// Claude is already inside its native approval flow. Abstain so
+				// configured policy and the user's prompt retain authority.
+				return {};
+			}
             // Surface Claude Code's permission prompt so the user confirms
             // per-call. \`systemMessage\` is the user-only channel — shown in
             // the permission UI but NOT included in the model context. The
@@ -185,12 +191,20 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
 
     function formatCodexResponse(responseType, data, postEventEcho, incomingEvent) {
         const isPermissionRequest = incomingEvent === "PermissionRequest";
+        if (responseType === "pre_ask" && isPermissionRequest) {
+            // Abstain so Codex displays its own permission prompt. Emitting
+            // an allow decision here would bypass the user's normal policy.
+            return {};
+        }
         if (responseType === "pre_block_grep" || responseType === "pre_block" || responseType === "pre_ask") {
-            // Codex has no documented "ask" primitive — collapse to a hard
-            // block. PermissionRequest uses a dedicated decision shape; for
-            // PreToolUse the legacy {decision:"block"} form is accepted.
+            // Codex has no ask primitive on PreToolUse, so unresolved asks
+            // collapse to a deny. PermissionRequest has a distinct shape.
             if (isPermissionRequest) return codexPermissionDeny(data.reason);
-            return { decision: "block", reason: data.reason };
+            return { hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: data.reason,
+            }};
         }
         if (responseType === "post_block") {
             // Codex PostToolUse: legacy block shape replaces the tool result
@@ -234,4 +248,19 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             return formatCursorResponse(responseType, data, incomingEvent, cursorNativeEvent);
         }
         return formatClaudeResponse(responseType, data, preEventEcho, postEventEcho);
+    }
+
+    // THE OUTPUT RULE (2026-08-27): a hook with nothing to say writes ZERO
+    // BYTES. Printing "{}" is not silence — Codex renders one
+    // "PostToolUse hook (completed)" row per response, so an empty envelope on
+    // every clean tool call is chat noise, and parallel commands multiply it.
+    // Every formatter already returns {} when it has no content, so routing
+    // all stdout through this one helper makes "no content ⇒ no output" a
+    // property of the runtime instead of a per-site decision. Clean timing is
+    // still recorded — in writeLastCheck (statusline) and the local activity
+    // log, which are the telemetry surfaces. The conversation is not.
+    function writeProviderResponse(responseType, data) {
+        const response = formatProviderResponse(responseType, data);
+        if (!response || Object.keys(response).length === 0) return;
+        console.log(JSON.stringify(response));
     }`;

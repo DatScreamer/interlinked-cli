@@ -719,6 +719,16 @@ describe("buildCollectionRecord — provider", () => {
 		expect(rec.provider).toBe("copilot");
 	});
 
+	it.each(["gemini-cli", "cursor", "opencode", "pi"])(
+		"detects %s from client_runner field",
+		(provider) => {
+			const rec = buildCollectionRecord(
+				baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, client_runner: provider }),
+			)!;
+			expect(rec.provider).toBe(provider);
+		},
+	);
+
 	it("detects gemini-cli from a BeforeTool/AfterTool hook_event", () => {
 		const rec = buildCollectionRecord(
 			baseEvent({ tool_name: "Bash", tool_input: { command: "echo" }, hook_event: "BeforeTool" }),

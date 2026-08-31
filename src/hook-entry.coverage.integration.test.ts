@@ -413,10 +413,10 @@ describe("cold fallback — apply_patch path extraction", () => {
 		});
 		expect(result.fell_back).toBe(true);
 		expect(result.stderr).toContain("graph-shard fail-closed gate engaged");
-		// Codex PreToolUse block → root {decision:"block"} shape.
+		// Codex PreToolUse blocks use the native permission-decision envelope.
 		const out = JSON.parse(result.stdout ?? "{}");
-		expect(out.decision).toBe("block");
-		expect(out.reason).toContain(target);
+		expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+		expect(out.hookSpecificOutput.permissionDecisionReason).toContain(target);
 	});
 
 	it("reads the apply_patch body from the `patch` field when `command` is absent", async () => {

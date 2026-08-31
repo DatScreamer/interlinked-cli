@@ -38,6 +38,27 @@ interface MaskState {
 	comment: boolean;
 }
 
+/**
+ * Agent-created worktrees are disabled by default. The daemon-side built-in
+ * rule imports this expression, while the cold fallback serializes it into the
+ * generated hook. Read and cleanup subcommands do not match.
+ */
+export const AGENT_WORKTREE_CREATE_COMMAND_PATTERN =
+	"(?:^|(?:&&|\\|\\||[;|\\n])\\s*)(?:(?:env(?:\\s+[A-Za-z_]\\w*=\\S+)*|command|exec|nohup|sudo)\\s+)*(?:[^\\s;&|]+\\/)*git(?:\\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env)\\s+\\S+|--(?:git-dir|work-tree|namespace|config-env|exec-path)=\\S+|-[pP]|--(?:paginate|no-pager|no-replace-objects|bare)))*\\s+worktree\\s+add\\b";
+
+/** Agent-facing policy reason shared by native and shell worktree gates. */
+export function agentWorktreeCreationBlockReason(): string {
+	return (
+		"BLOCKED: Agent-created Git worktrees are disabled by default. Use the existing " +
+		"workspace; a human operator may provision an approved worktree outside the agent session."
+	);
+}
+
+function dcgCheckWorktreeCreation(cmd: string): DestructiveCommandVerdict | null {
+	if (!new RegExp(AGENT_WORKTREE_CREATE_COMMAND_PATTERN, "i").test(cmd)) return null;
+	return { decision: "block", reason: agentWorktreeCreationBlockReason() };
+}
+
 /** One character inside a `#...` shell comment: masked until end-of-line. */
 function dcgMaskCommentStep(ch: string, state: MaskState): string {
 	if (ch === "\n") {
@@ -452,6 +473,7 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
 		dcgCheckSleep,
 		dcgCheckProcessKilling,
 		dcgCheckFilesystemDestruction,
+		dcgCheckWorktreeCreation,
 		dcgCheckGitDestruction,
 		dcgCheckDatabaseDestruction,
 		dcgCheckContainerOrchestration,
@@ -478,6 +500,9 @@ export function checkDestructiveCommand(cmd: string): DestructiveCommandVerdict 
  * call order inside the joined blob doesn't matter.
  */
 export const DESTRUCTIVE_COMMAND_GUARD_SOURCE: string = [
+	`const AGENT_WORKTREE_CREATE_COMMAND_PATTERN = ${JSON.stringify(AGENT_WORKTREE_CREATE_COMMAND_PATTERN)};`,
+	agentWorktreeCreationBlockReason,
+	dcgCheckWorktreeCreation,
 	dcgMaskCommentStep,
 	dcgMaskQuoteStep,
 	dcgMaskUnquotedStep,
@@ -496,5 +521,5 @@ export const DESTRUCTIVE_COMMAND_GUARD_SOURCE: string = [
 	dcgCheckEmbeddedDestructive,
 	checkDestructiveCommand,
 ]
-	.map((fn) => fn.toString())
+	.map((entry) => (typeof entry === "function" ? entry.toString() : entry))
 	.join("\n");

@@ -53,6 +53,8 @@ const CLIENT_SKILL_ROOTS: Record<ClientName, string> = {
     gemini: join(".gemini", "skills"),
     codex: join(".agents", "skills"),
     cursor: join(".cursor", "skills"),
+    opencode: join(".opencode", "skills"),
+    pi: join(".pi", "skills"),
 };
 
 interface PlannedWrite {

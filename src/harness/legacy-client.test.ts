@@ -466,6 +466,29 @@ describe("toLegacyHarnessEvent base mapping", () => {
 		expect(legacy.agent_type).toBe("researcher");
 	});
 
+	it("prefers normalized metadata over provider-specific raw fields", () => {
+		const ev = makeEvent({
+			turn_id: "turn-normalized",
+			tool_use_id: "tool-normalized",
+			context: {
+				cwd: "/repo",
+				model: "model-normalized",
+				transcript_path: "/normalized.jsonl",
+			},
+			raw: {
+				model: "model-raw",
+				transcript_path: "/raw.jsonl",
+				tool_use_id: "tool-raw",
+			},
+		});
+		expect(toLegacyHarnessEvent(ev)).toMatchObject({
+			model: "model-normalized",
+			transcript_path: "/normalized.jsonl",
+			tool_use_id: "tool-normalized",
+			prompt_id: "turn-normalized",
+		});
+	});
+
 	it("copies subagent result fields (last_assistant_message / agent_transcript_path)", () => {
 		const ev = makeEvent({
 			runner_native_event: "SubagentStop",
@@ -852,6 +875,7 @@ describe("legacyHookEventName mapping", () => {
 		["session-end", "SessionEnd"],
 		["user-prompt", "UserPromptSubmit"],
 		["pre-compact", "PreCompact"],
+		["post-compact", "PostCompact"],
 		["stop", "Stop"],
 		["subagent-start", "SubagentStart"],
 		["subagent-stop", "SubagentStop"],
@@ -887,6 +911,8 @@ describe("mapAgentSource", () => {
 		["codex", "codex"],
 		["gemini-cli", "gemini"],
 		["cursor", "cursor"],
+		["opencode", "opencode"],
+		["pi", "pi"],
 	] as const)("maps runner %s to agent_source %s", (runner, expected) => {
 		expect(toLegacyHarnessEvent(makeEvent({ runner })).agent_source).toBe(expected);
 	});

@@ -25,10 +25,20 @@ describe("Codex adapter identity", () => {
 		expect(adapter.experimental).toBe(false);
 	});
 	it("lists native event names in PascalCase", () => {
-		expect(adapter.nativeEventNames).toContain("PreToolUse");
-		expect(adapter.nativeEventNames).toContain("PostToolUse");
-		expect(adapter.nativeEventNames).toContain("PermissionRequest");
-		expect(adapter.nativeEventNames).toContain("Stop");
+		expect(adapter.nativeEventNames).toEqual([
+			"SessionStart",
+			"SessionEnd",
+			"UserPromptSubmit",
+			"Stop",
+			"PreToolUse",
+			"PermissionRequest",
+			"PostToolUse",
+			"PreCompact",
+			"PostCompact",
+			"SubagentStart",
+			"SubagentStop",
+			"Interrupt",
+		]);
 	});
 });
 
@@ -56,10 +66,11 @@ describe("Codex parseHookInput — PreToolUse", () => {
 		"PreToolUse",
 	);
 	it("produces a tool_call action with the canonical tool name", () => {
-		expect(event.action).toMatchObject({ kind: "tool_call", tool_name: "Bash" });
+		expect(event.action).toMatchObject({ kind: "tool_call", tool_name: "bash" });
 	});
 	it("propagates Codex turn_id as parent_event_id", () => {
 		expect(event.parent_event_id).toBe("turn-7");
+		expect(event.turn_id).toBe("turn-7");
 	});
 	it("uses the canonical pre-tool phase", () => {
 		expect(event.phase).toBe("pre-tool");
@@ -79,7 +90,7 @@ describe("Codex parseHookInput — PostToolUse", () => {
 	it("preserves the tool_response on the action", () => {
 		expect(event.action).toMatchObject({
 			kind: "tool_call",
-			tool_name: "Bash",
+			tool_name: "bash",
 			tool_response: "file1\nfile2",
 		});
 	});
@@ -101,6 +112,43 @@ describe("Codex parseHookInput — UserPromptSubmit", () => {
 	});
 });
 
+describe("Codex parseHookInput — Interrupt", () => {
+	const event = adapter.parseHookInput(
+		{
+			cwd: "/repo",
+			hook_event_name: "Interrupt",
+			model: "gpt-5.6-sol", // REAL_WORLD_VERSION_FIXTURE_OK — exact native Interrupt payload under test.
+			permission_mode: "default",
+			session_id: "cx-interrupt",
+			transcript_path: "/repo/transcript.jsonl",
+			turn_id: "turn-interrupt",
+		},
+		"Interrupt",
+	);
+
+	it("preserves the strict seven-field payload as observation-only metadata", () => {
+		expect(event.phase).toBe("other");
+		expect(event.runner_native_event).toBe("Interrupt");
+		expect(event.context).toMatchObject({
+			cwd: "/repo",
+			model: "gpt-5.6-sol", // REAL_WORLD_VERSION_FIXTURE_OK — exact normalized Interrupt payload under test.
+			permission_mode: "default",
+			transcript_path: "/repo/transcript.jsonl",
+		});
+		expect(event.turn_id).toBe("turn-interrupt");
+		expect(event.action).toMatchObject({ kind: "other", subkind: "Interrupt" });
+	});
+
+	it("always emits zero stdout even if an internal decision carries feedback", () => {
+		expect(
+			adapter.encodeDecision(
+				{ decision: "block", reason: "must not control", warnings: ["must not print"] },
+				event,
+			),
+		).toEqual({ exit_code: 0 });
+	});
+});
+
 describe("Codex parseHookInput — SessionStart", () => {
 	const event = adapter.parseHookInput(
 		{ session_id: "cx-3", source: "startup" },
@@ -113,8 +161,9 @@ describe("Codex parseHookInput — SessionStart", () => {
 
 describe("Codex parseHookInput — Stop", () => {
 	const event = adapter.parseHookInput({ session_id: "cx-4" }, "Stop");
-	it("produces a session_lifecycle action with event=end", () => {
-		expect(event.action).toMatchObject({ kind: "session_lifecycle", event: "end" });
+	it("keeps turn stop distinct from session end", () => {
+		expect(event.phase).toBe("stop");
+		expect(event.action).toMatchObject({ kind: "session_lifecycle", event: "stop" });
 	});
 });
 
@@ -128,17 +177,26 @@ describe("Codex encodeDecision — PreToolUse path", () => {
 		expect(out.exit_code).toBe(0);
 		expect(out.stdout).toBeUndefined();
 	});
-	it("block emits legacy {decision:'block'} JSON on stdout", () => {
+	it("block emits the canonical PreToolUse deny shape", () => {
 		const out = adapter.encodeDecision({ decision: "block", reason: "no" }, event);
 		expect(out.exit_code).toBe(0);
 		expect(out.stdout).toBeDefined();
 		const parsed = JSON.parse(out.stdout || "{}");
-		expect(parsed).toEqual({ decision: "block", reason: "no" });
+		expect(parsed).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "no",
+			},
+		});
 	});
 	it("ask collapses to block on PreToolUse (no ask primitive)", () => {
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
 		const parsed = JSON.parse(out.stdout || "{}");
-		expect(parsed).toEqual({ decision: "block", reason: "confirm?" });
+		expect(parsed.hookSpecificOutput).toMatchObject({
+			permissionDecision: "deny",
+			permissionDecisionReason: "confirm?",
+		});
 	});
 });
 
@@ -147,15 +205,13 @@ describe("Codex encodeDecision — PermissionRequest path", () => {
 		{ session_id: "c", tool_name: "Bash", tool_input: { command: "ls /etc" } },
 		"PermissionRequest",
 	);
-	it("allow uses hookSpecificOutput.decision.behavior=allow", () => {
+	it("allow abstains so Codex applies its normal permission policy", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, event);
-		const parsed = JSON.parse(out.stdout || "{}");
-		expect(parsed).toEqual({
-			hookSpecificOutput: {
-				hookEventName: "PermissionRequest",
-				decision: { behavior: "allow" },
-			},
-		});
+		expect(out.stdout).toBeUndefined();
+	});
+	it("ask abstains so Codex can display its native permission prompt", () => {
+		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
+		expect(out.stdout).toBeUndefined();
 	});
 	it("block uses hookSpecificOutput.decision.behavior=deny + message", () => {
 		const out = adapter.encodeDecision(
@@ -186,10 +242,21 @@ describe("Codex renderSettingsFragment", () => {
 		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
 		const entries = root.hooks.PreToolUse as Array<{
 			matcher: string;
-			hooks: Array<{ type: string; command: string }>;
+			hooks: Array<{
+				type: string;
+				command: string;
+				timeout: number;
+				statusMessage: string;
+				additionalContextLimit: number;
+			}>;
 		}>;
-		expect(nonNull(nonNull(entries[0]).hooks[0]).type).toBe("command");
-		expect(nonNull(nonNull(entries[0]).hooks[0]).command).toContain("/bin/hook");
+		const handler = nonNull(nonNull(entries[0]).hooks[0]);
+		expect(handler).toMatchObject({
+			type: "command",
+			statusMessage: "Interlinked policy check",
+			additionalContextLimit: 2_500,
+		});
+		expect(handler.command).toContain("/bin/hook");
 	});
 	it("uses empty PostToolUse matcher (match all tools)", () => {
 		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
@@ -205,6 +272,28 @@ describe("Codex renderSettingsFragment", () => {
 			const entries = root.hooks[eventName] as Array<{ matcher: string }>;
 			expect(nonNull(entries[0]).matcher).toBe("");
 		}
+	});
+
+	it("runs SessionEnd detached within Codex's three-second deadline", () => {
+		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
+		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
+		const entries = root.hooks.SessionEnd as Array<{
+			hooks: Array<{ command: string; timeout: number }>;
+		}>;
+		const handler = nonNull(nonNull(entries[0]).hooks[0]);
+		expect(handler.timeout).toBe(3);
+		expect(handler.command).toContain(">/dev/null 2>&1 &");
+	});
+
+	it("runs Interrupt asynchronously with a three-second telemetry ceiling", () => {
+		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
+		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
+		const entries = root.hooks.Interrupt as Array<{
+			hooks: Array<{ async: boolean; timeout: number; additionalContextLimit?: number }>;
+		}>;
+		const handler = nonNull(nonNull(entries[0]).hooks[0]);
+		expect(handler).toMatchObject({ async: true, timeout: 3 });
+		expect(handler.additionalContextLimit).toBeUndefined();
 	});
 });
 
@@ -306,7 +395,7 @@ describe("Codex encodeDecision — block with no reason falls back to the generi
 		);
 		const out = adapter.encodeDecision({ decision: "block" }, event);
 		const parsed = JSON.parse(out.stdout || "{}");
-		expect(parsed.reason).toBe(
+		expect(parsed.hookSpecificOutput.permissionDecisionReason).toBe(
 			"Blocked by the interlinked harness, but no reason was attached — likely a harness bug; " +
 				"re-run, or run `interlinked harness restart`, then report it.",
 		);
@@ -354,18 +443,55 @@ describe("Codex encodeDecision — allow with additional_context (non-Permission
 		{ session_id: "c", tool_name: "Bash", tool_input: {} },
 		"PreToolUse",
 	);
-	it("uses additional_context alone as stderr when there are no warnings", () => {
+	it("uses additionalContext so feedback reaches the model", () => {
 		const out = adapter.encodeDecision(
 			{ decision: "allow", additional_context: "fyi only" },
 			event,
 		);
-		expect(out.stderr).toBe("fyi only");
+		expect(JSON.parse(out.stdout || "{}")).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				additionalContext: "fyi only",
+			},
+		});
 	});
 	it("joins warnings and additional_context with a newline when both are present", () => {
 		const out = adapter.encodeDecision(
 			{ decision: "allow", warnings: ["w1"], additional_context: "fyi" },
 			event,
 		);
-		expect(out.stderr).toBe("w1\nfyi");
+		expect(JSON.parse(out.stdout || "{}").hookSpecificOutput.additionalContext).toBe(
+			"fyi\nw1",
+		);
+	});
+});
+
+describe("Codex parseHookInput — full native metadata", () => {
+	it("normalizes tool, context, and subagent identifiers", () => {
+		const event = adapter.parseHookInput(
+			{
+				session_id: "cx-meta",
+				turn_id: "turn-meta",
+				tool_use_id: "call-meta",
+				tool_name: "Write",
+				tool_input: { file_path: "a.ts" },
+				model: "vendor-model-v6",
+				transcript_path: "/tmp/transcript.jsonl",
+				permission_mode: "default",
+				agent_id: "agent-1",
+				agent_type: "worker",
+			},
+			"PreToolUse",
+		);
+		expect(event).toMatchObject({
+			turn_id: "turn-meta",
+			tool_use_id: "call-meta",
+			context: {
+				model: "vendor-model-v6",
+				transcript_path: "/tmp/transcript.jsonl",
+				permission_mode: "default",
+				agent: { id: "agent-1", role: "worker" },
+			},
+		});
 	});
 });

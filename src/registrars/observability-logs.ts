@@ -26,7 +26,7 @@ export function registerObservabilityLogCommands(program: Command): void {
 		.option("--kind <kind>", "Filter by kind (harness_caught | harness_missed | codebase_existing | tool_failure)")
 		.option("--top <n>", "Limit to top N rows by count")
 		.option("--since <duration>", "Only include events at-or-after (e.g. 7d, 12h, ISO timestamp)")
-		.option("--agent-source <name>", "Filter by agent_source (claude/copilot/codex/gemini/cursor)")
+		.option("--agent-source <name>", "Filter by agent_source (claude/copilot/codex/gemini/cursor/opencode/pi)")
 		.option("--check-id <id>", "Filter by check_id")
 		.option("--cwd <path>", "Project root (default: current directory)")
 		.option("--json", "Machine-readable output")

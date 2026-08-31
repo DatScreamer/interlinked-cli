@@ -3,34 +3,22 @@
 // ===========================================
 // Native events (camelCase): sessionStart, sessionEnd, userPromptSubmitted,
 // preToolUse, postToolUse, errorOccurred. Payload shape based on Copilot CLI
-// docs as of 2026-04-23. Decision protocol: stderr + exit 2 = deny; exit 0 =
-// allow. "ask" semantics limited — Copilot surfaces as allow + note.
+// docs as of 2026-04-23. Decision protocol: PreToolUse reads a stdout JSON
+// `permissionDecision`; process exit codes are not the decision channel.
+// "ask" semantics are limited, so Interlinked collapses it to deny.
 
-import type { JsonObject } from "../../lib/json-types.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
-import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
-import { makeEventId } from "../unified-event.js";
+import type { JsonObject } from "../../lib/json-types.js";
 import { buildHookCommand } from "./hook-command.js";
+import { buildStandardAction, normalizeNativeHookEvent } from "./normalization.js";
+import {
+	COPILOT_CLI_CAPABILITIES,
+	installedEventNames,
+} from "./provider-capabilities.js";
 import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
 
-const NATIVE_EVENTS = [
-	"sessionStart",
-	"sessionEnd",
-	"userPromptSubmitted",
-	"preToolUse",
-	"postToolUse",
-	"errorOccurred",
-] as const;
-
-const PHASE_MAP: Record<string, UnifiedPhase> = {
-	sessionStart: "session-start",
-	sessionEnd: "session-end",
-	userPromptSubmitted: "user-prompt",
-	preToolUse: "pre-tool",
-	postToolUse: "post-tool",
-	errorOccurred: "error",
-};
+const NATIVE_EVENTS = installedEventNames(COPILOT_CLI_CAPABILITIES);
 
 export interface CopilotCliAdapterOptions {
 	overrides?: ClassifierOverrides | undefined;
@@ -40,6 +28,7 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 	return {
 		id: "copilot-cli",
 		label: "GitHub Copilot CLI",
+		capabilities: COPILOT_CLI_CAPABILITIES,
 		nativeEventNames: NATIVE_EVENTS,
 
 		detectFromEnv(env) {
@@ -52,26 +41,24 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 		},
 
 		parseHookInput(nativeJson, nativeEventName) {
-			const raw = isObject(nativeJson) ? nativeJson : {};
-			const phase = PHASE_MAP[nativeEventName] ?? "other";
-			const session_id = readString(raw.sessionId) ?? readString(raw.session_id) ?? "unknown";
-			const cwd = readString(raw.cwd) ?? process.cwd();
-			const ts = new Date().toISOString();
-
-			const action = buildCopilotAction(nativeEventName, raw, opts.overrides);
-
-			return {
-				schema_version: "1",
-				event_id: makeEventId(),
-				session_id,
-				ts,
+			return normalizeNativeHookEvent({
 				runner: "copilot-cli",
-				runner_native_event: nativeEventName,
-				phase,
-				action,
-				context: { cwd },
-				raw,
-			};
+				capabilities: COPILOT_CLI_CAPABILITIES,
+				nativeEventName,
+				nativeJson,
+				buildAction: ({ raw, phase }) =>
+					buildStandardAction({
+						raw: copilotActionRaw(raw),
+						phase,
+						nativeEventName,
+						toolNameKeys: ["toolName", "tool_name"],
+						toolInputKeys: ["__interlinkedToolArgs", "toolInput", "tool_input"],
+						toolResponseKeys: ["toolResponse", "tool_response"],
+						toolErrorKeys: ["toolError", "tool_error"],
+						promptKeys: ["prompt", "userPrompt"],
+						...(opts.overrides ? { overrides: opts.overrides } : {}),
+					}),
+			});
 		},
 
 		classifyToolClass(toolName, toolInput) {
@@ -85,7 +72,13 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 		renderSettingsFragment(binaryPath, _scope): SettingsFragment {
 			const hooks: Record<string, unknown[]> = {};
 			for (const event of NATIVE_EVENTS) {
-				const hookCommand = buildHookCommand(binaryPath, "copilot-cli", event);
+				// Missing-runtime policy: only Copilot's tool gate fails closed.
+				const hookCommand = buildHookCommand(
+					binaryPath,
+					"copilot-cli",
+					event,
+					event === "preToolUse" ? "fail_closed" : "warn_open",
+				);
 				hooks[event] = [{ type: "command", bash: hookCommand }];
 			}
 			return {
@@ -106,7 +99,7 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 					"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
 						"bug; re-run, or run `interlinked harness restart`, then report it.";
 				const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
-				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
+				return copilotDeny(reason, stderr);
 			}
 			if (decision.decision === "ask") {
 				// Copilot has no "ask" primitive — collapse to deny so destructive
@@ -121,7 +114,7 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 				// hitting the prompt sees what would have happened.
 				const baseReason = decision.reason ?? "Confirmation required";
 				const reason = formatAskReasonWithTargets(baseReason, decision.resolved_targets);
-				return { stderr: stderr ? `${stderr}\n${reason}` : reason, exit_code: 2 };
+				return copilotDeny(reason, stderr);
 			}
 			// allow
 			let out = stderr;
@@ -133,55 +126,27 @@ export function createCopilotCliAdapter(opts: CopilotCliAdapterOptions = {}): Ru
 	};
 }
 
-function buildCopilotAction(
-	eventName: string,
-	raw: JsonObject,
-	overrides: ClassifierOverrides | undefined,
-): UnifiedHookEvent["action"] {
-	if (eventName === "userPromptSubmitted") {
-		const text = readString(raw.prompt) ?? readString(raw.userPrompt) ?? "";
-		return { kind: "user_prompt", text };
-	}
-	if (eventName === "sessionStart" || eventName === "sessionEnd") {
-		return {
-			kind: "session_lifecycle",
-			event: eventName === "sessionStart" ? "start" : "end",
-		};
-	}
-	if (eventName === "preToolUse" || eventName === "postToolUse") {
-		const toolNameRaw = readString(raw.toolName) ?? readString(raw.tool_name) ?? "unknown";
-		const toolInput = (raw.toolInput ?? raw.tool_input ?? {}) as unknown;
-		const tool_class: ToolClass = classifyFromToolName(
-			toolNameRaw,
-			toolInput,
-			overrides ? { overrides } : {},
-		);
-		const base = {
-			kind: "tool_call" as const,
-			tool_name: toolNameRaw.toLowerCase(),
-			tool_class,
-			tool_input: toolInput,
-			tool_input_redacted: toolInput,
-		};
-		if (eventName === "postToolUse") {
-			return {
-				...base,
-				tool_response: raw.toolResponse ?? raw.tool_response,
-				tool_error: readString(raw.toolError) ?? readString(raw.tool_error) ?? undefined,
-			};
+function copilotActionRaw(raw: JsonObject): JsonObject {
+	if (typeof raw.toolArgs !== "string") return raw;
+	try {
+		const parsed: unknown = JSON.parse(raw.toolArgs);
+		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return { ...raw, __interlinkedToolArgs: parsed };
 		}
-		return base;
+	} catch {
+		// A malformed native payload must not fall back to a conflicting legacy
+		// field. Classify it with an empty input and let the safe unknown path win.
 	}
-	if (eventName === "errorOccurred") {
-		return { kind: "other", subkind: "error", data: raw };
-	}
-	return { kind: "other", subkind: eventName, data: raw };
+	return { ...raw, __interlinkedToolArgs: {} };
 }
 
-function isObject(v: unknown): v is JsonObject {
-	return v != null && typeof v === "object" && !Array.isArray(v);
-}
-
-function readString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
+function copilotDeny(reason: string, stderr: string): AdapterOutput {
+	return {
+		stdout: JSON.stringify({
+			permissionDecision: "deny",
+			permissionDecisionReason: reason,
+		}),
+		stderr: stderr || undefined,
+		exit_code: 0,
+	};
 }

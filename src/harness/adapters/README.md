@@ -10,21 +10,32 @@ into the runner's stdout/stderr/exit-code contract.
 - `docs/design/free-cli-architecture.md` — directory layout, installer manifest
 - `docs/design/three-product-architecture.md` — latency budgets
 
-## Runner matrix (as of 2026-04-30)
+## Runner matrix (as of 2026-08-30)
 
 | Runner         | `id`           | Status       | Native events                                                                    | Decision contract                                  | Native ask | Post→model |
 | -------------- | -------------- | ------------ | -------------------------------------------------------------------------------- | -------------------------------------------------- | ---------- | ---------- |
-| Claude Code    | `claude-code`  | Stable       | `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, 10 more               | stdout JSON `{decision: "deny"\|"ask"}` or exit 0  | ✅          | ✅ `additionalContext` |
-| Copilot CLI    | `copilot-cli`  | Stable       | `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `userPromptSubmitted` | stderr + exit 2 = deny; exit 0 = allow             | ❌ → deny  | ❌ stderr only |
-| Cursor         | `cursor`       | Stable       | 15 events incl. `beforeShellExecution`, `beforeMCPExecution`, `postToolUse`, `postToolUseFailure`, `subagentStart/Stop`, `preCompact` | stdout JSON `{permission: "allow"\|"deny"\|"ask", user_message, agent_message}` (snake_case); `{additional_context}` on `postToolUse` | ✅ on shell/MCP gates; preToolUse / beforeReadFile / subagentStart collapse ask → deny | ✅ `additional_context` on `postToolUse` |
-| Codex CLI      | `codex`        | Stable       | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest` | stdout JSON `{decision: "block"}` or `additionalContext` | ❌ → block | ✅ `additionalContext` |
-| Gemini CLI     | `gemini-cli`   | Experimental | `BeforeTool`, `AfterTool`, `AfterModel`, `PreCompress`                           | stdout JSON (provisional)                          | 🚧 prov    | 🚧 prov    |
+| Claude Code    | `claude-code`  | Supported    | 14 registered, including `PermissionRequest` and the `WorktreeCreate` hard stop; `PostToolUseFailure` parse-only | native hook JSON; WorktreeCreate exits non-zero without a path | ✅ | ✅ `additionalContext` |
+| Copilot CLI    | `copilot-cli`  | Experimental (payload drift vs current docs, e.g. `toolArgs`) | 6 events | stderr + exit 2 = deny; exit 0 = allow | ❌ → deny | ❌ stderr only |
+| Cursor         | `cursor`       | Experimental (no provider-level contract test) | 18 events | snake_case decision/context responses | ✅ on shell/MCP gates | ✅ `additional_context` on `postToolUse` |
+| Codex CLI      | `codex`        | Supported | Complete 12-event native surface | native hook JSON with permission/continuation envelopes | `PreToolUse` ask → deny; `PermissionRequest` uses native prompt | ✅ `additionalContext` |
+| Gemini CLI     | `gemini-cli`   | Experimental | 9 events | stdout JSON (provisional) | 🚧 provisional | 🚧 provisional |
+| OpenCode      | `opencode`     | Experimental managed plugin | 11 installed callbacks: generic tool/prompt/compaction plus session/permission bus observations | throw from `tool.execute.before` to deny | ❌ → deny | ✅ tool result/context mutation; bus events observe only |
+| Pi            | `pi`           | Experimental managed extension | 13 callbacks, including `tool_call`, `tool_result`, `input`, `user_bash`, lifecycle, and compaction | Pi extension return objects | ✅ `ctx.ui.confirm`; headless → deny | ✅ `tool_result` content + UI notification |
 
-**Native ask** = runner has a user-confirm primitive (Claude `permissionDecision: "ask"`, Cursor `permission: "ask"` on `beforeShellExecution` / `beforeMCPExecution`). When absent, the harness collapses our canonical `decision: "ask"` to a hard deny so the user still sees the reason and can refine.
+**Native ask** = runner has a user-confirm primitive (Claude `permissionDecision: "ask"`, Cursor `permission: "ask"` on `beforeShellExecution` / `beforeMCPExecution`, Pi `ctx.ui.confirm` when `ctx.hasUI`). When absent — including headless Pi and OpenCode's stable `tool.execute.before` — the harness collapses canonical `ask` to a hard deny so the user still sees the reason and can refine.
 
 **Post→model** = a model-visible PostToolUse advisory channel exists. Claude uses `hookSpecificOutput.additionalContext`, Codex echoes `additionalContext`, **Cursor uses snake_case `additional_context` on `postToolUse`** (the generic post-tool hook — specific `afterFileEdit` / `afterShellExecution` / `afterMCPExecution` / `postToolUseFailure` are observation-only stderr). Copilot has no model-visible post channel.
 
 **Cursor field naming**: response keys are snake_case per the public docs (`user_message`, `agent_message`, `additional_context`, `updated_input`, `updated_mcp_tool_output`, `followup_message`). Earlier camelCase emissions were silently dropped by Cursor — denial messages reached the runner empty.
+
+**Managed-bridge boundary:** OpenCode and Pi install whole source files at
+`.opencode/plugins/interlinked.ts` and `.pi/extensions/interlinked.js` (user scope:
+`~/.config/opencode/plugins/interlinked.ts` and `~/.pi/agent/extensions/interlinked.js`). The
+manifest hash protects foreign or subsequently modified files. Restart OpenCode after install;
+Pi requires `/reload` or restart and a project-extension trust decision. OpenCode's stable surface
+has no controllable permission/Stop hook and neither provider exposes dedicated native MCP,
+subagent, or worktree lifecycle hooks. Pi uniquely gates direct `user_bash`; interactive ask uses
+its UI and headless ask denies.
 
 When a runner ships a 1.0 hook contract that differs from what is in this table,
 update the adapter, stamp the file header with today's date, and re-run the

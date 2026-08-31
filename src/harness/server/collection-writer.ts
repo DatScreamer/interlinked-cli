@@ -14,7 +14,15 @@ import { buildCollectionRecord } from "../../lib/collection/builder.js";
 import { appendCollection } from "../../lib/collection/writer.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { eventAttributionFields } from "../event-attribution-fields.js";
-import type { HarnessEvent } from "../types.js";
+import type { AgentSource, HarnessEvent } from "../types.js";
+
+const CLIENT_RUNNER_BY_AGENT_SOURCE: Partial<Record<AgentSource, string>> = {
+	codex: "codex",
+	copilot: "copilot",
+	gemini: "gemini-cli",
+	opencode: "opencode",
+	pi: "pi",
+};
 
 /** Map a `HarnessEvent` to the `JsonObject` the collection builder consumes.
  *  Pure — derives `event_type` from `hook_event`, detects the client runner
@@ -36,12 +44,10 @@ export function mapEventToCollectionInput(
 	}
 
 	// Detect client_runner from agent_source for non-Claude providers
-	let clientRunner: string | undefined;
-	let cursorVersion: string | undefined;
-	const src = event.agent_source ?? "";
-	if (src.includes("codex")) clientRunner = "codex";
-	else if (src.includes("copilot")) clientRunner = "copilot";
-	else if (src.includes("cursor")) cursorVersion = "1";
+	const clientRunner = event.agent_source
+		? CLIENT_RUNNER_BY_AGENT_SOURCE[event.agent_source]
+		: undefined;
+	const cursorVersion = event.agent_source === "cursor" ? "1" : undefined;
 
 	return {
 		event_type: eventType,

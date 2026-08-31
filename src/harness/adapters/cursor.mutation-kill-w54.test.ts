@@ -108,7 +108,10 @@ describe("createCursorAdapter — NATIVE_EVENTS string contents (mutantIds 40f49
 	it("parseHookInput resolves the correct phase for every distinguishing native event", () => {
 		const adapter = createCursorAdapter({});
 		const cases: Array<[string, string]> = [
-			["sessionStart", "other"],
+			["sessionStart", "session-start"],
+			["sessionEnd", "session-end"],
+			["stop", "stop"],
+			["preCompact", "pre-compact"],
 			["beforeSubmitPrompt", "user-prompt"],
 			["beforeShellExecution", "pre-tool"],
 			["afterShellExecution", "post-tool"],
@@ -120,7 +123,7 @@ describe("createCursorAdapter — NATIVE_EVENTS string contents (mutantIds 40f49
 			["postToolUse", "post-tool"],
 			["postToolUseFailure", "post-tool"],
 			["subagentStart", "pre-tool"],
-			["subagentStop", "other"],
+			["subagentStop", "subagent-stop"],
 		];
 		for (const [event, expectedPhase] of cases) {
 			const parsed = adapter.parseHookInput({}, event);

@@ -6,21 +6,13 @@
 // Payload shape is provisional. When Gemini CLI ships 1.0 this adapter needs
 // a revisit — see docs/design/cli-hook-normalization.md.
 
-import type { JsonObject } from "../../lib/json-types.js";
 import { type ClassifierOverrides, classifyFromToolName } from "../tool-class-classifier.js";
-import type { ToolClass, UnifiedHookEvent, UnifiedPhase } from "../unified-event.js";
-import { makeEventId } from "../unified-event.js";
 import { buildHookCommand } from "./hook-command.js";
+import { buildStandardAction, normalizeNativeHookEvent } from "./normalization.js";
+import { GEMINI_CLI_CAPABILITIES, installedEventNames } from "./provider-capabilities.js";
 import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
 
-const NATIVE_EVENTS = ["BeforeTool", "AfterTool", "AfterModel", "PreCompress"] as const;
-
-const PHASE_MAP: Record<string, UnifiedPhase> = {
-	BeforeTool: "pre-tool",
-	AfterTool: "post-tool",
-	AfterModel: "other",
-	PreCompress: "pre-compact",
-};
+const NATIVE_EVENTS = installedEventNames(GEMINI_CLI_CAPABILITIES);
 
 export interface GeminiCliAdapterOptions {
 	overrides?: ClassifierOverrides | undefined;
@@ -31,6 +23,7 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 		id: "gemini-cli",
 		label: "Gemini CLI",
 		experimental: true,
+		capabilities: GEMINI_CLI_CAPABILITIES,
 		nativeEventNames: NATIVE_EVENTS,
 
 		detectFromEnv(env) {
@@ -38,26 +31,23 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 		},
 
 		parseHookInput(nativeJson, nativeEventName) {
-			const raw = isObject(nativeJson) ? nativeJson : {};
-			const phase = PHASE_MAP[nativeEventName] ?? "other";
-			const session_id = readString(raw.session_id) ?? readString(raw.sessionId) ?? "unknown";
-			const cwd = readString(raw.cwd) ?? process.cwd();
-			const ts = new Date().toISOString();
-
-			const action = buildGeminiAction(nativeEventName, raw, opts.overrides);
-
-			return {
-				schema_version: "1",
-				event_id: makeEventId(),
-				session_id,
-				ts,
+			return normalizeNativeHookEvent({
 				runner: "gemini-cli",
-				runner_native_event: nativeEventName,
-				phase,
-				action,
-				context: { cwd },
-				raw,
-			};
+				capabilities: GEMINI_CLI_CAPABILITIES,
+				nativeEventName,
+				nativeJson,
+				buildAction: ({ raw, phase }) =>
+					buildStandardAction({
+						raw,
+						phase,
+						nativeEventName,
+						toolNameKeys: ["tool_name", "toolName"],
+						toolInputKeys: ["tool_input", "toolInput", "arguments"],
+						toolResponseKeys: ["tool_response", "response"],
+						toolErrorKeys: ["tool_error", "error"],
+						...(opts.overrides ? { overrides: opts.overrides } : {}),
+					}),
+			});
 		},
 
 		classifyToolClass(toolName, toolInput) {
@@ -72,7 +62,13 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 			const path = scope === "user" ? "~/.gemini/settings.json" : ".gemini/settings.json";
 			const hooks: Record<string, unknown[]> = {};
 			for (const event of NATIVE_EVENTS) {
-				const hookCommand = buildHookCommand(binaryPath, "gemini-cli", event);
+				// Missing-runtime policy: only Gemini's tool gate fails closed.
+				const hookCommand = buildHookCommand(
+					binaryPath,
+					"gemini-cli",
+					event,
+					event === "BeforeTool" ? "fail_closed" : "warn_open",
+				);
 				hooks[event] = [{ command: hookCommand }];
 			}
 			return { path, fragment: { hooks }, mergeStrategy: "array-append" };
@@ -112,47 +108,4 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 			};
 		},
 	};
-}
-
-function buildGeminiAction(
-	eventName: string,
-	raw: JsonObject,
-	overrides: ClassifierOverrides | undefined,
-): UnifiedHookEvent["action"] {
-	if (eventName === "BeforeTool" || eventName === "AfterTool") {
-		const toolNameRaw = readString(raw.tool_name) ?? readString(raw.toolName) ?? "unknown";
-		const toolInput = (raw.tool_input ?? raw.toolInput ?? raw.arguments ?? {}) as unknown;
-		const tool_class: ToolClass = classifyFromToolName(
-			toolNameRaw,
-			toolInput,
-			overrides ? { overrides } : {},
-		);
-		const base = {
-			kind: "tool_call" as const,
-			tool_name: toolNameRaw.toLowerCase(),
-			tool_class,
-			tool_input: toolInput,
-			tool_input_redacted: toolInput,
-		};
-		if (eventName === "AfterTool") {
-			return {
-				...base,
-				tool_response: raw.tool_response ?? raw.response,
-				tool_error: readString(raw.tool_error) ?? readString(raw.error) ?? undefined,
-			};
-		}
-		return base;
-	}
-	if (eventName === "PreCompress") {
-		return { kind: "other", subkind: "pre_compact", data: raw };
-	}
-	return { kind: "other", subkind: eventName, data: raw };
-}
-
-function isObject(v: unknown): v is JsonObject {
-	return v != null && typeof v === "object" && !Array.isArray(v);
-}
-
-function readString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
 }

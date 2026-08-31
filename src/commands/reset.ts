@@ -4,6 +4,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { manifestPath, readManifestState, uninstallHooks } from "../harness/installer.js";
 import { c, divider, header } from "../lib/formatter.js";
 
 const INTERLINKED_MARKER = "interlinked-activity";
@@ -40,6 +41,7 @@ function printConfirmationPreview(emit: (line: string) => void): void {
 	emit("  What will be removed:");
 	emit("    - .interlinked/ directory (config, hooks, sessions)");
 	emit("    - Hook entries from client settings (.claude, .github/hooks)");
+	emit("    - Managed provider bridges (OpenCode, Pi)");
 	emit("");
 	emit(c.bold("Run with --force to confirm:"));
 	emit(c.dim("  interlinked reset --force"));
@@ -165,6 +167,31 @@ function printHumanSummary(removed: string[], emit: (line: string) => void): voi
 	}
 }
 
+/** Remove manifest-owned artifacts before `.interlinked/` (and its ownership
+ * hashes) disappears. A modified managed provider file keeps its manifest row,
+ * so reset must preserve the directory and report the conflict. */
+function removeManifestArtifacts(cwd: string, ctx: ResetContext): boolean {
+	const state = readManifestState(manifestPath(cwd));
+	if (state.kind === "missing") return true;
+	if (state.kind === "corrupt") {
+		ctx.failed.push(`installer manifest: ${state.reason}`);
+		ctx.emitError(`  ${c.red("failed")} installer manifest: ${state.reason}`);
+		return false;
+	}
+	const result = uninstallHooks({ cwd });
+	for (const entry of result.removed) {
+		const label = `${entry.runner} hook artifact`;
+		ctx.removed.push(label);
+		ctx.emit(`  ${c.green("removed")} ${label}`);
+	}
+	for (const entry of result.remaining) {
+		const message = `${entry.runner} managed provider file was modified; preserved ${entry.settings_path}`;
+		ctx.failed.push(message);
+		ctx.emitError(`  ${c.red("failed")} ${message}`);
+	}
+	return result.remaining.length === 0;
+}
+
 export async function resetCommand(opts: { force?: boolean; json?: boolean }): Promise<void> {
 	const jsonMode = Boolean(opts.json);
 	const emit = (line: string): void => {
@@ -202,13 +229,16 @@ export async function resetCommand(opts: { force?: boolean; json?: boolean }): P
 	const ctx: ResetContext = { removed: [], failed: [], emit, emitError };
 
 	emit(header("Resetting Interlinked CLI"));
+	const manifestArtifactsRemoved = removeManifestArtifacts(cwd, ctx);
 
 	// 1. Remove .interlinked/ directory
 	const configDir = join(cwd, ".interlinked");
-	if (existsSync(configDir)) {
+	if (existsSync(configDir) && manifestArtifactsRemoved) {
 		removeAndReport(configDir, ".interlinked/", ctx, { recursive: true, force: true });
-	} else {
+	} else if (!existsSync(configDir)) {
 		emit(`  ${c.dim("skip")}    .interlinked/ (not found)`);
+	} else {
+		emit(`  ${c.yellow("kept")} .interlinked/ (needed to track preserved hook artifacts)`);
 	}
 
 	// 2. Remove legacy config

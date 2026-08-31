@@ -8,6 +8,11 @@
 // idempotently when missing so `interlinked enable` is a one-step setup.
 
 import { join } from "node:path";
+import {
+	CODEX_CAPABILITIES,
+	eventCapability,
+	installedEventNames,
+} from "../harness/adapters/provider-capabilities.js";
 import { ensureCodexFeatureFlag as ensureCodexFlag } from "./codex-feature-flag.js";
 import {
 	buildHookCommand,
@@ -19,22 +24,11 @@ import {
 import { CLIENT_CODEX } from "./hook-types.js";
 import type { JsonObject } from "./json-types.js";
 
-// OpenAI Codex CLI hook events. Codex shipped its hook contract using
-// PascalCase event names that mirror Claude Code's vocabulary, with one
-// addition (PermissionRequest is its own event type, separate from
-// PreToolUse). Stop is included so the harness can record turn-end and so
-// future Stop-driven continuations have a hook to fire on. SessionEnd is
-// not part of the documented Codex hook surface as of 2026-04 — only
-// SessionStart is.
+// One provider capability catalog drives both the adapter installer and this
+// established `interlinked enable` path. Keeping a second handwritten event
+// list here previously left Codex six events behind its native surface.
 /** Public API — consumed by `src/lib/hooks.ts`. */
-export const CODEX_HOOK_EVENTS = [
-	"SessionStart",
-	"UserPromptSubmit",
-	"PreToolUse",
-	"PostToolUse",
-	"PermissionRequest",
-	"Stop",
-] as const;
+export const CODEX_HOOK_EVENTS = installedEventNames(CODEX_CAPABILITIES);
 
 function getCodexHooksPath(cwd: string): string {
 	return join(cwd, ".codex", "hooks.json");
@@ -58,11 +52,41 @@ export function installCodexHooks(cwd: string, hookScriptPath: string): void {
 	const hookCommand = buildHookCommand(hookScriptPath, CLIENT_CODEX);
 
 	for (const eventName of CODEX_HOOK_EVENTS) {
-		installHookEntry(hooks, eventName, hookCommand);
+		installHookEntry(hooks, eventName, hookCommand, codexHookOptions(eventName));
 	}
 
 	writeJsonFile(settingsPath, settings);
-	ensureCodexFlag(cwd);
+	// `"refused"` (duplicate [features] tables) is a FAILURE: Codex rejects the
+	// whole TOML and no hook fires. Throw so the legacy install path cannot
+	// report success over an inert install (Grok 2026-08-28 issue 5).
+	if (ensureCodexFlag(cwd) === "refused") {
+		throw new Error(
+			".codex/config.toml has duplicate [features] tables — Codex rejects the whole file, so hooks cannot fire. Merge the duplicate tables, then re-run enable.",
+		);
+	}
+}
+
+function codexHookOptions(eventName: string): {
+	timeout?: number;
+	async?: boolean;
+	statusMessage: string;
+	additionalContextLimit?: number;
+} {
+	const capability = eventCapability(CODEX_CAPABILITIES, eventName);
+	return {
+		...(eventName === "SessionEnd" ? { timeout: 3 } : {}),
+		...(capability?.background ? { async: true } : {}),
+		statusMessage: codexStatusMessage(eventName),
+		...(capability?.model_context ? { additionalContextLimit: 2_500 } : {}),
+	};
+}
+
+function codexStatusMessage(eventName: string): string {
+	if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
+		return "Interlinked policy check";
+	}
+	if (eventName === "PostToolUse") return "Interlinked quality review";
+	return "Interlinked lifecycle check";
 }
 
 /**

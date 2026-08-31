@@ -6,10 +6,18 @@ import { buildAllAdapters, detectAdapter, getAdapter } from "./index.js";
 
 describe("buildAllAdapters", () => {
 	const adapters = buildAllAdapters();
-	it("returns all five runner adapters", () => {
-		expect(adapters.length).toBe(5);
+	it("returns all seven runner adapters", () => {
+		expect(adapters.length).toBe(7);
 		const ids = adapters.map((a) => a.id).sort();
-		expect(ids).toEqual(["claude-code", "codex", "copilot-cli", "cursor", "gemini-cli"]);
+		expect(ids).toEqual([
+			"claude-code",
+			"codex",
+			"copilot-cli",
+			"cursor",
+			"gemini-cli",
+			"opencode",
+			"pi",
+		]);
 	});
 	it("every adapter conforms to the basic interface", () => {
 		for (const a of adapters) {
@@ -47,6 +55,12 @@ describe("detectAdapter", () => {
 		const a = detectAdapter({ CODEX_CLI: "1" });
 		expect(a?.id).toBe("codex");
 	});
+	it("detects OpenCode via OPENCODE", () => {
+		expect(detectAdapter({ OPENCODE: "1" })?.id).toBe("opencode");
+	});
+	it("detects Pi via PI_CODING_AGENT", () => {
+		expect(detectAdapter({ PI_CODING_AGENT: "1" })?.id).toBe("pi");
+	});
 });
 
 describe("getAdapter", () => {
@@ -54,6 +68,8 @@ describe("getAdapter", () => {
 		expect(getAdapter("claude-code")?.id).toBe("claude-code");
 		expect(getAdapter("copilot-cli")?.id).toBe("copilot-cli");
 		expect(getAdapter("cursor")?.id).toBe("cursor");
+		expect(getAdapter("opencode")?.id).toBe("opencode");
+		expect(getAdapter("pi")?.id).toBe("pi");
 	});
 	it("returns null for unknown ids", () => {
 		expect(getAdapter("unknown")).toBeNull();
@@ -88,6 +104,42 @@ describe("cross-runner equivalence — semantically identical Edit events", () =
 					toolInput: { path: "/r/a.ts" },
 				},
 				"preToolUse",
+			),
+		],
+		[
+			"cursor",
+			nonNull(buildAllAdapters()[2]).parseHookInput(
+				{
+					session_id: "s",
+					cwd: "/r",
+					tool_name: "Edit",
+					tool_input: { file_path: "/r/a.ts" },
+				},
+				"preToolUse",
+			),
+		],
+		[
+			"gemini",
+			nonNull(buildAllAdapters()[3]).parseHookInput(
+				{
+					session_id: "s",
+					cwd: "/r",
+					tool_name: "Edit",
+					tool_input: { file_path: "/r/a.ts" },
+				},
+				"BeforeTool",
+			),
+		],
+		[
+			"codex",
+			nonNull(buildAllAdapters()[4]).parseHookInput(
+				{
+					session_id: "s",
+					cwd: "/r",
+					tool_name: "Edit",
+					tool_input: { file_path: "/r/a.ts", old_string: "x", new_string: "y" },
+				},
+				"PreToolUse",
 			),
 		],
 	];

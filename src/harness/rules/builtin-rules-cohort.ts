@@ -93,7 +93,7 @@ export const COHORT_DISCIPLINE_RULES: GuardRule[] = [
 		reason:
 			"Another agent is active in this worktree. Switching branches moves HEAD and rewrites the working tree under every concurrent agent.",
 		suggestion:
-			"Wait until you are the only active agent, or use a separate worktree (`git worktree add`) for branch work.",
+			"Wait until you are the only active agent. If isolation is required, ask a human operator to provision an approved workspace.",
 		severity: "high",
 		category: "cohort-discipline",
 		keywords: ["checkout", "switch"],

@@ -6,12 +6,17 @@ description: "Overview and router for the Interlinked CLI — a local guard, qua
 # interlinked — overview & skill router
 
 **Interlinked is a local control plane for AI coding agents.** A local daemon ("the harness")
-hooks into Claude Code, Codex, Copilot CLI, Gemini CLI, and Cursor, and on **every** tool call
-it: enforces deterministic policy (block/allow in milliseconds, no model in the decision path),
+hooks into Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, OpenCode, and
+Pi — and on every tool call the runner exposes to its hook surface it enforces deterministic
+policy (block/allow in milliseconds, no model in the decision path),
 fails closed on what causes incidents (destructive commands, secrets, unvetted deps), and writes
 a replayable local activity log. It is **offline-first** — no required cloud dependency or
 remote telemetry. Activity is recorded locally; an **optional authenticated server** provides
 multi-agent coordination and configured sync.
+
+Runner registration is not a claim of identical native APIs. OpenCode and Pi use managed
+plugin/extension bridges and lack dedicated native MCP, subagent, and worktree lifecycle hooks;
+load **interlinked-setup** for activation/trust and **interlinked-harness** for ask/Stop behavior.
 
 If you're an agent working in a repo with a `.interlinked/` directory, you are being guarded by
 it. This skill orients you and points to the right focused skill.
@@ -42,6 +47,7 @@ Everything is per-`cwd` under `<repo>/.interlinked/`. Key files:
 | `semantic.json` / `.local.json` | team / local | optional local semantic-index policy / machine runtime topology |
 | `index/functions/` | local | generation-scoped function metadata and vectors; never synced |
 | `activity.jsonl`, `collection.jsonl`, `timeline.jsonl` | local | captured agent activity (`enable` gitignores the first two) |
+| `hook-runtime.json` | local | payload-free proof that each provider executed its current hook definition |
 | `harness.sock` / `harness.pid` | — | the running daemon |
 
 ## What warnings mean: `[proven]` vs `[heuristic]`
@@ -90,6 +96,8 @@ interlinked --help          # full command list
 
 > `harness status` and `doctor` verify liveness by **round-trip, not PID**. A red `ZOMBIE`
 > (process alive, nothing answering) means the guard is off — `interlinked harness restart`.
+> For Codex, doctor also compares `.codex/hooks.json` with the last executed definition hash;
+> review changed hooks through `/hooks`, then run a hooked action.
 
 ## Golden rules for an agent in a guarded repo
 1. **When blocked, read the `Suggestion:` and take the safe path** — don't rewrite to dodge the pattern.
@@ -97,3 +105,5 @@ interlinked --help          # full command list
 3. **`[proven]` findings are real** — fix them; triage `[heuristic]` ones.
 4. **Package installs are default-deny** — surface an unapproved dep to the human, don't `--force`.
 5. **Checkpoints/rewind mutate git** — never run them without explicit per-turn authorization.
+6. **Do not create worktrees** — use the current workspace; ask a human operator to provision
+   an approved worktree when isolation is required. Listing and cleanup remain allowed.

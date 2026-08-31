@@ -25,21 +25,25 @@ export type Determinism = "fully_deterministic" | "partially_deterministic" | "h
 
 /** Hook events from all supported coding agents */
 export type HookEventName =
-	// Claude Code (14 events)
+	// Claude Code — parseable events. PostToolUseFailure remains parse-only;
+	// PermissionRequest and WorktreeCreate are installed policy events.
 	| "PreToolUse"
 	| "PostToolUse"
 	| "PostToolUseFailure"
 	| "SessionStart"
 	| "SessionEnd"
+	| "Interrupt"
 	| "UserPromptSubmit"
 	| "Stop"
 	| "SubagentStart"
 	| "SubagentStop"
 	| "Notification"
 	| "PreCompact"
+	| "PostCompact"
 	| "TaskCompleted"
 	| "TeammateIdle"
 	| "PermissionRequest"
+	| "WorktreeCreate"
 	// Gemini CLI
 	| "BeforeTool"
 	| "AfterTool"
@@ -52,7 +56,14 @@ export type HookEventName =
 	// Generic
 	| string;
 
-export type AgentSource = "claude" | "copilot" | "codex" | "gemini" | "cursor";
+export type AgentSource =
+	| "claude"
+	| "copilot"
+	| "codex"
+	| "gemini"
+	| "cursor"
+	| "opencode"
+	| "pi";
 
 /**
  * Whether a given agent runtime can surface an interactive permission prompt
@@ -62,7 +73,7 @@ export type AgentSource = "claude" | "copilot" | "codex" | "gemini" | "cursor";
  * retry deliberately. Kept here in `types.ts` (rather than only in the
  * generated `.mjs`) so the harness evaluator and tests can reason about it.
  */
-export const ASK_CAPABLE_AGENTS = new Set<AgentSource>(["claude", "cursor"]);
+export const ASK_CAPABLE_AGENTS = new Set<AgentSource>(["claude", "cursor", "pi"]);
 
 /** True when the agent runtime supports a per-call user confirmation flow. */
 export function agentSupportsAsk(source: AgentSource | string | undefined): boolean {
@@ -111,7 +122,7 @@ export interface HarnessEvent {
 	// in `src/lib/hook-template-chunks/event-normalizers.ts` and forwarded
 	// over the harness socket. `tool_outcome` is the single source of truth
 	// for failure detection across every provider (Claude / Codex / Gemini /
-	// Copilot / Cursor) — `is_error` does NOT exist on our wire format.
+	// Copilot / Cursor / OpenCode / Pi) — `is_error` does NOT exist on our wire format.
 	tool_outcome?: "success" | "error" | "interrupted";
 	/** Canonical diagnostic text for the failure. Populated from the most-
 	 *  specific provider field (Claude `tool_response.message`, Cursor

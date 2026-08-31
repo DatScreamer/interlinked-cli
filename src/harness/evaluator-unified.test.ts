@@ -356,6 +356,20 @@ describe("toHarnessEvent — copilot runner", () => {
 	});
 });
 
+describe("toHarnessEvent — runner attribution", () => {
+	it.each([
+		["claude-code", "claude"],
+		["copilot-cli", "copilot"],
+		["codex", "codex"],
+		["gemini-cli", "gemini"],
+		["cursor", "cursor"],
+		["opencode", "opencode"],
+		["pi", "pi"],
+	] as const)("maps %s to %s", (runner, expected) => {
+		expect(toHarnessEvent(makeEvent({ runner })).agent_source).toBe(expected);
+	});
+});
+
 describe("toHarnessEvent — non-claude runner event-name mapping", () => {
 	const phaseToName: Array<[UnifiedHookEvent["phase"], string]> = [
 		["pre-tool", "PreToolUse"],

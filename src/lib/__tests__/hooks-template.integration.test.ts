@@ -204,6 +204,37 @@ describe("buildHookScript", () => {
 		expect(res.status, `node --check rejected the hook script: ${res.stderr}`).toBe(0);
 	});
 
+	it("fails Claude WorktreeCreate without returning a replacement path", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-worktree-ban-"));
+		const interlinkedDir = join(tempDir, ".interlinked");
+		mkdirSync(interlinkedDir, { recursive: true });
+		writeFileSync(join(interlinkedDir, "config.local.json"), JSON.stringify({ sync_mode: "local" }));
+		const scriptPath = join(tempDir, "hook.mjs");
+		writeFileSync(scriptPath, buildHookScript("worktree-ban-test"));
+		const res = spawnSync(process.execPath, [scriptPath], {
+			input: JSON.stringify({
+				hook_event_name: "WorktreeCreate",
+				session_id: "worktree-ban",
+				cwd: tempDir,
+				name: "feature",
+			}),
+			encoding: "utf-8",
+			cwd: tempDir,
+			env: {
+				...process.env,
+				INTERLINKED_HOME: interlinkedDir,
+				INTERLINKED_DATA_DIR: interlinkedDir,
+				INTERLINKED_CLIENT: "claude",
+			},
+			timeout: 10_000,
+		});
+
+		expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+		expect(res.status).toBe(2);
+		expect(res.stdout).toBe("");
+		expect(res.stderr).toContain("Agent-created Git worktrees are disabled");
+	});
+
 	it("generated .mjs uses argv-form git invocations (no shell interpolation)", () => {
 		// Security regression guard for Vuln 1: reconcileCommits must never
 		// concatenate session_start_head or a commit hash into a shell string.
@@ -334,6 +365,293 @@ describe("buildHookScript", () => {
 		// causing denial messages to reach Cursor empty.
 		expect(String(parsed.agent_message || parsed.user_message || "")).toMatch(
 			/BLOCKED|recursive|rm -rf/i,
+		);
+	});
+
+	// THE OUTPUT RULE (2026-08-27): a hook with nothing to say writes ZERO
+	// BYTES. Printing "{}" is not silence — Codex renders one
+	// "PostToolUse hook (completed)" row per response, so an empty envelope on
+	// every clean tool call flooded the conversation, multiplied by every
+	// parallel command. These run the REAL generated hook and assert on its
+	// actual bytes, because that is the thing the user sees.
+	describe("clean hook output — zero bytes (must stay silent)", () => {
+		function runGeneratedHook(payload: Record<string, unknown>, client: string) {
+			const tempDir = mkdtempSync(join(tmpdir(), "interlinked-silent-"));
+			const interlinkedDir = join(tempDir, ".interlinked");
+			mkdirSync(interlinkedDir, { recursive: true });
+			writeFileSync(
+				join(interlinkedDir, "config.local.json"),
+				JSON.stringify({ sync_mode: "local", agent_name: "silence-test" }),
+			);
+			// A pid file naming a live process + a non-socket file keeps the
+			// heal/retry spin out of the test: the connect fails immediately.
+			writeFileSync(join(interlinkedDir, "harness.pid"), String(process.pid));
+			writeFileSync(join(interlinkedDir, "harness.sock"), "");
+			const scriptPath = join(tempDir, "hook.mjs");
+			writeFileSync(scriptPath, buildHookScript("test"));
+			return spawnSync(process.execPath, [scriptPath], {
+				input: JSON.stringify({ ...payload, cwd: tempDir }),
+				encoding: "utf-8",
+				cwd: tempDir,
+				env: {
+					...process.env,
+					INTERLINKED_HOME: interlinkedDir,
+					INTERLINKED_DATA_DIR: interlinkedDir,
+					INTERLINKED_CLIENT: client,
+				},
+				timeout: 20_000,
+			});
+		}
+
+		for (const client of ["claude", "codex"]) {
+			it(`N: a read-only PostToolUse writes no stdout and no stderr (${client})`, () => {
+				const res = runGeneratedHook(
+					{
+						hook_event_name: "PostToolUse",
+						session_id: "silent-readonly",
+						tool_name: "Read",
+						tool_input: { file_path: "/etc/hosts" },
+						tool_response: { ok: true },
+					},
+					client,
+				);
+				expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+				expect(res.stdout).toBe("");
+				expect(res.stderr).toBe("");
+			});
+
+			it(`N: a PostToolUse with the harness unreachable writes no stdout (${client})`, () => {
+				const res = runGeneratedHook(
+					{
+						hook_event_name: "PostToolUse",
+						session_id: "silent-no-harness",
+						tool_name: "Bash",
+						tool_input: { command: "echo hi" },
+						tool_response: { exit_code: 0 },
+					},
+					client,
+				);
+				expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+				expect(res.stdout).toBe("");
+			});
+		}
+
+		/** Run the generated hook against a fake daemon that answers every
+		 *  request with `reply`. Returns the hook's own stdout/stderr. */
+		async function runAgainstDaemon(
+			reply: Record<string, unknown>,
+			buildPayload: (dir: string) => Record<string, unknown>,
+			mutateScript?: (script: string) => string,
+		): Promise<{ stdout: string; stderr: string; requests: Array<Record<string, unknown>> }> {
+			// "il-" and nothing longer: the socket path must stay under macOS's
+			// sockaddr_un limit (104 bytes). Over it, listen() still succeeds and
+			// the socket file exists, but every connect fails — the hook then
+			// heals, falls back inline, and a silence assertion passes VACUOUSLY.
+			const tempDir = mkdtempSync(join(tmpdir(), "il-"));
+			const interlinkedDir = join(tempDir, ".interlinked");
+			mkdirSync(interlinkedDir, { recursive: true });
+			writeFileSync(join(interlinkedDir, "config.json"), JSON.stringify({ skip_paths: ["dist/**"] }));
+			writeFileSync(join(interlinkedDir, "config.local.json"), JSON.stringify({ sync_mode: "local" }));
+			const socketPath = join(interlinkedDir, "harness.sock");
+			// Track accepted sockets: server.close() waits on lingering
+			// connections, which hangs teardown if they are not destroyed.
+			const accepted: Array<{ destroy: () => void }> = [];
+			const requests: Array<Record<string, unknown>> = [];
+			const server = createServer((socket) => {
+				accepted.push(socket);
+				let received = "";
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk) => {
+					received += chunk;
+					const newline = received.indexOf("\n");
+					if (newline < 0) return;
+					requests.push(JSON.parse(received.slice(0, newline)) as Record<string, unknown>);
+					socket.end(`${JSON.stringify(reply)}\n`);
+				});
+			});
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(socketPath, resolve);
+			});
+			expect(existsSync(socketPath), `socket missing at ${socketPath} (len ${socketPath.length})`).toBe(true);
+			const scriptPath = join(tempDir, "hook.mjs");
+			const baseScript = buildHookScript("daemon-test");
+			const script = mutateScript ? mutateScript(baseScript) : baseScript;
+			// A mutation that matches nothing would silently test the fixed code.
+			if (mutateScript) expect(script).not.toBe(baseScript);
+			writeFileSync(scriptPath, script);
+			try {
+				const res = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+					const child = spawn(process.execPath, [scriptPath], {
+						cwd: tempDir,
+						env: {
+							...process.env,
+							INTERLINKED_HOME: interlinkedDir,
+							INTERLINKED_DATA_DIR: interlinkedDir,
+						},
+					});
+					let stdout = "";
+					let stderr = "";
+					child.stdout.on("data", (chunk: Buffer) => {
+						stdout += chunk.toString();
+					});
+					child.stderr.on("data", (chunk: Buffer) => {
+						stderr += chunk.toString();
+					});
+					child.on("error", reject);
+					child.on("close", () => resolve({ stdout, stderr }));
+					child.stdin.end(JSON.stringify({ ...buildPayload(tempDir), cwd: tempDir }));
+				});
+				return { stdout: res.stdout, stderr: res.stderr, requests };
+			} finally {
+				for (const s of accepted) s.destroy();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+		}
+
+		const editPayload = (dir: string) => ({
+			hook_event_name: "PostToolUse",
+			session_id: "daemon-answer",
+			tool_name: "Write",
+			tool_input: { file_path: join(dir, "dist/generated.ts"), content: "export const generated = true;" },
+			tool_response: {},
+		});
+
+		// The reviewer's finding: the response path tested `warnings.length > 0`
+		// BEFORE `decision === "block"`, so this exact reply — a decision the
+		// HarnessDecision type fully permits — was recorded as allow and its
+		// stdout suppressed. A swallowed block is the failure this system
+		// exists to prevent, so it gets a live pin against a real socket.
+		it("P: a daemon block with an EMPTY warnings array still reaches the model", async () => {
+			const { stdout, stderr, requests } = await runAgainstDaemon(
+				{ decision: "block", reason: "Mutation evidence is unsafe", warnings: [] },
+				editPayload,
+			);
+			// Prove the socket was actually used: a silent inline fallback would
+			// otherwise satisfy a silence assertion without ever reaching here.
+			expect(requests.length, `stderr=${stderr}`).toBeGreaterThan(0);
+			expect(stdout.trim(), `stderr=${stderr}`).not.toBe("");
+			const parsed = JSON.parse(stdout.trim());
+			const spoken = String(parsed.reason ?? parsed.hookSpecificOutput?.additionalContext ?? "");
+			expect(spoken).toContain("Mutation evidence is unsafe");
+		});
+
+		it("N: a clean result from a REAL answering daemon writes no stdout", async () => {
+			const { stdout, stderr, requests } = await runAgainstDaemon(
+				{ decision: "allow", summary: "[interlinked] all clean (12ms)", warnings: [] },
+				editPayload,
+			);
+			// Without this the test would pass vacuously: an inline fallback that
+			// never reaches the socket also prints nothing.
+			expect(requests.length, `stdout=[${stdout}] stderr=[${stderr}]`).toBeGreaterThan(0);
+			expect(stdout).toBe("");
+		});
+
+		// Proof the ordering fix is load-bearing: restore the pre-fix condition
+		// (warning count first) and the very same block is swallowed — recorded
+		// as clean, stdout empty. If this ever stops failing-when-reverted, the
+		// pin above has stopped testing anything.
+		it("KILL: with the pre-fix ordering the same block is silently swallowed", async () => {
+			const { stdout, requests } = await runAgainstDaemon(
+				{ decision: "block", reason: "Mutation evidence is unsafe", warnings: [] },
+				editPayload,
+				(script) =>
+					script.replace(
+						"if (isBlockingPostDecision || warnings.length > 0) {",
+						"if (warnings.length > 0) {",
+					),
+			);
+			expect(requests.length).toBeGreaterThan(0);
+			expect(stdout).toBe("");
+		});
+
+		it("P: a daemon WARNING from a real socket still reaches the model", async () => {
+			const { stdout } = await runAgainstDaemon(
+				{ decision: "allow", warnings: ["[interlinked:cyclomatic] fn too complex"] },
+				editPayload,
+			);
+			expect(stdout.trim()).not.toBe("");
+			expect(stdout).toContain("cyclomatic");
+		});
+
+		// A pin that passes against the broken code is worthless. This runs the
+		// generated hook with the PRE-FIX emission restored and asserts it
+		// produces exactly the noise the rule forbids — so the two silence
+		// tests above are proven to distinguish, not merely to pass.
+		it("KILL: restoring the pre-fix emission produces the '{}' row the rule forbids", () => {
+			const fixed = buildHookScript("test");
+			const NEW = 'writeProviderResponse("post_success", {});';
+			const OLD = 'console.log(JSON.stringify(formatProviderResponse("post_success", {})));';
+			expect(fixed).toContain(NEW);
+			const tempDir = mkdtempSync(join(tmpdir(), "interlinked-kill-"));
+			const interlinkedDir = join(tempDir, ".interlinked");
+			mkdirSync(interlinkedDir, { recursive: true });
+			writeFileSync(
+				join(interlinkedDir, "config.local.json"),
+				JSON.stringify({ sync_mode: "local", agent_name: "kill-test" }),
+			);
+			writeFileSync(join(interlinkedDir, "harness.pid"), String(process.pid));
+			writeFileSync(join(interlinkedDir, "harness.sock"), "");
+			const scriptPath = join(tempDir, "hook.mjs");
+			writeFileSync(scriptPath, fixed.replace(NEW, OLD));
+			const res = spawnSync(process.execPath, [scriptPath], {
+				input: JSON.stringify({
+					hook_event_name: "PostToolUse",
+					session_id: "kill",
+					tool_name: "Read",
+					tool_input: { file_path: "/etc/hosts" },
+					tool_response: { ok: true },
+					cwd: tempDir,
+				}),
+				encoding: "utf-8",
+				cwd: tempDir,
+				env: {
+					...process.env,
+					INTERLINKED_HOME: interlinkedDir,
+					INTERLINKED_DATA_DIR: interlinkedDir,
+					INTERLINKED_CLIENT: "codex",
+				},
+				timeout: 20_000,
+			});
+			expect(res.stdout.trim()).toBe("{}");
+		});
+
+		it("P: a PreToolUse block still writes its reason (silence must not swallow a block)", () => {
+			const res = runGeneratedHook(
+				{
+					hook_event_name: "PreToolUse",
+					session_id: "block-must-speak",
+					tool_name: "Bash",
+					tool_input: { command: "rm -rf /" },
+				},
+				"claude",
+			);
+			expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+			expect(res.stdout.trim()).not.toBe("");
+			const parsed = JSON.parse(res.stdout.trim());
+			const reason = String(parsed.hookSpecificOutput?.permissionDecisionReason ?? parsed.reason ?? "");
+			expect(reason).toMatch(/BLOCKED/i);
+		});
+
+		it.each(["opencode", "pi"])(
+			"P: the %s managed-bridge fallback detects its provider and blocks a destructive tool call",
+			(client) => {
+				const res = runGeneratedHook(
+					{
+						hook_event_name: "PreToolUse",
+						session_id: `${client}-bridge-block`,
+						tool_name: "Bash",
+						tool_input: { command: "git worktree add ../feature feature" },
+					},
+					client,
+				);
+				expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+				const parsed = JSON.parse(res.stdout.trim());
+				expect(parsed.hookSpecificOutput?.permissionDecision).toBe("deny");
+				expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+					/worktrees are disabled/i,
+				);
+			},
 		);
 	});
 

@@ -9,7 +9,7 @@
 // `doctor.ts`.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	DEFAULT_HARNESS_MODE,
 	type HarnessMode,
@@ -25,9 +25,9 @@ import {
 } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
 import { readGuardDisable } from "../lib/guard-state.js";
-import { isInterlinkedHookCommand } from "../lib/hook-ownership.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
 import { isJsonObject } from "../lib/json-types.js";
+import { clientHookTargets } from "../lib/settings.js";
 import { functionTokenCapConfigIssue } from "../harness/metric-caps.js";
 import {
 	defaultSettingsPaths,
@@ -265,53 +265,52 @@ export function hookVersionChecks(cwd: string, fix: boolean): CheckResult[] {
 }
 
 /** Build the per-client hooks CheckResult from a settings file's content.
- *  Asks the SAME predicate every installer and cleanup path uses
- *  (`hook-ownership.ts::HOOK_COMMAND_MARKERS`) instead of re-stating a marker
- *  here. The hardcoded `"interlinked-activity"` it replaces was a confirmed
- *  false-negative (audit F3): `enable` writes `hook-entry.js` commands that
- *  never contain that substring, so doctor told users with a correct install
- *  to re-run a command that could not change the outcome. */
-function clientHookResult(clientName: string, content: string): CheckResult {
-	if (isInterlinkedHookCommand(content)) {
-		return { name: `${clientName} hooks`, status: "pass", message: "Hooks installed" };
-	}
-	return {
-		name: `${clientName} hooks`,
-		status: "warn",
-		message: "Settings file exists but no Interlinked CLI hooks -- run 'interlinked enable'",
-	};
-}
+ *  Moved to doctor-install-drift.ts (this file is over its line cap): PARSES
+ *  the document and asks the shared ownership walk — the shell-command
+ *  recognizer never sees serialized JSON (review 2026-08-30 final pass). */
+import { clientHookResult } from "./doctor-install-drift.js";
 
-/** Client hooks installed (5) — Claude Code / Gemini CLI / Codex CLI. Clients
- *  whose dir is absent are skipped entirely. */
+/** Codex runs hooks only when `.codex/config.toml` carries `[features] hooks =
+ *  true` (legacy key: `codex_hooks`). Extracted to doctor-checks-codex.ts
+ *  (this file is over the size cap) — it now also FAILS on duplicate
+ *  [features] tables, which are invalid TOML Codex rejects wholesale. */
+import {
+	codexFeatureFlagResult,
+	codexRuntimeReceiptResult,
+} from "./doctor-checks-codex.js";
+
+/** Client hooks installed (5) — every client in the settings registry, so a
+ *  newly supported runner is covered the moment it is registered rather than
+ *  when someone remembers to add it here. Clients whose config dir is absent
+ *  are skipped entirely. Paths come from `clientHookTargets`; doctor must not
+ *  restate them (the hardcoded `.codex/config.toml` entry this replaces made
+ *  doctor warn about every correct Codex install). */
 export function clientHookChecks(cwd: string): CheckResult[] {
-	const clientChecks: Array<{ name: string; dir: string; settingsFile: string }> = [
-		{ name: "Claude Code", dir: ".claude", settingsFile: "settings.json" },
-		{ name: "Gemini CLI", dir: ".gemini", settingsFile: "settings.json" },
-		{ name: "Codex CLI", dir: ".codex", settingsFile: "config.toml" },
-	];
 	const out: CheckResult[] = [];
-	for (const client of clientChecks) {
-		const clientDir = join(cwd, client.dir);
-		if (!existsSync(clientDir)) continue; // Skip clients that aren't present
+	for (const client of clientHookTargets(cwd)) {
+		if (!existsSync(client.configDir)) continue; // Skip clients that aren't present
 
-		const settingsPath = join(clientDir, client.settingsFile);
-		if (!existsSync(settingsPath)) {
+		if (!existsSync(client.settingsPath)) {
 			out.push({
-				name: `${client.name} hooks`,
+				name: `${client.label} hooks`,
 				status: "warn",
-				message: `${client.settingsFile} not found`,
+				message: `${basename(client.settingsPath)} not found`,
 			});
 			continue;
 		}
 		try {
-			out.push(clientHookResult(client.name, readFileSync(settingsPath, "utf-8")));
+			out.push(clientHookResult(client.label, readFileSync(client.settingsPath, "utf-8")));
 		} catch {
 			out.push({
-				name: `${client.name} hooks`,
+				name: `${client.label} hooks`,
 				status: "warn",
 				message: "Could not read settings file",
 			});
+		}
+		if (client.name === "codex") {
+			const flag = codexFeatureFlagResult(client.configDir);
+			if (flag) out.push(flag);
+			out.push(codexRuntimeReceiptResult(cwd));
 		}
 	}
 	return out;

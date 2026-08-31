@@ -2,16 +2,24 @@
 // Client Discovery
 // ===========================================
 // Detects local AI coding clients and their settings locations.
-// To add a new client (Cursor, Copilot, Opencode, Amp, etc.):
+// To add a new client (Amp, Kiro, etc.):
 //   1. Add the name to ClientName
 //   2. Add an entry to CLIENT_CONFIGS
-//   3. Add install/uninstall functions in hooks.ts
-//   4. Add a normalizer + detector in the generated hook script
+//   3. Add a RunnerAdapter and capability description
+//   4. Wire its lifecycle into CLIENT_INSTALL_REGISTRY in hooks.ts
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { RunnerId } from "../harness/unified-event.js";
 
-export type ClientName = "claude" | "copilot" | "gemini" | "codex" | "cursor";
+export type ClientName =
+	| "claude"
+	| "copilot"
+	| "gemini"
+	| "codex"
+	| "cursor"
+	| "opencode"
+	| "pi";
 
 interface ClientConfig {
 	name: ClientName;
@@ -19,6 +27,11 @@ interface ClientConfig {
 	configDir: string;
 	settingsFile: string;
 	inputMethod: "stdin" | "argv";
+	/** Project-root files that prove the client is configured even before its
+	 *  hook/plugin directory exists. */
+	detectionFiles?: readonly string[];
+	/** Provider-native environment markers for the currently running client. */
+	detectFromEnv?: (env: NodeJS.ProcessEnv) => boolean;
 }
 
 /**
@@ -65,9 +78,36 @@ const CLIENT_CONFIGS: ClientConfig[] = [
 		settingsFile: "hooks.json",
 		inputMethod: "stdin",
 	},
+	{
+		name: "opencode",
+		label: "OpenCode",
+		// OpenCode auto-loads project-local JavaScript/TypeScript plugins from
+		// `<project>/.opencode/plugins/`. The Interlinked bridge is an owned
+		// plugin file rather than a settings.json fragment.
+		configDir: ".opencode",
+		settingsFile: "plugins/interlinked.ts",
+		inputMethod: "stdin",
+		detectionFiles: ["opencode.json", "opencode.jsonc"],
+		detectFromEnv: (env) =>
+			Object.entries(env).some(
+				([name, value]) =>
+					name.startsWith("OPENCODE") && typeof value === "string" && value.length > 0,
+			),
+	},
+	{
+		name: "pi",
+		label: "Pi",
+		// Pi auto-loads project extensions from `<project>/.pi/extensions/`.
+		// The generated extension forwards native events to the shared hook
+		// entry point over stdin.
+		configDir: ".pi",
+		settingsFile: "extensions/interlinked.js",
+		inputMethod: "stdin",
+		detectFromEnv: (env) =>
+			env.AI_AGENT?.trim().toLowerCase() === "pi" || Boolean(env.PI_CODING_AGENT),
+	},
 	// Future client shapes (documented for extension; NOT commented-out code —
 	// each line below is an example of a ClientConfig entry you might add):
-	//   Example: opencode → configDir: ".opencode", settingsFile: "config.json",   inputMethod: "stdin"
 	//   Example: amp      → configDir: ".amp",      settingsFile: "settings.json", inputMethod: "stdin"
 ];
 
@@ -81,10 +121,56 @@ function getClientSettingsPath(cwd: string, client: ClientConfig): string {
 	return join(cwd, client.configDir, client.settingsFile);
 }
 
-export function detectClients(cwd: string): DetectedClient[] {
+export function detectClients(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): DetectedClient[] {
 	return CLIENT_CONFIGS.map((config) => ({
 		name: config.name,
 		settingsPath: getClientSettingsPath(cwd, config),
-		exists: existsSync(join(cwd, config.configDir)),
+		exists:
+			existsSync(join(cwd, config.configDir)) ||
+			config.detectionFiles?.some((path) => existsSync(join(cwd, path))) === true ||
+			config.detectFromEnv?.(env) === true,
+	}));
+}
+
+/** Maps a legacy `ClientName` id to the adapter `RunnerId` vocabulary. The two
+ *  id sets diverge: the adapter layer uses `claude-code` / `copilot-cli` /
+ *  `gemini-cli` where the legacy client layer uses `claude` / `copilot` /
+ *  `gemini`. It lives HERE, beside the client registry it keys, so a caller
+ *  that only needs the id translation does not have to import the hook
+ *  INSTALLER — `enable`'s tests mock that module wholesale, which would make a
+ *  pure lookup table un-importable at test time. */
+export const CLIENT_TO_RUNNER: Record<ClientName, RunnerId> = {
+	claude: "claude-code",
+	copilot: "copilot-cli",
+	gemini: "gemini-cli",
+	codex: "codex",
+	cursor: "cursor",
+	opencode: "opencode",
+	pi: "pi",
+};
+
+/** One hook-config location per supported client, resolved against `cwd`.
+ *
+ *  Reporting surfaces (doctor) must read this rather than restate paths: the
+ *  hardcoded copy in `doctor-checks.ts` had Codex pointing at
+ *  `.codex/config.toml` — which only carries the `[features] hooks = true`
+ *  flag, never the hook commands — so doctor warned that every CORRECT Codex
+ *  install was missing its hooks, and told the user to re-run a command that
+ *  could not change the outcome. Same class as audit F3; the cure is one
+ *  source of truth, not a second correction. */
+export function clientHookTargets(cwd: string): Array<{
+	name: ClientName;
+	label: string;
+	configDir: string;
+	settingsPath: string;
+}> {
+	return CLIENT_CONFIGS.map((config) => ({
+		name: config.name,
+		label: config.label,
+		configDir: join(cwd, config.configDir),
+		settingsPath: getClientSettingsPath(cwd, config),
 	}));
 }
