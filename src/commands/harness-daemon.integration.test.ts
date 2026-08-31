@@ -32,6 +32,16 @@ vi.mock("node:fs", () => ({
 	unlinkSync: mocks.unlinkSync,
 }));
 
+// This test owns daemon stderr wiring, not the startup-lock protocol. Keep the
+// lease successful so the detached child reaches `unref()`; startup-lock races
+// and transfer failures have dedicated suites.
+vi.mock("../harness/startup-lock.js", () => ({
+	acquireStartupLock: vi.fn(() => ({ acquired: true, path: "/repo/.interlinked/.harness-start.lock", release: vi.fn() })),
+	touchStartupLockHolder: vi.fn(),
+	transferStartupLock: vi.fn(() => true),
+	waitForDaemonSocket: vi.fn(),
+}));
+
 import { nonNull } from "../lib/non-null.js";
 import { harnessStartCommand } from "./harness.js";
 
