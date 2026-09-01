@@ -22,20 +22,10 @@ import {
 } from "../tool-class-classifier.js";
 import type { UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
+import { installedEventNames, OPENCODE2_CAPABILITIES } from "./provider-capabilities.js";
 import type { AdapterOutput, PostInstallOptions, RunnerAdapter, SettingsFragment } from "./types.js";
 
-const NATIVE_EVENTS = [
-	"tool.execute.before",
-	"tool.execute.after",
-	"session.created",
-	"session.deleted",
-	"session.idle",
-	"PreToolUse",
-	"PostToolUse",
-	"SessionStart",
-	"SessionEnd",
-	"Stop",
-] as const;
+const NATIVE_EVENTS = installedEventNames(OPENCODE2_CAPABILITIES);
 
 const PHASE_MAP: Record<string, UnifiedPhase> = {
 	"tool.execute.before": "pre-tool",
@@ -58,6 +48,8 @@ export function createOpencode2Adapter(opts: OpencodeAdapterOptions = {}): Runne
 	return {
 		id: "opencode2",
 		label: "OpenCode v2",
+		experimental: true,
+		capabilities: OPENCODE2_CAPABILITIES,
 		nativeEventNames: NATIVE_EVENTS,
 
 		detectFromEnv(env) {
