@@ -1,4 +1,11 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -50,8 +57,12 @@ describe("append-safe suffix replacement", () => {
 
 	it("refuses to replace a different inode than the caller planned", () => {
 		const expected = fileIdentity(path);
-		rmSync(path);
-		writeFileSync(path, "foreign\n");
+		const foreignPath = join(dir, "foreign.jsonl");
+		writeFileSync(foreignPath, "foreign\n");
+		const foreign = fileIdentity(foreignPath);
+		expect(foreign).not.toEqual(expected);
+		renameSync(foreignPath, path);
+		expect(fileIdentity(path)).toEqual(foreign);
 		expect(() => replaceFileWithSuffix(path, 0, { expectedSource: expected })).toThrow(
 			FileIdentityChangedError,
 		);

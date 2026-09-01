@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import type { ProjectGraph } from "./project-graph.js";
 import type { RouteMap } from "./route-map.js";
 import type { SessionTracker } from "./session-state.js";
@@ -147,8 +148,11 @@ describe("preCheckTestFirst — mutation kills", () => {
 
 	// test-contract: invariant — once a discovered test file has actually been run this session, the nudge falls silent (the terminal empty-array branch).
 	it("returns [] once the discovered test file has been run this session", () => {
-		const source = "/Users/quentincody/interlinked-cli/src/harness/structural-checks.ts";
-		const testFile = "/Users/quentincody/interlinked-cli/src/harness/structural-checks.test.ts";
+		// Resolve the real colocated source/test pair from this module. A hardcoded
+		// developer checkout path made discovery return null on Linux and in any
+		// clone outside /Users/quentincody.
+		const source = join(import.meta.dirname, "structural-checks.ts");
+		const testFile = join(import.meta.dirname, "structural-checks.test.ts");
 		const c = { ...baseConfig(), test_first: true };
 		const s = session({ test_runs: new Map([[testFile, { status: "pass", at_step: 1 }]]) });
 		const out = preCheckTestFirst(
