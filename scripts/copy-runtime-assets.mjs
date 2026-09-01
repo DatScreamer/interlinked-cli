@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // Runtime assets that must accompany the bundled JS in `dist/`. The OPF
 // content-scanner's default config (`harness/rules/default-config.ts`)
@@ -11,15 +11,15 @@ import { dirname, join } from "node:path";
 const ASSETS = [
 	{
 		from: "src/harness/content-scanner/sidecars/opf-sidecar.py",
-		to: "dist/sidecars/opf-sidecar.py",
+		to: "sidecars/opf-sidecar.py",
 	},
 	{
 		from: "src/harness/content-scanner/sidecars/calibrations/default.json",
-		to: "dist/sidecars/calibrations/default.json",
+		to: "sidecars/calibrations/default.json",
 	},
 	{
 		from: "src/harness/content-scanner/sidecars/calibrations/high_precision.json",
-		to: "dist/sidecars/calibrations/high_precision.json",
+		to: "sidecars/calibrations/high_precision.json",
 	},
 	// (Skill SKILL.md bodies are bundled dynamically below — every skills/<name>/.)
 	// Side-loaded npm popular-packages allowlist — read at runtime by
@@ -27,25 +27,20 @@ const ASSETS = [
 	// Refreshable via `scripts/refresh-npm-popular.mjs` without rebuild.
 	{
 		from: "src/harness/checks/data/npm-popular-packages.json",
-		to: "dist/checks/data/npm-popular-packages.json",
+		to: "checks/data/npm-popular-packages.json",
 	},
 	// The viz dashboard — a self-contained HTML asset served by `interlinked viz`
 	// at runtime via `resolveVizAsset` (which probes `dist/viz/index.html`).
 	{
 		from: "src/lib/viz/web/index.html",
-		to: "dist/viz/index.html",
+		to: "viz/index.html",
+	},
+	// Live mutation-run lens (one row per measurement; SSE /api/mutation-runs).
+	{
+		from: "src/lib/viz/web/mutation-runs.html",
+		to: "viz/mutation-runs.html",
 	},
 ];
-
-for (const asset of ASSETS) {
-	const src = join(process.cwd(), asset.from);
-	const dest = join(process.cwd(), asset.to);
-	if (!existsSync(src)) {
-		throw new Error(`Runtime asset missing: ${asset.from}`);
-	}
-	mkdirSync(dirname(dest), { recursive: true });
-	copyFileSync(src, dest);
-}
 
 function copyDirectory(sourceRoot, destinationRoot) {
     for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
@@ -64,14 +59,29 @@ function copyDirectory(sourceRoot, destinationRoot) {
     }
 }
 
-// Bundle every complete skill directory so optional agents metadata, scripts,
-// references, and assets remain available in published installs.
-const skillsRoot = join(process.cwd(), "skills");
-if (existsSync(skillsRoot)) {
-	for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;
-		const source = join(skillsRoot, entry.name);
-		if (!existsSync(join(source, "SKILL.md"))) continue;
-		copyDirectory(source, join(process.cwd(), "dist", "skills", entry.name));
-	}
+export function copyRuntimeAssets(
+    outputDirectory = join(process.cwd(), "dist"),
+    sourceRoot = process.cwd(),
+) {
+    const outputRoot = resolve(outputDirectory);
+    for (const asset of ASSETS) {
+        const src = join(sourceRoot, asset.from);
+        const dest = join(outputRoot, asset.to);
+        if (!existsSync(src)) {
+            throw new Error(`Runtime asset missing: ${asset.from}`);
+        }
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(src, dest);
+    }
+
+    // Bundle every complete skill directory so optional agents metadata, scripts,
+    // references, and assets remain available in published installs.
+    const skillsRoot = join(sourceRoot, "skills");
+    if (!existsSync(skillsRoot)) return;
+    for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const source = join(skillsRoot, entry.name);
+        if (!existsSync(join(source, "SKILL.md"))) continue;
+        copyDirectory(source, join(outputRoot, "skills", entry.name));
+    }
 }

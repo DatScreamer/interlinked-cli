@@ -11,9 +11,11 @@
 			"!**/.wrangler/**",
 			"!**/.stryker-tmp/**",
 			"!coverage/**",
+			"!scratch/**",
 			"!**/reports/mutation/**",
 			"!.interlinked/quarantine-*/**",
 			"!.claude/workflows/**",
+			"!.claude/worktrees/**",
 			"!.interlinked/hooks/**"
 		]
 	},

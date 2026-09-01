@@ -60,6 +60,19 @@
         "reason": "User-requested Codex Security scan of interlinked-cli",
         "version_range": "0.1.1",
         "license": "Apache-2.0"
+      },
+      "ajv": {
+        "approved_at": "2026-08-30T19:14:41.663Z",
+        "approved_by": "claude-fable-session",
+        "reason": "protocol v3 schema-conformance validator (reviewer order 2026-08-31: declare as direct pinned devDependency)",
+        "license": "MIT"
+      },
+      "@types/node": {
+        "approved_at": "2026-08-31T20:27:17.253Z",
+        "approved_by": "codex",
+        "reason": "Existing CLI type dependency and interlinked-cloud protocol source typing",
+        "version_range": "=20.19.33",
+        "license": "MIT"
       }
     },
     "pypi": {},
@@ -73,16 +86,14 @@
   },
   "lockfile_snapshots": {
     "package.json": {
-      "sha256": "222764ea625be109aaf95851e68c59306ab6c289ee67e52f285f6d675095c82e",
-      "approved_at": "2026-08-17T22:35:34.910Z",
-      "approved_by": "fable-runner-repair",
-      "reason": "re-approve committed manifest state (post 2d674f4 audit fixes); runner worktree is byte-identical"
+      "sha256": "ad2045134eb0363651d2f97d6c515cabbf693bab545564fdb0fae3f05d024a3a",
+      "approved_at": "2026-09-01T00:55:50.313Z",
+      "approved_by": "quentincody"
     },
     "package-lock.json": {
-      "sha256": "0c6c5d67b0d7dd29ab4b75f9196cef80a4b2a580f9700246051dfdbde4c232ea",
-      "approved_at": "2026-08-17T22:35:34.910Z",
-      "approved_by": "fable-runner-repair",
-      "reason": "re-approve committed manifest state (post 2d674f4 audit fixes); runner worktree is byte-identical"
+      "sha256": "b4ec508f4c9264f62304265ef2d01bf134fb8f5fafa7482f92f7d3c4715f94c7",
+      "approved_at": "2026-09-01T00:55:50.314Z",
+      "approved_by": "quentincody"
     }
   }
 }

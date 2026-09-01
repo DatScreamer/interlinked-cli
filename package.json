@@ -68,7 +68,7 @@
         "interlinked-hook": "./dist/hook-entry.js"
     },
     "scripts": {
-        "build": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/harness/check-engine/tool-runners/tsc-overlay-sidecar-main.ts src/lib/demo-runtime/index.ts src/lib/viz/reporter-vitest.ts --format esm --dts --clean && node scripts/fix-dist-dts.mjs && node scripts/copy-runtime-assets.mjs",
+        "build": "node scripts/build-atomic-cli.mjs",
         "build:watch": "tsup src/index.ts src/hook-entry.ts src/harness/server.ts src/harness/replay/inference-proxy.ts src/harness/check-engine/tool-runners/tsc-overlay-sidecar-main.ts src/lib/demo-runtime/index.ts src/lib/viz/reporter-vitest.ts --format esm --watch",
         "dev": "tsx src/index.ts",
         "typecheck": "tsgo --noEmit",
@@ -103,6 +103,7 @@
     },
     "devDependencies": {
         "@biomejs/biome": "2.4.13",
+        "ajv": "8.18.0",
         "@stryker-mutator/core": "^9.6.1",
         "@stryker-mutator/vitest-runner": "^9.6.1",
         "@types/node": "20.19.33",

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mutation Runs</title>
+<style>
+:root{
+  --ground:#F2F4F3; --panel:#FFFFFF; --line:#D3DAD6; --ink:#1A2320; --muted:#5C6A63;
+  --killed:#1E7A52; --killedBg:#E2F1E9; --survived:#B33830; --survivedBg:#F8E7E5;
+  --accent:#8A6412; --accentBg:#F5EAD0;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --ground:#10151A; --panel:#1A222B; --line:#2A343E; --ink:#D9E2E8; --muted:#7D8C97;
+    --killed:#49A97C; --killedBg:#17352A; --survived:#E4574F; --survivedBg:#3B1F1D;
+    --accent:#E8B44C; --accentBg:#3A2F17;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:system-ui,sans-serif;line-height:1.45}
+.wrap{max-width:1000px;margin:0 auto;padding:24px 18px 60px}
+h1{font-size:24px;margin:0 0 2px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 14px;min-width:96px}
+.stat .n{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;font-size:22px;font-weight:600}
+.stat .l{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.stat.k .n{color:var(--killed)} .stat.s .n{color:var(--survived)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line)}
+th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+td.num{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}
+td .chip{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:999px;padding:2px 8px}
+.chip.per-edit{background:var(--accentBg);color:var(--accent)}
+.chip.harvest{background:var(--killedBg);color:var(--killed)}
+.chip.script{background:var(--survivedBg);color:var(--survived)}
+td .surv{color:var(--survived);font-weight:600}
+td .clean{color:var(--killed);font-weight:600}
+/* Adoption is NOT clean (review 2026-08-28 item 2): a first sighting's zero
+   survivors says only that the floor started empty. Neutral, never green. */
+td .baseline{color:var(--muted,#8b8b94);font-weight:600}
+.chip.adopted{background:var(--panelAlt,#26262e);color:var(--muted,#8b8b94)}
+tr.fresh{animation:flash 1.2s ease-out}
+@keyframes flash{from{background:var(--accentBg)}to{}}
+@media (prefers-reduced-motion: reduce){tr.fresh{animation:none}}
+.empty{color:var(--muted);padding:20px;text-align:center}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--killed);margin-right:6px}
+.dot.off{background:var(--survived)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Mutation Runs</h1>
+<div class="sub"><span class="dot" id="dot"></span><span id="state">connecting</span> &middot; one row per observed run &mdash; per-edit gate, harvest, and scripted sweeps land in the same stream; a harvest row can be PARTIAL (survivor-only), so a row is not proof of a complete measurement</div>
+<div class="stats" id="stats"></div>
+<table>
+<thead><tr><th>when</th><th>source</th><th>file</th><th class="num">mutants</th><th class="num">killed</th><th class="num">survived</th><th class="num">shards</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="empty">no runs yet &mdash; edit a gated file or start a scripted round</td></tr></tbody>
+</table>
+</div>
+<script>
+const rows = document.getElementById("rows");
+const statsEl = document.getElementById("stats");
+const RUN_SOURCES = new Set(["per-edit", "harvest", "script"]);
+const RUN_OUTCOMES = new Set(["baseline_adopted", "measured_clean", "finding", "harvest_partial"]);
+let runs = [];
+function safeCount(value){ return Number.isSafeInteger(value) && value >= 0 ? value : 0; }
+function normalizeRow(value){
+  if (!value || typeof value !== "object" || typeof value.file !== "string") return null;
+  return {
+    ts: typeof value.ts === "string" ? value.ts : "",
+    file: value.file,
+    source: RUN_SOURCES.has(value.source) ? value.source : "unknown",
+    mutants: safeCount(value.mutants),
+    killed: safeCount(value.killed),
+    survived: safeCount(value.survived),
+    shards: value.shards === undefined ? "" : safeCount(value.shards),
+    partial: value.partial === true,
+    outcome: RUN_OUTCOMES.has(value.outcome) ? value.outcome : null,
+  };
+}
+function fmt(ts){ const d = new Date(ts); return Number.isNaN(d.getTime()) ? "unknown" : d.toLocaleTimeString(); }
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+function stats(){
+  const t = runs.length, surv = runs.reduce((a,r)=>a+(r.survived||0),0);
+  const mut = runs.reduce((a,r)=>a+(r.mutants||0),0), kill = runs.reduce((a,r)=>a+(r.killed||0),0);
+  statsEl.innerHTML =
+    `<div class="stat"><div class="n">${t}</div><div class="l">runs</div></div>`+
+    `<div class="stat"><div class="n">${mut}</div><div class="l">mutants</div></div>`+
+    `<div class="stat k"><div class="n">${kill}</div><div class="l">killed</div></div>`+
+    `<div class="stat s"><div class="n">${surv}</div><div class="l">survivors</div></div>`;
+}
+// Never infer clean from survived === 0 (review 2026-08-28 item 2): an
+// adoption row's zero says only that the floor STARTED empty, and a legacy row
+// without an outcome cannot prove clean either — both render neutral. Only a
+// row that ATTESTS measured_clean earns the green class. Extracted as a named
+// function so viz tests can pin it (feeds.test.ts).
+function rowSurvClass(r){
+  if (safeCount(r.survived) > 0) return "surv";
+  return r.outcome === "measured_clean" ? "clean" : "baseline";
+}
+function renderRowHtml(r){
+  const svClass = rowSurvClass(r);
+  const badge = r.outcome === "baseline_adopted" ? `<span class="chip adopted" title="first sighting — floor recorded, not certified clean">baseline</span>` : "";
+  return `<td>${esc(fmt(r.ts))}</td>`+
+    `<td><span class="chip ${esc(r.source)}">${esc(r.source)}</span>${badge}</td>`+
+    `<td>${esc(r.file)}</td>`+
+    `<td class="num">${r.partial ? "&ge;" + r.mutants : r.mutants}</td>`+
+    `<td class="num">${r.killed}</td>`+
+    `<td class="num"><span class="${svClass}">${r.survived}</span></td>`+
+    `<td class="num">${r.shards}</td>`;
+}
+function add(value, fresh){
+  const r = normalizeRow(value);
+  if (r === null) return;
+  runs.push(r);
+  if (runs.length === 1) rows.innerHTML = "";
+  const tr = document.createElement("tr");
+  if (fresh) tr.className = "fresh";
+  tr.innerHTML = renderRowHtml(r);
+  rows.prepend(tr);
+  stats();
+}
+const es = new EventSource("/api/mutation-runs");
+const dot = document.getElementById("dot"), state = document.getElementById("state");
+es.onopen = () => { dot.className = "dot"; state.textContent = "live"; };
+es.onerror = () => { dot.className = "dot off"; state.textContent = "reconnecting"; };
+es.onmessage = (m) => { try { add(JSON.parse(m.data), runs.length > 0) } catch {} };
+</script>
+</body>
+</html>

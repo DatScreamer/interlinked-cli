@@ -1,11 +1,15 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const STUBS = ["dist/index.d.ts", "dist/harness/server.d.ts"];
+const STUBS = ["index.d.ts", "harness/server.d.ts"];
 
-for (const rel of STUBS) {
-	const path = join(process.cwd(), rel);
-	if (existsSync(path)) {
-		writeFileSync(path, "export {};\n");
-	}
+// Public build-finalizer seam consumed by the failure-atomic distribution builder.
+export function fixDistDts(outputDirectory = join(process.cwd(), "dist")) {
+    const outputRoot = resolve(outputDirectory);
+    for (const rel of STUBS) {
+        const path = join(outputRoot, rel);
+        if (existsSync(path)) {
+            writeFileSync(path, "export {};\n");
+        }
+    }
 }
