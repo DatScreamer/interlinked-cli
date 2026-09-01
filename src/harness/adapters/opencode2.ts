@@ -116,7 +116,7 @@ export function createOpencode2Adapter(opts: OpencodeAdapterOptions = {}): Runne
 		renderSettingsFragment(_binaryPath, scope): SettingsFragment {
 			const path =
 				scope === "user"
-					? `~/.config/opencode-v2/opencode/plugins/${OPENCODE_PLUGIN_FILENAME}`
+					? `~/.config/opencode/plugins/${OPENCODE_PLUGIN_FILENAME}`
 					: `.opencode/plugins/${OPENCODE_PLUGIN_FILENAME}`;
 			return {
 				path,

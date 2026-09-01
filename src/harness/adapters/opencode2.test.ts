@@ -15,7 +15,7 @@ describe("OpenCode adapter identity", () => {
 		expect(project.path).toBe(".opencode/plugins/interlinked-opencode2.ts");
 		expect(project.fileContent).toContain("interlinked-opencode2");
 		expect(adapter.renderSettingsFragment("/bin/hook", "user").path).toBe(
-			"~/.config/opencode-v2/opencode/plugins/interlinked-opencode2.ts",
+			"~/.config/opencode/plugins/interlinked-opencode2.ts",
 		);
 	});
 });

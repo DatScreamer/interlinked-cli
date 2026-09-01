@@ -31,8 +31,7 @@ export function opencodePluginRelPath(): string {
 export function getOpencodePluginPath(cwd: string, scope: "user" | "project" | "local" = "project"): string {
 	if (scope === "user") {
 		const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
-		// opencode2's `plugin list` loads ~/.config/opencode/plugins/*.js
-		return join(home, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME.replace(/\.ts$/, ".js"));
+		return join(home, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME);
 	}
 	return join(cwd, ".opencode", "plugins", OPENCODE_PLUGIN_FILENAME);
 }
@@ -55,7 +54,7 @@ function pluginPaths(cwd: string): string[] {
 		join(projectDir, "interlinked.js"),
 		join(projectDir, "interlinked.ts"),
 		join(v1UserDir, "interlinked.js"),
-		join(v1UserDir, OPENCODE_PLUGIN_FILENAME),
+		join(v1UserDir, "interlinked-opencode2.js"),
 		join(v1UserDir, "interlinked.ts"),
 	];
 }
@@ -75,11 +74,11 @@ function pluginIsOurs(path: string): boolean {
  */
 export function installOpencode2Hooks(cwd: string, _hookScriptPath: string): void {
 	const project = getOpencodePluginPath(cwd, "project");
-	const userJs = getOpencodePluginPath(cwd, "user");
+	const userPlugin = getOpencodePluginPath(cwd, "user");
 	writePlugin(project);
-	writePlugin(userJs);
+	writePlugin(userPlugin);
 	for (const leftover of pluginPaths(cwd)) {
-		if (leftover === project || leftover === userJs) continue;
+		if (leftover === project || leftover === userPlugin) continue;
 		if (!pluginIsOurs(leftover)) continue;
 		rmSync(leftover, { force: true });
 	}
