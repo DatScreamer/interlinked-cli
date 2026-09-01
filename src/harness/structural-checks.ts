@@ -28,11 +28,7 @@ import type { SessionTracker } from "./session-state.js";
 import { checkImportCycles } from "./structural-checks/cycles.js";
 import { checkDeadExports } from "./structural-checks/dead-exports.js";
 import { checkUndefinedEnvVars } from "./structural-checks/env-vars.js";
-import {
-	checkExportRippleCompilation,
-	checkExportSurface,
-	checkRippleTests,
-} from "./structural-checks/export-surface.js";
+import { checkExportSurface } from "./structural-checks/export-surface.js";
 import {
 	exportSurfaceChanged,
 	extractFilePath,
@@ -116,22 +112,10 @@ export function runStructuralChecks(
 		const exportResults = checkExportSurface(filePath, relPath, oldExports, graph);
 		results.push(...exportResults);
 
-		// Tier 3: Ripple compilation check — verify affected importers still compile
-		// Only triggered when export surface actually changed and there are affected files.
-		const affectedFromExportSurface = exportResults.flatMap((r) => r.affectedFiles || []);
-		if (affectedFromExportSurface.length > 0) {
-			results.push(
-				...checkExportRippleCompilation(
-					filePath,
-					relPath,
-					affectedFromExportSurface,
-					graph,
-				),
-			);
-
-			// Also run tests for the edited file if a test file exists
-			results.push(...checkRippleTests(filePath, relPath, graph));
-		}
+		// Compilation and test execution are owned by the async quality phase.
+		// Calling the legacy ripple helpers here synchronously version-probed the
+		// full tool catalog, spawned tsc once per importer, and ran duplicate
+		// Vitest work on the daemon's only event loop.
 	}
 
 	// Tier 1: Import resolution

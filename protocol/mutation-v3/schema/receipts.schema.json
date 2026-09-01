@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://interlinked.quentincody.dev/protocol/mutation-v3/receipts.schema.json",
+  "title": "Interlinked mutation protocol v3 — signed receipts",
+  "description": "A receipt is {payload, signature}: signature = Ed25519 over utf8(canonicalJson({key_id, payload})) — key_id is INSIDE the signed bytes; the envelope binds sha256(canonicalJson(payload)). canonicalJson is the Interlinked Canonical JSON profile (see README). Verifier invariants beyond this schema (receipts.ts / verify.ts): the signing key must carry the payload kind as a PURPOSE; the key validity window is checked against the payload's signed timestamp (issued_at, or occurred_at for terminalization); the result envelope signer must equal the execution signer on the execution arm or the terminalization signer on the control arm; every cross-echo in the README must hold exactly.",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "imageDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?(Z|[+-]\\d{2}:\\d{2})$" },
+    "boundedString": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "fullCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repoPath": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*//)[^\\\\]+$" },
+    "sourceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "artifact_id", "sha256", "bytes"],
+      "properties": {
+        "format": { "const": "git-archive-tar-v1" },
+        "artifact_id": { "type": "string", "pattern": "^src_[A-Za-z0-9][A-Za-z0-9_-]{2,124}$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 }
+      }
+    },
+    "policyId": { "type": "string", "pattern": "^policy-[a-z0-9][a-z0-9-]{1,62}$" },
+    "scopeMode": { "enum": ["import_graph", "companion_fallback", "glob_fallback"] },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant", "project", "repository", "commit", "target_file", "target_content_hash", "job_key"],
+      "properties": {
+        "tenant": { "$ref": "#/$defs/boundedString" },
+        "project": { "$ref": "#/$defs/boundedString" },
+        "repository": { "$ref": "#/$defs/boundedString" },
+        "commit": { "$ref": "#/$defs/fullCommit" },
+        "target_file": { "$ref": "#/$defs/repoPath" },
+        "target_content_hash": { "$ref": "#/$defs/sha256" },
+        "job_key": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "value"],
+      "properties": {
+        "key_id": { "$ref": "#/$defs/boundedString" },
+        "value": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "acceptancePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_version", "kind", "protocol_version", "issued_at", "job", "approved_policy_ids", "policy_version", "request_hash", "test_scope_hash", "quota_reservation_id", "changeset_hash", "source_artifact", "intended_image_digest", "intended_engine_config_hash", "intended_scope_mode"],
+      "$comment": "issued_at is the signed key-window anchor.",
+      "properties": {
+        "receipt_version": { "const": "1" },
+        "kind": { "const": "acceptance" },
+        "protocol_version": { "const": "interlinked-mutation/3.0" },
+        "issued_at": { "$ref": "#/$defs/rfc3339" },
+        "job": { "$ref": "#/$defs/job" },
+        "approved_policy_ids": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/policyId" } },
+        "policy_version": { "$ref": "#/$defs/boundedString" },
+        "request_hash": { "$ref": "#/$defs/sha256" },
+        "test_scope_hash": { "$ref": "#/$defs/sha256" },
+        "quota_reservation_id": { "$ref": "#/$defs/boundedString" },
+        "changeset_hash": { "$ref": "#/$defs/sha256" },
+        "source_artifact": { "$ref": "#/$defs/sourceArtifact" },
+        "intended_image_digest": { "$ref": "#/$defs/imageDigest" },
+        "intended_engine_config_hash": { "$ref": "#/$defs/sha256" },
+        "intended_scope_mode": { "$ref": "#/$defs/scopeMode" }
+      }
+    },
+    "executionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_version", "kind", "issued_at", "acceptance_receipt_hash", "source_artifact", "job_key", "attempt_id", "image_digest", "engine_name", "engine_version", "engine_config_hash", "lockfile_hash", "runtime_identity", "package_manager_identity", "test_command_hash", "test_selection_algorithm", "selected_test_hash", "selected_test_count"],
+      "properties": {
+        "receipt_version": { "const": "1" },
+        "kind": { "const": "execution" },
+        "issued_at": { "$ref": "#/$defs/rfc3339" },
+        "acceptance_receipt_hash": { "$ref": "#/$defs/sha256" },
+        "source_artifact": { "$ref": "#/$defs/sourceArtifact" },
+        "job_key": { "$ref": "#/$defs/boundedString" },
+        "attempt_id": { "$ref": "#/$defs/boundedString" },
+        "image_digest": { "$ref": "#/$defs/imageDigest" },
+        "engine_name": { "$ref": "#/$defs/boundedString" },
+        "engine_version": { "$ref": "#/$defs/boundedString" },
+        "engine_config_hash": { "$ref": "#/$defs/sha256" },
+        "lockfile_hash": { "$ref": "#/$defs/sha256" },
+        "runtime_identity": { "$ref": "#/$defs/boundedString" },
+        "package_manager_identity": { "$ref": "#/$defs/boundedString" },
+        "test_command_hash": { "$ref": "#/$defs/sha256" },
+        "test_selection_algorithm": { "$ref": "#/$defs/boundedString" },
+        "selected_test_hash": { "$ref": "#/$defs/sha256" },
+        "selected_test_count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "terminalizationPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_version", "kind", "job_key", "acceptance_receipt_hash", "terminal_state", "actor", "authority", "reason_code", "occurred_at", "policy_version"],
+      "properties": {
+        "receipt_version": { "const": "1" },
+        "kind": { "const": "terminalization" },
+        "job_key": { "$ref": "#/$defs/boundedString" },
+        "acceptance_receipt_hash": { "$ref": "#/$defs/sha256" },
+        "terminal_state": { "$ref": "#/$defs/boundedString" },
+        "actor": { "$ref": "#/$defs/boundedString" },
+        "authority": { "$ref": "#/$defs/boundedString" },
+        "reason_code": { "$ref": "#/$defs/boundedString" },
+        "occurred_at": { "$ref": "#/$defs/rfc3339" },
+        "policy_version": { "$ref": "#/$defs/boundedString" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payload", "signature"],
+  "properties": {
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/acceptancePayload" },
+        { "$ref": "#/$defs/executionPayload" },
+        { "$ref": "#/$defs/terminalizationPayload" }
+      ]
+    },
+    "signature": { "$ref": "#/$defs/signature" }
+  }
+}

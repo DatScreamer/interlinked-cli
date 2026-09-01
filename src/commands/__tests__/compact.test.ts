@@ -1,12 +1,103 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { Command } from "commander";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * A CONCURRENT compactor, simulated at the one instant that matters: between
+ * our sequence scan and our segment claim. `race.segment` names the segment
+ * basename the rival claims; the first hard-link publication whose path matches
+ * finds the rival's bytes already there.
+ *
+ * `vi.mock` + `vi.hoisted` rather than `vi.spyOn(fs, …)`: spying on node:fs
+ * throws "Module namespace is not configurable in ESM" (same workaround as
+ * src/lib/__tests__/local-activity.mutation-kill-w34.test.ts). Every other call
+ * passes straight through to the real fs.
+ */
+const race = vi.hoisted(() => ({
+	segment: null as string | null,
+	content: Buffer.from("rival-compactor-segment-bytes"),
+	/** Basenames of every write/link/rename destination, in call order. */
+	writes: [] as string[],
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	const writeFileSyncPassthrough = (...args: Parameters<typeof actual.writeFileSync>): void => {
+		const [file, data, options] = args;
+		const path = String(file);
+		race.writes.push(path.slice(path.lastIndexOf("/") + 1));
+		actual.writeFileSync(file, data, options);
+	};
+	const linkSyncPassthrough = (...args: Parameters<typeof actual.linkSync>): void => {
+		const [, destination] = args;
+		const path = String(destination);
+		const name = path.slice(path.lastIndexOf("/") + 1);
+		race.writes.push(name);
+		if (race.segment !== null && name === race.segment) {
+			race.segment = null; // the rival wins the race exactly once
+			actual.writeFileSync(path, race.content);
+		}
+		actual.linkSync(...args);
+	};
+	const renameSyncPassthrough = (...args: Parameters<typeof actual.renameSync>): void => {
+		const [, destination] = args;
+		const path = String(destination);
+		race.writes.push(path.slice(path.lastIndexOf("/") + 1));
+		actual.renameSync(...args);
+	};
+	return {
+		...actual,
+		linkSync: linkSyncPassthrough,
+		renameSync: renameSyncPassthrough,
+		writeFileSync: writeFileSyncPassthrough,
+	};
+});
+
 import { computeEntryHash, GENESIS_HASH, verifyAuditChain } from "../../lib/audit-chain.js";
+import { MAX_SYNC_STATE_BYTES } from "../../lib/local-activity-sync.js";
 import { nonNull } from "../../lib/non-null.js";
-import { compactCommand, loadArchiveManifest, registerCompactCommand } from "../compact.js";
+import {
+	MAX_ARCHIVE_MANIFEST_BYTES,
+	readArchiveManifestJson,
+} from "../compact-plain.js";
+import {
+	compactCommand,
+	loadArchiveManifest,
+	loadOrRebuildArchiveManifest,
+	registerCompactCommand,
+} from "../compact.js";
+
+afterEach(() => {
+	race.segment = null;
+	race.writes.length = 0;
+});
+
+/** Run a compaction with console.log captured, so fixtures stay quiet. */
+async function quiet(run: () => Promise<void>): Promise<string[]> {
+	const out: string[] = [];
+	const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
+	try {
+		await run();
+	} finally {
+		log.mockRestore();
+	}
+	return out;
+}
 
 function writeLog(records: object[]): { tempDir: string; dataDir: string; content: string } {
 	const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-"));
@@ -64,6 +155,21 @@ describe("interlinked compact", () => {
 		setSync(dataDir, 0);
 		await compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 10 });
 		expect(loadArchiveManifest(tempDir).segments.length).toBe(0);
+		expect(existsSync(join(dataDir, "archive"))).toBe(false);
+	});
+
+	it("refuses a stale sync cursor beyond the live EOF without archiving current bytes", async () => {
+		const { tempDir, dataDir, content } = writeLog(
+			Array.from({ length: 20 }, (_, i) => ({ type: "tool_use", i })),
+		);
+		setSync(dataDir, Buffer.byteLength(content) + 1);
+		const out = await quiet(() =>
+			compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 }),
+		);
+
+		const result = JSON.parse(nonNull(out[0]));
+		expect(result.reason).toContain("cursor invalidated");
+		expect(readFileSync(join(dataDir, "activity.jsonl"), "utf8")).toBe(content);
 		expect(existsSync(join(dataDir, "archive"))).toBe(false);
 	});
 
@@ -261,6 +367,25 @@ describe("interlinked compact", () => {
 			log.mockRestore();
 		}
 		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.synced_bytes).toBe(0);
+		expect(parsed.reason).toBe("no synced data yet — pass --all to compact a local-only log");
+	});
+
+	it("refuses an oversized sync-state document before trusting its cursor", async () => {
+		const { tempDir, dataDir } = writeLog(
+			Array.from({ length: 10 }, (_, i) => ({ type: "tool_use", i })),
+		);
+		const oversized = JSON.stringify({ synced_through_bytes: 123 }).padEnd(
+			MAX_SYNC_STATE_BYTES + 1,
+			" ",
+		);
+		writeFileSync(join(dataDir, "sync-state.json"), oversized);
+
+		const [line] = await quiet(() =>
+			compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 }),
+		);
+		const parsed = JSON.parse(nonNull(line));
 		expect(parsed.compacted).toBe(false);
 		expect(parsed.synced_bytes).toBe(0);
 		expect(parsed.reason).toBe("no synced data yet — pass --all to compact a local-only log");
@@ -500,6 +625,16 @@ describe("loadArchiveManifest — malformed manifest handling", () => {
 		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
 	});
 
+	it("refuses to materialize an archive manifest beyond the bounded reader limit", () => {
+		const tempDir = withManifest("{}");
+		const path = join(tempDir, ".interlinked", "archive", "manifest.json");
+		truncateSync(path, MAX_ARCHIVE_MANIFEST_BYTES + 1);
+		expect(() => readArchiveManifestJson(path)).toThrow(
+			`limit ${MAX_ARCHIVE_MANIFEST_BYTES}`,
+		);
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
 	// --- parseArchiveManifest / parseArchiveSegment boundary parser ---
 
 	const VALID_SEGMENT = {
@@ -542,6 +677,36 @@ describe("loadArchiveManifest — malformed manifest handling", () => {
 	it("N4: a segments array containing null still yields an empty manifest", () => {
 		const tempDir = withManifest(JSON.stringify({ version: 1, segments: [null] }));
 		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("rejects an unknown manifest version instead of interpreting it as v1", () => {
+		const tempDir = withManifest(JSON.stringify({ version: 2, segments: [VALID_SEGMENT] }));
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("rejects segment paths and prefixes outside the activity archive namespace", () => {
+		for (const file of ["../activity-0001.jsonl.gz", "collection-0001.jsonl.gz"]) {
+			const tempDir = withManifest(
+				JSON.stringify({ version: 1, segments: [{ ...VALID_SEGMENT, file }] }),
+			);
+			expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+		}
+	});
+
+	it("rejects a segment whose filename sequence contradicts its row", () => {
+		const bad = { ...VALID_SEGMENT, file: "activity-0002.jsonl.gz" };
+		const tempDir = withManifest(JSON.stringify({ version: 1, segments: [bad] }));
+		expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+	});
+
+	it("rejects negative or fractional segment counters", () => {
+		for (const bad of [
+			{ ...VALID_SEGMENT, bytes: -1 },
+			{ ...VALID_SEGMENT, records: 1.5 },
+		]) {
+			const tempDir = withManifest(JSON.stringify({ version: 1, segments: [bad] }));
+			expect(loadArchiveManifest(tempDir)).toEqual({ version: 1, segments: [] });
+		}
 	});
 
 	// --- per-field type-guard MC/DC: each field wrong in isolation, all others valid,
@@ -704,8 +869,12 @@ describe("registerCompactCommand — CLI wiring", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-cli-default-"));
 		const dataDir = join(tempDir, ".interlinked");
 		mkdirSync(dataDir, { recursive: true });
-		writeFileSync(join(dataDir, "activity.jsonl"), '{"type":"tool_use","i":1}\n');
-		writeFileSync(join(dataDir, "sync-state.json"), JSON.stringify({ synced_through_bytes: 27 }));
+		const content = '{"type":"tool_use","i":1}\n';
+		writeFileSync(join(dataDir, "activity.jsonl"), content);
+		writeFileSync(
+			join(dataDir, "sync-state.json"),
+			JSON.stringify({ synced_through_bytes: Buffer.byteLength(content) }),
+		);
 
 		const out: string[] = [];
 		const log = vi.spyOn(console, "log").mockImplementation((m) => void out.push(String(m)));
@@ -731,7 +900,7 @@ describe("registerCompactCommand — CLI wiring", () => {
 		registerCompactCommand(program);
 		const cmd = nonNull(program.commands.find((command) => command.name() === "compact"));
 		expect(cmd.description()).toBe(
-			"Gzip + archive the synced prefix of activity.jsonl (lossless), reclaiming disk",
+			"Gzip + archive the synced prefix of activity.jsonl plus the collection/timeline logs (lossless), reclaiming disk",
 		);
 		const flags = new Map(cmd.options.map((o) => [o.long, o.description]));
 		expect(flags.get("--dry-run")).toBe("Show what would be archived without changing anything");
@@ -740,5 +909,315 @@ describe("registerCompactCommand — CLI wiring", () => {
 			"Archive past the recent tail even when un-synced (local-only / disk recovery; archived events won't be sent to the server)",
 		);
 		expect(flags.get("--json")).toBe("Machine-readable output");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Corrupt-index recovery for the ACTIVITY archive.
+//
+// This archive is the one with a real product reader: `interlinked audit
+// verify` walks manifest.json to find the segments the hash chain spans
+// (src/lib/audit-chain.ts::iterateArchivedAuditLines). A segment missing from
+// the index is therefore evidence the verifier never reads.
+//
+// The two halves of that story are deliberately opposite, and BOTH are pinned
+// below: the WRITER rebuilds a lost index from the segment filenames so the
+// next compaction cannot orphan older segments, while the VERIFIER keeps
+// failing closed on a manifest it cannot read (ManifestReadError) — it is never
+// allowed to reconstruct its own evidence list. Recovery restores the pointers
+// so the verifier can read the segments again; it never asserts they are
+// intact. `P4` below verifies AFTER a successful recovery-write, when the
+// manifest on disk is valid again.
+// ---------------------------------------------------------------------------
+
+const plainRecords = (from: number, n: number): object[] =>
+	Array.from({ length: n }, (_, i) => ({ type: "tool_use", i: from + i }));
+
+/** A log holding three real hash-chain links separated by plain records, plus
+ *  the byte offset just past the FIRST link (where compaction #1 cuts). */
+function chainedLog(): { tempDir: string; dataDir: string; content: string; afterLink1: number } {
+	const l1 = { type: "guard_allow", previousHash: GENESIS_HASH, n: 1 };
+	const link1 = { ...l1, hash: computeEntryHash(l1) };
+	const l2 = { type: "guard_allow", previousHash: link1.hash, n: 2 };
+	const link2 = { ...l2, hash: computeEntryHash(l2) };
+	const l3 = { type: "guard_allow", previousHash: link2.hash, n: 3, last: true };
+	const link3 = { ...l3, hash: computeEntryHash(l3) };
+	const records = [
+		...plainRecords(0, 6),
+		link1,
+		...plainRecords(10, 6),
+		link2,
+		...plainRecords(20, 6),
+		link3,
+		...plainRecords(30, 2),
+	];
+	const { tempDir, dataDir, content } = writeLog(records);
+	const throughLink1 = `${records
+		.slice(0, 7)
+		.map((r) => JSON.stringify(r))
+		.join("\n")}\n`;
+	return { tempDir, dataDir, content, afterLink1: Buffer.byteLength(throughLink1) };
+}
+
+interface LostIndexFixture {
+	tempDir: string;
+	dataDir: string;
+	content: string;
+	seg1Path: string;
+	seg1Before: Buffer;
+}
+
+/**
+ * The reviewer's reproduction: compact once (segment 1 = through link1), lose
+ * the index while every segment survives on disk, compact again.
+ */
+async function compactWithLostIndex(): Promise<LostIndexFixture> {
+	const { tempDir, dataDir, content, afterLink1 } = chainedLog();
+	const total = Buffer.byteLength(content);
+	setSync(dataDir, total);
+	// keepRecentBytes chosen so the cut lands exactly on the boundary after link1.
+	await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: total - afterLink1 }));
+
+	const seg1Path = join(dataDir, "archive", "activity-0001.jsonl.gz");
+	const seg1Before = readFileSync(seg1Path);
+	expect(gunzipSync(seg1Before).toString("utf-8")).toBe(content.slice(0, afterLink1));
+
+	// The INDEX is destroyed (a truncated write, a crashed writer, disk
+	// corruption) while every segment file survives untouched.
+	writeFileSync(join(dataDir, "archive", "manifest.json"), "{not valid json");
+
+	const liveAfter1 = readFileSync(join(dataDir, "activity.jsonl"));
+	setSync(dataDir, liveAfter1.length);
+	await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1 }));
+	return { tempDir, dataDir, content, seg1Path, seg1Before };
+}
+
+describe("activity archive — corrupt-index recovery (writer side)", () => {
+	it("P1: rebuilds the lost index — the manifest ends up indexing BOTH the old and the new segment", async () => {
+		const { tempDir } = await compactWithLostIndex();
+		const manifest = loadArchiveManifest(tempDir);
+		// Pre-fix this was [2]: the corrupt manifest degraded to an EMPTY segment
+		// list, so the manifest written after the second compaction listed only
+		// the segment that compaction had just created. activity-0001.jsonl.gz
+		// stayed on disk with no pointer to it.
+		expect(manifest.segments.map((s) => s.seq)).toEqual([1, 2]);
+		expect(manifest.segments.map((s) => s.file)).toEqual([
+			"activity-0001.jsonl.gz",
+			"activity-0002.jsonl.gz",
+		]);
+	});
+
+	it("P2: flags the reconstructed row `recovered` with zeroed counts, never fabricated ones", async () => {
+		const { tempDir, seg1Path } = await compactWithLostIndex();
+		const manifest = loadArchiveManifest(tempDir);
+		const recovered = nonNull(manifest.segments[0]);
+		expect(recovered.recovered).toBe(true);
+		// bytes / records / created_at lived ONLY in the lost index — a reader must
+		// be able to tell a placeholder from a measurement.
+		expect(recovered.bytes).toBe(0);
+		expect(recovered.records).toBe(0);
+		expect(recovered.created_at).toBe("");
+		// gz_bytes is the one figure the disk still holds, so it is measured.
+		expect(recovered.gz_bytes).toBe(statSync(seg1Path).size);
+
+		const fresh = nonNull(manifest.segments[1]);
+		expect(fresh.recovered).toBeUndefined();
+		expect(fresh.bytes).toBeGreaterThan(0);
+		expect(fresh.records).toBeGreaterThan(0);
+	});
+
+	it("P3: leaves the pre-existing segment byte-identical and the whole archive lossless in index order", async () => {
+		const { tempDir, dataDir, content, seg1Path, seg1Before } = await compactWithLostIndex();
+		expect(readFileSync(seg1Path).equals(seg1Before)).toBe(true);
+
+		// Reading the segments in MANIFEST order plus the live tail must reproduce
+		// the original log byte-for-byte — the recovered row is in the right place,
+		// and nothing between the two segments went missing.
+		const manifest = loadArchiveManifest(tempDir);
+		const archived = manifest.segments
+			.map((s) => gunzipSync(readFileSync(join(dataDir, "archive", s.file))).toString("utf-8"))
+			.join("");
+		const live = readFileSync(join(dataDir, "activity.jsonl"), "utf-8");
+		expect(archived + live).toBe(content);
+	});
+
+	it("P4: `audit verify` still walks the full hash chain across the recovered segment", async () => {
+		const { tempDir } = await compactWithLostIndex();
+		// Pre-fix: the manifest listed only segment 2, so verification started at
+		// link2, whose previousHash is neither GENESIS nor the (never-read) link1
+		// hash — a previousHash mismatch. The archive's first link had become
+		// invisible evidence.
+		const result = verifyAuditChain(tempDir);
+		expect(result.first_bad_reason).toBeUndefined();
+		expect(result.valid).toBe(true);
+		expect(result.chained_events).toBe(3);
+	});
+
+	it("N1: an ABSENT manifest still means 'never compacted' — a stray segment is not recovered", async () => {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		setSync(dataDir, Buffer.byteLength(content));
+		mkdirSync(join(dataDir, "archive"), { recursive: true });
+		writeFileSync(join(dataDir, "archive", "activity-0007.jsonl.gz"), Buffer.from("stray"));
+		// No manifest.json at all: nothing was ever indexed, so nothing is recovered.
+		expect(loadOrRebuildArchiveManifest(tempDir).segments).toEqual([]);
+
+		await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 }));
+
+		const manifest = loadArchiveManifest(tempDir);
+		expect(manifest.segments.map((s) => s.seq)).toEqual([8]);
+		expect(manifest.segments.some((s) => s.recovered === true)).toBe(false);
+	});
+
+	it("N2: rebuilds only from ACTIVITY segment filenames — foreign files in the archive dir are ignored", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "interlinked-compact-rebuild-"));
+		const archiveDir = join(tempDir, ".interlinked", "archive");
+		mkdirSync(archiveDir, { recursive: true });
+		writeFileSync(join(archiveDir, "manifest.json"), "{not valid json");
+		writeFileSync(join(archiveDir, "activity-0002.jsonl.gz"), Buffer.from("two"));
+		writeFileSync(join(archiveDir, "activity-0001.jsonl.gz"), Buffer.from("one"));
+		// The plain-log namespace must NOT be pulled in: audit verify gunzips every
+		// segment manifest.json lists, so a collection segment there would make it
+		// read the whole tool-event history as if it were chain evidence.
+		writeFileSync(join(archiveDir, "collection-0001.jsonl.gz"), Buffer.from("nope"));
+		writeFileSync(join(archiveDir, "activity-12.jsonl.gz"), Buffer.from("nope"));
+		writeFileSync(join(archiveDir, "notes.txt"), Buffer.from("nope"));
+
+		const manifest = loadOrRebuildArchiveManifest(tempDir);
+		// Sorted by sequence, which is the order the verifier reads them in.
+		expect(manifest.segments.map((s) => s.file)).toEqual([
+			"activity-0001.jsonl.gz",
+			"activity-0002.jsonl.gz",
+		]);
+		expect(manifest.segments.every((s) => s.recovered === true)).toBe(true);
+	});
+});
+
+describe("activity archive — exclusive segment claim + write order", () => {
+	interface RacedFixture {
+		dataDir: string;
+		content: string;
+		total: number;
+		out: string[];
+	}
+
+	/** Compact while a concurrent compactor claims activity-0001.jsonl.gz first. */
+	async function racedCompaction(): Promise<RacedFixture> {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		const total = Buffer.byteLength(content);
+		setSync(dataDir, total);
+		race.segment = "activity-0001.jsonl.gz";
+		const out = await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 }));
+		return { dataDir, content, total, out };
+	}
+
+	it("P1: refuses the claim and reports it, instead of replacing the rival's segment", async () => {
+		const { dataDir, out } = await racedCompaction();
+		const parsed = JSON.parse(nonNull(out[0]));
+		expect(parsed.compacted).toBe(false);
+		expect(parsed.segment).toBe("activity-0001.jsonl.gz");
+		expect(parsed.reason).toContain("does not match its durable rotation claim");
+		// Pre-fix the write was tmp → rename, which overwrites: the rival's
+		// archived records were destroyed and the run reported success.
+		const onDisk = readFileSync(join(dataDir, "archive", "activity-0001.jsonl.gz"));
+		expect(onDisk.equals(race.content)).toBe(true);
+	});
+
+	it("P2: leaves the live log, the sync cursor and the index untouched when the claim is refused", async () => {
+		const { dataDir, content, total } = await racedCompaction();
+		// Destruction must never outrun a durable pointer to the archived bytes.
+		expect(readFileSync(join(dataDir, "activity.jsonl"), "utf-8")).toBe(content);
+		const sync = JSON.parse(readFileSync(join(dataDir, "sync-state.json"), "utf-8"));
+		expect(sync.synced_through_bytes).toBe(total);
+		expect(existsSync(join(dataDir, "archive", "manifest.json"))).toBe(false);
+	});
+
+	it("P3: claims the segment and publishes the index BEFORE the live prefix is dropped", async () => {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		const total = Buffer.byteLength(content);
+		setSync(dataDir, total);
+
+		race.writes.length = 0;
+		await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 }));
+
+		// Observed call order, not a reading of the source.
+		const segmentAt = race.writes.indexOf("activity-0001.jsonl.gz");
+		const manifestAt = race.writes.findIndex((w) => w.startsWith("manifest.json"));
+		const liveAt = race.writes.findIndex((w) => w === "activity.jsonl");
+		expect(segmentAt).toBeGreaterThanOrEqual(0); // hard-linked only after gzip completion
+		expect(manifestAt).toBeGreaterThanOrEqual(0);
+		expect(liveAt).toBeGreaterThanOrEqual(0);
+		// Pre-fix the order was segment.tmp → live → cursor → manifest, so a crash
+		// after the truncate lost the live bytes while the segment was unindexed.
+		expect(segmentAt).toBeLessThan(manifestAt);
+		expect(manifestAt).toBeLessThan(liveAt);
+
+		// End state is still a correct, lossless compaction.
+		const manifest = loadArchiveManifest(tempDir);
+		expect(manifest.segments.map((s) => s.file)).toEqual(["activity-0001.jsonl.gz"]);
+		const live = readFileSync(join(dataDir, "activity.jsonl"), "utf-8");
+		const archived = gunzipSync(readFileSync(join(dataDir, "archive", "activity-0001.jsonl.gz"))).toString("utf-8");
+		expect(archived + live).toBe(content);
+		expect(Buffer.byteLength(live)).toBeLessThan(total);
+	});
+
+	it("P: retry adopts a final segment published before a manifest-write crash", async () => {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		const total = Buffer.byteLength(content);
+		setSync(dataDir, total);
+		const archiveDir = join(dataDir, "archive");
+		mkdirSync(join(archiveDir, "manifest.json.tmp"), { recursive: true });
+
+		await expect(
+			quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 })),
+		).rejects.toThrow();
+		const segmentPath = join(archiveDir, "activity-0001.jsonl.gz");
+		expect(existsSync(segmentPath)).toBe(true);
+		expect(existsSync(join(archiveDir, "manifest.json"))).toBe(false);
+		expect(readFileSync(join(dataDir, "activity.jsonl"), "utf8")).toBe(content);
+
+		const late = `${JSON.stringify({ type: "tool_use", late: true })}\n`;
+		appendFileSync(join(dataDir, "activity.jsonl"), late);
+		rmSync(join(archiveDir, "manifest.json.tmp"), { recursive: true });
+		await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 }));
+
+		const gzipFiles = readdirSync(archiveDir).filter((name) => /^activity-\d{4}\.jsonl\.gz$/.test(name));
+		expect(gzipFiles).toEqual(["activity-0001.jsonl.gz"]);
+		expect(loadArchiveManifest(tempDir).segments.map((entry) => entry.file)).toEqual(gzipFiles);
+		const reassembled = Buffer.concat([
+			gunzipSync(readFileSync(segmentPath)),
+			readFileSync(join(dataDir, "activity.jsonl")),
+		]);
+		expect(reassembled.toString("utf8")).toBe(content + late);
+
+		await quiet(() =>
+			compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 1024 * 1024 }),
+		);
+		expect(readdirSync(archiveDir).filter((name) => name.endsWith(".jsonl.gz"))).toEqual(gzipFiles);
+		expect(loadArchiveManifest(tempDir).segments.map((entry) => entry.file)).toEqual(gzipFiles);
+	});
+
+	it("P4: the sync cursor is lowered before the truncate, so a crash re-sends rather than skips", async () => {
+		const records = Array.from({ length: 30 }, (_, i) => ({ type: "tool_use", i }));
+		const { tempDir, dataDir, content } = writeLog(records);
+		const total = Buffer.byteLength(content);
+		setSync(dataDir, total);
+
+		race.writes.length = 0;
+		const out = await quiet(() => compactCommand({ cwd: tempDir, json: true, keepRecentBytes: 20 }));
+
+		const cursorAt = race.writes.findIndex((w) => w.startsWith("sync-state.json"));
+		const liveAt = race.writes.findIndex((w) => w === "activity.jsonl");
+		expect(cursorAt).toBeGreaterThanOrEqual(0);
+		// A cursor left too HIGH over an already-shortened live file skips unsent
+		// records; too low only re-sends. So it must move first.
+		expect(cursorAt).toBeLessThan(liveAt);
+
+		const parsed = JSON.parse(nonNull(out[0]));
+		const sync = JSON.parse(readFileSync(join(dataDir, "sync-state.json"), "utf-8"));
+		expect(sync.synced_through_bytes).toBe(total - parsed.archived_bytes);
 	});
 });

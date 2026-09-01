@@ -41,6 +41,16 @@ const mockEngine = {
 			siblings?: ReadonlyArray<{ filePath: string; content: string }>,
 		) => CheckResult[]
 	>(),
+	// Typed variant (sidecar unavailable-vs-clean contract, 2026-08-26):
+	// diff-overlay now calls this one; delegate to the legacy mock so every
+	// existing mockReturnValue/assertion keeps working unchanged.
+	getTscDiagnosticsForOverlayTyped(
+		filePath: string,
+		content: string,
+		siblings?: ReadonlyArray<{ filePath: string; content: string }>,
+	): { status: "ok"; findings: CheckResult[] } {
+		return { status: "ok", findings: mockEngine.getTscDiagnosticsForOverlay(filePath, content, siblings) };
+	},
 	clearCache: vi.fn<() => void>(),
 };
 

@@ -7,17 +7,17 @@
 // take *seconds* to compute and cannot run inline on a PostToolUse hook
 // without blowing that budget.
 //
-// The pattern for those slow checks is: kick the work off asynchronously,
-// stash the result here keyed by session, and deliver it to the agent on a
-// *later* hook event folded into the decision's `additional_context`. This
-// module is that stash — nothing more. It is a deterministic, in-memory,
-// zero-I/O per-session queue.
+// The pattern for slow checks and background mutation results is: compute or
+// durably receive the finding off the hook path, stash its agent-facing
+// projection here keyed by session, and deliver it on a *later* hook event
+// folded into the decision's `additional_context`. This module is that
+// in-memory notification stash — nothing more.
 //
-// Intended integration (NOT yet wired — see below):
-//   - `enqueue()` is called by an async PostToolUse check once it finishes
-//     computing. The check formats its agent-facing string (already
-//     carrying its `[interlinked:...]` tag) and hands it over as a
-//     `DeferredFinding`.
+// Integration:
+//   - `enqueue()` is called by an async PostToolUse check once it finishes,
+//     or by the protocol-v3 mutation background delivery after its JSONL row
+//     is fsynced. The producer formats the agent-facing string (already
+//     carrying its `[interlinked:...]` tag) as a `DeferredFinding`.
 //   - `drain()` is called at the top of PreToolUse evaluation. Its results
 //     are folded into the harness decision's `additional_context` so the
 //     agent sees the deferred finding on its next turn — the same delivery
@@ -25,15 +25,10 @@
 //   - `clearSession()` is called on SessionEnd to drop a finished session's
 //     queue.
 //
-// A daemon restart loses all pending findings. That is acceptable: these
-// findings are advisory (they nudge, they never block), the underlying
-// async checks are idempotent and will recompute on the next relevant
-// edit, and persisting them would buy a stale snapshot for no real gain.
-//
-// IMPORTANT: this module is infrastructure built ahead of its consumers.
-// As of this commit there are NO enqueuers and it is NOT imported by
-// `server.ts`, the evaluator, or anything else in the harness. Wiring it
-// in is a deliberate follow-up.
+// A daemon restart loses this in-memory notification queue. Async checks can
+// recompute; protocol-v3 mutation findings remain in the versioned local
+// JSONL delivery feed keyed by their stable outbox id. The queue is advisory
+// presentation only and never retroactively blocks an edit.
 
 /**
  * A single deferred finding — the result of an async check, parked until a

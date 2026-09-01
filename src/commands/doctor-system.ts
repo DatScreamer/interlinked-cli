@@ -99,7 +99,15 @@ export function checkFreeMemoryGb(freeMemoryBytes: number): SystemCheckResult {
  * count across many directories suggests the user should run `harness clean`
  * to reclaim daemons attached to repos they're no longer working in.
  */
-export function checkOrphanHarnessCount(orphanCount: number): SystemCheckResult {
+export function checkOrphanHarnessCount(orphanCount: number | null): SystemCheckResult {
+	if (orphanCount === null) {
+		return {
+			name: "Orphan harness daemons",
+			status: "warn",
+			message:
+				"could not determine orphan count — the daemon probe failed; re-run, or check 'interlinked harness status'",
+		};
+	}
 	if (orphanCount === 0) {
 		return {
 			name: "Orphan harness daemons",
@@ -188,42 +196,48 @@ export function observeCliResolution(): CliResolution {
  * command consumes. Pure-shell side effects only happen inside; the
  * underlying primitives are unit-tested via the other exports above.
  */
-export function runSystemChecks(): SystemCheckResult[] {
+/**
+ * Orphan count from the canonical, protection-aware sweep — the one
+ * `harness status` and `harness reap` use. It resolves which daemons are
+ * actually ANSWERING over their sockets and excludes them, so the active
+ * daemon (re-parented to pid 1, like every daemon) is never counted.
+ *
+ * Public API — `doctor.ts` awaits this and passes the result to
+ * `runSystemChecks`. Best-effort: any failure yields 0 rather than a scary
+ * fabricated number, matching the fallback scan's contract.
+ */
+export async function countVerifiedOrphans(cwd: string): Promise<number | null> {
+	try {
+		const { reapOrphanHarnessesVerified } = await import("./harness-daemon-control.js");
+		const result = await reapOrphanHarnessesVerified(cwd, { dryRun: true });
+		return result.candidates.length;
+	} catch (e) {
+		void e;
+		// UNAVAILABLE, never 0. Returning 0 on a failed probe renders a green
+		// "0 orphans — auto-reaper working as expected" row for a question that
+		// was never answered, which is the same false-clean class the harness
+		// exists to prevent: a check that cannot run must say so, not pass.
+		return null;
+	}
+}
+
+export function runSystemChecks(orphanCount: number | null): SystemCheckResult[] {
 	const results: SystemCheckResult[] = [];
 	results.push(checkCpuCores(cpus().length));
 	results.push(checkFreeMemoryGb(freemem()));
-	results.push(checkOrphanHarnessCount(countOrphanHarnesses()));
+	// REQUIRED, not optional: the count comes from the one protection-aware
+	// sweep `harness status` and `harness reap` use, and `null` means the probe
+	// could not answer — rendered as "could not determine", never as zero.
+	// There is deliberately no local fallback scanner to fall back TO.
+	results.push(checkOrphanHarnessCount(orphanCount));
 	results.push(checkCliResolvable(observeCliResolution()));
 	return results;
 }
 
-/**
- * Count interlinked harness daemons whose parent has exited (ppid ≤ 1).
- * Best-effort: returns 0 on any `ps` failure rather than fabricating a
- * scary number. Mirrors the selection logic in
- * `commands/harness.ts:reapOrphanHarnesses` — keep them consistent if
- * either is updated.
- */
-function countOrphanHarnesses(): number {
-	try {
-		const ps = execSync("ps -ax -o pid=,ppid=,command= 2>/dev/null", {
-			encoding: "utf-8",
-			timeout: 2000,
-		});
-		let count = 0;
-		for (const line of ps.split("\n")) {
-			const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-			if (!m) continue;
-			const ppid = Number.parseInt(m[2] as string, 10);
-			const cmd = m[3] as string;
-			if (Number.isNaN(ppid)) continue;
-			if (ppid > 1) continue; // Has a living parent — not orphan
-			if (!cmd.includes("interlinked-cli/dist/harness/server")) continue;
-			count++;
-		}
-		return count;
-	} catch (e) {
-		void e;
-		return 0;
-	}
-}
+// The private `ps` scanner that used to live here is DELETED (2026-08-27).
+// It was a second definition of "orphan" that disagreed with the canonical
+// one: it counted every harness process whose parent had exited, which is
+// every daemon by definition, so a healthy machine was told it had an orphan
+// and offered a reap that would have killed the daemon doing the work. The one
+// answer now comes from `countVerifiedOrphans` → `reapOrphanHarnessesVerified`,
+// which resolves who is actually ANSWERING and protects them.

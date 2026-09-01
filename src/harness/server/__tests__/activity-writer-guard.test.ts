@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { verifyAuditChain } from "../../../lib/audit-chain.js";
 import { readLocalActivity } from "../../../lib/local-activity.js";
 import type { HarnessDecision, HarnessEvent } from "../../types.js";
 import { mapDecisionToGuardRecord, writeGuardDecisionRecord } from "../activity-writer.js";
@@ -79,6 +80,12 @@ describe("writeGuardDecisionRecord -- round-trips through readLocalActivity", ()
 			expect(recs[0]?.type).toBe("guard_block");
 			expect(recs[0]?.guard_rule_id).toBe("destructive");
 			expect(recs[0]?.tool_use_id).toBe("tu_1");
+			expect(verifyAuditChain(dir)).toMatchObject({
+				valid: true,
+				guard_events: 1,
+				chained_events: 1,
+				unchained_guard_events: 0,
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

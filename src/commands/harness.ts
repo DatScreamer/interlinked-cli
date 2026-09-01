@@ -4,7 +4,8 @@
 
 import { existsSync } from "node:fs";
 import { distStaleness, stalenessWarning } from "../harness/build-staleness.js";
-import { readRecentDaemonEvents, recordDaemonEvent } from "../harness/daemon-ledger.js";
+import { readRecentDaemonEvents } from "../harness/daemon-ledger.js";
+import { recordInheritedDaemonSpawn } from "../harness/handover-churn.js";
 import { detectEnforcementGaps, formatEnforcementGapWarning } from "../harness/enforcement-gap.js";
 import { acquireStartupLock } from "../harness/startup-lock.js";
 import { c, header, kvLine } from "../lib/formatter.js";
@@ -17,10 +18,11 @@ import {
 	classifyHarnessLiveness,
 	livenessStatusValue,
 	probeHarnessLive,
+	probeHarnessSocket,
 	zombieWarningLine,
 } from "./harness-liveness.js";
 import { reapOrphanHarnessesVerified, stopAllDaemons } from "./harness-daemon-control.js";
-import { reportRestartDecision, resolveRestartAction } from "./harness-restart-guard.js";
+import { beginRestartAttempt, failRestartAttempt, reportRestartDecision, resolveRestartAction } from "./harness-restart-guard.js";
 import {
 	buildHarnessSpawnArgs,
 	cleanStaleRestartFiles,
@@ -85,6 +87,8 @@ export async function harnessStartCommand(opts: {
 	json?: boolean;
 	protocol?: string;
 	sessionId?: string;
+	/** Internal restart handoff: the incumbent-safe build preflight already ran. */
+	buildFreshness?: "preflight_complete";
 }): Promise<void> {
 	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
@@ -103,39 +107,43 @@ export async function harnessStartCommand(opts: {
 	}
 
 	try {
-		// Reap BEFORE the already-running check. The reap below (line ~120) only
-		// ran on the spawn path, so the most common call in a long session — a
-		// hung-but-live daemon, `start` reports "already running", returns — never
-		// reaped anything. Orphans then accumulated for hours: measured
-		// 2026-07-28, one had been resident since 09:15 holding 743MB while the
-		// live daemon degraded for want of the memory it was sitting on. Reaping
-		// first makes every `start` a cleanup, which is what the docs already
-		// promise ("`interlinked harness start` reaps orphans and reports what it
-		// reaped").
-		// Liveness-verified: a daemon that ANSWERS its socket is never a reap
-		// victim, whatever `ps` or the pid files say.
-		const reaped = await reapOrphanHarnessesVerified(cwd);
-		const status = isHarnessRunning(cwd);
-		if (status.running) {
+		// A protocol round-trip outranks pid files. A healthy daemon can keep
+		// serving after its pid file is lost; reaping before this check used to
+		// classify that exact process as an orphan, kill it, and start a loop.
+		if (await probeHarnessSocket(cwd)) {
+			const liveStatus = isHarnessRunning(cwd);
+			recordInheritedDaemonSpawn(cwd, "refused", "daemon socket already serving");
 			output(
 				mode,
-				{ already_running: true, pid: status.pid, reaped: reaped.killed },
+				{ already_running: true, pid: liveStatus.pid, reaped: [] },
 				{
-					json: () => ({ status: "already_running", pid: status.pid, reaped: reaped.killed }),
+					json: () => ({ status: "already_running", pid: liveStatus.pid, reaped: [] }),
 					normal: () =>
-						reaped.killed.length > 0
-							? `Harness already running (PID ${status.pid}); reaped ${reaped.killed.length} orphan(s): ${reaped.killed.join(", ")}`
-							: `Harness already running (PID ${status.pid})`,
+						liveStatus.pid === undefined
+							? "Harness already running (socket answered; pid file unavailable)"
+							: `Harness already running (PID ${liveStatus.pid})`,
 				},
 			);
 			return;
 		}
 
-		// Auto-rebuild if source is newer than compiled dist
-		ensureDistFresh();
+		// Reap BEFORE the already-running check (2026-07-28: orphans accumulated
+		// for hours because the reap only ran on the spawn path — one held 743MB
+		// since 09:15 while the live daemon starved). Liveness-verified: a daemon
+		// that ANSWERS its socket is never a reap victim.
+		// A live PID without a protocol answer is a zombie, not readiness. Include
+		// the pid-file daemon in the verified takeover sweep; answering sockets
+		// were already protected above and are protected again inside the reaper.
+		const reaped = await reapOrphanHarnessesVerified(cwd, { killAll: true });
+
+		// A direct start owns its build preflight. Restart performs the same work
+		// before stopping the incumbent and marks the handoff so a second failed
+		// build cannot discover itself only after the old daemon is gone.
+		if (opts.buildFreshness !== "preflight_complete") ensureDistFresh({ quiet: mode === "json" });
 
 		const serverPath = getHarnessServerPath();
 		if (!serverPath || !existsSync(serverPath)) {
+			recordInheritedDaemonSpawn(cwd, "no_artifact", "harness server artifact missing");
 			outputError(
 				mode,
 				serverPath
@@ -147,12 +155,6 @@ export async function harnessStartCommand(opts: {
 
 		const nodePath = process.execPath; // Use the same Node binary running the CLI
 		const args = buildHarnessSpawnArgs(serverPath, cwd, protocol, sessionId, opts);
-
-		// Reap orphan daemons before binding our own socket. Without this,
-		// each `interlinked harness start` over a session lifetime accumulates
-		// a stale daemon (oldest seen in production: 28 daemons across 4 days,
-		// ~1.8 GB stale RSS). Serving daemons are protected (verified sweep).
-		await reapOrphanHarnessesVerified(cwd);
 
 		if (opts.daemon !== false) {
 			await daemonizeHarness({
@@ -168,6 +170,8 @@ export async function harnessStartCommand(opts: {
 			startHarnessForeground(mode, nodePath, args, cwd);
 		}
 	} catch (err) {
+		// Terminal for an inherited attempt: no successor is coming (idempotent).
+		recordInheritedDaemonSpawn(cwd, "start_failed", "start threw");
 		outputError(mode, err instanceof Error ? err.message : String(err));
 	} finally {
 		lock.release();
@@ -217,7 +221,7 @@ export async function harnessStopCommand(opts: { json?: boolean }): Promise<void
 				normal: () =>
 					survived.length > 0
 						? c.yellow(
-								`Stopped ${stopped.length} daemon(s); still running: ${survived.join(", ")}. Try: kill -9 ${survived.join(" ")}`,
+								`Stopped ${stopped.length} daemon(s); PID(s) ${survived.join(", ")} survived SIGKILL. Investigate process permissions or kernel state manually.`,
 							)
 						: c.green(`Harness stopped (${stopped.length} daemon(s): ${stopped.join(", ")})`),
 			},
@@ -249,25 +253,30 @@ export async function harnessRestartCommand(opts: {
 		// `stopRunningHarnessForRestart` — see harness-restart-guard.ts for the
 		// race this closes. Only "proceed"/"deferred-timeout" fall through to the
 		// stop+respawn sequence below; the other two verdicts are terminal.
+		// Attempt-ID protocol: adopt the inherited id (automatic handover) or
+		// mint one (manual restart), write the non-counting intent row — which
+		// also upgrades the daemon's `signal` exit to `explicit-restart` in
+		// `describeLastExit` — and keep the id in env for the daemon spawn.
+		const attemptId = beginRestartAttempt(cwd);
 		const decision = await resolveRestartAction(cwd);
 		if (decision.action !== "proceed") {
-			reportRestartDecision(mode, cwd, decision);
+			reportRestartDecision(mode, cwd, decision, { attemptId });
 			if (decision.action !== "deferred-timeout") return;
 		}
-		// A restart is a PLANNED exit. Record the intent first so the daemon's
-		// own `signal` exit row is upgraded to `explicit-restart` by
-		// `describeLastExit` — otherwise an operator restart is indistinguishable
-		// in the ledger from a reaper killing a healthy daemon (the storm).
-		recordDaemonEvent(cwd, {
-			at: Date.now(),
-			pid: process.pid,
-			event: "handover",
-			reason: "explicit-restart",
-		});
+		// Rebuild BEFORE stopping the incumbent, in both human and JSON modes.
+		// A compiler failure must leave the known-good daemon serving rather
+		// than turn a stale checkout into an avoidable guard outage. A source
+		// edit racing after this point belongs to the daemon's build watcher;
+		// deliberately do not start a second fallible build after the stop.
+		ensureDistFresh({ quiet: mode === "json" });
 		// SIGTERM → escalate to SIGKILL if wedged. The helper owns its stderr
-		// nudges and the survived-SIGKILL fatal error; on survival we abort.
+		// nudges and the survived-SIGKILL fatal error; on survival the terminal
+		// row resolves the attempt before aborting.
 		const { oldPid, survived } = await stopRunningHarnessForRestart(cwd, mode);
-		if (survived) return;
+		if (survived) {
+			failRestartAttempt(cwd, attemptId, "old daemon survived SIGKILL");
+			return;
+		}
 
 		await cleanStaleRestartFiles(cwd);
 
@@ -278,9 +287,10 @@ export async function harnessRestartCommand(opts: {
 		if (mode === "json") {
 			await lockedJsonRestartStart(cwd, opts, protocol, sessionId, oldPid, mode);
 		} else {
-			await harnessStartCommand(opts);
+			await harnessStartCommand({ ...opts, buildFreshness: "preflight_complete" });
 		}
 	} catch (err) {
+		recordInheritedDaemonSpawn(cwd, "start_failed", "restart threw"); // terminal (idempotent)
 		outputError(mode, err instanceof Error ? err.message : String(err));
 	}
 }
@@ -327,7 +337,13 @@ export async function harnessStatusCommand(opts: { json?: boolean }): Promise<vo
 		});
 
 		const result = {
+			// `running` means exactly "the legacy harness.pid names a live
+			// process" — NOT "the harness is serving" (that is `liveness`).
+			// `pid_running` is the unambiguous alias; in a framed-only
+			// deployment `running` can be false while liveness is "listening"
+			// (review 2026-08-26: both readings were possible before).
 			running: processStatus.running,
+			pid_running: processStatus.running,
 			liveness,
 			socket_answered: socketAnswered,
 			pid: processStatus.pid,

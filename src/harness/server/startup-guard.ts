@@ -30,6 +30,8 @@
 //    the survive handler and produced the zombie.
 
 import { type DaemonLedgerEvent, recordDaemonEvent } from "../daemon-ledger.js";
+import { consumeHandoverAttemptEnv } from "../handover-churn.js";
+import { releaseStartupLock } from "../startup-lock.js";
 import {
 	DaemonOwnershipConflictError,
 	type SessionDaemonHandle,
@@ -63,12 +65,20 @@ export interface StartupGuardOptions {
 	exit?: (code: number) => void;
 	/** Test seam — defaults to appending to `.interlinked/daemon-events.jsonl`. */
 	recordEvent?: (evt: DaemonLedgerEvent) => void;
+	/** Test seam — release the startup lease transferred to this daemon after
+	 *  it either becomes ready or terminates during startup. */
+	releaseStartup?: () => void;
 	/** Test seam — defaults to `installCrashResilience`. Creating the guard
 	 *  ARMS the process-level handlers with it, because the two are one
 	 *  policy: "survive once serving, die loudly before". Splitting them let
 	 *  the daemon run with survive-always semantics during startup, which is
 	 *  the bug (F1). */
 	install?: (opts: CrashResilienceOptions) => void;
+	/** Test seam — the handover attempt id this daemon was spawned to serve.
+	 *  Defaults to consuming (read + clear) {@link consumeHandoverAttemptEnv}
+	 *  from the real process env; stamped on the `listening` row so the churn
+	 *  counter can pair it with the parent's `spawned` row in either order. */
+	attemptId?: string;
 }
 
 /** Structurally satisfies `CrashResilienceOptions`, so the guard can be handed
@@ -100,15 +110,28 @@ export function createStartupGuard(opts: StartupGuardOptions): StartupGuard {
 	const exit = opts.exit ?? ((code: number) => process.exit(code));
 	const recordEvent =
 		opts.recordEvent ?? ((evt: DaemonLedgerEvent) => recordDaemonEvent(opts.cwd, evt));
+	const releaseStartup = opts.releaseStartup ?? (() => releaseStartupLock(opts.cwd));
 	// A listener this mode does not run is "already bound" — nothing to wait for.
 	const bound = { raw: !opts.runRaw, framed: !opts.runFramed };
 	let complete = false;
+	// Consumed (read + cleared) at guard creation, BEFORE any handover this
+	// daemon might itself spawn later copies process.env — see handover-churn.
+	const attemptId = opts.attemptId ?? consumeHandoverAttemptEnv();
 
 	const note = (which: "raw" | "framed"): void => {
 		bound[which] = true;
 		if (complete || !bound.raw || !bound.framed) return;
 		complete = true;
-		recordEvent({ at: Date.now(), pid: process.pid, event: "listening" });
+		try {
+			recordEvent({
+				at: Date.now(),
+				pid: process.pid,
+				event: "listening",
+				...(attemptId !== undefined ? { attempt_id: attemptId } : {}),
+			});
+		} finally {
+			releaseStartup();
+		}
 	};
 
 	const fail = (what: string, err: unknown): void => {
@@ -119,14 +142,25 @@ export function createStartupGuard(opts: StartupGuardOptions): StartupGuard {
 				"file while answering nothing, and every diagnostic would call it healthy. " +
 				"Auto-revive (or `interlinked harness start`) will spawn a working replacement.",
 		);
-		recordEvent({
-			at: Date.now(),
-			pid: process.pid,
-			event: "exit",
-			reason: STARTUP_FAILED_REASON,
-			detail: `${what}: ${firstLine(detail)}`,
-		});
-		exit(EXIT_STARTUP_FAILED);
+		try {
+			recordEvent({
+				at: Date.now(),
+				pid: process.pid,
+				event: "exit",
+				reason: STARTUP_FAILED_REASON,
+				detail: `${what}: ${firstLine(detail)}`,
+				// A startup-failed exit is TERMINAL for the attempt that spawned this
+				// daemon — the id on the row resolves it in the churn reducer, so the
+				// backstop never waits on a daemon that already died pre-listening.
+				...(attemptId !== undefined ? { attempt_id: attemptId } : {}),
+			});
+		} finally {
+			try {
+				releaseStartup();
+			} finally {
+				exit(EXIT_STARTUP_FAILED);
+			}
+		}
 	};
 
 	const guard: StartupGuard = {

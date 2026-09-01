@@ -59,11 +59,9 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		expect(endRel).toBeGreaterThan(0);
 
 		const body = rest.slice(0, endRel);
-		// Legacy removal stays — now via the dedup'd `removeFileIfExists` helper
-		// (server decomposition ce71204), or a bare `rmSync`. Either form removes
-		// the legacy PID; the assertion stays implementation-tolerant so a
-		// behavior-preserving refactor doesn't false-fail this safety regression.
-		expect(body).toMatch(/(?:rmSync|removeFileIfExists)\(PID_PATH\)/);
+		// Legacy removal stays, but is ownership-checked so a delayed shutdown
+		// cannot erase a successor's PID claim.
+		expect(body).toContain("removePidFileIfOwned(PID_PATH, process.pid)");
 		// Framed removal must be gone — it's owned by session-daemon.handle.stop().
 		expect(body).not.toContain("FRAMED_PATHS.pid");
 	});
@@ -75,24 +73,30 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		// already own this" read before either had written, both proceed to
 		// bind, one silently stomping the other's socket — confirmed
 		// empirically, see session-daemon.test.ts). The write is now an
-		// exclusive-create (`wx`) so at most one caller's create can win.
+		// fenced companion lock plus an exclusive temp file and atomic rename.
+		// A displaced claimant checks its lock token before and after rename and
+		// cannot report a second win.
 		expect(SESSION_DAEMON_TS).toContain("export function claimSessionPid(");
-		expect(SESSION_DAEMON_TS).toContain('writeFileSync(pidPath, String(pid), { flag: "wx" })');
+		expect(SESSION_DAEMON_TS).toContain('writeFileSync(lock.path, lock.raw, { flag: "wx" })');
+		expect(SESSION_DAEMON_TS).toContain('writeFileSync(nextPath, String(pid), { flag: "wx" })');
+		expect(SESSION_DAEMON_TS).toContain("if (!claimLockIsCurrent(lock)) return false");
+		expect(SESSION_DAEMON_TS).toContain("renameSync(nextPath, pidPath)");
 
 		// Sanity: the ownership check (process-alive guard) must come before
 		// that write, otherwise we'd still have the same race.
-		const checkIdx = SESSION_DAEMON_TS.indexOf("isProcessAlive(existingPid)");
-		const writeIdx = SESSION_DAEMON_TS.indexOf(
-			'writeFileSync(pidPath, String(pid), { flag: "wx" })',
-		);
+		const checkIdx = SESSION_DAEMON_TS.indexOf("isProcessAlive(ownerPid)");
+		const writeIdx = SESSION_DAEMON_TS.indexOf("return replacePidClaim(lock, pidPath, pid)");
 		expect(checkIdx).toBeGreaterThan(0);
 		expect(writeIdx).toBeGreaterThan(checkIdx);
 
 		// `startSessionDaemon` must call the claim BEFORE it ever touches the
 		// socket — that ordering (not the bind) is what makes two racing
 		// starts resolve to exactly one winner.
-		const claimCallIdx = SESSION_DAEMON_TS.indexOf(
-			"claimSessionPid(paths.pid, process.pid)",
+		const ownershipCallIdx = SESSION_DAEMON_TS.indexOf(
+			"await claimSessionOwnership({ paths, sessionId: session_id",
+		);
+		const fencedClaimIdx = SESSION_DAEMON_TS.indexOf(
+			"const claim = claimSessionPid(args.paths.pid, process.pid",
 		);
 		// The bind moved into the extracted `bindSessionSocket` helper during the
 		// c0828a4 decomposition; the ordering guarantee is now claim-call before
@@ -101,8 +105,9 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		const listenIdx = SESSION_DAEMON_TS.indexOf(
 			"await bindSessionSocket({ socketPath: paths.socket",
 		);
-		expect(claimCallIdx).toBeGreaterThan(0);
-		expect(listenIdx).toBeGreaterThan(claimCallIdx);
+		expect(fencedClaimIdx).toBeGreaterThan(0);
+		expect(ownershipCallIdx).toBeGreaterThan(fencedClaimIdx);
+		expect(listenIdx).toBeGreaterThan(ownershipCallIdx);
 	});
 
 	it("session-daemon.handle.stop removes paths.pid", () => {
@@ -112,7 +117,13 @@ describe("framed-PID file ownership (Plan 08 review fix)", () => {
 		const stopIdx = SESSION_DAEMON_TS.indexOf("async stop(");
 		expect(stopIdx).toBeGreaterThan(0);
 		const stopSlice = SESSION_DAEMON_TS.slice(stopIdx, stopIdx + 800);
-		expect(stopSlice).toContain("paths.pid");
-		expect(stopSlice).toContain("rmSync");
+		expect(stopSlice).toContain("removeOwnedSessionArtifacts(paths, process.pid)");
+		const cleanupIdx = SESSION_DAEMON_TS.indexOf(
+			"export function removeOwnedSessionArtifacts",
+		);
+		expect(cleanupIdx).toBeGreaterThan(0);
+		const cleanupSlice = SESSION_DAEMON_TS.slice(cleanupIdx, cleanupIdx + 400);
+		expect(cleanupSlice).toContain("pidFileNames(paths.pid, pid)");
+		expect(cleanupSlice).toContain("removePidFileIfOwned(paths.pid, pid)");
 	});
 });

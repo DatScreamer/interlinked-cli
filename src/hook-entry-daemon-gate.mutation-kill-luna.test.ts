@@ -12,7 +12,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 		spawn: (command: string, args: string[], options: unknown) => {
 			const call = { command, args, options, unrefCalls: 0 };
 			spawnCalls.push(call);
-			return { unref: () => { call.unrefCalls++; } } as unknown as ReturnType<typeof actual.spawn>;
+			return { pid: process.pid, unref: () => { call.unrefCalls++; } } as unknown as ReturnType<typeof actual.spawn>;
 		},
 	};
 });
@@ -62,7 +62,7 @@ describe("daemon-gate mutation survivor hardening", () => {
 			const result = attemptDaemonSelfHeal(valueDir, { INTERLINKED_NO_SELF_HEAL: value }, {
 				resolveServerPath: () => "/fake/server.js",
 				now: () => 1_700_000_000_000 + value.length,
-				spawnDaemon: () => {},
+				spawnDaemon: () => process.pid,
 			});
 			expect(result).toBe("spawned");
 		}

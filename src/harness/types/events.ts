@@ -100,6 +100,12 @@ export interface HarnessEvent {
 	tool_input?: JsonObject | undefined;
 	tool_response?: unknown;
 	tool_use_id?: string | undefined;
+	/** Generated-hook delivery token for the request-owned PostTool warning
+	 * spool. The daemon never trusts it as identity; it is only a filesystem
+	 * correlation key validated to a bounded filename-safe alphabet. */
+	post_delivery_token?: string | undefined;
+	/** Local hook process holding the synchronous first-delivery right. */
+	post_delivery_pid?: number | undefined;
 	/** Per-session monotonic event ordinal, minted by the daemon at observe
 	 *  time (G3). The one total-ordering key — `timestamp` is ms-precision and
 	 *  collides for parallel tool calls. Absent on the daemon-down cold path

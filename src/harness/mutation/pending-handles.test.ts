@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { MutationRunPendingError } from "./cloud-runner.js";
 import { pendingHandlesFrom } from "./gate.js";
-import { ShardedRunFailure } from "./sharded-runner.js";
 
 const HANDLE = { jobId: "j1", runnerUrl: "http://runner/" };
+
+/** The structural aggregate shape `pendingHandlesFrom` recovers from: an error
+ *  carrying a `pending` array (formerly the sharded runner's ShardedRunFailure;
+ *  the sharded runner is retired but the shape stays supported). */
+function aggregateFailure(message: string, pending: unknown[]): Error {
+	return Object.assign(new Error(message), { pending });
+}
 
 describe("pendingHandlesFrom — recovering claimable work from a thrown runner", () => {
 	it("returns the handle a single runner rejected with", () => {
@@ -11,8 +17,8 @@ describe("pendingHandlesFrom — recovering claimable work from a thrown runner"
 		expect(pendingHandlesFrom(err)).toEqual([expect.objectContaining(HANDLE)]);
 	});
 
-	it("returns every shard's handle from a sharded failure", () => {
-		const err = new ShardedRunFailure("all failed", [
+	it("returns every handle from an aggregate failure carrying a pending array", () => {
+		const err = aggregateFailure("all failed", [
 			new MutationRunPendingError("a", "http://one/"),
 			new MutationRunPendingError("b", "http://two/"),
 		]);
@@ -23,8 +29,8 @@ describe("pendingHandlesFrom — recovering claimable work from a thrown runner"
 		expect(pendingHandlesFrom(new Error("connection refused"))).toEqual([]);
 	});
 
-	it("returns nothing when every shard failed for a real reason", () => {
-		expect(pendingHandlesFrom(new ShardedRunFailure("all failed", []))).toEqual([]);
+	it("returns nothing when an aggregate failure has an empty pending list", () => {
+		expect(pendingHandlesFrom(aggregateFailure("all failed", []))).toEqual([]);
 	});
 
 	it("ignores non-handle entries mixed into a pending list", () => {

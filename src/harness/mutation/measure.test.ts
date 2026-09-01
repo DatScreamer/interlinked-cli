@@ -49,11 +49,22 @@ const META = {
 const FILE = "src/a.ts";
 const CONTENT = "export function f(x: number): boolean {\n\treturn x > 0;\n}\n";
 
+function completeRunEvidence() {
+	return {
+		engine: { exitCode: 0 },
+		testRun: { overlayGreen: true, redWitnessSatisfied: null, executedTestCount: 1 },
+		testFiles: {
+			"src/a.test.ts": { tests: [{ id: "test-1", name: "f returns true" }] },
+		},
+	};
+}
+
 /** A Stryker-shaped report for CONTENT with one mutant at the `>`. */
 function report(status: string, file: string = FILE, content: string = CONTENT) {
 	const line2 = content.split("\n")[1] ?? "";
 	const col = line2.indexOf(">") + 1;
 	return {
+		...completeRunEvidence(),
 		files: {
 			[file]: {
 				source: content,
@@ -65,6 +76,21 @@ function report(status: string, file: string = FILE, content: string = CONTENT) 
 						location: { start: { line: 2, column: col }, end: { line: 2, column: col + 1 } },
 					},
 				],
+			},
+		},
+	};
+}
+
+function reportWithReplacement(status: string, replacement: string) {
+	const base = report(status);
+	const entry = base.files[FILE];
+	if (entry === undefined) throw new Error("report helper lost its target entry");
+	return {
+		...base,
+		files: {
+			[FILE]: {
+				...entry,
+				mutants: entry.mutants.map((mutant) => ({ ...mutant, replacement })),
 			},
 		},
 	};
@@ -392,7 +418,7 @@ describe("requestWholeFileReport", () => {
 		expect(headers[1]).toEqual({ "content-type": "application/json", authorization: "Bearer secret" });
 	});
 
-	it("P6: sends an explicit whole-file range covering every content line", async () => {
+	it("P6: sends explicit scope/incremental fields and NO range key (protocol v2)", async () => {
 		let body = "";
 		await requestWholeFileReport({
 			...baseArgs,
@@ -403,7 +429,13 @@ describe("requestWholeFileReport", () => {
 				return fakeResponse(200, { files: {} });
 			},
 		});
-		expect(JSON.parse(body).range).toEqual({ start: 1, end: 4 });
+		// The runner selects cache behavior ONLY from the explicit `incremental`
+		// field; protocol v2 rejects `range`, so the wire must never carry it.
+		// SAFETY: body is the JSON object this very test's request just built.
+		const sent = JSON.parse(body) as Record<string, unknown>;
+		expect(sent.scope).toBe("whole_file");
+		expect(sent.incremental).toBe(false);
+		expect("range" in sent).toBe(false);
 	});
 
 	it("N5: gives up after exactly three unreachable rounds and names all endpoints", async () => {
@@ -520,6 +552,7 @@ describe("measureFile", () => {
 		const killed = report("Killed");
 		const survived = report("Survived");
 		const both = {
+			...completeRunEvidence(),
 			files: {
 				[FILE]: {
 					source: CONTENT,
@@ -648,18 +681,19 @@ describe("measureFile", () => {
 		}
 	});
 
-	it("N4: a body with no `files` key summarizes to zero mutants rather than throwing", async () => {
+	it("N4: a body with no `files` key is partial rather than throwing or claiming a measurement", async () => {
 		const outcome = await measureFile({
 			...args,
 			endpoints: ["http://runner/"],
 			fetchImpl: async () => fakeResponse(200, { unrelated: true }),
 		});
-		expect(outcome.status).toBe("measured");
+		expect(outcome.status).toBe("partial");
 		expect(outcome).toMatchObject({ mutantCount: 0, survivorCount: 0, survivors: [] });
 	});
 
 	it("N5: tolerates malformed per-file / per-mutant shapes — skips what it can't read, defaults the rest", async () => {
 		const body = {
+			...completeRunEvidence(),
 			files: {
 				"not-a-record": "just a string, not an object",
 				"missing-mutants-array": { source: "x", mutants: "not an array" },
@@ -674,7 +708,12 @@ describe("measureFile", () => {
 							replacement: 456,
 							status: 789,
 						},
-						{ mutatorName: "EqualityOperator", replacement: ">=", status: "Survived" },
+						{
+							mutatorName: "EqualityOperator",
+							replacement: ">=",
+							status: "Survived",
+							location: { start: { line: 2, column: 11 }, end: { line: 2, column: 12 } },
+						},
 					],
 				},
 			},
@@ -684,16 +723,16 @@ describe("measureFile", () => {
 			endpoints: ["http://runner/"],
 			fetchImpl: async () => fakeResponse(200, body),
 		});
-		expect(outcome.status).toBe("measured");
-		// "not-a-record" and "missing-mutants-array" contribute nothing; the
-		// string mutant entry is skipped; the two remaining object mutants land.
-		expect(outcome.mutantCount).toBe(2);
+		expect(outcome.status).toBe("partial");
+		expect(outcome.reason).toContain("report row(s)");
+		expect(outcome.mutantCount).toBe(1);
 		expect(outcome.survivorCount).toBe(1);
-		expect(outcome.survivors).toEqual([{ line: 0, mutator: "EqualityOperator", replacement: ">=" }]);
+		expect(outcome.survivors).toEqual([{ line: 2, mutator: "EqualityOperator", replacement: ">=" }]);
 	});
 
-	it("N6: reports safe defaults for malformed survivor fields and preserves a valid source line", async () => {
+	it("N6: malformed survivor fields count as parse loss rather than plausible default mutants", async () => {
 		const body = {
+			...completeRunEvidence(),
 			files: {
 				[FILE]: {
 					source: CONTENT,
@@ -711,10 +750,9 @@ describe("measureFile", () => {
 			endpoints: ["http://runner/"],
 			fetchImpl: async () => fakeResponse(200, body),
 		});
-		expect(outcome.survivors).toEqual([
-			{ line: 0, mutator: "?", replacement: "?" },
-			{ line: 2, mutator: "EqualityOperator", replacement: ">=" },
-		]);
+		expect(outcome.status).toBe("partial");
+		expect(outcome.reason).toContain("incomplete census");
+		expect(outcome.survivors).toEqual([]);
 	});
 
 	it("N7: treats a malformed files value as an empty report instead of iterating it", async () => {
@@ -725,7 +763,7 @@ describe("measureFile", () => {
 			endpoints: ["http://runner/"],
 			fetchImpl: async () => fakeResponse(200, { files: null }),
 		});
-		expect(outcome).toMatchObject({ status: "measured", mutantCount: 0, survivorCount: 0, survivors: [] });
+		expect(outcome).toMatchObject({ status: "partial", mutantCount: 0, survivorCount: 0, survivors: [] });
 	});
 
 	it("N8: a custom `now` is genuinely forwarded and used to compute the retry deadline — not silently dropped", async () => {
@@ -740,7 +778,7 @@ describe("measureFile", () => {
 			now: nowSpy,
 			fetchImpl: async () => fakeResponse(200, { files: {} }),
 		});
-		expect(outcome.status).toBe("measured");
+		expect(outcome.status).toBe("partial");
 		expect(nowSpy).toHaveBeenCalled();
 	});
 
@@ -774,6 +812,7 @@ describe("measureFile", () => {
 		// malformed entry, turning one bad file in a report into a rejected
 		// promise for the whole measurement.
 		const body = {
+			...completeRunEvidence(),
 			files: {
 				"bad-shape.ts": { source: "x", mutants: 42 },
 				[FILE]: {
@@ -796,6 +835,94 @@ describe("measureFile", () => {
 		});
 		expect(outcome.status).toBe("measured");
 		expect(outcome.mutantCount).toBe(1);
+	});
+
+	it("N11: missing engine evidence is partial and never exposes a recordable raw report", async () => {
+		const { engine: _engine, ...body } = report("Killed");
+		const outcome = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, body),
+		});
+		expect(outcome.status).toBe("partial");
+		expect(outcome.reason).toContain("no engine-exit evidence");
+		expect(outcome.rawReport).toBeUndefined();
+	});
+
+	it("N12: non-zero and malformed engine evidence cannot certify a report", async () => {
+		const failed = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, { ...report("Killed"), engine: { exitCode: 2 } }),
+		});
+		const malformed = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, { ...report("Killed"), engine: { exitCode: "0" } }),
+		});
+		expect(failed).toMatchObject({ status: "partial" });
+		expect(failed.reason).toContain("engine exited 2");
+		expect(malformed).toMatchObject({ status: "partial" });
+		expect(malformed.reason).toContain("exit unrecoverable");
+	});
+
+	it("N13: absent, inventory-only, red, and zero-executed test evidence all remain partial", async () => {
+		const { testRun: _testRun, ...withoutTestRun } = report("Killed");
+		const absent = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, withoutTestRun),
+		});
+		const red = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () =>
+				fakeResponse(200, { ...report("Killed"), testRun: { overlayGreen: false, redWitnessSatisfied: null } }),
+		});
+		const inventoryOnly = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () =>
+				fakeResponse(200, {
+					...report("Killed"),
+					testRun: { overlayGreen: true, redWitnessSatisfied: null },
+				}),
+		});
+		const zero = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () =>
+				fakeResponse(200, {
+					...report("Killed"),
+					testRun: { overlayGreen: true, redWitnessSatisfied: null, executedTestCount: 0 },
+				}),
+		});
+		expect(absent.reason).toContain("no test-run evidence");
+		expect(inventoryOnly.reason).toContain("no executed-test count");
+		expect(red.reason).toContain("RED overlay suite");
+		expect(zero.reason).toContain("zero tests executed");
+		expect([absent.status, inventoryOnly.status, red.status, zero.status]).toEqual([
+			"partial",
+			"partial",
+			"partial",
+			"partial",
+		]);
+	});
+
+	it("N14: a foreign target or stale source is partial even when every other evidence field is valid", async () => {
+		const foreign = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, report("Killed", "src/other.ts")),
+		});
+		const stale = await measureFile({
+			...args,
+			endpoints: ["http://runner/"],
+			fetchImpl: async () => fakeResponse(200, report("Killed", FILE, CONTENT.replace("> 0", "> 1"))),
+		});
+		expect(foreign.reason).toContain("no entry for src/a.ts");
+		expect(stale.reason).toContain("different source");
+		expect([foreign.status, stale.status]).toEqual(["partial", "partial"]);
 	});
 });
 
@@ -849,7 +976,16 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 
 	it("N3: refuses a report naming zero mutants for this file", () => {
 		const base = emptyManifest(META);
-		const result = recordMeasurement({ base, file: FILE, content: CONTENT, rawReport: { files: {} }, at: "t" });
+		const result = recordMeasurement({
+			base,
+			file: FILE,
+			content: CONTENT,
+			rawReport: {
+				...completeRunEvidence(),
+				files: { [FILE]: { source: CONTENT, mutants: [] } },
+			},
+			at: "t",
+		});
 		expect(result.recorded).toBe(false);
 		expect(result.reason).toContain("zero mutants");
 	});
@@ -861,6 +997,92 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		expect(result.recorded).toBe(false);
 		expect(result.reason).toContain("TypeScript API is unavailable");
 		expect(result.manifest).toBeUndefined();
+	});
+
+	function attemptRecord(rawReport: unknown): ReturnType<typeof recordMeasurement> {
+		return recordMeasurement({
+			base: emptyManifest(META),
+			file: FILE,
+			content: CONTENT,
+			rawReport,
+			at: "t",
+		});
+	}
+
+	it("N5: missing engine evidence cannot cross the direct record boundary", () => {
+		const { engine: _engine, ...body } = report("Killed");
+		const result = attemptRecord(body);
+		expect(result.recorded).toBe(false);
+		expect(result.reason).toContain("no engine-exit evidence");
+		expect(result.manifest).toBeUndefined();
+	});
+
+	it("N6: non-zero and malformed engine exits cannot cross the direct record boundary", () => {
+		const nonzero = attemptRecord({ ...report("Killed"), engine: { exitCode: 2 } });
+		const malformed = attemptRecord({ ...report("Killed"), engine: { exitCode: "0" } });
+		expect(nonzero.recorded).toBe(false);
+		expect(nonzero.reason).toContain("engine exited 2");
+		expect(nonzero.manifest).toBeUndefined();
+		expect(malformed.recorded).toBe(false);
+		expect(malformed.reason).toContain("exit unrecoverable");
+		expect(malformed.manifest).toBeUndefined();
+	});
+
+	it("N7: absent, inventory-only, red, and zero-executed test evidence cannot cross the direct record boundary", () => {
+		const { testRun: _testRun, ...withoutTestRun } = report("Killed");
+		const absent = attemptRecord(withoutTestRun);
+		const red = attemptRecord({
+			...report("Killed"),
+			testRun: { overlayGreen: false, redWitnessSatisfied: null },
+		});
+		const inventoryOnly = attemptRecord({
+			...report("Killed"),
+			testRun: { overlayGreen: true, redWitnessSatisfied: null },
+		});
+		const zero = attemptRecord({
+			...report("Killed"),
+			testRun: { overlayGreen: true, redWitnessSatisfied: null, executedTestCount: 0 },
+		});
+		expect(absent.recorded).toBe(false);
+		expect(absent.reason).toContain("no test-run evidence");
+		expect(inventoryOnly.recorded).toBe(false);
+		expect(inventoryOnly.reason).toContain("no executed-test count");
+		expect(inventoryOnly.manifest).toBeUndefined();
+		expect(red.recorded).toBe(false);
+		expect(red.reason).toContain("RED overlay suite");
+		expect(zero.recorded).toBe(false);
+		expect(zero.reason).toContain("zero tests executed");
+		expect([absent.manifest, inventoryOnly.manifest, red.manifest, zero.manifest]).toEqual([
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	it("N8: a dropped mutant row cannot cross the direct record boundary", () => {
+		const body = report("Killed");
+		const entry = body.files[FILE];
+		if (entry === undefined) throw new Error("report helper lost its target entry");
+		const result = attemptRecord({
+			...body,
+			files: {
+				[FILE]: { ...entry, mutants: [...entry.mutants, { status: "Survived" }] },
+			},
+		});
+		expect(result.recorded).toBe(false);
+		expect(result.reason).toContain("incomplete census");
+		expect(result.manifest).toBeUndefined();
+	});
+
+	it("N9: foreign-target and stale-source reports cannot cross the direct record boundary", () => {
+		const foreign = attemptRecord(report("Killed", "src/other.ts"));
+		const stale = attemptRecord(report("Killed", FILE, CONTENT.replace("> 0", "> 1")));
+		expect(foreign.recorded).toBe(false);
+		expect(foreign.reason).toContain("no entry for src/a.ts");
+		expect(stale.recorded).toBe(false);
+		expect(stale.reason).toContain("different source");
+		expect([foreign.manifest, stale.manifest]).toEqual([undefined, undefined]);
 	});
 
 	it("keys an absolute-path measurement under the SAME repo-relative key a relative one would use", () => {
@@ -911,6 +1133,7 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 			file: FILE,
 			content: CONTENT,
 			rawReport: {
+				...completeRunEvidence(),
 				files: {
 					"src/other.ts": {
 						source: CONTENT,
@@ -932,6 +1155,7 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		// `adapted[0]` (a DIFFERENT file) and explain the wrong thing.
 		const base = emptyManifest(META);
 		const rawReport = {
+			...completeRunEvidence(),
 			files: {
 				"other.ts": {
 					source: "export const z = 1;\n",
@@ -973,6 +1197,27 @@ describe("recordMeasurement — the only write path, and it goes through seedFil
 		expect(must(result.manifest).fileProvenance).toEqual({
 			[FILE]: { scope: "unknown", testCount: 6, surface: "measure", at: "t1" },
 		});
+	});
+
+	it("N10: refuses a truncated census that drops a prior mutant from an unchanged symbol", () => {
+		const base = emptyManifest(META);
+		const first = recordMeasurement({
+			base,
+			file: FILE,
+			content: CONTENT,
+			rawReport: reportWithReplacement("Killed", ">="),
+			at: "t1",
+		});
+		const second = recordMeasurement({
+			base: must(first.manifest),
+			file: FILE,
+			content: CONTENT,
+			rawReport: reportWithReplacement("Killed", "<"),
+			at: "t2",
+		});
+		expect(second.recorded).toBe(false);
+		expect(second.reason).toContain("incomplete unchanged-symbol census");
+		expect(second.manifest).toBeUndefined();
 	});
 });
 

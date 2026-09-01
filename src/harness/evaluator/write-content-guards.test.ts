@@ -28,7 +28,7 @@ vi.mock("../check-registry/index.js", () => ({
 	buildCheckInstructions: vi.fn(() => ({})),
 }));
 
-vi.mock("../diff-overlay.js", () => ({
+vi.mock("../diff-overlay.js", async (importOriginal) => ({
 	evaluateBiomeDiffOverlay: vi.fn(() => ({ newFindings: [], elapsedMs: 0, exceededBudget: false })),
 	evaluateTscDiffOverlay: vi.fn(() => ({
 		newFindings: [],
@@ -37,6 +37,10 @@ vi.mock("../diff-overlay.js", () => ({
 		exceededBudget: false,
 	})),
 	isTscFindingBlocking: vi.fn(() => true),
+	// The REAL message builder — the NOT CHECKED tests below must pin the
+	// shipped wording, not a stub of it (review 2026-08-28).
+	tscUnavailableWarning: (await importOriginal<typeof import("../diff-overlay.js")>())
+		.tscUnavailableWarning,
 }));
 
 vi.mock("../overlay-content.js", () => ({
@@ -138,6 +142,41 @@ function run(
 		pendingEscalation: undefined,
 	});
 }
+
+// Review 2026-08-28: the LIVE PreToolUse path must never read "checker did not
+// run" as clean. These drive the real evaluateWriteContentGuards production
+// path with the overlay mocked to the sidecar's actual unavailable shape.
+describe("tsc overlay unavailable — NOT CHECKED on the live path", () => {
+	const mTscOverlay = evaluateTscDiffOverlay as unknown as ReturnType<typeof vi.fn>;
+
+	it("P: checkerUnavailable ⇒ a loud NOT CHECKED warning on an otherwise-allowed edit", () => {
+		mTscOverlay.mockReturnValueOnce({
+			newFindings: [],
+			proposedFindings: null,
+			elapsedMs: 0,
+			exceededBudget: false,
+			checkerUnavailable: "sidecar spawn failed",
+		});
+		const result = run({ file_path: "src/a.ts", content: "export const a = 1;\n" });
+		if (result.kind !== "ok") throw new Error("expected the ok path");
+		const joined = result.warnings.join("\n");
+		expect(joined).toContain("NOT CHECKED");
+		expect(joined).toContain("sidecar spawn failed");
+		expect(joined).toContain('"not looked at", not "clean"');
+	});
+
+	it("N: a checker that RAN clean emits no NOT CHECKED warning", () => {
+		mTscOverlay.mockReturnValueOnce({
+			newFindings: [],
+			proposedFindings: null,
+			elapsedMs: 5,
+			exceededBudget: false,
+		});
+		const result = run({ file_path: "src/a.ts", content: "export const a = 1;\n" });
+		if (result.kind !== "ok") throw new Error("expected the ok path");
+		expect(result.warnings.join("\n")).not.toContain("NOT CHECKED");
+	});
+});
 
 describe("buildTscDiffOverlayBlockReason", () => {
 	it("returns just the head for a MultiEdit tool call", () => {

@@ -4,8 +4,9 @@
 // Appends collection.v1 records to .interlinked/collection.jsonl.
 // Synchronous, fire-and-forget — mirrors appendLocalActivity() semantics.
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { appendFileWithMutationLock } from "../file-mutation-lock.js";
 import type { AgentEventRecord, CollectionRecord } from "./types.js";
 
 export function getCollectionPath(cwd: string): string {
@@ -19,7 +20,7 @@ export function appendCollection(record: CollectionRecord | AgentEventRecord, cw
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
-		appendFileSync(filePath, `${JSON.stringify(record)}\n`);
+		appendFileWithMutationLock(filePath, `${JSON.stringify(record)}\n`);
 	} catch {
 		// collection is best-effort — never break the hook pipeline
 	}

@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { coldDaemonUnreachableBlockReasonFresh } from "./hook-entry-daemon-probe.js";
+import {
+	coldDaemonUnreachableBlockReasonFresh,
+	daemonRecoveryRootFresh,
+} from "./hook-entry-daemon-probe.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
 
 let root: string;
@@ -74,5 +77,32 @@ describe("coldDaemonUnreachableBlockReasonFresh — positive (must block)", () =
 		});
 		expect(reason).not.toContain("interlinked harness start");
 		expect(reason).toContain("retry your call");
+	});
+});
+
+describe("daemonRecoveryRootFresh — zombie recovery", () => {
+	it("P: a live pid plus socket file still recovers when the socket does not answer", async () => {
+		writeFileSync(join(root, ".interlinked", "harness.pid"), String(process.pid));
+		writeFileSync(join(root, ".interlinked", "harness.sock"), "stale");
+		let probes = 0;
+		const recoveryRoot = await daemonRecoveryRootFresh(EVENT, root, {}, {
+			listSockets: () => [join(root, ".interlinked", "harness.sock")],
+			probe: () => {
+				probes++;
+				return Promise.resolve(false);
+			},
+		});
+		expect(probes).toBe(1);
+		expect(recoveryRoot).toBe(root);
+	});
+
+	it("N: an answering socket suppresses recovery despite stale file evidence", async () => {
+		writeFileSync(join(root, ".interlinked", "harness.pid"), String(process.pid));
+		writeFileSync(join(root, ".interlinked", "harness.sock"), "placeholder");
+		const recoveryRoot = await daemonRecoveryRootFresh(EVENT, root, {}, {
+			listSockets: () => [join(root, ".interlinked", "harness.sock")],
+			probe: () => Promise.resolve(true),
+		});
+		expect(recoveryRoot).toBeNull();
 	});
 });

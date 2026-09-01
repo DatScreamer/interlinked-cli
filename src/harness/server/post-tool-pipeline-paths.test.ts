@@ -163,6 +163,14 @@ describe("resolveEditedPaths — read-only calls must not be charged with observ
 		expect(r.editedFilePaths).toEqual([]);
 	});
 
+	it("N4: a collaboration wait never inherits the agent's concurrent edit", () => {
+		const r = resolveEditedPaths(
+			readOnly("collaborationwait_agent", ["src/harness/server/agent-owned-edit.ts"]),
+		);
+		expect(r.editedFilePaths).toEqual([]);
+		expect(r.shouldRunChecks).toBe(false);
+	});
+
 	it("P1: Bash KEEPS its ChangeSet — it is the bash-edit obligation channel", () => {
 		const r = resolveEditedPaths(readOnly("Bash", ["src/really-edited.ts"]));
 		expect(r.editedFilePaths).toEqual(["src/really-edited.ts"]);

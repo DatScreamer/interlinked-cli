@@ -30,6 +30,7 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { CheckEngine, type CheckResult, formatToolReport } from "../harness/check-engine/index.js";
+import { tryAcquireProjectHeavyProcessLease } from "../harness/project-heavy-process-lock.js";
 import {
 	detectDecisionSurface,
 	detectLockfileMultiplicity,
@@ -50,16 +51,19 @@ import {
 import { DEFAULT_ADVISORY_SKIPS, TOOL_IDS } from "./verify/advisory.js";
 import { getEffectiveSkipChecks, getSkipTools } from "./verify/advisory-skips.js";
 import { cloneRepo, isGitUrl, normalizeGitUrl, repoDisplayName } from "./verify/clone-repo.js";
+import { runCodeQualityPhase } from "./verify/code-quality-phase.js";
 import { discoverFiles } from "./verify/file-discovery.js";
 import { outputJson } from "./verify/output-json.js";
-import { setActiveSkipChecks, streamAllCqSections } from "./verify/streaming-output.js";
+import { createScanProgress } from "./verify/scan-progress.js";
+import { setActiveSkipChecks } from "./verify/streaming-output.js";
 import { buildStructureJsonSection, runStructureVerify } from "./verify/structure.js";
 import {
 	checkProjectSetup,
-	filterCodeQualityResults,
-	runCodeQualityChecks,
+	filterCodeQualityResultsInPlace,
+	runCodeQualityChecksProgressive,
 	runSuggestions,
 } from "./verify/tool-results.js";
+import { emptyResults } from "./verify/tool-results-types.js";
 import {
 	emitVerifyRun,
 	streamCaseDivergence,
@@ -69,7 +73,6 @@ import {
 	streamRegistryParity,
 	streamSuggestionsSummary,
 	streamSupermodelDeadCode,
-	streamUndocumentedEnvVars,
 	summarizeFlaggedFiles,
 } from "./verify/verify-summary.js";
 import { streamExternalTools } from "./verify/verify-tools.js";
@@ -257,6 +260,33 @@ async function runRemoteVerify(target: string, opts: VerifyOpts): Promise<void> 
 }
 
 async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
+	let releaseHeavyProcess: (() => void) | null;
+	try {
+		releaseHeavyProcess = tryAcquireProjectHeavyProcessLease(cwd);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		process.stderr.write(
+			`  verify unavailable: project admission failed (${detail}); no verification verdict was produced.\n`,
+		);
+		process.exitCode = 1;
+		return;
+	}
+	if (!releaseHeavyProcess) {
+		process.stderr.write(
+			"  verify deferred: another heavyweight Interlinked check is already running for this project; no verification verdict was produced.\n",
+		);
+		process.exitCode = 1;
+		return;
+	}
+	try {
+		await runVerifyWithHeavyProcessLease(cwd, opts);
+	} finally {
+		releaseHeavyProcess();
+	}
+}
+
+/** Run one verify after the caller owns the cross-process project lane. */
+async function runVerifyWithHeavyProcessLease(cwd: string, opts: VerifyOpts): Promise<void> {
 	const files = discoverFiles(cwd);
 	const engine = new CheckEngine(cwd);
 	const details = opts.details ?? false;
@@ -265,7 +295,7 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	const scope = { projectRoot: cwd, mode: "project" as const };
 
 	if (opts.json) {
-		await runVerifyBatchJson(engine, files, cwd, opts, scope);
+		await runVerifyBatchJson({ engine, files, cwd, opts, scope });
 		return;
 	}
 
@@ -282,15 +312,18 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	if (opts.allChecks) streamCaseDivergence(cwd, files, allFlaggedFiles);
 
 	const cqStart = Date.now();
-	process.stderr.write("  \x1b[2mscanning files...\x1b[0m");
-	const cq = filterCodeQualityResults(runCodeQualityChecks(files, cwd), skipChecks);
-	const cqElapsed = ((Date.now() - cqStart) / 1000).toFixed(1);
-	process.stderr.write("\r\x1b[K");
-
-	streamAllCqSections(cq, details, allFlaggedFiles);
-	streamUndocumentedEnvVars(cq.undocumentedEnvVars, allFlaggedFiles);
-
-	process.stderr.write(`\x1b[2m  code quality checks completed in ${cqElapsed}s\x1b[0m\n`);
+	// `--only` promises one external tool. Previously it still ran the entire
+	// inline census first, retaining ~1.6 GB on this repository before tsc.
+	if (!opts.only) {
+		await runCodeQualityPhase({
+			files,
+			cwd,
+			skipChecks,
+			details,
+			allFlaggedFiles,
+			startedAt: cqStart,
+		});
+	}
 
 	await streamExternalTools({
 		engine,
@@ -336,13 +369,45 @@ async function runVerify(cwd: string, opts: VerifyOpts): Promise<void> {
 	});
 }
 
-async function runVerifyBatchJson(
-	engine: CheckEngine,
-	files: string[],
-	cwd: string,
-	opts: VerifyOpts,
-	scope: import("../harness/check-engine/types.js").CheckScope,
-): Promise<void> {
+function safeRegistryParity(cwd: string): RegistryDriftFinding[] {
+	try {
+		return runRegistryParityCheck(cwd);
+	} catch (error) {
+		void error;
+		return [];
+	}
+}
+
+function batchSuggestions(args: {
+	opts: VerifyOpts;
+	files: string[];
+	cwd: string;
+}): Map<string, Finding[]> | null {
+	if (!args.opts.suggestions) return null;
+	return runSuggestions({
+		files: args.files,
+		cwd: args.cwd,
+		limit: SUGGESTIONS_LIMIT,
+		threshold: SUGGESTIONS_THRESHOLD,
+	});
+}
+
+function filterSuppressedToolResults(results: CheckResult[], interlinkedDir: string): CheckResult[] {
+	return results.filter((result) => {
+		const fileSuppressions = loadFileSuppressions(interlinkedDir, result.file);
+		return !fileSuppressions.has(result.tool);
+	});
+}
+
+interface VerifyBatchArgs {
+	engine: CheckEngine;
+	files: string[];
+	cwd: string;
+	opts: VerifyOpts;
+	scope: import("../harness/check-engine/types.js").CheckScope;
+}
+
+async function runVerifyBatchJson({ engine, files, cwd, opts, scope }: VerifyBatchArgs): Promise<void> {
 	const only = opts.only;
 	const onlySkipTools = only
 		? TOOL_IDS.filter((t) => t !== only && t !== only.replace("_", "-"))
@@ -351,43 +416,33 @@ async function runVerifyBatchJson(
 	const skipTools = [...new Set([...onlySkipTools, ...getSkipTools(skipChecks)])];
 	setActiveSkipChecks(skipChecks);
 
-	const report = engine.runChecks(scope, {
+	const report = await engine.runChecksAsync(scope, {
 		timeoutMs: CHECK_ENGINE_TIMEOUT_MS,
-		skipTools: skipTools as import("../harness/check-engine/types.js").ToolId[],
+		skipTools,
+		admissionAlreadyHeld: true,
 	});
 
 	const interlinkedDir = join(cwd, ".interlinked");
-	const filterToolResults = (results: CheckResult[]): CheckResult[] =>
-		results.filter((r) => {
-			const fileSup = loadFileSuppressions(interlinkedDir, r.file);
-			return !fileSup.has(r.tool);
-		});
-
-	const tscResults = filterToolResults(report.results.filter((r) => r.tool === "tsc"));
-	const biomeResults = filterToolResults(report.results.filter((r) => r.tool === "biome"));
-	const eslintResults = filterToolResults(report.results.filter((r) => r.tool === "eslint"));
-	const semgrepResults = filterToolResults(report.results.filter((r) => r.tool === "semgrep"));
-	const gitleaksResults = filterToolResults(report.results.filter((r) => r.tool === "gitleaks"));
+	const byTool = (tool: string): CheckResult[] =>
+		filterSuppressedToolResults(report.results.filter((result) => result.tool === tool), interlinkedDir);
+	const tscResults = byTool("tsc");
+	const biomeResults = byTool("biome");
+	const eslintResults = byTool("eslint");
+	const semgrepResults = byTool("semgrep");
+	const gitleaksResults = byTool("gitleaks");
 	const linterResults = [...biomeResults, ...eslintResults];
 	const linterName = eslintResults.length > 0 ? "eslint" : "biome";
 	const auditResult = opts.only && opts.only !== "sca" ? null : engine.runDepAudit();
-	const cq = filterCodeQualityResults(runCodeQualityChecks(files, cwd), skipChecks);
+	const cq = opts.only
+		? emptyResults()
+		: filterCodeQualityResultsInPlace(
+				// Progress goes to stderr only — stdout stays byte-identical JSON.
+				await runCodeQualityChecksProgressive(files, cwd, createScanProgress(files.length)),
+				skipChecks,
+			);
 	const setupIssues = checkProjectSetup(cwd);
-	let registryDrift: RegistryDriftFinding[] = [];
-	try {
-		registryDrift = runRegistryParityCheck(cwd);
-	} catch (e) {
-		void e;
-	}
-	let suggestions: Map<string, Finding[]> | null = null;
-	if (opts.suggestions) {
-		suggestions = runSuggestions({
-			files,
-			cwd,
-			limit: SUGGESTIONS_LIMIT,
-			threshold: SUGGESTIONS_THRESHOLD,
-		});
-	}
+	const registryDrift = safeRegistryParity(cwd);
+	const suggestions = batchSuggestions({ opts, files, cwd });
 
 	outputJson({
 		tscResults,

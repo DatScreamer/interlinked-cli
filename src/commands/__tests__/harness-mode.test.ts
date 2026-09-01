@@ -11,6 +11,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAdapter } from "../../harness/adapters/index.js";
+import { nonNull } from "../../lib/non-null.js";
 import { harnessModeCommand } from "../harness-mode.js";
 
 let workDir: string;
@@ -71,10 +73,16 @@ function writeInstallerManifest(runners: string[]): void {
 		path,
 		JSON.stringify({
 			schema_version: "1",
+			// STRICT binding (2026-08-30): settings_path must equal the adapter's
+			// own derivation for the scope, or the whole manifest reads corrupt.
 			entries: runners.map((runner) => ({
 				runner,
 				scope: "project",
-				settings_path: ".some-runner/settings.json",
+				settings_path: join(
+					workDir,
+					// SAFETY: these fixtures only name real runner ids.
+					nonNull(getAdapter(runner as never)).renderSettingsFragment("/bin/interlinked-hook", "project").path,
+				),
 				added_paths: ["hooks.PreToolUse[0]"],
 				binary_path: "/bin/interlinked-hook",
 				installed_at: "2026-01-01T00:00:00Z",

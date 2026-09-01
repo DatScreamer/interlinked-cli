@@ -226,8 +226,8 @@ describe("copyActorFields via mapActivityLine", () => {
 	// lookup key swapped to "") and b819eba475e95504 (`if (model)` forced to
 	// `if (false)`, never assigning).
 	it("projects a non-empty model", () => {
-		const ev = mapActivityLine(JSON.stringify({ ts: "t", type: "x", model: "claude-sonnet-5" }));
-		expect(ev?.model).toBe("claude-sonnet-5");
+		const ev = mapActivityLine(JSON.stringify({ ts: "t", type: "x", model: "vendor-model-luna" }));
+		expect(ev?.model).toBe("vendor-model-luna");
 	});
 
 	// test-contract: boundary — kills a675b036ac01ff90 (`if (model)`

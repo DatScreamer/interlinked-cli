@@ -89,8 +89,21 @@ vi.mock("./post-tool-file-checks.js", () => ({
 	runPerFileChecks: vi.fn(),
 }));
 
+vi.mock("./post-tool-warning-spool.js", () => ({
+	beginPostToolWarningSpool: vi.fn(() => ({
+		token: "test-delivery-token",
+		sessionId: "s",
+		markerPath: "/repo/.interlinked/quality-warning-spool/test.active.json",
+		readyPath: "/repo/.interlinked/quality-warning-spool/test.ready.json",
+		requested: true,
+		ownsMarker: true,
+		closed: false,
+	})),
+	completePostToolWarningSpool: vi.fn(),
+}));
+
 // Bind to the mocked exports so each test can re-program return values.
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { getOrCreateEngine } from "../check-engine/index.js";
 import { runPostToolScan } from "../content-scanner/post-scan.js";
 import { dischargeObligationsAfterGreenRun } from "../coverage-discharge.js";
@@ -105,6 +118,10 @@ import {
 	consecutiveFailureWarning,
 } from "../tool-result-checks.js";
 import { runPerFileChecks } from "./post-tool-file-checks.js";
+import {
+	beginPostToolWarningSpool,
+	completePostToolWarningSpool,
+} from "./post-tool-warning-spool.js";
 
 const mEvaluate = evaluatePostToolUse as unknown as Mock;
 const mDischarge = dischargeObligationsAfterGreenRun as unknown as Mock;
@@ -119,11 +136,10 @@ const mCheckBloat = checkContextBloat as unknown as Mock;
 const mConsecutive = consecutiveFailureWarning as unknown as Mock;
 const mGetEngine = getOrCreateEngine as unknown as Mock;
 const mRunPerFile = runPerFileChecks as unknown as Mock;
+const mBeginWarningSpool = beginPostToolWarningSpool as unknown as Mock;
+const mCompleteWarningSpool = completePostToolWarningSpool as unknown as Mock;
 const mExistsSync = existsSync as unknown as Mock;
-const mMkdir = mkdirSync as unknown as Mock;
 const mReadFile = readFileSync as unknown as Mock;
-const mUnlink = unlinkSync as unknown as Mock;
-const mWriteFile = writeFileSync as unknown as Mock;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1054,111 +1070,114 @@ describe("edited-path resolution", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Marker / pending-warnings file I/O
+// 8. Request-owned warning spool orchestration
 // ---------------------------------------------------------------------------
 
-describe("marker and pending-warnings file I/O", () => {
-	it("creates the data dir when missing then writes the in-progress marker", async () => {
-		// existsSync false for both the dirty check (no index here) and the dir.
-		mExistsSync.mockReturnValue(false);
-		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
-		await runPostToolPipeline(makeCtx(), event, makeSession());
-		expect(mMkdir).toHaveBeenCalledWith("/repo/.interlinked", { recursive: true });
-		expect(mWriteFile).toHaveBeenCalledWith(
-			"/repo/.interlinked/quality-check-in-progress",
-			expect.any(String),
+describe("request-owned warning spool orchestration", () => {
+	it("begins one spool record and publishes accumulated warnings", async () => {
+		mRunPerFile.mockImplementation(
+			async (_ctx, _ev, _se, _path, decision: HarnessDecision) => {
+				decision.warnings = ["W1"];
+			},
 		);
-		// Marker removed at the end (unlink with no pending warnings).
-		expect(mUnlink).toHaveBeenCalledWith("/repo/.interlinked/quality-check-in-progress");
+		const event = ev({
+			tool_name: "Edit",
+			tool_input: { file_path: "/repo/a.ts" },
+			post_delivery_token: "request-token-0001",
+		});
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mBeginWarningSpool).toHaveBeenCalledWith("/repo/.interlinked", event);
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(
+			expect.objectContaining({ ownsMarker: true }),
+			["W1"],
+		);
 	});
 
-	it("logs but continues when the marker write throws", async () => {
+	it("publishes an empty warning list for a clean request", async () => {
+		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(expect.any(Object), []);
+	});
+
+	it("logs an unavailable spool but keeps the synchronous decision", async () => {
 		const log = vi.fn();
-		mWriteFile.mockImplementationOnce(() => {
-			throw new Error("marker fail");
+		mBeginWarningSpool.mockReturnValueOnce({
+			token: "unavailable-token",
+			sessionId: "s",
+			markerPath: "active",
+			readyPath: "ready",
+			requested: true,
+			ownsMarker: false,
+			closed: false,
 		});
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
 		const decision = await runPostToolPipeline(makeCtx({ log }), event, makeSession());
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("Failed to write quality-check marker"),
-		);
+		expect(log).toHaveBeenCalledWith(expect.stringContaining("spool unavailable"));
 		expect(decision.decision).toBe("allow");
 	});
 
-	it("stringifies a non-Error marker-write throw", async () => {
+	it("does not log a spool failure for a rolling-upgrade hook with no delivery token", async () => {
 		const log = vi.fn();
-		mWriteFile.mockImplementationOnce(() => {
-			throw "marker string fail";
+		mBeginWarningSpool.mockReturnValueOnce({
+			token: "missing-token",
+			sessionId: "s",
+			markerPath: "active",
+			readyPath: "ready",
+			requested: false,
+			ownsMarker: false,
+			closed: false,
 		});
-		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
-		await runPostToolPipeline(makeCtx({ log }), event, makeSession());
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("marker string fail"));
+		await runPostToolPipeline(
+			makeCtx({ log }),
+			ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } }),
+			makeSession(),
+		);
+		expect(log).not.toHaveBeenCalledWith(expect.stringContaining("spool unavailable"));
 	});
 
-	it("writes pending-quality-warnings.json when warnings accumulated, then removes the marker", async () => {
-		mRunPerFile.mockImplementation(
-			async (_ctx, _ev, _se, _path, decision: HarnessDecision) => {
-				decision.warnings = ["W1"];
-			},
-		);
+	it("publishes an explicit NOT CHECKED diagnostic when a per-file check throws", async () => {
+		mRunPerFile.mockRejectedValueOnce(new Error("check failed"));
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
-		await runPostToolPipeline(makeCtx(), event, makeSession());
-		expect(mWriteFile).toHaveBeenCalledWith(
-			"/repo/.interlinked/pending-quality-warnings.json",
-			JSON.stringify(["W1"]),
+		await expect(runPostToolPipeline(makeCtx(), event, makeSession())).rejects.toThrow(
+			"check failed",
 		);
-		expect(mUnlink).toHaveBeenCalledWith("/repo/.interlinked/quality-check-in-progress");
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(expect.any(Object), [
+			expect.stringMatching(/NOT CHECKED.*interlinked verify/),
+		]);
 	});
 
-	it("removes the marker (no pending file) when there are no warnings", async () => {
-		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
-		await runPostToolPipeline(makeCtx(), event, makeSession());
-		expect(mWriteFile).not.toHaveBeenCalledWith(
-			"/repo/.interlinked/pending-quality-warnings.json",
-			expect.anything(),
-		);
-		expect(mUnlink).toHaveBeenCalledWith("/repo/.interlinked/quality-check-in-progress");
-	});
-
-	it("recovers by unlinking the marker when the pending write throws", async () => {
+	it("logs a publish failure without replacing the synchronous result", async () => {
 		const log = vi.fn();
-		mRunPerFile.mockImplementation(
-			async (_ctx, _ev, _se, _path, decision: HarnessDecision) => {
-				decision.warnings = ["W1"];
-			},
-		);
-		// First writeFile = marker (ok), second = pending (throws).
-		mWriteFile
-			.mockImplementationOnce(() => undefined)
-			.mockImplementationOnce(() => {
-				throw new Error("pending fail");
-			});
-		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
-		await runPostToolPipeline(makeCtx({ log }), event, makeSession());
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("Quality check file error"));
-		expect(mUnlink).toHaveBeenCalledWith("/repo/.interlinked/quality-check-in-progress");
-	});
-
-	it("swallows a nested unlink failure inside the pending-write catch", async () => {
-		const log = vi.fn();
-		mRunPerFile.mockImplementation(
-			async (_ctx, _ev, _se, _path, decision: HarnessDecision) => {
-				decision.warnings = ["W1"];
-			},
-		);
-		mWriteFile
-			.mockImplementationOnce(() => undefined)
-			.mockImplementationOnce(() => {
-				throw new Error("pending fail");
-			});
-		mUnlink.mockImplementation(() => {
-			throw new Error("unlink fail");
+		mCompleteWarningSpool.mockImplementationOnce(() => {
+			throw new Error("publish failed");
 		});
 		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
 		const decision = await runPostToolPipeline(makeCtx({ log }), event, makeSession());
-		// Reaches the log line after the nested catch swallowed the unlink throw.
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("Quality check file error"));
+		expect(log).toHaveBeenCalledWith(expect.stringContaining("Quality warning spool error"));
 		expect(decision.decision).toBe("allow");
+	});
+
+	it("persists a warning-less block reason for late delivery", async () => {
+		mEvaluate.mockReturnValue({ decision: "block", reason: "late block reason", warnings: [] });
+		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(expect.any(Object), [
+			"late block reason",
+		]);
+	});
+
+	it("persists the block reason before warnings and removes exact duplicates", async () => {
+		mEvaluate.mockReturnValue({
+			decision: "block",
+			reason: "late block reason",
+			warnings: ["supporting warning", "late block reason"],
+		});
+		const event = ev({ tool_name: "Edit", tool_input: { file_path: "/repo/a.ts" } });
+		await runPostToolPipeline(makeCtx(), event, makeSession());
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(expect.any(Object), [
+			"late block reason",
+			"supporting warning",
+		]);
 	});
 });
 
@@ -1212,6 +1231,10 @@ describe("required-tool coverage", () => {
 		const decision = await runPostToolPipeline(ctx, ev({ tool_name: "Read" }), session);
 		expect(decision.warnings?.some((w) => w.includes('Required tool "tsc"'))).toBe(true);
 		expect(session.acknowledged_checks.has("required-tool-missing::tsc")).toBe(true);
+		expect(mCompleteWarningSpool).toHaveBeenCalledWith(
+			expect.any(Object),
+			expect.arrayContaining([expect.stringContaining('Required tool "tsc"')]),
+		);
 	});
 
 	it("merges the required-tool warning into an existing warnings array", async () => {

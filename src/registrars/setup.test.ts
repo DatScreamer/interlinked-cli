@@ -70,10 +70,12 @@ let logSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	process.exitCode = undefined;
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
+	process.exitCode = undefined;
 	logSpy.mockRestore();
 });
 
@@ -134,7 +136,16 @@ describe("registerSetupCommands — structure", () => {
 		const ih = program.commands.find((c) => c.name() === "install-hooks");
 		if (!ih) throw new Error("install-hooks not registered");
 		expect(ih.options.map((o) => o.long).sort()).toEqual(
-			["--binary", "--dry-run", "--json", "--mode", "--runner", "--scope"].sort(),
+			[
+				"--binary",
+				"--dry-run",
+				"--json",
+				"--mode",
+				"--preserve-mode",
+				"--refresh",
+				"--runner",
+				"--scope",
+			].sort(),
 		);
 	});
 });
@@ -191,6 +202,18 @@ describe("direct-binding actions", () => {
 			dataDir: "/d",
 			structure: "strict",
 			dryRun: true,
+		});
+	});
+
+	it("does not normalize invalid explicit enable values before validation", async () => {
+		const program = build();
+		await program.parseAsync(
+			["enable", "--clients", "claude,bogus", "--sync-mode", "turbo"],
+			{ from: "user" },
+		);
+		expect(nonNull(enableCommand.mock.calls[0])[0]).toMatchObject({
+			clients: "claude,bogus",
+			syncMode: "turbo",
 		});
 	});
 
@@ -272,6 +295,19 @@ describe("lazy-import action wrappers", () => {
 		});
 	});
 
+	it("does not normalize invalid explicit install values before validation", async () => {
+		const program = build();
+		await program.parseAsync(
+			["install-hooks", "--runner", "claude-code", "--scope", "galaxy", "--mode", "turbo"],
+			{ from: "user" },
+		);
+		expect(nonNull(installHooksCommand.mock.calls[0])[0]).toMatchObject({
+			runner: "claude-code",
+			scope: "galaxy",
+			mode: "turbo",
+		});
+	});
+
 	it("uninstall-hooks forwards runner + flags", async () => {
 		const program = build();
 		await program.parseAsync(["uninstall-hooks", "--runner", "codex", "--json"], {
@@ -307,6 +343,22 @@ describe("lazy-import action wrappers", () => {
 // fall-through.
 // ---------------------------------------------------------------------------
 describe("setup action — branches", () => {
+	it("stops before auth and onboarding when enable rejects its inputs", async () => {
+		enableCommand.mockImplementationOnce(() => {
+			process.exitCode = 1;
+		});
+		const program = build();
+		await program.parseAsync(
+			["setup", "--clients", "claude,bogus", "--sync-mode", "turbo", "--token", "tok"],
+			{ from: "user" },
+		);
+
+		expect(process.exitCode).toBe(1);
+		expect(loginCommand).not.toHaveBeenCalled();
+		expect(resolveAuthToken).not.toHaveBeenCalled();
+		expect(ensureRemoteOnboarding).not.toHaveBeenCalled();
+	});
+
 	it("dry-run: enables then returns before any auth work", async () => {
 		const program = build();
 		await program.parseAsync(["setup", "--server", "https://s", "--agent", "a", "--dry-run"], {

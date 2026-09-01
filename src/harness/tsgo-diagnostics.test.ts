@@ -150,6 +150,27 @@ describe("spawnCollect", () => {
 		);
 		expect(result).toBe("out-line\nerr-line");
 	});
+
+	it("treats a non-zero compiler exit without diagnostics as unavailable", async () => {
+		const result = await spawnCollect(
+			process.execPath,
+			["-e", "process.stderr.write('internal compiler failure'); process.exit(2);"],
+			undefined,
+			5000,
+		);
+		expect(result).toBeNull();
+	});
+
+	it("preserves structured diagnostics from an ordinary non-zero compiler exit", async () => {
+		const diagnostic = "src/x.ts(1,2): error TS2322: incompatible value";
+		const result = await spawnCollect(
+			process.execPath,
+			["-e", `process.stdout.write(${JSON.stringify(diagnostic)}); process.exit(1);`],
+			undefined,
+			5000,
+		);
+		expect(result).toBe(`${diagnostic}\n`);
+	});
 });
 
 // ============================================================

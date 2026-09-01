@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -199,15 +199,36 @@ describe("install-hooks command", () => {
 		expect(cloud.token_source.env).toBe("MY_TOKEN");
 	});
 
-	it("warns and skips unknown runners", async () => {
+	it("rejects an unknown runner selection before installing any requested runner", async () => {
 		const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		process.exitCode = 0;
 		await installHooksCommand({
 			runner: "not-a-runner,claude-code",
 			binary: "/usr/bin/ih-binary",
 		});
-		expect(stderrSpy).toHaveBeenCalled();
-		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(true);
+		expect(stderrSpy).toHaveBeenCalledWith(
+			expect.stringContaining("unknown runner: not-a-runner; no hooks were installed"),
+		);
+		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(false);
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+		stdoutSpy.mockRestore();
+		stderrSpy.mockRestore();
+	});
+
+	it("rejects an explicitly empty runner instead of treating it as all runners", async () => {
+		const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		process.exitCode = 0;
+		await installHooksCommand({ runner: "", binary: "/usr/bin/ih-binary" });
+		expect(stderrSpy).toHaveBeenCalledWith(
+			expect.stringContaining("unknown runner: ; no hooks were installed"),
+		);
+		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(false);
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
 		stdoutSpy.mockRestore();
 		stderrSpy.mockRestore();
 	});
@@ -225,19 +246,24 @@ describe("install-hooks command", () => {
 		expect(parsed.mode).toBe("strict");
 	});
 
-	it("warns on unknown --mode and defaults to balanced", async () => {
+	it("rejects an explicit unknown --mode before hooks or policy are written", async () => {
 		const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		process.exitCode = 0;
 		await installHooksCommand({
 			runner: "claude-code",
 			binary: "/usr/bin/ih-mode-bad",
 			mode: "super-strict",
 		});
-		expect(stderrSpy).toHaveBeenCalled();
-		const parsed = JSON.parse(
-			readFileSync(join(tmp, ".interlinked", "check-policy.json"), "utf-8"),
-		) as { mode: string };
-		expect(parsed.mode).toBe("balanced");
+		expect(stderrSpy).toHaveBeenCalledWith(
+			expect.stringContaining('unknown mode "super-strict"'),
+		);
+		expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("no files were changed"));
+		expect(process.exitCode).toBe(1);
+		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+		process.exitCode = 0;
 		stdoutSpy.mockRestore();
 		stderrSpy.mockRestore();
 	});
@@ -323,6 +349,27 @@ describe("install-hooks — a failed postInstall is not reported as success", ()
 		expect(payload.ok).toBe(true);
 		expect(payload.post_install_failures).toEqual([]);
 		expect(process.exitCode).toBe(0);
+	});
+});
+
+describe("install-hooks — a failed mode write is not reported as success", () => {
+	it("reports ok:false and leaves the requested mode unapplied", async () => {
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		const guardPath = join(tmp, ".interlinked", "guard-rules.json");
+		writeFileSync(guardPath, "{ corrupt guard rules");
+		process.exitCode = 0;
+
+		const out = await captureStdout(() =>
+			installHooksCommand({ runner: "gemini-cli", binary: "/usr/bin/ih-mode-fail", json: true }),
+		);
+		const payload = JSON.parse(out) as { ok: boolean; mode: string };
+
+		expect(payload.ok).toBe(false);
+		expect(payload.mode).toBe("balanced");
+		expect(process.exitCode).toBe(1);
+		expect(readFileSync(guardPath, "utf-8")).toBe("{ corrupt guard rules");
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+		process.exitCode = 0;
 	});
 });
 
@@ -447,8 +494,13 @@ describe("install-hooks — binary path resolution fallback", () => {
 		const payload = JSON.parse(out) as { ok: boolean; entries: unknown[] };
 		expect(payload.ok).toBe(true);
 		expect(payload.entries.length).toBe(1);
-		// resolveHookBinaryPath with writeFallback wrote the legacy hook script.
-		expect(existsSync(join(tmp, ".interlinked", "hooks"))).toBe(true);
+		// In a BUILT checkout the install now resolves the packaged
+		// `dist/hook-entry.js` — the canonical runtime — instead of writing the
+		// legacy `.mjs`. The previous assertion (that a hooks/ dir appeared)
+		// silently encoded "the legacy fallback ran", which is the defect: it
+		// passed precisely when the wrong binary was installed. The .mjs
+		// fallback itself is still covered, by name, in hooks.test.ts.
+		expect(existsSync(join(tmp, ".interlinked", "hooks"))).toBe(false);
 	});
 
 	it("resolves a hook binary path when --binary omitted under --dry-run (no fallback write)", async () => {
@@ -487,8 +539,9 @@ describe("install-hooks — scope parsing", () => {
 		expect(nonNull(payload.entries[0]).settings_path).not.toContain(tmp);
 	});
 
-	it("warns and falls back to project on an unknown scope", async () => {
+	it("rejects an explicit unknown scope without falling back or writing", async () => {
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		process.exitCode = 0;
 		const out = await captureStdout(() =>
 			installHooksCommand({
 				runner: "claude-code",
@@ -498,12 +551,17 @@ describe("install-hooks — scope parsing", () => {
 			}),
 		);
 		expect(stderrSpy).toHaveBeenCalledWith(
-			expect.stringContaining('unknown scope galaxy; using "project"'),
+			expect.stringContaining('unknown scope "galaxy"'),
 		);
+		const payload = JSON.parse(out) as { ok: boolean; error: string };
+		expect(payload.ok).toBe(false);
+		expect(payload.error).toContain("expected user, project, or local");
+		expect(process.exitCode).toBe(1);
+		expect(existsSync(join(tmp, ".claude", "settings.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "installer-manifest.json"))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
+		process.exitCode = 0;
 		stderrSpy.mockRestore();
-		const payload = JSON.parse(out) as { entries: Array<{ settings_path: string }> };
-		// project scope lands inside the project tmp dir.
-		expect(nonNull(payload.entries[0]).settings_path).toContain(tmp);
 	});
 });
 
@@ -606,7 +664,7 @@ describe("install-hooks — cloud config branches", () => {
 			manifestPath: (cwd: string): string =>
 				join(cwd, ".interlinked", "installer-manifest.json"),
 		}));
-		const writeModeSpy = vi.fn();
+		const writeModeSpy = vi.fn(() => true);
 		vi.doMock("./mode.js", () => ({ writeMode: writeModeSpy }));
 		const mod = await import("./install-hooks.js");
 

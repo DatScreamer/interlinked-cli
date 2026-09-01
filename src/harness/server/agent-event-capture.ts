@@ -33,7 +33,7 @@ import { isJsonObject } from "../../lib/json-types.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { redactPii, scrubSecrets } from "../../lib/secrets.js";
 import { captureAgentTranscript } from "../timeline-capture.js";
-import type { HarnessEvent } from "../types.js";
+import type { AgentSource, HarnessEvent } from "../types.js";
 import {
 	readAgentMetrics,
 	rememberAgentType,
@@ -66,12 +66,14 @@ export const AGENT_TRANSCRIPT_REDRAIN_MS = 750;
 
 /** Provider label per agent source — same vocabulary the tool_event records
  *  use (`detectProvider` in lib/collection/builder.ts). */
-const PROVIDER_BY_SOURCE: Record<string, string> = {
+const PROVIDER_BY_SOURCE: Record<AgentSource, string> = {
 	claude: "claude-code",
 	gemini: "gemini-cli",
 	copilot: "copilot",
 	codex: "codex",
 	cursor: "cursor",
+	opencode: "opencode",
+	pi: "pi",
 };
 
 /** Read the last `tailBytes` of a file as utf-8, dropping a partial first

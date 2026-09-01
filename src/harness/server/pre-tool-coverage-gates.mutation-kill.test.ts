@@ -15,7 +15,7 @@ vi.mock("../evaluator/coverage-write-guard.js", () => ({ checkCoverageWrite: vi.
 vi.mock("../evaluator/commit-gate.js", () => ({ checkCommitGate: vi.fn() }));
 vi.mock("../mutation/gate.js", () => ({ runPerEditMutationGate: vi.fn() }));
 vi.mock("../mutation/manifest.js", () => ({
-	loadManifest: vi.fn(),
+	loadManifestState: vi.fn(() => ({ kind: "missing" })),
 	emptyManifest: vi.fn((meta) => ({ meta, mutants: [] })),
 	makeManifestPersister: vi.fn(() => vi.fn()),
 }));
@@ -23,6 +23,8 @@ vi.mock("../mutation/survivors-index.js", () => ({ makeManifestPersisterWithInde
 vi.mock("../mutation/pending-registry.js", () => ({
 	overlayHash: vi.fn(() => "overlay-hash"),
 	pendingRegistry: vi.fn(() => ({ pending: [] })),
+	initPendingRegistryStore: vi.fn(),
+	commitPendingRegistry: vi.fn(),
 }));
 vi.mock("../mutation/pending-runs.js", () => ({ recordPending: vi.fn() }));
 vi.mock("../dependency-view.js", () => ({ resolveDependencyView: vi.fn() }));
@@ -32,7 +34,7 @@ vi.mock("../debt-evasion.js", () => ({ noteWanderBlockDecision: vi.fn() }));
 
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
-import { emptyManifest, loadManifest } from "../mutation/manifest.js";
+import { emptyManifest, loadManifestState } from "../mutation/manifest.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
 import { runCommitGate, runCoverageWriteGate, runMutationWriteGate } from "./pre-tool-coverage-gates.js";
 
@@ -43,7 +45,7 @@ const commit = checkCommitGate as unknown as ReturnType<typeof vi.fn>;
 // SAFETY: this import is replaced by a vi.mock factory above.
 const mutationGate = runPerEditMutationGate as unknown as ReturnType<typeof vi.fn>;
 // SAFETY: this import is replaced by a vi.mock factory above.
-const mLoadManifest = loadManifest as unknown as ReturnType<typeof vi.fn>;
+const mLoadManifestState = loadManifestState as unknown as ReturnType<typeof vi.fn>;
 // SAFETY: this import is replaced by a vi.mock factory above.
 const mEmptyManifest = emptyManifest as unknown as ReturnType<typeof vi.fn>;
 
@@ -77,7 +79,7 @@ beforeEach(() => {
 	coverage.mockResolvedValue(null);
 	commit.mockResolvedValue(null);
 	mutationGate.mockResolvedValue(null);
-	mLoadManifest.mockReturnValue(null);
+	mLoadManifestState.mockReturnValue({ kind: "missing" });
 });
 
 // --- runCoverageWriteGate: fail-loud-allow merge is a no-op on empty warnings ---
@@ -142,14 +144,14 @@ it("keeps commitDecision.warnings by REFERENCE when pre-decision's warnings arra
 it("resolves the manifest directory as cwd + '.interlinked' (module constant)", async () => {
 	const ctx = mutationCtx("/repo-mut-a");
 	const decision = await runMutationWriteGate(ctx, event(), { decision: "allow" });
-	expect(mLoadManifest).toHaveBeenCalledWith(resolve("/repo-mut-a", ".interlinked"));
+	expect(mLoadManifestState).toHaveBeenCalledWith(resolve("/repo-mut-a", ".interlinked"));
 	expect(decision).toBeNull();
 });
 
 // test-contract: invariant — `??` must prefer a real manifest over the empty-fallback constructor.
-it("uses loadManifest's result directly (not the emptyManifest fallback) when a manifest is found", async () => {
+it("uses the VALID state's manifest directly (not the emptyManifest fallback) when one is found", async () => {
 	const realManifest = { generation: 7, mutants: [] };
-	mLoadManifest.mockReturnValueOnce(realManifest);
+	mLoadManifestState.mockReturnValueOnce({ kind: "valid", manifest: realManifest });
 	await runMutationWriteGate(mutationCtx(), event(), { decision: "allow" });
 	expect(mutationGate.mock.calls[0]?.[0]?.baseManifest).toBe(realManifest);
 	expect(mEmptyManifest).not.toHaveBeenCalled();
@@ -159,7 +161,7 @@ it("uses loadManifest's result directly (not the emptyManifest fallback) when a 
 // pinned via the manifest the mutation gate actually receives (emptyManifest's real return shape),
 // not just the call arguments.
 it("builds the emptyManifest fallback with the EXACT placeholder metadata when no manifest is found", async () => {
-	mLoadManifest.mockReturnValueOnce(null);
+	mLoadManifestState.mockReturnValueOnce({ kind: "missing" });
 	const expectedMeta = {
 		engine: "stryker",
 		engineVersion: "0",

@@ -14,7 +14,7 @@ function makeDeps(over: Partial<IncumbentDeps> & { present?: string[] }): Record
 	const present = new Set(over.present ?? []);
 	const deps: IncumbentDeps = {
 		fileExists: over.fileExists ?? ((p) => present.has(p)),
-		probe: over.probe ?? (() => Promise.resolve(false)),
+		probe: over.probe ?? (() => Promise.resolve("absent")),
 		liveForeignPid: over.liveForeignPid ?? (() => null),
 		removeFile:
 			over.removeFile ??
@@ -32,7 +32,7 @@ const PID = "/repo/.interlinked/harness.pid";
 
 describe("resolveIncumbent — positive (must fire: stale recovery)", () => {
 	it("P1: unlinks a socket that refuses connections and reports stale", async () => {
-		const r = makeDeps({ present: [SOCK, PID], probe: () => Promise.resolve(false) });
+		const r = makeDeps({ present: [SOCK, PID], probe: () => Promise.resolve("absent") });
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
 		expect(verdict).toEqual({ kind: "stale", pid: null });
 		expect(r.removed).toContain(SOCK);
@@ -44,11 +44,18 @@ describe("resolveIncumbent — positive (must fire: stale recovery)", () => {
 		expect(r.removed).toContain(PID);
 	});
 
-	it("P3: keeps a LIVE owner's pid file and names it for the caller to reap", async () => {
+	it("P3: names a LIVE owner for reaping without unlinking its live pathname first", async () => {
 		const r = makeDeps({ present: [SOCK, PID], liveForeignPid: () => 4242 });
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
 		expect(verdict).toEqual({ kind: "stale", pid: 4242 });
-		expect(r.removed).toEqual([SOCK]);
+		expect(r.removed).toEqual([]);
+	});
+
+	it("P4: a live pid without a socket is a deaf incumbent requiring recovery", async () => {
+		const r = makeDeps({ present: [PID], liveForeignPid: () => 7 });
+		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
+		expect(verdict).toEqual({ kind: "stale", pid: 7 });
+		expect(r.removed).toEqual([]);
 	});
 });
 
@@ -56,7 +63,7 @@ describe("resolveIncumbent — negative (must not fire: live incumbent protected
 	it("N1: a socket that ACCEPTS is left untouched and reported serving", async () => {
 		const r = makeDeps({
 			present: [SOCK, PID],
-			probe: () => Promise.resolve(true),
+			probe: () => Promise.resolve("ready"),
 			liveForeignPid: () => 99,
 		});
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
@@ -65,7 +72,7 @@ describe("resolveIncumbent — negative (must not fire: live incumbent protected
 	});
 
 	it("N2: an incumbent that answers is protected even with NO pid file", async () => {
-		const r = makeDeps({ present: [SOCK], probe: () => Promise.resolve(true) });
+		const r = makeDeps({ present: [SOCK], probe: () => Promise.resolve("ready") });
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
 		expect(verdict.kind).toBe("serving");
 		expect(r.removed).toEqual([]);
@@ -79,12 +86,33 @@ describe("resolveIncumbent — negative (must not fire: live incumbent protected
 			},
 		});
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
-		expect(verdict.kind).toBe("serving");
+		expect(verdict.kind).toBe("occupied_unready");
 		expect(r.removed).toEqual([]);
 	});
 
-	it("N4: no socket file at all is a clear start, not a recovery", async () => {
-		const r = makeDeps({ present: [], liveForeignPid: () => 7 });
+	it("N4: an accepting but protocol-silent listener without a pid is never unlinked", async () => {
+		const r = makeDeps({
+			present: [SOCK],
+			probe: () => Promise.resolve("occupied_unready"),
+		});
+		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
+		expect(verdict).toEqual({ kind: "occupied_unready", pid: null });
+		expect(r.removed).toEqual([]);
+	});
+
+	it("N5: an ambiguous listener with a live pid is never reclassified as stale", async () => {
+		const r = makeDeps({
+			present: [SOCK, PID],
+			probe: () => Promise.resolve("occupied_unready"),
+			liveForeignPid: () => 99,
+		});
+		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
+		expect(verdict).toEqual({ kind: "occupied_unready", pid: 99 });
+		expect(r.removed).toEqual([]);
+	});
+
+	it("N6: no socket and no live pid is a clear start, not a recovery", async () => {
+		const r = makeDeps({ present: [] });
 		const verdict = await resolveIncumbent(SOCK, PID, r.deps);
 		expect(verdict).toEqual({ kind: "clear" });
 		expect(r.removed).toEqual([]);
@@ -115,7 +143,7 @@ function antiStompSpy(): { deps: AntiStompDeps; exits: number; recorded: number 
 describe("settleIncumbentAtBind — incumbent protection", () => {
 	it("P1: a serving incumbent makes THIS process exit as already-running", async () => {
 		const spy = antiStompSpy();
-		const r = makeDeps({ present: [SOCK], probe: () => Promise.resolve(true) });
+		const r = makeDeps({ present: [SOCK], probe: () => Promise.resolve("ready") });
 		const verdict = await settleIncumbentAtBind({
 			socketPath: SOCK,
 			pidPath: PID,
@@ -131,7 +159,7 @@ describe("settleIncumbentAtBind — incumbent protection", () => {
 
 	it("N1: a stale socket does NOT exit — it clears the corpse and binds", async () => {
 		const spy = antiStompSpy();
-		const r = makeDeps({ present: [SOCK, PID], probe: () => Promise.resolve(false) });
+		const r = makeDeps({ present: [SOCK, PID], probe: () => Promise.resolve("absent") });
 		const verdict = await settleIncumbentAtBind({
 			socketPath: SOCK,
 			pidPath: PID,
@@ -160,4 +188,49 @@ describe("settleIncumbentAtBind — incumbent protection", () => {
 		expect(spy.exits).toBe(0);
 		expect(r.removed).toEqual([]);
 	});
+
+	it("N3: a protocol-silent listener with no verifiable pid aborts startup without unlinking", async () => {
+		const r = makeDeps({ present: [SOCK], probe: () => Promise.resolve("occupied_unready") });
+		await expect(
+			settleIncumbentAtBind({
+				socketPath: SOCK,
+				pidPath: PID,
+				cwd: "/repo",
+				logAlways: () => {},
+				deps: r.deps,
+			}),
+		).rejects.toThrow("did not prove the Interlinked protocol");
+		expect(r.removed).toEqual([]);
+	});
+
+	it("P2: exact-process exit is confirmed before stale pid/socket metadata is removed", async () => {
+		const r = makeDeps({ present: [SOCK, PID], liveForeignPid: () => 4242 });
+		await settleIncumbentAtBind({
+			socketPath: SOCK,
+			pidPath: PID,
+			cwd: "/repo",
+			logAlways: () => {},
+			deps: r.deps,
+			reap: async () => "gone",
+		});
+		expect(r.removed).toEqual([SOCK, PID]);
+	});
+
+	it.each(["unverified", "replaced", "failed"] as const)(
+		"N4: %s identity outcome aborts takeover and preserves incumbent metadata",
+		async (outcome) => {
+			const r = makeDeps({ present: [SOCK, PID], liveForeignPid: () => 4242 });
+			await expect(
+				settleIncumbentAtBind({
+					socketPath: SOCK,
+					pidPath: PID,
+					cwd: "/repo",
+					logAlways: () => {},
+					deps: r.deps,
+					reap: async () => outcome,
+				}),
+			).rejects.toThrow("verified identity");
+			expect(r.removed).toEqual([]);
+		},
+	);
 });

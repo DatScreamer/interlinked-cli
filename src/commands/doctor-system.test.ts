@@ -220,7 +220,13 @@ describe("checkOrphanHarnessCount", () => {
 	});
 });
 
-describe("runSystemChecks (mocked os/child_process — exercises countOrphanHarnesses)", () => {
+// The private `ps` scanner these cases used to drive is DELETED: it was a
+// second, disagreeing definition of "orphan" that counted every daemon (a
+// daemon is re-parented to pid 1 by definition) and made doctor offer a reap
+// that would have killed the working one. The count is now supplied by the
+// caller from the canonical protection-aware sweep, so what belongs here is
+// the PASS-THROUGH and the unavailable rendering — not a reimplementation.
+describe("runSystemChecks (orphan count supplied by the caller)", () => {
 	beforeEach(() => {
 		cpusMock.mockReset().mockReturnValue(new Array(4));
 		freememMock.mockReset().mockReturnValue(4 * 1024 ** 3);
@@ -231,63 +237,9 @@ describe("runSystemChecks (mocked os/child_process — exercises countOrphanHarn
 		vi.clearAllMocks();
 	});
 
-	it("calls ps with the exact command string and options", () => {
+	it("P: passes the supplied count straight through to the orphan row", () => {
 		execSyncMock.mockReturnValue("");
-		runSystemChecks();
-		expect(execSyncMock).toHaveBeenCalledWith("ps -ax -o pid=,ppid=,command= 2>/dev/null", {
-			encoding: "utf-8",
-			timeout: 2000,
-		});
-	});
-
-	it("reports 0 orphans when ps output is empty", () => {
-		execSyncMock.mockReturnValue("");
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
-			name: "Orphan harness daemons",
-			status: "pass",
-			message: "0 orphans — auto-reaper working as expected",
-		});
-	});
-
-	it("counts only lines that are matching, ppid<=1, AND a harness command — ignoring header/high-ppid/other-cmd lines", () => {
-		const psOutput = [
-			"  PID  PPID COMMAND",
-			"  99999  1  /usr/local/lib/node_modules/interlinked-cli/dist/harness/server.js --daemon",
-			"  100     50   /usr/bin/node other-process.js",
-			"  200     1    /usr/bin/some-other-tool --flag",
-		].join("\n");
-		execSyncMock.mockReturnValue(psOutput);
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
-			name: "Orphan harness daemons",
-			status: "warn",
-			message:
-				"1 orphan daemon found — using extra memory. Run 'interlinked harness reap --force' to clean up",
-		});
-	});
-
-	it("treats a multi-digit ppid text (e.g. '01') as ppid 1 and counts it as an orphan", () => {
-		execSyncMock.mockReturnValue(
-			"500  01  /path/interlinked-cli/dist/harness/server.js",
-		);
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
-			name: "Orphan harness daemons",
-			status: "warn",
-			message:
-				"1 orphan daemon found — using extra memory. Run 'interlinked harness reap --force' to clean up",
-		});
-	});
-
-	it("counts multiple orphan lines correctly (not decremented)", () => {
-		const psOutput = [
-			"1  1  /a/interlinked-cli/dist/harness/server.js",
-			"2  1  /b/interlinked-cli/dist/harness/server.js",
-			"3  0  /c/interlinked-cli/dist/harness/server.js",
-		].join("\n");
-		execSyncMock.mockReturnValue(psOutput);
-		const results = runSystemChecks();
+		const results = runSystemChecks(3);
 		expect(results[2]).toEqual({
 			name: "Orphan harness daemons",
 			status: "warn",
@@ -296,47 +248,37 @@ describe("runSystemChecks (mocked os/child_process — exercises countOrphanHarn
 		});
 	});
 
-	it("does not count a harness-matching process whose parent is still alive (ppid > 1)", () => {
-		execSyncMock.mockReturnValue(
-			"50  999  /usr/local/lib/node_modules/interlinked-cli/dist/harness/server.js",
-		);
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
+	it("P: zero renders the healthy row", () => {
+		execSyncMock.mockReturnValue("");
+		expect(runSystemChecks(0)[2]).toEqual({
 			name: "Orphan harness daemons",
 			status: "pass",
 			message: "0 orphans — auto-reaper working as expected",
 		});
 	});
 
-	it("does not count a line whose digits aren't anchored at the start (garbled prefix)", () => {
-		execSyncMock.mockReturnValue(
-			"xx99999  1  /usr/local/lib/node_modules/interlinked-cli/dist/harness/server.js",
-		);
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
-			name: "Orphan harness daemons",
-			status: "pass",
-			message: "0 orphans — auto-reaper working as expected",
-		});
+	// The load-bearing one: an unanswerable probe must not render as clean.
+	it("P: null renders 'could not determine', NOT a green zero", () => {
+		execSyncMock.mockReturnValue("");
+		const row = runSystemChecks(null)[2];
+		expect(row?.status).toBe("warn");
+		expect(row?.message).toContain("could not determine orphan count");
+		expect(row?.message).not.toContain("0 orphans");
 	});
 
-	it("returns 0 orphans when ps throws (caught, fails closed to non-scary)", () => {
-		execSyncMock.mockImplementation(() => {
-			throw new Error("ps: command not found");
-		});
-		const results = runSystemChecks();
-		expect(results[2]).toEqual({
-			name: "Orphan harness daemons",
-			status: "pass",
-			message: "0 orphans — auto-reaper working as expected",
-		});
+	it("N: it no longer shells out to `ps` at all (the duplicate scanner is gone)", () => {
+		execSyncMock.mockReturnValue("");
+		runSystemChecks(0);
+		for (const call of execSyncMock.mock.calls) {
+			expect(String(call[0])).not.toContain("ps -ax");
+		}
 	});
 
 	it("builds the full four-check array in order (cpu, memory, orphans, cli)", () => {
 		cpusMock.mockReset().mockReturnValue(new Array(8));
 		freememMock.mockReset().mockReturnValue(8 * 1024 ** 3);
 		execSyncMock.mockReturnValue("");
-		const results = runSystemChecks();
+		const results = runSystemChecks(0);
 		expect(results).toEqual([
 			{
 				name: "CPU cores",

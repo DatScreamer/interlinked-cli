@@ -271,7 +271,9 @@ describe("survivor extraction — only survivors, with their real fields", () =>
 		expect(typeof out.survivors[0]?.lexeme).toBe("string");
 	});
 
-	it("reports an empty survivor list as harvested-but-clean, not as a miss", async () => {
+	// "Zero survivors returned" is a valid report, NOT clean evidence — the
+	// late path never certifies (review 2026-08-28).
+	it("reports an empty survivor list as harvested-with-zero-survivors, not as a miss", async () => {
 		const out = await harvestPending([pending()], async () => ({ ok: true, status: 200, json: async () => survivorReport([]) }), fakeClock().opts);
 		expect(out.harvested).toBe(1);
 		expect(out.survivors).toEqual([]);

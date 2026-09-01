@@ -6,7 +6,7 @@
 // including a healthy one serving another session, and the gap that opened is
 // what made the next blocked caller start yet another daemon (the storm).
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -119,6 +119,50 @@ describe("cleanStaleRestartFiles — negative (must not fire)", () => {
 			cleanStaleRestartFiles(tmpRepo(), { discover: () => [], reap: recorder(seen) }),
 		).resolves.toBeUndefined();
 		expect(seen).toHaveLength(1);
+	});
+
+	it("N4: a protocol-ready raw socket with no pid metadata is never unlinked", async () => {
+		const root = tmpRepo();
+		const socketPath = join(root, ".interlinked", "harness.sock");
+		mkdirSync(join(root, ".interlinked"), { recursive: true });
+		writeFileSync(socketPath, "socket-placeholder");
+		let classifications = 0;
+		await cleanStaleRestartFiles(root, {
+			discover: () => [],
+			socketPaths: () => [socketPath],
+			extraPids: () => [],
+			probe: () => Promise.resolve(true),
+			reap: recorder([]),
+			classifySocket: () => {
+				classifications++;
+				return Promise.resolve("ready");
+			},
+		});
+		expect(classifications).toBe(1);
+		expect(existsSync(socketPath)).toBe(true);
+	});
+
+	it("N5: a reused unrelated live pid is stale when the raw socket is confirmed absent", async () => {
+		const root = tmpRepo();
+		const interlinked = join(root, ".interlinked");
+		const pidPath = join(interlinked, "harness.pid");
+		mkdirSync(interlinked, { recursive: true });
+		writeFileSync(pidPath, String(process.pid));
+		let classifications = 0;
+		await cleanStaleRestartFiles(root, {
+			discover: () => [],
+			socketPaths: () => [],
+			extraPids: () => [],
+			reap: recorder([]),
+			classifySocket: () => {
+				classifications++;
+				return Promise.resolve("absent");
+			},
+			runningStatus: () => ({ running: true, pid: process.pid }),
+			identify: () => null,
+		});
+		expect(classifications).toBe(0);
+		expect(existsSync(pidPath)).toBe(false);
 	});
 });
 

@@ -5,11 +5,15 @@ description: "Inspect what AI agents did — the local, offline-first activity l
 
 # interlinked-observability — inspect what agents did
 
-Interlinked captures normalized tool calls from Claude Code, Codex, Copilot CLI,
-Gemini CLI, Cursor, OpenCode, and Pi — locally via hooks, offline-first, into
-append-only JSONL under `.interlinked/`. The hook writes synchronously (~0.1ms), so the log is
-current the moment a tool returns. You can answer *what did I (or a parallel agent) just do?
-what ran, on what files, with what tokens? what did the guard block? what mistakes keep
+Interlinked captures normalized tool-call events that configured Claude Code,
+Codex, Copilot CLI, Gemini CLI, Cursor, OpenCode, and Pi integrations deliver —
+locally via hooks, offline-first, into append-only JSONL under `.interlinked/`.
+The running daemon persists those delivered events. Detached lifecycle events and
+asynchronous PostTool findings can arrive after the originating provider action,
+and a cold fallback is not a complete capture path, so the log is evidence of
+events already delivered and persisted—not a synchronous transcript of every
+agent action. You can answer *what did I (or a parallel agent) just do? what ran,
+on what files, with what tokens? what did the guard block? what mistakes keep
 recurring?* — **all without a server** (the server is optional enrichment).
 
 ## Load this when
@@ -42,11 +46,19 @@ strict: `\d+(s|m|h|d)` (e.g. `30m`, `2d`) — `15` or `1.5h` throw.
 | `collect [--provider codex --since --dir --dry-run]` | Fold Codex rollout history (`~/.codex/sessions/`) into `timeline.jsonl`; live Codex hooks capture the twelve native lifecycle/tool events. |
 | `search <query> [--path --glob --type --limit --context --engine]` | Local codebase search (ripgrep, native fallback; multi-term → OR + density rank). |
 
+`collect` retains only the bounded incoming Codex candidate batch (at most
+250,000 records / 64 MiB; each rollout file is capped at 64 MiB) and streams
+the existing timeline to remove already-seen keys. A corrupt, oversized-row,
+or unreadable destination timeline is an error, not an empty history: the
+command exits nonzero without appending duplicates. Full timeline rebuilds are
+an in-memory sort and therefore explicitly refuse inputs or existing snapshots
+over 250,000 records / 64 MiB instead of exhausting application memory.
+
 **Audit & maintenance**
 | Command | Purpose |
 |---|---|
 | `audit verify` | Verify the **tamper-evident, hash-chained guard-decision log** (`compact` archives read first). Bare `interlinked audit` just prints help — you must pass `verify`. *Not* a dependency audit — that's `interlinked allowlist verify`. |
-| `compact [--dry-run --keep-recent-mb --all]` | Lossless gzip + rotate `activity.jsonl` (archives a safe prefix ≤ sync cursor; recoverable via `gunzip`). |
+| `compact [--dry-run --keep-recent-mb --all]` | Lossless gzip + rotate `activity.jsonl` (safe prefix ≤ sync cursor, audit-chain-aware) PLUS `collection.jsonl` / `timeline.jsonl` (plain recent-tail rotation, per-log `manifest-<log>.json`). Appenders and rotation share a cross-process lock, so appends made during compaction survive. A durable per-log claim precedes final segment publication; retry verifies its source identity, recorded prefix, gzip size, and SHA-256 before completing the SAME segment, even when the process died before the manifest write. Unknown or mismatched segment bytes stay untouched and stop that recovery. While either a durable claim or a legacy claim-less pending manifest row exists, `clean` and whole-file timeline rebuilds refuse to replace that log; ordinary appends remain allowed so recovery includes later rows. Activity recovery also refuses any recorded sync cursor beyond the retained suffix. Activity compaction refuses a sync cursor beyond the current EOF (unless `--all` explicitly bypasses sync bounds). All bytes remain recoverable via `gunzip` in manifest order. |
 | `sync [--dry-run --limit]` | Push buffered events to the server (`POST /api/hooks/activity/batch`, secret+PII scrubbed at egress). Network — use `--dry-run` for a safe pending count. |
 
 `interlinked metrics` (whole-repo code-quality scan) lives in **interlinked-quality-gates**;
@@ -102,9 +114,31 @@ parent thread as `session_id` and no actor/model fields. Interlinked correlates 
 `subagent_id`, `parent_agent`, and `model`. The parent `session` stays unchanged so one delegated
 turn remains a coherent trajectory. `interlinked collect --provider codex` also understands the
 current `session_meta.payload.id` + `source.subagent.thread_spawn` shape and writes
-`agent_id`/`attribution_agent`/`is_sidechain` into `timeline.jsonl`. Correlation is fail-open: if
+`agent_id`/`parent_agent`/`attribution_agent`/`is_sidechain` into `timeline.jsonl`. Correlation is fail-open: if
 the rollout is missing, stale, outside the repo cwd, or unmatched, the event remains provider-only
-rather than receiving a guessed identity.
+rather than receiving a guessed identity. Exact execution-id evidence wins; pending-call fallback
+also declines when otherwise-matching evidence names more than one distinct child actor. The first
+`session_meta` owns a rollout file: later duplicate root metadata cannot erase child attribution,
+and when both are present the child `payload.id` takes precedence over root `payload.session_id`.
+
+**Codex token accounting:** rollout metrics and the generated hook read
+`event_msg.payload.type: "token_count"` rows and add only
+`info.last_token_usage`, which is the per-call delta. Never sum
+`total_token_usage`; it is cumulative and would multiply usage when appended repeatedly. Codex
+`input_tokens` stays the raw input count, `cached_input_tokens` maps separately to cache-read,
+`cache_write_input_tokens` maps to cache-creation, and `reasoning_output_tokens` is recorded without
+being added to output a second time. `turn_context.payload.model` supplies the model. Generated-hook
+cursors include provider, transcript path, and actor identity because sibling subagents can share the
+parent `session_id`; `agent_transcript_path` is the authoritative child transcript at SubagentStop.
+
+**OpenCode/Pi observability boundary:** their managed bridges emit provider-attributed tool,
+prompt, lifecycle, and compaction records, and a loaded bridge leaves an `opencode` or `pi` row in
+`hook-runtime.json`. OpenCode maps `session.idle` and Pi maps `agent_settled` to normalized Stop,
+but both upstream signals are observation-only: no native continuation or veto is implied.
+Neither bridge receives dedicated MCP, subagent, or worktree lifecycle events, so the absence of
+those rows is an upstream capability gap, not evidence that no such higher-level activity occurred.
+The AGENTS lens can label OpenCode/Pi root sessions, but cannot invent subagent lanes without a
+native actor event.
 
 **`logs --type <t>`** filters the raw `event.type` exactly (not the uppercase display labels).
 Values: `session_start`, `session_end`, `tool_use_start`, `tool_use`, `tool_use_error`,
@@ -198,12 +232,13 @@ Six lenses, each fed by its own SSE route:
 | DRIFT | — | — | not built yet (standby pane) |
 
 The AGENTS lens needs no producer: attributed activity rows carry `agent`, `session`,
-`subagent_id`, and `model`, so presence is a fold over the stream the dashboard already tails
+`subagent_id`, `parent_agent`, and `model`, so presence is a fold over the stream the dashboard already tails
 (`src/lib/viz/agent-roster.ts`, hosted at `/api/agents`). Each actor gets a stable hue from its
 id, and that hue is reused for its ticker rows and its file pulses — with two sessions running,
 colour alone answers "who did that". A subagent gets its OWN lane keyed under its parent, so a
-session's own edits are never conflated with its subagents'. Lanes dim to idle after 2 minutes
-of silence rather than disappearing.
+session's own edits are never conflated with its subagents'. When a runner names the parent by
+thread/session id, the roster resolves that id through the root lane's session before linking the
+child. Lanes dim to idle after 2 minutes of silence rather than disappearing.
 
 The TESTS lens needs a producer. Any repo using vitest adds one line:
 
@@ -240,6 +275,17 @@ interlinked sync --dry-run               # safe: pending count, no send
   `explain` for pure introspection — they never touch the network.
 - **`watch` and the send half of `sync` are server-only** — they need auth (and `workspace_id`
   for localhost dev); `watch` prints "Not authenticated" offline.
+- **`sync` is restart-safe and memory-bounded:** it sends at most 100 events per batch,
+  checkpoints the byte cursor after each accepted batch, and leaves an unterminated final
+  JSONL record pending until its newline arrives. Each response body is capped at 256 KiB and
+  the request timeout remains active until that body is consumed. Run-wide type, agent, tool,
+  and session summaries retain at most 256 keys per dimension (512 characters per key); JSON
+  reports `breakdown_complete` plus exact omission counts in `summary_truncated`, and a partial
+  breakdown is never persisted as an exact last-sync summary.
+- **Session summaries are bounded and fail loudly:** `status`, checkpoint/resume context, and
+  impact evidence stream at most 10,000 session JSON files, 1 MiB per file, and 32 MiB total.
+  Crossing a ceiling refuses the scan instead of returning an incomplete list as exact;
+  ordinary malformed/unreadable legacy rows remain skipped.
 - **`viz serve` / `logs -f` / `watch` / `telemetry -f` block** until Ctrl-C.
 - **`--type` filters the raw type** (`tool_use_error`, `guard_block`), not display labels
   (`ERROR`). Passing an unsupported mode flag to a command errors (flags are per-command).

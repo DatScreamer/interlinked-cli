@@ -1,10 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
 	configuredCeilingBytes,
+	configuredHeapMb,
 	DEFAULT_DAEMON_HEAP_MB,
 	DEFAULT_RSS_CEILING_BYTES,
 	shouldRecycle,
 } from "./memory-ceiling.js";
+
+describe("configuredHeapMb", () => {
+	it("accepts a bounded override and floors fractions when the RSS ceiling has headroom", () => {
+		expect(
+			configuredHeapMb({
+				INTERLINKED_HARNESS_HEAP_MB: "2048.9",
+				INTERLINKED_HARNESS_RSS_CEILING_MB: "3072",
+			}),
+		).toBe(2048);
+	});
+
+	it("caps the heap below the RSS backstop and rejects runaway Node argv", () => {
+		expect(configuredHeapMb({ INTERLINKED_HARNESS_HEAP_MB: "2048" })).toBe(1536);
+		expect(
+			configuredHeapMb({
+				INTERLINKED_HARNESS_HEAP_MB: "999999999999",
+				INTERLINKED_HARNESS_RSS_CEILING_MB: "10000",
+			}),
+		).toBe(4096);
+	});
+
+	it.each([undefined, "", "0", "-1", "Infinity", "NaN", "0.5"])(
+		"falls back for an unusable override: %s",
+		(value) => {
+			const env = value === undefined ? {} : { INTERLINKED_HARNESS_HEAP_MB: value };
+			expect(configuredHeapMb(env)).toBe(DEFAULT_DAEMON_HEAP_MB);
+		},
+	);
+});
 
 /**
  * The daemon grows under sustained edit traffic and, past roughly 750MB on a
@@ -13,10 +43,10 @@ import {
  * "pid present, no live daemon". The old process then lingers as an orphan
  * holding the memory the replacement needs.
  *
- * The root cause is not isolated. This bounds the SYMPTOM: exit cleanly while
- * still healthy so the existing self-heal starts a fresh daemon, rather than
- * degrading into a hang. Recycling a stateless-by-design guard is cheap; a
- * hung one blocks the agent's next tool call.
+ * The dominant root cause was a full read of a 1 GiB append-only activity log,
+ * compounded by compiler/test fanout. Those paths are now bounded, and this
+ * remains the hard machine-safety backstop for any future growth: exit cleanly
+ * before a second daemon can overlap the bloated heap.
  */
 describe("shouldRecycle", () => {
 	it("keeps running well under the ceiling", () => {
@@ -47,16 +77,10 @@ describe("shouldRecycle", () => {
 	});
 
 	it("keeps the ceiling a bounded backstop (not disabled, not runaway)", () => {
-		// Raised 1800 → 2600MB (2026-08-11): under sustained multi-agent fleet
-		// load the daemon legitimately reaches ~2.5GB and is NOT leaking, so a
-		// 1800 ceiling recycled it every ~60s — each recycle a fail-closed gap
-		// with no memory reclaimed. Raised 2600 → 3584MB (2026-08-16, restart-
-		// storm postmortem) alongside the heap re-size 1536 → 2560: idle
-		// baseline reached 640–825MB and one in-process tsc-overlay burst per
-		// src edit peaked past the old heap cap, so every src edit killed the
-		// daemon. The bound stays a real backstop (a true runaway is many GB);
-		// the upper limit tracks the default with headroom.
-		expect(DEFAULT_RSS_CEILING_BYTES).toBeLessThan(4096 * 1024 * 1024);
+		// The former 3584MB default permitted the whole-system OOM class before
+		// recycling. With compiler/test fanout removed, 2GB is the hard backstop.
+		expect(DEFAULT_DAEMON_HEAP_MB).toBe(1536);
+		expect(DEFAULT_RSS_CEILING_BYTES).toBe(2048 * 1024 * 1024);
 		expect(DEFAULT_RSS_CEILING_BYTES).toBeGreaterThan(200 * 1024 * 1024);
 	});
 
@@ -84,16 +108,28 @@ describe("configuredCeilingBytes", () => {
 		);
 	});
 
-	it("converts a valid MB override to bytes", () => {
-		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "500" })).toBe(
-			500 * 1024 * 1024,
+	it("falls back to the default for a whitespace-only override", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: " \t " })).toBe(
+			DEFAULT_RSS_CEILING_BYTES,
+		);
+	});
+
+	it("converts a valid bounded MB override to bytes", () => {
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "3072" })).toBe(
+			3072 * 1024 * 1024,
 		);
 	});
 
 	it("floors a fractional MB override rather than rounding", () => {
-		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "10.7" })).toBe(
-			10 * 1024 * 1024,
+		expect(configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "3072.7" })).toBe(
+			3072 * 1024 * 1024,
 		);
+	});
+
+	it.each(["1", "500", "2047"])("rejects an unusably low nonzero RSS ceiling: %s", (value) => {
+		const env = { INTERLINKED_HARNESS_RSS_CEILING_MB: value };
+		expect(configuredCeilingBytes(env)).toBe(DEFAULT_RSS_CEILING_BYTES);
+		expect(configuredHeapMb(env)).toBe(DEFAULT_DAEMON_HEAP_MB);
 	});
 
 	it("treats 0 as a valid explicit override (the documented 'off' value), not malformed", () => {
@@ -112,11 +148,18 @@ describe("configuredCeilingBytes", () => {
 		);
 	});
 
+	it("bounds huge finite overrides before byte conversion can overflow", () => {
+		const ceiling = configuredCeilingBytes({ INTERLINKED_HARNESS_RSS_CEILING_MB: "1e300" });
+		expect(ceiling).toBe(8192 * 1024 * 1024);
+		expect(Number.isFinite(ceiling)).toBe(true);
+		expect(shouldRecycle(ceiling + 1, ceiling)).toBe(true);
+	});
+
 	it("defaults to process.env when no env argument is passed", () => {
 		const prior = process.env.INTERLINKED_HARNESS_RSS_CEILING_MB;
-		process.env.INTERLINKED_HARNESS_RSS_CEILING_MB = "42";
+		process.env.INTERLINKED_HARNESS_RSS_CEILING_MB = "3072";
 		try {
-			expect(configuredCeilingBytes()).toBe(42 * 1024 * 1024);
+			expect(configuredCeilingBytes()).toBe(3072 * 1024 * 1024);
 		} finally {
 			if (prior === undefined) delete process.env.INTERLINKED_HARNESS_RSS_CEILING_MB;
 			else process.env.INTERLINKED_HARNESS_RSS_CEILING_MB = prior;

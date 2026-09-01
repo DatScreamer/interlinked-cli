@@ -18,6 +18,7 @@ import {
 	checkTddGreenConfirmation,
 	checkTddRegression,
 } from "./behavioral-checks-tdd.js";
+import { isOperationalCheckDeferral } from "./operational-check-deferrals.js";
 import type { CheckResultEntry, Determinism, SessionTrajectory } from "./types.js";
 
 export type { LocDelta } from "./behavioral-checks-tdd.js";
@@ -278,6 +279,7 @@ function groupEscalationInputs(
  * "typescript") stays eligible so those callers keep their old behavior.
  */
 function isEscalationEligible(name: string, determinism: Determinism | undefined): boolean {
+	if (isOperationalCheckDeferral(name)) return false;
 	if (ADVISORY_CHECK_IDS.has(name)) return false;
 	return determinism !== "heuristic";
 }

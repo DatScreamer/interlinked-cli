@@ -35,6 +35,8 @@ export const PROVEN_TOOL_CHECKS: ReadonlySet<string> = new Set([
 	"dependency_audit",
 	"secrets_in_source",
 	"affected_tests",
+	"affected_tests_deferred",
+	"external_check_deferred",
 	// Mutation engine (Stryker et al.) ran the actual suite against real mutants —
 	// a measured survivor/kill is proven, not a regex shape (spec §9).
 	"per-edit-mutation",
@@ -89,6 +91,12 @@ export const TOOL_CHECK_INSTRUCTIONS: Record<string, string> = {
 	affected_tests:
 		"The test file for this source file is failing. Fix the source code so the tests pass. " +
 		"Do NOT modify the tests to make them pass — fix the implementation.",
+	affected_tests_deferred:
+		"No test result exists for this check. Re-run the affected test after the active check finishes; " +
+		"do not interpret deferral as either passing or failing.",
+	external_check_deferred:
+		"No external-check verdict exists. Re-run the check after active work finishes; " +
+		"do not interpret deferral, timeout, or runner failure as a clean result.",
 	inline_language_checks:
 		"Each finding below lists the line and a fix_instruction from the language profile. " +
 		"Address the specific pattern (bare except, .unwrap() in non-test code, force cast, etc.). " +

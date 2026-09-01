@@ -8,13 +8,18 @@
 // and re-exports the public `parseTsgoOutput`. Keep imports `.js`-specified
 // (ESM/NodeNext) and avoid importing from `tsgo-runner.ts` to stay acyclic.
 
-import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { nonNull } from "../lib/non-null.js";
 import type { TsgoDiagnostic } from "./daemon-protocol.js";
+import {
+	runProcessAsync,
+	type RunProcessOptions,
+	type RunProcessResult,
+} from "./check-engine/spawn-async.js";
+import { runWithProjectCompilerLease } from "./project-compiler-gate.js";
 
 // -----------------------------------------------------------------------------
 // Pass-marker regexes + ANSI / timestamp stripping
@@ -200,6 +205,7 @@ export async function runTsgoOneShot(
 	path: string,
 	extraArgs: readonly string[],
 	timeoutMs: number,
+	admissionRoot?: string,
 ): Promise<TsgoDiagnostic[]> {
 	const projectRoot = findTsconfigDir(path);
 	const args: string[] = [...extraArgs];
@@ -213,8 +219,30 @@ export async function runTsgoOneShot(
 		args.push("--ignoreConfig", ...STANDALONE_TSGO_OPTS, path);
 	}
 
-	const raw = await spawnCollect(executable, args, spawnCwd, timeoutMs);
-	if (raw === null) return []; // spawn failed / timed out — degrade
+	const compilerRoot = admissionRoot ?? projectRoot ?? dirname(path);
+	let raw: string | null = null;
+	try {
+		raw = await runWithProjectCompilerLease(compilerRoot, () =>
+			spawnCollect(executable, args, spawnCwd, timeoutMs),
+		);
+	} catch {
+		// Queue saturation / cross-process contention is an unavailable check,
+		// never a clean diagnostic result and never a daemon crash.
+		raw = null;
+	}
+	if (raw === null) {
+		return [
+			{
+				file: path,
+				line: 0,
+				column: 0,
+				code: -1,
+				severity: "warning",
+				message:
+					"[interlinked:tsgo-unavailable] TypeScript diagnostics were not checked because the compiler failed, timed out, or was killed.",
+			},
+		];
+	}
 	const parsed = parseTsgoOutput(raw, path);
 	// Whole-project mode reports diagnostics for every file; narrow to `path`.
 	return projectRoot ? filterDiagnosticsForFile(parsed, path, projectRoot) : parsed;
@@ -225,50 +253,35 @@ export async function runTsgoOneShot(
  * resolve the combined text. Resolves null on spawn error or timeout so the
  * caller degrades gracefully. Never throws.
  */
+function spawnCollectOptions(cwd: string | undefined, timeoutMs: number): RunProcessOptions {
+	return cwd ? { cwd, timeout: timeoutMs } : { timeout: timeoutMs };
+}
+
+function collectedProcessText(result: RunProcessResult): string | null {
+	if (result.code === null || result.timedOut || result.killed) return null;
+	const output = `${result.stdout}\n${result.stderr}`;
+	// TypeScript reports ordinary diagnostics with a non-zero exit code, so a
+	// non-zero status alone is not an unavailable run.  It is unavailable when
+	// the process failed without producing even one structured diagnostic (for
+	// example a launcher crash or an internal compiler exception).  Returning
+	// that output to runTsgoOneShot would parse to [] and falsely look clean.
+	if (result.code !== 0 && parseTsgoOutput(output, "").length === 0) return null;
+	return output;
+}
+
 export function spawnCollect(
 	executable: string,
 	args: readonly string[],
 	cwd: string | undefined,
 	timeoutMs: number,
 ): Promise<string | null> {
-	return new Promise((resolveRun) => {
-		let child: ChildProcess;
-		try {
-			child = spawn(executable, args, {
-				stdio: ["ignore", "pipe", "pipe"],
-				...(cwd ? { cwd } : {}),
-			});
-		} catch (_err) {
-			resolveRun(null);
-			return;
-		}
-		let stdout = "";
-		let stderr = "";
-		let settled = false;
-		const finalize = (out: string | null): void => {
-			if (settled) return;
-			settled = true;
-			resolveRun(out);
-		};
-		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			finalize(null);
-		}, timeoutMs);
-		child.stdout?.on("data", (b: Buffer) => {
-			stdout += b.toString("utf-8");
-		});
-		child.stderr?.on("data", (b: Buffer) => {
-			stderr += b.toString("utf-8");
-		});
-		child.on("error", () => {
-			clearTimeout(timer);
-			finalize(null);
-		});
-		child.on("close", () => {
-			clearTimeout(timer);
-			finalize(`${stdout}\n${stderr}`);
-		});
-	});
+	// Starting the process inside a Promise callback turns Node's synchronous
+	// spawn validation errors (for example, an empty executable) into a normal
+	// rejection. The second handler preserves this helper's total async API:
+	// every launch failure resolves null rather than escaping to the caller.
+	return Promise.resolve()
+		.then(() => runProcessAsync(executable, [...args], spawnCollectOptions(cwd, timeoutMs)))
+		.then(collectedProcessText, () => null);
 }
 
 /** Parse tsgo/tsc diagnostic output. The compiler writes lines like

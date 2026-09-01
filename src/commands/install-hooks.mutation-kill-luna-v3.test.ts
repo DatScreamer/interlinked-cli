@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const installHooksMock = vi.hoisted(() => vi.fn(() => ({
+    ok: true,
+    post_install_failures: [],
     entries: [],
     skipped: [],
     manifest_path: "manifest.json",
@@ -11,7 +13,7 @@ const installHooksMock = vi.hoisted(() => vi.fn(() => ({
     foreign: 0,
     orphans_cleaned: [],
 })));
-const writeModeMock = vi.hoisted(() => vi.fn());
+const writeModeMock = vi.hoisted(() => vi.fn(() => true));
 const resolveHookBinaryPathMock = vi.hoisted(() => vi.fn(() => "/fallback/interlinked"));
 
 vi.mock("../harness/installer.js", () => ({
@@ -33,9 +35,11 @@ beforeEach(() => {
     installHooksMock.mockClear();
     writeModeMock.mockClear();
     resolveHookBinaryPathMock.mockClear();
+	process.exitCode = undefined;
 });
 
 afterEach(() => {
+	process.exitCode = undefined;
     vi.restoreAllMocks();
     rmSync(tmp, { recursive: true, force: true });
 });
@@ -84,17 +88,14 @@ describe("installHooksCommand", () => {
         });
     });
 
-    // test-contract: unknown scope falls back to project while a valid scope is preserved.
-    it("uses project for an unknown scope", async () => {
+    // test-contract: an explicit unknown scope must not silently redirect writes.
+    it("rejects an unknown scope before resolving a binary or installing", async () => {
         await installHooksCommand({ scope: "workspace", json: true });
 
-        expect(installHooksMock).toHaveBeenCalledWith({
-            cwd: tmp,
-            binaryPath: "/fallback/interlinked",
-            runners: [],
-            scope: "project",
-            dryRun: false,
-        });
+        expect(resolveHookBinaryPathMock).not.toHaveBeenCalled();
+        expect(installHooksMock).not.toHaveBeenCalled();
+        expect(writeModeMock).not.toHaveBeenCalled();
+        expect(existsSync(join(tmp, ".interlinked"))).toBe(false);
     });
 
     // test-contract: cloud opt-in writes enabled product metadata and the requested token source.

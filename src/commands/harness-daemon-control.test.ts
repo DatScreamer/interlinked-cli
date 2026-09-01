@@ -8,6 +8,7 @@ import {
 import type { ReapOptions, ReapResult } from "./harness-process.js";
 
 const CWD = "/repo";
+const identifyDaemon = (cwd: string, pid: number): string => `${cwd}:daemon:${pid}:started`;
 
 function daemon(pid: number | null, socket: string, alive = true) {
 	return {
@@ -33,6 +34,16 @@ describe("collectServingDaemonPids — positive (must fire)", () => {
 			probe: () => Promise.resolve(true),
 		};
 		expect((await collectServingDaemonPids(CWD, deps)).size).toBe(2);
+	});
+
+	it("P3: a socket-only serving daemon conservatively protects every verified cwd candidate", async () => {
+		const deps: DaemonControlDeps = {
+			discover: () => [],
+			socketPaths: () => ["/orphaned-metadata.sock"],
+			extraPids: () => [22, 33],
+			probe: () => Promise.resolve(true),
+		};
+		expect([...(await collectServingDaemonPids(CWD, deps))]).toEqual([22, 33]);
 	});
 });
 
@@ -104,6 +115,22 @@ describe("reapOrphanHarnessesVerified — positive (must fire: protect the servi
 		expect(seen[0]?.killAll).toBe(true);
 		expect(seen[0]?.protectPids?.has(11)).toBe(true);
 	});
+
+	it("P3: force reap cannot select a daemon answering through a socket with no pid file", async () => {
+		const seen: ReapOptions[] = [];
+		await reapOrphanHarnessesVerified(
+			CWD,
+			{ killAll: true },
+			{
+				discover: () => [],
+				socketPaths: () => ["/socket-only.sock"],
+				extraPids: () => [44],
+				probe: () => Promise.resolve(true),
+				reap: sweepRecorder(seen),
+			},
+		);
+		expect([...(seen[0]?.protectPids ?? [])]).toEqual([44]);
+	});
 });
 
 describe("reapOrphanHarnessesVerified — negative (must not fire)", () => {
@@ -136,12 +163,17 @@ describe("reapOrphanHarnessesVerified — negative (must not fire)", () => {
 describe("stopAllDaemons — positive (must fire: stop EVERY daemon for this repo)", () => {
 	it("P1: signals the pid-file daemon AND the orphans the pid file never knew about", async () => {
 		const killed: number[] = [];
+		const alive = new Set([11, 22, 33]);
 		const deps: DaemonControlDeps = {
 			discover: () => [daemon(11, "/a.sock")],
 			extraPids: () => [22, 33],
+			identify: identifyDaemon,
 			probe: () => Promise.resolve(true),
-			kill: (pid) => killed.push(pid),
-			isAlive: () => false,
+			kill: (pid) => {
+				killed.push(pid);
+				alive.delete(pid);
+			},
+			isAlive: (pid) => alive.has(pid),
 			wait: () => Promise.resolve(),
 		};
 		const result = await stopAllDaemons(CWD, deps);
@@ -152,35 +184,105 @@ describe("stopAllDaemons — positive (must fire: stop EVERY daemon for this rep
 
 	it("P2: records an explicit-stop ledger marker BEFORE signalling", async () => {
 		const order: string[] = [];
+		let alive = true;
 		const deps: DaemonControlDeps = {
 			discover: () => [daemon(11, "/a.sock")],
+			identify: identifyDaemon,
 			recordEvent: (evt) => order.push(`record:${evt.reason}`),
-			kill: (pid) => order.push(`kill:${pid}`),
-			isAlive: () => false,
+			kill: (pid) => {
+				order.push(`kill:${pid}`);
+				alive = false;
+			},
+			isAlive: () => alive,
 			wait: () => Promise.resolve(),
 		};
 		await stopAllDaemons(CWD, deps);
 		expect(order).toEqual(["record:explicit-stop", "kill:11"]);
 	});
 
-	it("P3: a daemon still alive after SIGTERM is reported as survived", async () => {
+	// test-contract: bug — live-reproduced 2026-08-29: an automatic handover's
+	// restart CLI is spawned BY the daemon it must replace, so the daemon is
+	// the CLI's ANCESTOR; the default sparing turned every automatic handover
+	// into a silent "already running" no-op the watcher retried forever. The
+	// restart path opts out; the daemon target must then be signalled.
+	it("P4: spareAncestralDaemons:false signals an ancestral daemon (the handover parent)", async () => {
+		const killed: number[] = [];
+		let alive = true;
 		const deps: DaemonControlDeps = {
 			discover: () => [daemon(11, "/a.sock")],
-			kill: () => {},
+			identify: identifyDaemon,
+			protectedPids: () => new Set([process.pid, 11]),
+			spareAncestralDaemons: false,
+			kill: (pid) => {
+				killed.push(pid);
+				alive = false;
+			},
+			isAlive: () => alive,
+			wait: () => Promise.resolve(),
+		};
+		const result = await stopAllDaemons(CWD, deps);
+		expect(killed).toEqual([11]);
+		expect(result.stopped).toEqual([11]);
+	});
+
+	it("P3: a daemon still alive after SIGKILL is reported as survived", async () => {
+		const signals: string[] = [];
+		const deps: DaemonControlDeps = {
+			discover: () => [daemon(11, "/a.sock")],
+			identify: identifyDaemon,
+			kill: (_pid, signal) => signals.push(signal),
 			isAlive: () => true,
 			wait: () => Promise.resolve(),
 		};
 		const result = await stopAllDaemons(CWD, deps);
+		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
 		expect(result.survived).toEqual([11]);
 		expect(result.stopped).toEqual([]);
+	});
+
+	it("P5: allows a graceful SIGTERM exit without escalating", async () => {
+		let alive = true;
+		const signals: string[] = [];
+		const deps: DaemonControlDeps = {
+			discover: () => [daemon(11, "/a.sock")],
+			identify: identifyDaemon,
+			kill: (_pid, signal) => signals.push(signal),
+			isAlive: () => alive,
+			wait: async () => {
+				alive = false;
+			},
+		};
+		const result = await stopAllDaemons(CWD, deps);
+		expect(signals).toEqual(["SIGTERM"]);
+		expect(result).toEqual({ stopped: [11], survived: [] });
 	});
 });
 
 describe("stopAllDaemons — negative (must not fire)", () => {
+	// test-contract: invariant — even with ancestor sparing OFF, this process
+	// itself is never a target: killing yourself mid-stop leaves no one to
+	// finish the restart.
+	it("N4: spareAncestralDaemons:false still never signals this process", async () => {
+		const killed: number[] = [];
+		const deps: DaemonControlDeps = {
+			discover: () => [daemon(process.pid, "/self.sock")],
+			identify: identifyDaemon,
+			protectedPids: () => new Set([process.pid]),
+			spareAncestralDaemons: false,
+			kill: (pid) => killed.push(pid),
+			isAlive: () => false,
+			wait: () => Promise.resolve(),
+		};
+		const result = await stopAllDaemons(CWD, deps);
+		expect(killed).toEqual([]);
+		expect(result.stopped).toEqual([]);
+	});
+
 	it("N1: never signals this process or an ancestor", async () => {
 		const killed: number[] = [];
 		const deps: DaemonControlDeps = {
 			discover: () => [daemon(process.pid, "/self.sock")],
+			identify: identifyDaemon,
 			extraPids: () => [4242],
 			protectedPids: () => new Set([process.pid, 4242]),
 			kill: (pid) => killed.push(pid),
@@ -212,14 +314,47 @@ describe("stopAllDaemons — negative (must not fire)", () => {
 
 	it("N3: a pid appearing in BOTH sources is signalled once", async () => {
 		const killed: number[] = [];
+		let alive = true;
 		const deps: DaemonControlDeps = {
 			discover: () => [daemon(11, "/a.sock")],
 			extraPids: () => [11],
-			kill: (pid) => killed.push(pid),
-			isAlive: () => false,
+			identify: identifyDaemon,
+			kill: (pid) => {
+				killed.push(pid);
+				alive = false;
+			},
+			isAlive: () => alive,
 			wait: () => Promise.resolve(),
 		};
 		await stopAllDaemons(CWD, deps);
 		expect(killed).toEqual([11]);
+	});
+
+	it("N5: a live PID that is not this project's daemon is never signaled", async () => {
+		const signals: string[] = [];
+		const result = await stopAllDaemons(CWD, {
+			discover: () => [daemon(11, "/a.sock")],
+			identify: () => null,
+			kill: (_pid, signal) => signals.push(signal),
+			isAlive: () => true,
+		});
+		expect(signals).toEqual([]);
+		expect(result).toEqual({ stopped: [], survived: [] });
+	});
+
+	it("N6: PID reuse between TERM and KILL never signals the replacement", async () => {
+		const signals: string[] = [];
+		let identity = "daemon:start-a";
+		const result = await stopAllDaemons(CWD, {
+			discover: () => [daemon(11, "/a.sock")],
+			identify: () => identity,
+			kill: (_pid, signal) => signals.push(signal),
+			isAlive: () => true,
+			wait: async () => {
+				identity = "unrelated:start-b";
+			},
+		});
+		expect(signals).toEqual(["SIGTERM"]);
+		expect(result).toEqual({ stopped: [11], survived: [] });
 	});
 });

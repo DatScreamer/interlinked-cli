@@ -11,7 +11,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
-import type { JsonObject } from "../../lib/json-types.js";
 import {
 	classifyBashCommandProvenance,
 	recordBashTaintSource,
@@ -26,6 +25,7 @@ import {
 	filterOutputEgress,
 } from "../output-egress-filter.js";
 import type { ReservationManager } from "../reservations.js";
+import { reservationTargetPaths } from "../reservation-target-paths.js";
 import { scanDisputedGroundRead } from "../server/review-reconcile-phase.js";
 import { extractAllEditedFilePaths } from "../server-tool-helpers.js";
 import { scanPromptInjection, scanSecrets as scanSecretsSignatures } from "../signatures.js";
@@ -40,10 +40,10 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
-import { STUB_INTRODUCED_CAP, scanForStubs } from "../verification-stop-checks.js";
 import { collectComplexityPulseWarnings } from "./complexity-pulse.js";
 import { collectFunctionTokenPulseWarnings } from "./function-token-pulse.js";
 import { collectPostWriteFileWarnings } from "./post-tool-write-warnings.js";
+import { recordStubsIntroduced } from "./post-tool-stub-tracking.js";
 import {
 	globMatch,
 	isBash,
@@ -79,10 +79,10 @@ export function evaluatePostToolUse(
 
 	// Schedule auto-release for file reservations
 	if (isFileWrite(toolName)) {
-		const filePath =
-			(event.tool_input?.file_path as string) || (event.tool_input?.path as string) || "";
 		const agentName = event.agent_name || session?.agent_name || "unknown";
-		if (filePath) reservations.scheduleRelease(filePath, agentName, cohort);
+		for (const filePath of reservationTargetPaths(event, event.tool_input ?? {})) {
+			reservations.scheduleRelease(filePath, agentName, cohort);
+		}
 	}
 
 	warnings.push(...collectFileReminders(event, rules, session));
@@ -437,65 +437,4 @@ function collectCommitCadenceWarning(
 		}
 	}
 	return warnings;
-}
-
-/**
- * Verification-before-stop signal capture: scan Write `content`,
- * Edit `new_string`, and MultiEdit `edits[].new_string` for
- * stub / TODO / disabled-test patterns and record matches into
- * `session.stubs_introduced` for the Stop-event nudge to summarize.
- *
- * Side-effecting only — never returns warnings. The Stop nudge is the
- * surface; per-edit feedback would just duplicate the existing taste
- * checks (assertion-density, suppression-justification, etc.).
- */
-function recordStubsIntroduced(
-	event: HarnessEvent,
-	rules: GuardRulesConfig,
-	session: SessionTrajectory | undefined,
-): void {
-	if (!session) return;
-	const vsc = rules.verification_stop_checks;
-	if (!vsc?.enabled || !vsc.warn_stubs_introduced) return;
-	const toolName = event.tool_name || "";
-	if (!isFileWrite(toolName)) return;
-	const filePath =
-		(event.tool_input?.file_path as string | undefined) ??
-		(event.tool_input?.path as string | undefined) ??
-		"";
-	if (!filePath) return;
-	if (!session.stubs_introduced) session.stubs_introduced = [];
-
-	const pushMatches = (content: string): void => {
-		if (!session.stubs_introduced) return;
-		if (session.stubs_introduced.length >= STUB_INTRODUCED_CAP) return;
-		for (const stub of scanForStubs(content)) {
-			if (session.stubs_introduced.length >= STUB_INTRODUCED_CAP) break;
-			session.stubs_introduced.push({ file: filePath, kind: stub.kind, snippet: stub.snippet });
-		}
-	};
-
-	for (const text of collectStubScanInputs(event)) pushMatches(text);
-}
-
-/** Gather every string payload a write tool can carry that should be scanned
- *  for stubs: Write `content`, Edit `new_string`, MultiEdit `edits[].new_string`. */
-function collectStubScanInputs(event: HarnessEvent): string[] {
-	const inputs: string[] = [];
-	const content = event.tool_input?.content;
-	if (typeof content === "string") inputs.push(content);
-
-	const newString = event.tool_input?.new_string;
-	if (typeof newString === "string") inputs.push(newString);
-
-	const edits = event.tool_input?.edits;
-	if (Array.isArray(edits)) {
-		for (const e of edits) {
-			if (e && typeof e === "object") {
-				const ns = (e as JsonObject).new_string;
-				if (typeof ns === "string") inputs.push(ns);
-			}
-		}
-	}
-	return inputs;
 }

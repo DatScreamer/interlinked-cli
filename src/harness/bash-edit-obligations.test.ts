@@ -72,6 +72,55 @@ describe("recordBashEditObligations — negative (must stay silent)", () => {
 		recordBashEditObligations({ cwd, sessionId: "s1", filePath: abs, dryRun: true });
 		expect(openBashEditObligations(cwd).length).toBe(0);
 	});
+
+	// 2026-08-27 daemon-melt regression pins: `.interlinked/` tool state and
+	// oversized data files are never obligation-eligible — a 45MB gitignored
+	// mutation-manifest.json obligation made every tool call re-scan it
+	// (73.7% of daemon CPU in stripComments) until the daemon read as zombie.
+	it("N3: a finding-bearing file under .interlinked/ opens nothing (tool state, not code)", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		const abs = join(cwd, ".interlinked", "mutation-manifest.json");
+		writeFileSync(abs, `{"snippet":"${BAD_LINE.trim()}"}\n${BAD_LINE}`);
+		expect(recordBashEditObligations({ cwd, sessionId: "s1", filePath: abs, dryRun: false })).toBeNull();
+		expect(openBashEditObligations(cwd).length).toBe(0);
+	});
+
+	it("N4: a finding-bearing file over the size bound opens nothing (data, not per-edit code)", () => {
+		const big = BAD_LINE + "// pad\n".repeat(400_000); // > 2MB
+		const abs = writeSrc("src/huge.ts", big);
+		expect(recordBashEditObligations({ cwd, sessionId: "s1", filePath: abs, dryRun: false })).toBeNull();
+		expect(openBashEditObligations(cwd).length).toBe(0);
+	});
+
+	it("P4: a dry_run gate evaluation observes a fixed obligation without mutating memory or disk", () => {
+		const abs = writeSrc("src/a.ts", BAD_LINE);
+		recordBashEditObligations({ cwd, sessionId: "s1", filePath: abs, dryRun: false });
+		writeFileSync(abs, CLEAN); // finding fixed on disk
+		const dryEvent = { ...editEvent("Write", join(cwd, "src/other.ts")), dry_run: true } as HarnessEvent;
+		// A dry run must decide from disk truth (fixed ⇒ allow) ...
+		expect(evaluateBashEditObligationGate(dryEvent, "Write", [])).toBeNull();
+		// ... but must NOT have consumed the row: the store still carries it,
+		// and the next REAL evaluation both allows and persists the discharge.
+		const stored = readFileSync(join(cwd, ".interlinked", "bash-edit-obligations.json"), "utf-8");
+		expect(stored).toContain("src/a.ts");
+		expect(evaluateBashEditObligationGate(editEvent("Write", join(cwd, "src/other.ts")), "Write", [])).toBeNull();
+		const after = readFileSync(join(cwd, ".interlinked", "bash-edit-obligations.json"), "utf-8");
+		expect(after).not.toContain("src/a.ts");
+	});
+
+	it("P3: a poisoned store row on an ineligible path self-discharges on the next gate evaluation", () => {
+		mkdirSync(join(cwd, ".interlinked"), { recursive: true });
+		writeFileSync(join(cwd, ".interlinked", "big.json"), BAD_LINE);
+		// Simulate the pre-fix poisoned store: an obligation recorded on tool state.
+		writeFileSync(
+			join(cwd, ".interlinked", "bash-edit-obligations.json"),
+			`${JSON.stringify({ ".interlinked/big.json": { checkIds: ["ubs_weak_hash"], opened_at: "", session_id: "s0" } })}\n`,
+		);
+		resetBashEditObligationsForTesting();
+		const decision = evaluateBashEditObligationGate(editEvent("Write", join(cwd, "src/other.ts")), "Write", []);
+		expect(decision).toBeNull();
+		expect(openBashEditObligations(cwd).length).toBe(0);
+	});
 });
 
 describe("evaluateBashEditObligationGate", () => {

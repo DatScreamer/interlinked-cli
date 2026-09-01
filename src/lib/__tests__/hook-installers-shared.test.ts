@@ -193,6 +193,37 @@ describe("cleanJsonHookFile", () => {
 			{ matcher: "", hooks: [{ type: "command", command: "echo user-hook" }] },
 		]);
 	});
+
+	it("preserves same-basename user scripts while removing exact legacy path forms", () => {
+		const path = join(tmp, "settings.json");
+		const userLegacyBasename = { command: "node /home/user/interlinked-activity.mjs" };
+		const userAdapterBasename = {
+			command: "node /home/user/hook-entry.js --runner user-runner --event PreToolUse",
+		};
+		const generatedAssignment =
+			'HOOK_SCRIPT_REL=".interlinked/hooks/interlinked-activity.mjs"; ' +
+			'HOOK_DIR="$PWD"; if test -f "$HOOK_DIR/$HOOK_SCRIPT_REL"; then ' +
+			'node "$HOOK_DIR/$HOOK_SCRIPT_REL"; fi';
+		writeFileSync(
+			path,
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [
+						userLegacyBasename,
+						userAdapterBasename,
+						{ command: "node .interlinked/hooks/interlinked-activity.mjs" },
+						{ command: generatedAssignment },
+					],
+				},
+			}),
+		);
+
+		expect(cleanJsonHookFile(path)).toBe(true);
+		const written = JSON.parse(readFileSync(path, "utf-8")) as {
+			hooks: { PreToolUse: unknown[] };
+		};
+		expect(written.hooks.PreToolUse).toEqual([userLegacyBasename, userAdapterBasename]);
+	});
 });
 
 describe("findParentWithHooks", () => {
@@ -220,10 +251,29 @@ describe("findParentWithHooks", () => {
 		mkdirSync(settingsDir, { recursive: true });
 		writeFileSync(
 			join(settingsDir, "settings.json"),
-			JSON.stringify({ hooks: { PreToolUse: [{ command: "node interlinked-activity.mjs" }] } }),
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [{ command: "node .interlinked/hooks/interlinked-activity.mjs" }],
+				},
+			}),
 		);
 
 		expect(findParentWithHooks(nested, ".claude/settings.json")).toBe(join(tmp, "a"));
+	});
+
+	it("ignores an ancestor user hook with only the legacy basename", () => {
+		const nested = join(tmp, "a", "b");
+		mkdirSync(nested, { recursive: true });
+		const settingsDir = join(tmp, "a", ".claude");
+		mkdirSync(settingsDir, { recursive: true });
+		writeFileSync(
+			join(settingsDir, "settings.json"),
+			JSON.stringify({
+				hooks: { PreToolUse: [{ command: "node /home/user/interlinked-activity.mjs" }] },
+			}),
+		);
+
+		expect(findParentWithHooks(nested, ".claude/settings.json")).toBeNull();
 	});
 
 	it("keeps walking up when the ancestor's settings file has no interlinked command", () => {

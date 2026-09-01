@@ -20,11 +20,29 @@
 // diary); bounded reads (tail only); extensible (a new exit reason is just a
 // new string — readers print unknown reasons verbatim).
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { readRecentLines } from "../lib/local-activity-collection.js";
 
 /** Known reasons; readers must handle unknown strings (forward compatibility). */
 export type DaemonEventKind = "start" | "listening" | "handover" | "exit" | "spike" | "emergency-gc";
+
+/** Typed handover-attempt outcomes (attempt-ID protocol, 2026-08-29).
+ *  The cross-process chain is requested → launcher_spawned (the restart CLI
+ *  was launched — NOT yet a daemon attempt) → daemon_spawned (the ONLY
+ *  outcome the churn backstop counts as unresolved) → the successor's
+ *  `listening` row. Terminal outcomes (`refused` / `spawn_failed` /
+ *  `no_artifact` / `start_failed`) RESOLVE the attempt like a listening ack.
+ *  Expiry is derived, not written: an unresolved `daemon_spawned` row ages
+ *  out of the churn window rather than getting its own row. */
+export type HandoverOutcome =
+	| "requested"
+	| "launcher_spawned"
+	| "daemon_spawned"
+	| "refused"
+	| "spawn_failed"
+	| "no_artifact"
+	| "start_failed";
 
 export interface DaemonLedgerEvent {
 	/** Epoch ms. */
@@ -47,6 +65,15 @@ export interface DaemonLedgerEvent {
 	 *  straight off `daemon-events.jsonl` instead of re-deriving the taxonomy
 	 *  from a reason string every time. See {@link classifyExitReason}. */
 	disposition?: ExitDisposition;
+	/** Handover attempt id (attempt-ID protocol). On a `handover` row it names
+	 *  the attempt; on a `listening` row it ACKNOWLEDGES the attempt that
+	 *  spawned this daemon — the pairing key that makes churn counting
+	 *  order-independent. Absent on legacy rows and manual starts. */
+	attempt_id?: string;
+	/** Typed attempt outcome on `handover` rows. Absent on legacy rows, which
+	 *  the churn counter treats as `spawned` (they were only written after the
+	 *  old counting semantics' spawn). */
+	outcome?: HandoverOutcome;
 }
 
 /** Planned = someone asked for this exit (a restart, a recycle, a stop).
@@ -163,13 +190,10 @@ function parseEventLine(line: string): DaemonLedgerEvent | null {
 export function readRecentDaemonEvents(projectRoot: string): DaemonLedgerEvent[] {
 	const path = ledgerPath(projectRoot);
 	try {
-		if (!existsSync(path)) return [];
-		const size = statSync(path).size;
-		const full = readFileSync(path, "utf-8");
-		const tail = size > READ_TAIL_BYTES ? full.slice(full.length - READ_TAIL_BYTES) : full;
-		const lines = tail.split("\n");
-		// A mid-line cut at the tail boundary produces a torn first line; drop it.
-		if (size > READ_TAIL_BYTES) lines.shift();
+		// Reverse-tail I/O is bounded BEFORE bytes become a JS string. The old
+		// implementation read the whole ever-growing ledger and only then sliced
+		// 8KB, defeating this function's memory contract.
+		const lines = readRecentLines(path, 10_000, READ_TAIL_BYTES).reverse();
 		const out: DaemonLedgerEvent[] = [];
 		for (const line of lines) {
 			if (line.trim() === "") continue;

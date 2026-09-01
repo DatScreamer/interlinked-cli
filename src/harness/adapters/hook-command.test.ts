@@ -4,7 +4,15 @@
 // while the install still reported success. Proven by executing the ACTUAL
 // generated command through sh, not by string inspection alone.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,11 +35,12 @@ afterEach(() => {
 function runSh(
 	command: string,
 	stdin = "",
-	env: NodeJS.ProcessEnv = hookSubprocessEnv(),
+	opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): { code: number; stderr: string; stdout?: string } {
 	for (let attempt = 1; attempt <= 4; attempt++) {
 		const result = spawnSync("sh", ["-c", command], {
-			env,
+			env: opts.env ?? hookSubprocessEnv(),
+			...(opts.cwd ? { cwd: opts.cwd } : {}),
 			input: stdin,
 			encoding: "utf8",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -71,6 +80,20 @@ function expectNativeBlock(
 	event: string,
 ): void {
 	expect(result.stderr).toContain("blocking mutating or unclassified tool calls");
+	if ((runner === "claude-code" || runner === "codex") && event === "PermissionRequest") {
+		expect(result.code).toBe(0);
+		const parsed = JSON.parse(result.stdout ?? "") as {
+			hookSpecificOutput?: {
+				hookEventName?: string;
+				decision?: { behavior?: string };
+			};
+		};
+		expect(parsed.hookSpecificOutput).toMatchObject({
+			hookEventName: "PermissionRequest",
+			decision: { behavior: "deny" },
+		});
+		return;
+	}
 	if (runner === "codex") {
 		expect(result.code).toBe(0);
 		const parsed = JSON.parse(result.stdout ?? "") as {
@@ -81,11 +104,7 @@ function expectNativeBlock(
 			};
 		};
 		expect(parsed.hookSpecificOutput?.hookEventName).toBe(event);
-		expect(
-			event === "PermissionRequest"
-				? parsed.hookSpecificOutput?.decision?.behavior
-				: parsed.hookSpecificOutput?.permissionDecision,
-		).toBe("deny");
+		expect(parsed.hookSpecificOutput?.permissionDecision).toBe("deny");
 		return;
 	}
 	if (runner === "copilot-cli") {
@@ -102,6 +121,20 @@ function hookSubprocessEnv(): NodeJS.ProcessEnv {
 	delete env.NODE_PATH;
 	env.PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
 	return env;
+}
+
+function prepareCanonicalCliCheckout(root: string): string {
+	mkdirSync(join(root, "scripts"), { recursive: true });
+	mkdirSync(join(root, "dist"), { recursive: true });
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({
+			name: "interlinked-cli",
+			scripts: { build: "node scripts/build-atomic-cli.mjs" },
+		}),
+	);
+	writeFileSync(join(root, "scripts", "build-atomic-cli.mjs"), "// canonical build entry\n");
+	return join(root, "dist", "hook-entry.js");
 }
 
 describe("buildHookCommand — missing runtime degrades reads and fails closed on writes", () => {
@@ -179,8 +212,6 @@ describe("buildHookCommand — missing runtime degrades reads and fails closed o
 		"npx tsx src/index.ts harness restart --protocol dual --session-id default",
 		"interlinked doctor",
 		"interlinked disable --reason daemon-memory-repair",
-		"npm run build",
-		"node scripts/build-atomic-cli.mjs",
 		"interlinked install-hooks --preserve-mode --refresh",
 	])("P4: a missing runtime cannot lock out the exact operator command: %s", (command) => {
 		const cmd = buildHookCommand(
@@ -192,9 +223,19 @@ describe("buildHookCommand — missing runtime degrades reads and fails closed o
 		expect(runSh(cmd, claudePayload(command))).toEqual({ code: 0, stderr: "" });
 	});
 
-	it("P5: Codex's exec_command spelling can run the exact atomic build repair", () => {
+	it.each(["npm run build", "node scripts/build-atomic-cli.mjs"])(
+		"P5: the same positively identified CLI checkout can run its exact build recovery: %s",
+		(command) => {
+			const binaryPath = prepareCanonicalCliCheckout(dir);
+			const cmd = buildHookCommand(binaryPath, "claude-code", "PreToolUse", "fail_closed");
+			expect(runSh(cmd, claudePayload(command), { cwd: dir })).toEqual({ code: 0, stderr: "" });
+		},
+	);
+
+	it("P6: Codex's exec_command spelling can build the same canonical CLI checkout", () => {
+		const binaryPath = prepareCanonicalCliCheckout(dir);
 		const cmd = buildHookCommand(
-			join(dir, "does-not-exist.js"),
+			binaryPath,
 			"codex",
 			"PreToolUse",
 			"fail_closed",
@@ -203,7 +244,46 @@ describe("buildHookCommand — missing runtime degrades reads and fails closed o
 			tool_name: "exec_command",
 			tool_input: { command: "npm run build" },
 		});
-		expect(runSh(cmd, payload)).toEqual({ code: 0, stderr: "" });
+		expect(runSh(cmd, payload, { cwd: dir })).toEqual({ code: 0, stderr: "" });
+	});
+
+	it.each(["npm run build", "node scripts/build-atomic-cli.mjs"])(
+		"N: an arbitrary installed repo cannot use the exact build spelling as a bypass: %s",
+		(command) => {
+			const foreignRoot = join(dir, "customer-app");
+			mkdirSync(join(foreignRoot, "scripts"), { recursive: true });
+			mkdirSync(join(foreignRoot, "dist"), { recursive: true });
+			writeFileSync(
+				join(foreignRoot, "package.json"),
+				JSON.stringify({
+					name: "customer-app",
+					scripts: { build: "node scripts/build-atomic-cli.mjs" },
+				}),
+			);
+			writeFileSync(join(foreignRoot, "scripts", "build-atomic-cli.mjs"), "// look-alike\n");
+			const binaryPath = join(foreignRoot, "dist", "hook-entry.js");
+			const cmd = buildHookCommand(binaryPath, "claude-code", "PreToolUse", "fail_closed");
+			const result = runSh(cmd, claudePayload(command), { cwd: foreignRoot });
+			expect(result.code).toBe(2);
+			expect(result.stderr).toContain("hook binary missing");
+		},
+	);
+
+	it("N: the package name without the canonical build declaration cannot authorize a build", () => {
+		const binaryPath = prepareCanonicalCliCheckout(dir);
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "interlinked-cli", scripts: { build: "tsx scripts/build.ts" } }),
+		);
+		const cmd = buildHookCommand(binaryPath, "claude-code", "PreToolUse", "fail_closed");
+		expect(runSh(cmd, claudePayload("npm run build"), { cwd: dir }).code).toBe(2);
+	});
+
+	it("N: canonical metadata cannot authorize a hook binary rooted in another checkout", () => {
+		prepareCanonicalCliCheckout(dir);
+		const foreignBinary = join(dir, "other", "dist", "hook-entry.js");
+		const cmd = buildHookCommand(foreignBinary, "claude-code", "PreToolUse", "fail_closed");
+		expect(runSh(cmd, claudePayload("npm run build"), { cwd: dir }).code).toBe(2);
 	});
 
 	it.each([
@@ -328,6 +408,13 @@ describe("buildHookCommand — present runtime integrity", () => {
 		expect(runSh(buildHookCommand(bin, "claude-code", "PreToolUse", "fail_closed"), payload).code).toBe(0);
 	});
 
+	it("P: accepted runtime stdout is forwarded after the status is known", () => {
+		const bin = join(dir, "allow-with-output.js");
+		writeFileSync(bin, 'process.stdout.write(JSON.stringify({ allow: true })); process.exit(0);\n');
+		const result = runSh(buildHookCommand(bin, "claude-code", "PreToolUse", "fail_closed"), payload);
+		expect(result).toEqual({ code: 0, stderr: "", stdout: '{"allow":true}' });
+	});
+
 	it("P: an ordinary payload starts only the runtime Node process, not the repair parser", () => {
 		const bin = join(dir, "one-node-runtime.js");
 		const nodeWrapper = join(dir, "node");
@@ -343,7 +430,9 @@ describe("buildHookCommand — present runtime integrity", () => {
 			PATH: `${dir}:${process.env.PATH ?? ""}`,
 			REAL_NODE: process.execPath,
 		};
-		expect(runSh(buildHookCommand(bin, "claude-code", "PreToolUse", "fail_closed"), payload, env).code).toBe(0);
+		expect(
+			runSh(buildHookCommand(bin, "claude-code", "PreToolUse", "fail_closed"), payload, { env }).code,
+		).toBe(0);
 		expect(readFileSync(calls, "utf8")).toBe("call\n");
 	});
 
@@ -366,6 +455,29 @@ describe("buildHookCommand — present runtime integrity", () => {
 		expect(r).toEqual({ code: 0, stderr: "" });
 		expect(existsSync(invoked)).toBe(false);
 	});
+
+	it.each(["npm run build", "node scripts/build-atomic-cli.mjs"])(
+		"P: the exact build recovery '%s' bypasses a present runtime block before invoking it",
+		(command) => {
+			const bin = prepareCanonicalCliCheckout(dir);
+			const invoked = join(dir, "build-runtime-was-invoked");
+			writeFileSync(
+				bin,
+				`require("node:fs").writeFileSync(${JSON.stringify(invoked)}, "yes"); process.exit(2);\n`,
+			);
+			const buildPayload = JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command },
+			});
+			const result = runSh(
+				buildHookCommand(bin, "claude-code", "PreToolUse", "fail_closed"),
+				buildPayload,
+				{ cwd: dir },
+			);
+			expect(result).toEqual({ code: 0, stderr: "" });
+			expect(existsSync(invoked)).toBe(false);
+		},
+	);
 
 	it("P: exact checkout status bypasses a stale runtime block before invoking it", () => {
 		const bin = join(dir, "blocking-stale-runtime.js");
@@ -439,6 +551,26 @@ describe("buildHookCommand — present runtime integrity", () => {
 		const result = runSh(buildHookCommand(bin, runner, event, "fail_closed"), payload);
 		expect(result.stderr).toContain("hook runtime failed");
 		expectNativeBlock(result, runner, event);
+	});
+
+	it.each([
+		{
+			runner: "codex" as const,
+			event: "PreToolUse",
+			payload: JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo changed" } }),
+		},
+		{
+			runner: "copilot-cli" as const,
+			event: "preToolUse",
+			payload: JSON.stringify({ toolName: "shell", toolArgs: { command: "echo changed" } }),
+		},
+	])("N: failed $runner runtime stdout is discarded before the one native deny envelope", ({ runner, event, payload }) => {
+		const bin = join(dir, `${runner}-partial-output.js`);
+		writeFileSync(bin, 'process.stdout.write(JSON.stringify({ allow: true })); process.exit(1);\n');
+		const result = runSh(buildHookCommand(bin, runner, event, "fail_closed"), payload);
+		expectNativeBlock(result, runner, event);
+		expect(() => JSON.parse(result.stdout ?? "")).not.toThrow();
+		expect(result.stdout).not.toContain('"allow":true');
 	});
 
 	it("N: an unexpected runtime exit cannot fail open on a gate event", () => {
@@ -706,6 +838,23 @@ describe("every adapter's rendered pre-tool command applies the degraded fallbac
 			"PermissionRequest",
 		);
 	});
+
+	it.each(["missing", "corrupt"])(
+		"N: Claude PermissionRequest stays fail-closed when the runtime is %s",
+		(runtimeState) => {
+			const claude = createClaudeCodeAdapter();
+			const binary = join(dir, `claude-permission-${runtimeState}.js`);
+			if (runtimeState === "corrupt") writeFileSync(binary, "const = broken;\n");
+			const cmd = commandsByEvent(claude, binary).get("PermissionRequest");
+			if (!cmd) throw new Error("Claude fragment has no PermissionRequest command");
+			const result = runSh(
+				cmd,
+				JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo mutate" } }),
+			);
+			expectNativeBlock(result, claude.id, "PermissionRequest");
+			expect(result.stderr).toContain(runtimeState === "missing" ? "binary missing" : "runtime failed");
+		},
+	);
 
 	it.each([
 		{ adapter: createClaudeCodeAdapter(), event: "WorktreeCreate" },

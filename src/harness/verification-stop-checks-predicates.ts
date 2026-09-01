@@ -47,7 +47,7 @@ const TEST_RE =
  *  `cargo check` is treated as a typecheck above? Actually it's neither —
  *  but it IS a correctness gate. Treat as lint for simplicity. */
 const LINT_RE =
-	/\b(?:biome(?:\s+(?:check|lint|ci))?|eslint|oxlint|ruff|clippy|tslint|stylelint|cargo\s+check|cargo\s+clippy)\b/;
+	/\b(?:biome(?:\s+(?:check|lint|ci))?|eslint|oxlint|ruff|clippy|tslint|stylelint|cargo\s+check|cargo\s+clippy)\b|\b(?:npm|bun|pnpm|yarn)\s+run\s+lint\b/;
 
 /** Project-wide build commands. Excludes `tsc --watch` (development) and
  *  `bun build <file>` (one-off compile) — those don't prove the full

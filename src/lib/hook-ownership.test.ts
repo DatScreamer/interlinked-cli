@@ -51,19 +51,25 @@ describe("isInterlinkedHookCommand", () => {
 			expect(isInterlinkedHookCommand("node build.js hook-entry.js")).toBe(false);
 			expect(isInterlinkedHookCommand("mytool --config hook-entry.js --verbose")).toBe(false);
 		});
+		it("N: Node option values named like our script are not claimed as the entry point", () => {
+			expect(isInterlinkedHookCommand("node --require /tmp/hook-entry.js app.js")).toBe(false);
+			expect(isInterlinkedHookCommand("node --loader /tmp/hook-entry.js app.js")).toBe(false);
+			expect(isInterlinkedHookCommand("node -r /tmp/hook-entry.js app.js")).toBe(false);
+		});
 		it("N: the marker inside prose/comment text is not claimed", () => {
 			expect(isInterlinkedHookCommand("echo 'see docs about hook-entry.js' # interlinked-hook note")).toBe(false);
 		});
-		it("P: the args-less legacy enable shape IS still claimed", () => {
+		it("N: an args-less same-basename adapter script is not ownership evidence", () => {
 			expect(
 				isInterlinkedHookCommand('test -f "/repo/dist/hook-entry.js" && node "/repo/dist/hook-entry.js" || true'),
-			).toBe(true);
+			).toBe(false);
 		});
 		// test-contract: invariant — the recognizer takes ONE command string,
 		// never a serialized document; a raw JSON blob is NOT a hook command.
 		// Document scanning is the parsed-walk helper's job.
 		it("N: a raw JSON document is not itself a hook command; the parsed walk finds the entry", () => {
-			const raw = '{"hooks":{"PreToolUse":[{"command":"test -f \\"/r/dist/hook-entry.js\\" && node \\"/r/dist/hook-entry.js\\" || true"}]}}';
+			const raw =
+				'{"hooks":{"PreToolUse":[{"command":"node \\"/r/dist/hook-entry.js\\" --runner \\"claude-code\\" --event \\"PreToolUse\\""}]}}';
 			expect(isInterlinkedHookCommand(raw)).toBe(false);
 			expect(documentContainsInterlinkedHook(JSON.parse(raw))).toBe(true);
 		});
@@ -86,12 +92,89 @@ describe("isInterlinkedHookCommand", () => {
 			expect(isInterlinkedHookCommand("/usr/local/bin/my-interlinked-hook --event pre")).toBe(false);
 		});
 
-		// test-contract: public-api — the exact basenames still match at any
-		// directory depth, quoted or bare.
-		it("P: exact basenames keep matching at any path depth", () => {
-			expect(isInterlinkedHookCommand('node "/deep/a b/dist/hook-entry.js" --runner x')).toBe(true);
+		// test-contract: public-api — adapter identity needs the canonical
+		// registered-runner + event shape; legacy identity needs the reserved
+		// path, not basename alone.
+		it("P: canonical adapter invocations and exact legacy paths are claimed", () => {
+			expect(
+				isInterlinkedHookCommand(
+					'node "/deep/a b/dist/hook-entry.js" --runner claude-code --event PreToolUse',
+				),
+			).toBe(true);
+			expect(
+				isInterlinkedHookCommand(
+					"node -- /deep/dist/hook-entry.js --runner=codex --event=PermissionRequest",
+				),
+			).toBe(true);
 			expect(isInterlinkedHookCommand("node /abs/.interlinked/hooks/interlinked-activity.mjs")).toBe(true);
-			expect(isInterlinkedHookCommand("/opt/bin/interlinked-hook --event pre")).toBe(true);
+			expect(
+				isInterlinkedHookCommand(
+					"/opt/bin/interlinked-hook --runner gemini-cli --event BeforeTool",
+				),
+			).toBe(true);
+		});
+
+		it("N: same-basename adapter scripts with missing or unknown identity survive", () => {
+			expect(
+				isInterlinkedHookCommand("node /home/u/hook-entry.js --runner claude-code"),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand("node /home/u/hook-entry.js --event PreToolUse"),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					"node /home/u/hook-entry.js --runner user-runner --event PreToolUse",
+				),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					"node /home/u/hook-entry.js --runner claude-code --runner codex --event PreToolUse",
+				),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					"node /home/u/hook-entry.js --runner=codex --event=--not-an-event",
+				),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand("/home/u/interlinked-hook --event PreToolUse"),
+			).toBe(false);
+		});
+
+		it("N: arbitrary legacy basenames and assignment near-misses survive", () => {
+			expect(isInterlinkedHookCommand("node /home/u/interlinked-activity.mjs")).toBe(false);
+			expect(isInterlinkedHookCommand("node interlinked-activity.mjs")).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					'HOOK_SCRIPT_REL="hooks/interlinked-activity.mjs"; node "$HOOK_DIR/$HOOK_SCRIPT_REL"',
+				),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					'HOOK_SCRIPT_REL=".interlinked/hooks/interlinked-activity.mjs.extra"; node "$HOOK_DIR/$HOOK_SCRIPT_REL"',
+				),
+			).toBe(false);
+			expect(
+				isInterlinkedHookCommand(
+					'HOOK_SCRIPT_REL=".interlinked/hooks/interlinked-activity.mjs"; node "$HOOK_DIR/$HOOK_SCRIPT_REL"',
+				),
+			).toBe(false);
+		});
+
+		it.each([
+			"claude-code",
+			"copilot-cli",
+			"cursor",
+			"gemini-cli",
+			"codex",
+			"opencode",
+			"pi",
+		])("P: %s is a registered adapter runner", (runner) => {
+			expect(
+				isInterlinkedHookCommand(
+					`node /repo/dist/hook-entry.js --runner ${runner} --event NativeEvent`,
+				),
+			).toBe(true);
 		});
 	});
 });
@@ -172,7 +255,8 @@ describe("isProjectOwnedHookEntry", () => {
 	// mentions this project's root stays foreign.
 	it("N: a foreign hook mentioning the current root in an argument stays foreign", () => {
 		const foreign = {
-			command: "node '/other/repo/dist/hook-entry.js' --runner x ; echo /repo/notes",
+			command:
+				"node '/other/repo/dist/hook-entry.js' --runner claude-code --event PreToolUse ; echo /repo/notes",
 		};
 		expect(isProjectOwnedHookEntry(foreign, "/repo")).toBe(false);
 		expect(isProjectOwnedHookEntry(foreign, "/other/repo")).toBe(true);
@@ -216,6 +300,21 @@ describe("isHookEntryInvokingBinary", () => {
 		).toBe(false);
 		expect(isHookEntryInvokingBinary({ command: ADAPTER_CMD }, "/other/dist/hook-entry.js")).toBe(false);
 		expect(isHookEntryInvokingBinary({ command: ADAPTER_CMD }, "")).toBe(false);
+		expect(
+			isHookEntryInvokingBinary(
+				{ command: "node /repo/dist/hook-entry.js --runner claude-code" },
+				"/repo/dist/hook-entry.js",
+			),
+		).toBe(false);
+		expect(
+			isHookEntryInvokingBinary(
+				{
+					command:
+						"node /repo/dist/hook-entry.js --runner not-registered --event PreToolUse",
+				},
+				"/repo/dist/hook-entry.js",
+			),
+		).toBe(false);
 	});
 });
 

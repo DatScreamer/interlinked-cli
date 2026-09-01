@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +15,8 @@ import {
 	appendActivityRecordOnly,
 	appendLocalActivity,
 	appendSyncError,
+	captureActivitySyncBasis,
+	checkpointSyncState,
 	getLocalStats,
 	getSyncDiagnostics,
 	getUnsyncedEvents,
@@ -816,6 +827,158 @@ describe("getUnsyncedEvents — edge cases", () => {
 		// Offset must have advanced past BOTH the malformed line and the good line.
 		const consumed = Buffer.byteLength(`${bad}\n`) + Buffer.byteLength(`${good}\n`);
 		expect(res.newOffset).toBe(consumed);
+	});
+
+	it("does not consume an unterminated trailing JSONL row", () => {
+		const complete = JSON.stringify({ ts: "t1", agent: "a", type: "x" });
+		const partial = JSON.stringify({ ts: "t2", agent: "b", type: "y" });
+		writeRaw(tmp, "activity.jsonl", [complete]);
+		const path = join(tmp, INTERLINKED, "activity.jsonl");
+		appendFileSync(path, partial);
+
+		const first = getUnsyncedEvents(undefined, tmp);
+		expect(first.events.map((e) => e.agent)).toEqual(["a"]);
+		expect(first.newOffset).toBe(Buffer.byteLength(`${complete}\n`));
+
+		appendFileSync(path, "\n");
+		updateSyncState(first.newOffset, undefined, tmp);
+		const second = getUnsyncedEvents(undefined, tmp);
+		expect(second.events.map((e) => e.agent)).toEqual(["b"]);
+		expect(second.newOffset).toBe(statSync(path).size);
+	});
+
+	it("pages a frozen byte range without changing the persisted cursor", () => {
+		const rows = [
+			JSON.stringify({ ts: "t1", agent: "a", type: "x" }),
+			JSON.stringify({ ts: "t2", agent: "b", type: "y" }),
+			JSON.stringify({ ts: "t3", agent: "c", type: "z" }),
+		];
+		writeRaw(tmp, "activity.jsonl", rows);
+		const endExclusive = statSync(join(tmp, INTERLINKED, "activity.jsonl")).size;
+
+		const first = getUnsyncedEvents(1, tmp, { startOffset: 0, endExclusive });
+		const second = getUnsyncedEvents(1, tmp, {
+			startOffset: first.newOffset,
+			endExclusive,
+		});
+		expect(first.events.map((e) => e.agent)).toEqual(["a"]);
+		expect(second.events.map((e) => e.agent)).toEqual(["b"]);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(0);
+	});
+
+	it("rejects a persisted cursor beyond the current activity-log EOF", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "t1", agent: "a", type: "x" }),
+		]);
+		const size = statSync(join(tmp, INTERLINKED, "activity.jsonl")).size;
+		updateSyncState(size + 1, undefined, tmp);
+
+		expect(() => getUnsyncedEvents(undefined, tmp)).toThrow(/cursor .* exceeds/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(size + 1);
+	});
+
+	it("rejects a nonzero cursor when the activity log disappeared", () => {
+		updateSyncState(1, undefined, tmp);
+
+		expect(() => getUnsyncedEvents(undefined, tmp)).toThrow(/cursor 1 exceeds/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(1);
+	});
+
+	it("leaves the cursor before an oversized valid JSONL row", () => {
+		const oversized = JSON.stringify({
+			ts: "t1",
+			agent: "a",
+			type: "x",
+			summary: "v".repeat(4 * 1024 * 1024),
+		});
+		writeRaw(tmp, "activity.jsonl", [oversized]);
+
+		expect(() => getUnsyncedEvents(undefined, tmp)).toThrow(/row at byte 0 exceeds.*not advanced/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(0);
+	});
+
+	it("leaves the cursor before an oversized malformed JSONL row", () => {
+		writeRaw(tmp, "activity.jsonl", [`{${"x".repeat(4 * 1024 * 1024)}`]);
+
+		expect(() => getUnsyncedEvents(undefined, tmp)).toThrow(/row at byte 0 exceeds.*not advanced/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(0);
+	});
+
+	it("bounds a materialized page by aggregate JSONL bytes", () => {
+		const rows = ["a", "b", "c"].map((agent) =>
+			JSON.stringify({
+				ts: `t-${agent}`,
+				agent,
+				type: "x",
+				summary: agent.repeat(3 * 1024 * 1024),
+			}),
+		);
+		writeRaw(tmp, "activity.jsonl", rows);
+		const afterTwo = Buffer.byteLength(`${rows[0]}\n${rows[1]}\n`);
+
+		const first = getUnsyncedEvents(100, tmp);
+		expect(first.events.map((event) => event.agent)).toEqual(["a", "b"]);
+		expect(first.newOffset).toBe(afterTwo);
+
+		const second = getUnsyncedEvents(100, tmp, { startOffset: first.newOffset });
+		expect(second.events.map((event) => event.agent)).toEqual(["c"]);
+		expect(second.newOffset).toBe(statSync(join(tmp, INTERLINKED, "activity.jsonl")).size);
+	});
+
+	it("checkpoints a page only while the captured activity generation is current", () => {
+		const row = JSON.stringify({ ts: "t1", agent: "a", type: "x" });
+		writeRaw(tmp, "activity.jsonl", [row]);
+		const basis = captureActivitySyncBasis(0, tmp);
+		const page = getUnsyncedEvents(1, tmp, {
+			startOffset: 0,
+			endExclusive: basis.endExclusive,
+			expectedIdentity: basis.identity,
+		});
+
+		checkpointSyncState({ basis, expectedCursor: 0, nextCursor: page.newOffset, cwd: tmp });
+		expect(readSyncState(tmp).synced_through_bytes).toBe(page.newOffset);
+	});
+
+	it("does not write an old-coordinate checkpoint after activity-log replacement", () => {
+		const activityPath = join(tmp, INTERLINKED, "activity.jsonl");
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "t1", agent: "a", type: "x" }),
+		]);
+		const basis = captureActivitySyncBasis(0, tmp);
+		const replacement = `${activityPath}.replacement`;
+		writeFileSync(
+			replacement,
+			`${JSON.stringify({ ts: "t2", agent: "b", type: "x" })}\n`,
+		);
+		renameSync(replacement, activityPath);
+
+		expect(() =>
+			checkpointSyncState({
+				basis,
+				expectedCursor: 0,
+				nextCursor: basis.endExclusive,
+				cwd: tmp,
+			}),
+		).toThrow(/activity log was replaced/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(0);
+	});
+
+	it("does not overwrite a cursor rebased after the sync basis was captured", () => {
+		writeRaw(tmp, "activity.jsonl", [
+			JSON.stringify({ ts: "t1", agent: "a", type: "x" }),
+		]);
+		const basis = captureActivitySyncBasis(0, tmp);
+		updateSyncState(1, undefined, tmp);
+
+		expect(() =>
+			checkpointSyncState({
+				basis,
+				expectedCursor: 0,
+				nextCursor: basis.endExclusive,
+				cwd: tmp,
+			}),
+		).toThrow(/persisted cursor moved from 0 to 1/);
+		expect(readSyncState(tmp).synced_through_bytes).toBe(1);
 	});
 });
 

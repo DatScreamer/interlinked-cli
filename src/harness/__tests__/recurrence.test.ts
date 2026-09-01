@@ -591,6 +591,24 @@ describe("recurrencesPath / recordRecurrenceEvent / loadRecurrenceEvents", () =>
 		expect(nonNull(events[0]).ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 	});
 
+	it("keeps operational no-verdict rows out of source recurrence", () => {
+		for (const checkId of [
+			"external_check_deferred",
+			"affected_tests_deferred",
+			"project_typecheck_deferred",
+			"project_tests_deferred",
+		]) {
+			recordHarnessCaught({
+				check_id: checkId,
+				agent_source: "claude",
+				session_id: "s1",
+				file: "src/foo.ts",
+				cwd: dir,
+			});
+		}
+		expect(loadRecurrenceEvents(dir)).toEqual([]);
+	});
+
 	it("markOutcome writes outcome_marker rows that survive reload", () => {
 		markOutcome({
 			check_id: "misused_promises",

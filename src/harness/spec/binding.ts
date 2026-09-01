@@ -18,6 +18,28 @@ export function idLineSet(ns: IdNamespace): Set<number> {
 	return set;
 }
 
+/** Lines on which TWO OR MORE distinct ids of the namespace appear — a
+ *  registry enumeration ("six bets B1, B2, B7"), as opposed to one incidental
+ *  mention. Same-line claim binding requires this (round-8): a findings-table
+ *  row like "F9 — the audit lists 83 commands" carries one id plus a generic
+ *  noun, and binding from it flagged every "N commands" claim repo-wide
+ *  against the F census (stop-digest FPs 2026-08-21).
+ *  Exported for tests; production callers go through the memoized
+ *  enumLinesFor below. */
+export function enumerationLineSet(ns: IdNamespace): Set<number> {
+	const idsOnLine = new Map<number, number>();
+	const set = new Set<number>();
+	for (const id of ns.ids) {
+		// De-duplicate per id: one id repeated on a line is still one id.
+		for (const line of new Set(id.sites)) {
+			const n = (idsOnLine.get(line) ?? 0) + 1;
+			idsOnLine.set(line, n);
+			if (n >= 2) set.add(line);
+		}
+	}
+	return set;
+}
+
 /** DEFINITION-site lines only (registry rows) — heading binding requires a real
  *  registry in the section, not incidental prose mentions (FP control). */
 export function defLineSet(ns: IdNamespace): Set<number> {
@@ -169,11 +191,13 @@ function ownerNounFor(facts: SpecFacts, defLines: Set<number>): string | null {
  *  fabricates drift against the B census (round-7 #29). */
 function claimBindsGivenOwner(
 	claim: CountClaim,
-	idLines: Set<number>,
+	enumLines: Set<number>,
 	ownerNoun: string | null,
 	ambiguousLines: Set<number>,
 ): boolean {
-	if (idLines.has(claim.line) && !ambiguousLines.has(claim.line)) return true;
+	// Same-line binding requires an ENUMERATION line (≥2 distinct ids of the
+	// namespace), not one incidental id mention — see enumerationLineSet.
+	if (enumLines.has(claim.line) && !ambiguousLines.has(claim.line)) return true;
 	return ownerNoun !== null && ownerNoun === claim.nounSingular;
 }
 
@@ -192,11 +216,23 @@ function claimBindsGivenOwner(
 export function claimBindsToNamespace(
 	claim: CountClaim,
 	facts: SpecFacts,
-	idLines: Set<number>,
+	ns: IdNamespace,
 	defLines: Set<number>,
 ): boolean {
 	const ownerNoun = ownerNounFor(facts, defLines);
-	return claimBindsGivenOwner(claim, idLines, ownerNoun, ambiguousClaimLines(facts));
+	return claimBindsGivenOwner(claim, enumLinesFor(ns), ownerNoun, ambiguousClaimLines(facts));
+}
+
+/** Memoized enumerationLineSet, keyed by namespace identity — the checks path
+ *  calls the bind predicate once per namespace×claim, and the set is invariant
+ *  per namespace. */
+const enumLineCache = new WeakMap<IdNamespace, Set<number>>();
+function enumLinesFor(ns: IdNamespace): Set<number> {
+	const hit = enumLineCache.get(ns);
+	if (hit) return hit;
+	const set = enumerationLineSet(ns);
+	enumLineCache.set(ns, set);
+	return set;
 }
 
 /** Headings whose plural word is almost never a registry noun. */

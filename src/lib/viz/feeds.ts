@@ -7,11 +7,13 @@
 // descriptor and the server hosts them all through one generic SSE path. Adding
 // a lens is a descriptor here, not another copy of the plumbing.
 
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { type AgentPresence, AgentRoster } from "./agent-roster.js";
 import {
 	createActivityTailer,
 	createChecksTailer,
+	readAppendedLines,
 	seedRecentChecks,
 	seedRecentEvents,
 } from "./event-stream.js";
@@ -42,6 +44,10 @@ export interface FeedPaths {
 	checkResults: string;
 	testEvents: string;
 	mutationManifest: string;
+	/** Per-run mutation ledger (run-log.ts). Optional so older FeedPaths
+	 *  literals in tests stay valid; the feed derives it from the manifest's
+	 *  directory when absent. */
+	mutationRuns?: string;
 }
 
 /** Default feed paths under a project root's `.interlinked/` directory. */
@@ -52,7 +58,49 @@ export function defaultFeedPaths(root: string): FeedPaths {
 		checkResults: join(dir, "check-results.jsonl"),
 		testEvents: join(dir, "test-events.jsonl"),
 		mutationManifest: join(dir, "mutation-manifest.json"),
+		mutationRuns: join(dir, "mutation-runs.jsonl"),
 	};
+}
+
+/** Tail the per-run mutation ledger: parse each appended JSONL row, skip torn
+ *  lines. Same poll cadence as the other JSONL feeds. */
+function createRunsTailer(
+	path: string,
+	onEvent: (ev: unknown) => void,
+	pollMs: number,
+): { stop: () => void } {
+	let offset = existsSync(path) ? statSync(path).size : 0;
+	const iv = setInterval(() => {
+		const read = readAppendedLines(path, offset);
+		offset = read.offset;
+		for (const line of read.lines) {
+			try {
+				onEvent(JSON.parse(line));
+			} catch (err) {
+				void err; // torn tail line from a live writer — next poll completes it
+			}
+		}
+	}, pollMs);
+	iv.unref?.();
+	return { stop: () => clearInterval(iv) };
+}
+
+/** The run ledger's path for a FeedPaths, tolerating older literals. */
+function mutationRunsPath(paths: FeedPaths): string {
+	return paths.mutationRuns ?? join(dirname(paths.mutationManifest), "mutation-runs.jsonl");
+}
+
+/** Newest `max` run rows, oldest first, torn lines skipped. */
+function seedMutationRuns(path: string, max: number): unknown[] {
+	const rows: unknown[] = [];
+	for (const line of readAppendedLines(path, 0).lines) {
+		try {
+			rows.push(JSON.parse(line));
+		} catch (err) {
+			void err;
+		}
+	}
+	return rows.slice(-max);
 }
 
 /**
@@ -116,6 +164,12 @@ export function buildFeeds(paths: FeedPaths, pollMs: number): VizFeed[] {
 			hello: "interlinked mutant stream",
 			seed: () => seedMutants(paths.mutationManifest),
 			subscribe: (onEvent) => createMutantWatcher(paths.mutationManifest, onEvent),
+		},
+		{
+			route: "/api/mutation-runs",
+			hello: "interlinked mutation run stream",
+			seed: () => seedMutationRuns(mutationRunsPath(paths), SEED_TESTS),
+			subscribe: (onEvent) => createRunsTailer(mutationRunsPath(paths), onEvent, pollMs),
 		},
 	];
 }

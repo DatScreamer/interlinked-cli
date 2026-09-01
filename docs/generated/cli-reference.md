@@ -25,7 +25,7 @@ Commands:
   clean [options]                            Remove stale data
   cloud                                      Inspect the cloud governor (reads cloud_governor from config.local.json)
   collect [options]                          Sync external model sessions (Codex) into .interlinked/timeline.jsonl
-  compact [options]                          Gzip + archive the synced prefix of activity.jsonl (lossless), reclaiming disk
+  compact [options]                          Gzip + archive the synced prefix of activity.jsonl plus the collection/timeline logs (lossless), reclaiming disk
   completions <shell>                        Output shell completion script (bash, zsh, fish)
   context [options]                          Show effective configuration (merged from all sources)
   coverage                                   Per-file coverage ratchet — fails on any file whose coverage drops
@@ -57,7 +57,7 @@ Commands:
   metrics [options]                          Scan the whole codebase: function tokens, companion-test presence, coverage, complexity, and CRAP
   mode [options] [name]                      Show current enforcement mode, or switch to balanced / strict / lenient
   multi-edit [options] [path]                Apply N old/new string edits atomically to one or more files. Gate runs once on final content. Ambiguity evaluated after prior edits.
-  mutation                                   Per-file mutation-score ratchet — fails on any file whose mutation score drops
+  mutation                                   Mutation testing: report-score ratchet, local runner measurement, and experimental durable cloud jobs
   plan                                       Show agent-emitted plans captured from TaskCreate / ExitPlanMode / structured prompts
   query [options] [source]                   Bounded query over .interlinked JSONL logs (blocks/checks/recurrences/costs/… or a .jsonl path)
   recurrence                                 Surface repeating agent behaviors (harness_caught / harness_missed / codebase_existing / tool_failure)
@@ -87,7 +87,7 @@ Commands:
   trajectory                                 Inspect trajectory snapshots; replay recorded event streams through sequence detectors
   uninstall-hooks [options]                  Remove hooks previously installed via install-hooks (manifest-driven)
   update|upgrade [options]                   Clone or pull from GitHub, rebuild, and link the CLI
-  verify [options] [target]                  Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.
+  verify [options] [target]                  Run the default high-signal external catalog plus diff-safe inline checks. Target can be a local path, GitHub URL, or any git remote URL.
   verify-changeset [options]                 Preview the content-quality gate (pre_block + biome + tsc diff-overlay) over a PROPOSED changeset WITHOUT writing — the agent-callable self-gate. Input JSON {version:1, changes:[{path,content}|{path,old_string,new_string}|{path,edits}]} via --file or --stdin.
   version                                    Show Interlinked CLI + server version
   viz                                        Baseline-test visualizer — the cells, interlinked (loopback dashboard)
@@ -205,11 +205,13 @@ Options:
 ```
 Usage: interlinked verify [options] [target]
 
-Run tsc + biome on a project and report errors. Target can be a local path,
-GitHub URL, or any git remote URL.
+Run the default high-signal external catalog plus diff-safe inline checks.
+Target can be a local path, GitHub URL, or any git remote URL.
 
 Options:
-  --only <tool>            Run only tsc or biome (e.g., --only tsc)
+  --only <tool>            Run one named external check (for example: tsc,
+                           biome, oxlint, eslint, semgrep, gitleaks, knip,
+                           docs-check, sca)
   --suggestions            Also run scored regex heuristics (sql-injection,
                            perf, quality)
   --json                   Machine-readable output
@@ -893,7 +895,7 @@ Options:
   --server <url>      Server URL
   --agent <name>      Default agent name
   --clients <list>    Comma-separated client list
-                      (claude,copilot,gemini,codex,cursor)
+                      (claude,copilot,gemini,codex,cursor,opencode,pi)
   --sync-mode <mode>  Sync mode: realtime (default), local, manual
   --data-dir <path>   Override data directory for activity logs and sessions
   --dry-run           Show what would change without modifying files

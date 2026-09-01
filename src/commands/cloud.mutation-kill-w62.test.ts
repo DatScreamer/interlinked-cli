@@ -68,9 +68,11 @@ describe("loadCloudUrl — existsSync gate and encoding literal (positive/negati
 
 function withSliceSpy(fn: () => void): Array<unknown[]> {
 	const calls: Array<unknown[]> = [];
-	// biome-ignore lint/suspicious/noExplicitAny: intentional prototype patch for one synchronous call
+	// SAFETY: this test temporarily patches the known String prototype method
+	// for one synchronous call and restores the original in `finally` below.
 	const orig = String.prototype.slice as any;
-	// biome-ignore lint/suspicious/noExplicitAny: same
+	// SAFETY: the receiver remains String.prototype; only the method's callable
+	// type is widened so the probe can record its variadic arguments.
 	(String.prototype as any).slice = function (...args: unknown[]) {
 		calls.push(args);
 		return orig.apply(this, args);
@@ -78,7 +80,7 @@ function withSliceSpy(fn: () => void): Array<unknown[]> {
 	try {
 		fn();
 	} finally {
-		// biome-ignore lint/suspicious/noExplicitAny: restore
+		// SAFETY: `orig` is the exact method saved from this prototype above.
 		(String.prototype as any).slice = orig;
 	}
 	return calls;

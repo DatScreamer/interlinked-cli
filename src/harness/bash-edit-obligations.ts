@@ -22,13 +22,43 @@
 // lesson, 2026-08-23). `dry_run` never persists (CLAUDE.md rule).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { runPreBlockRegistryGate } from "./pre-block-gate.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
 const STORE_REL = join(".interlinked", "bash-edit-obligations.json");
 const GIT_SHOW_MAX_BUFFER = 8 * 1024 * 1024;
+
+/** Files above this size are data, not per-edit code — the registry checks
+ *  are calibrated for source files, and scanning a multi-MB artifact on every
+ *  tool call is exactly the melt this bound exists to prevent (see below). */
+const ELIGIBLE_MAX_BYTES = 2 * 1024 * 1024;
+
+/** 2026-08-27 daemon-melt root cause: a bash edit to the 45MB (gitignored)
+ *  `.interlinked/mutation-manifest.json` opened a `ubs_weak_hash` obligation —
+ *  the manifest stores mutant replacement code, so scanning it AS code fires
+ *  false positives, and with no git baseline everything counted as
+ *  "introduced". Every subsequent tool call then re-read and re-scanned the
+ *  45MB file (73.7% of daemon CPU in `stripComments` plus the GC storm it
+ *  induced — the "zombie daemon" state). `.interlinked/` is harness tool
+ *  state, not agent-authored code; it is never obligation-eligible. */
+function isObligationEligiblePath(rel: string): boolean {
+	return rel !== ".interlinked" && !rel.startsWith(".interlinked/");
+}
+
+/** Re-verification cache: an obligated file's introduced-check result, keyed
+ *  by (mtime, size). The gate re-verifies on EVERY tool call by design; the
+ *  cache makes that re-verify a stat() instead of a full read + registry scan
+ *  when the file has not changed. A baseline change with no file change (a
+ *  `git add` of the fix) is missed until the file itself changes — acceptable:
+ *  the fix path always touches the file. */
+interface VerifyCacheEntry {
+	mtimeMs: number;
+	size: number;
+	ids: string[];
+}
+const verifyCache = new Map<string, VerifyCacheEntry>();
 
 export interface BashEditObligation {
 	file: string;
@@ -118,11 +148,26 @@ function gitBaseline(cwd: string, rel: string): string | null {
 
 /** pre_block check ids the file's CURRENT content introduces vs its baseline. */
 function introducedCheckIds(cwd: string, rel: string, abs: string): string[] {
+	if (!isObligationEligiblePath(rel)) return [];
+	let mtimeMs: number;
+	let size: number;
+	try {
+		const st = statSync(abs);
+		mtimeMs = st.mtimeMs;
+		size = st.size;
+	} catch {
+		return []; // deleted/unreadable — nothing to hold an obligation against
+	}
+	if (size > ELIGIBLE_MAX_BYTES) return [];
+	// A newline cannot appear in these normalized paths, so the key is collision-proof.
+	const cacheKey = `${cwd}\n${rel}`;
+	const cached = verifyCache.get(cacheKey);
+	if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.ids;
 	let content: string;
 	try {
 		content = readFileSync(abs, "utf-8");
 	} catch {
-		return []; // deleted/unreadable — nothing to hold an obligation against
+		return [];
 	}
 	const outcomes = runPreBlockRegistryGate({
 		content,
@@ -130,7 +175,9 @@ function introducedCheckIds(cwd: string, rel: string, abs: string): string[] {
 		baselineContent: gitBaseline(cwd, rel),
 		projectRoot: cwd,
 	});
-	return outcomes.filter((o) => o.introduced.length > 0).map((o) => o.checkId);
+	const ids = outcomes.filter((o) => o.introduced.length > 0).map((o) => o.checkId);
+	verifyCache.set(cacheKey, { mtimeMs, size, ids });
+	return ids;
 }
 
 /** All open obligations for a repo root (test/inspection surface). */
@@ -142,6 +189,7 @@ export function openBashEditObligations(cwd: string): BashEditObligation[] {
 export function resetBashEditObligationsForTesting(): void {
 	cache.clear();
 	loadedRoots.clear();
+	verifyCache.clear();
 }
 
 /**
@@ -210,20 +258,29 @@ function targetRel(event: HarnessEvent, cwd: string): string | null {
 	return relative(cwd, abs).replace(/\\/g, "/");
 }
 
-/** Re-verify every open obligation against current disk; drop the fixed ones. */
+/** Re-verify every open obligation against current disk and return the ones
+ *  still open. A dry run observes without mutating the shared map or the
+ *  store — the pre-fix version deleted rows in memory on dry_run probes but
+ *  never persisted, so the disk row survived every restart while the live
+ *  gate forgot it (2026-08-27: exactly how the poisoned mutation-manifest
+ *  obligation kept re-melting each fresh daemon). */
 function dischargeFixedObligations(
 	cwd: string,
 	map: Map<string, BashEditObligation>,
 	dryRun: boolean | undefined,
-): void {
+): Map<string, BashEditObligation> {
+	const open = new Map<string, BashEditObligation>();
 	let changed = false;
-	for (const [rel] of [...map]) {
+	for (const [rel, ob] of [...map]) {
 		if (introducedCheckIds(cwd, rel, resolve(cwd, rel)).length === 0) {
-			map.delete(rel);
 			changed = true;
+			if (!dryRun) map.delete(rel);
+		} else {
+			open.set(rel, ob);
 		}
 	}
 	if (changed && !dryRun) persist(cwd, map);
+	return open;
 }
 
 /**
@@ -241,11 +298,11 @@ export function evaluateBashEditObligationGate(
 	if (!cwd) return null;
 	const map = loadOnce(cwd);
 	if (map.size === 0) return null;
-	dischargeFixedObligations(cwd, map, event.dry_run);
-	if (map.size === 0 || !WRITE_TOOLS.has(toolName)) return null;
+	const open = dischargeFixedObligations(cwd, map, event.dry_run);
+	if (open.size === 0 || !WRITE_TOOLS.has(toolName)) return null;
 	const target = targetRel(event, cwd);
-	if (target !== null && map.has(target)) return null;
-	const summary = [...map.values()]
+	if (target !== null && open.has(target)) return null;
+	const summary = [...open.values()]
 		.map((o) => `${o.file} (${o.checkIds.join(", ")})`)
 		.join("; ");
 	return {

@@ -13,9 +13,17 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
-import { filterCodeQualityResults, runCodeQualityChecks, runSuggestions } from "./tool-results.js";
+import { createScanProgress } from "./scan-progress.js";
+import {
+	clearCodeQualityResults,
+	filterCodeQualityResults,
+	filterCodeQualityResultsInPlace,
+	runCodeQualityChecks,
+	runCodeQualityChecksProgressive,
+	runSuggestions,
+} from "./tool-results.js";
 import type { CodeQualityResults } from "./tool-results-types.js";
 
 let tempDir: string;
@@ -275,6 +283,140 @@ describe("filterCodeQualityResults", () => {
 		);
 		expect(filtered.strongTyping.map((i) => i.check)).toEqual(["other_check"]);
 		expect(filtered.largeFiles).toEqual([]);
+	});
+});
+
+describe("memory-bounded result ownership", () => {
+	it("compacts an owned result in place without allocating replacement buckets", () => {
+		const results = runCodeQualityChecks([], tempDir);
+		const bucket = results.strongTyping;
+		bucket.push(
+			{ check: "drop", file: "a.ts", line: 1, message: "drop" },
+			{ check: "keep", file: "b.ts", line: 2, message: "keep" },
+		);
+
+		const filtered = filterCodeQualityResultsInPlace(results, new Set(["drop"]));
+
+		expect(filtered).toBe(results);
+		expect(filtered.strongTyping).toBe(bucket);
+		expect(filtered.strongTyping.map((row) => row.check)).toEqual(["keep"]);
+	});
+
+	it("clears every finding bucket after streaming has consumed the result", () => {
+		const results = runCodeQualityChecks([], tempDir);
+		results.strongTyping.push({ check: "a", file: "a.ts", line: 1, message: "a" });
+		results.largeFiles.push({ check: "b", file: "b.ts", line: 2, message: "b" });
+
+		clearCodeQualityResults(results);
+
+		expect(Object.values(results).every((rows) => rows.length === 0)).toBe(true);
+	});
+});
+
+// ===========================================
+// runCodeQualityChecksProgressive
+// ===========================================
+// The progress-reporting entry point must be observationally identical to the
+// synchronous one except for its stderr side-channel, and it must emit that
+// side-channel WHILE the scan runs — the whole point of the change.
+
+/** A clock that always jumps past the throttle window, so every file renders. */
+function alwaysPastInterval(): () => number {
+	let t = 0;
+	return () => {
+		t += 10_000;
+		return t;
+	};
+}
+
+describe("runCodeQualityChecksProgressive — equivalence with the sync entry point", () => {
+	it("P1: returns exactly what runCodeQualityChecks returns for the same files", async () => {
+		const a = fixture("a.ts", "export function foo(x: any): any { return x; }\n");
+		const b = fixture("b.ts", "export const B = process.env.SOME_UNDOCUMENTED_VAR;\n");
+		const sync = runCodeQualityChecks([a, b], tempDir);
+		const async_ = await runCodeQualityChecksProgressive(
+			[a, b],
+			tempDir,
+			createScanProgress(2, { write: () => {}, now: () => 0 }),
+		);
+		expect(async_).toEqual(sync);
+	});
+
+	it("P2: matches the sync entry point on an empty file set", async () => {
+		const sync = runCodeQualityChecks([], tempDir);
+		const async_ = await runCodeQualityChecksProgressive(
+			[],
+			tempDir,
+			createScanProgress(0, { write: () => {}, now: () => 0 }),
+		);
+		expect(async_).toEqual(sync);
+	});
+});
+
+describe("runCodeQualityChecksProgressive — progress is emitted during the scan", () => {
+	it("P1: writes an intermediate per-file count while files still remain", async () => {
+		const files = [
+			fixture("p1.ts", "export const A = 1;\n"),
+			fixture("p2.ts", "export const B = 2;\n"),
+			fixture("p3.ts", "export const C = 3;\n"),
+		];
+		const chunks: string[] = [];
+		await runCodeQualityChecksProgressive(
+			files,
+			tempDir,
+			createScanProgress(files.length, { write: (c) => void chunks.push(c), now: alwaysPastInterval() }),
+		);
+		const out = chunks.join("");
+		// "checks 1/3" can only have been written with two files still to scan.
+		expect(out).toContain("scanning checks 1/3");
+		expect(out).toContain("scanning checks 3/3");
+	});
+
+	it("P2: reports both passes by name", async () => {
+		const files = [fixture("q1.ts", "export const A = 1;\n")];
+		const chunks: string[] = [];
+		await runCodeQualityChecksProgressive(
+			files,
+			tempDir,
+			createScanProgress(1, { write: (c) => void chunks.push(c), now: alwaysPastInterval() }),
+		);
+		expect(chunks.join("")).toContain("scanning exports");
+		expect(chunks.join("")).toContain("scanning checks");
+	});
+
+	it("N1: writes progress to stderr only — stdout stays untouched", async () => {
+		const files = [fixture("r1.ts", "export const A = 1;\n")];
+		const outSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+		// Default deps => the real stderr writer.
+		await runCodeQualityChecksProgressive(files, tempDir, createScanProgress(1));
+		// Snapshot before restoring: mockRestore also resets the recorded calls.
+		const errCalls = errSpy.mock.calls.length;
+		const outCalls = outSpy.mock.calls.length;
+		outSpy.mockRestore();
+		errSpy.mockRestore();
+		expect(errCalls).toBeGreaterThan(0);
+		expect(outCalls).toBe(0);
+	});
+});
+
+describe("runCodeQualityChecksProgressive — event-loop yielding", () => {
+	it("P1: lets a queued macrotask run before the scan resolves", async () => {
+		// More files than YIELD_EVERY_FILES (25), so at least one yield happens.
+		const files = Array.from({ length: 26 }, (_, i) =>
+			fixture(`y${i}.ts`, `export const Y${i} = ${i};\n`),
+		);
+		const order: string[] = [];
+		const scan = runCodeQualityChecksProgressive(
+			files,
+			tempDir,
+			createScanProgress(files.length, { write: () => {}, now: () => 0 }),
+		).then(() => void order.push("scan"));
+		// Queued after the first synchronous span; a non-yielding implementation
+		// would settle its promise (a microtask) before this macrotask ever ran.
+		setImmediate(() => void order.push("interrupt"));
+		await scan;
+		expect(order).toEqual(["interrupt", "scan"]);
 	});
 });
 

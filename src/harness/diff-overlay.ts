@@ -34,6 +34,31 @@ export interface DiffOverlayResult {
 	elapsedMs: number;
 	/** True if latency exceeded the tool-specific budget — caller may demote to warn. */
 	exceededBudget: boolean;
+	/**
+	 * Set (to the reason string) when the checker itself could not run —
+	 * sidecar spawn failure, timeout, malformed reply, cooldown. `newFindings`
+	 * is then vacuously empty: "unavailable", NOT "checked clean".
+	 * Transactional consumers (multi-edit, verify-changeset) must treat this
+	 * as a gate failure; advisory consumers should surface it as a warning.
+	 */
+	checkerUnavailable?: string;
+}
+
+/** GateFailure `code` used by consumers when `checkerUnavailable` is set. */
+export const TSC_CHECKER_UNAVAILABLE_CODE = "tsc-overlay-unavailable";
+
+/**
+ * The live PreToolUse hook's honest-unavailability warning (Grok 2026-08-28
+ * issue 7). Sidecar spawn failure / timeout / cooldown yields zero findings
+ * WITH `checkerUnavailable` set; the live path used to read that as clean —
+ * the fail-open this module's transactional callers (write / multi-edit /
+ * verify-changeset) already abort on. Blocking every live edit during a
+ * sidecar cooldown would brick the session, so the live path warns LOUDLY
+ * instead: the edit proceeds unchecked-by-tsc and SAYS so, and the PostToolUse
+ * on-disk tsc pass remains the backstop.
+ */
+export function tscUnavailableWarning(filePath: string, reason: string): string {
+	return `[interlinked:tsc-overlay] NOT CHECKED — the type-checker was unavailable for this edit of ${filePath} (${reason}). Zero findings here means "not looked at", not "clean"; the PostToolUse tsc pass is the backstop.`;
 }
 
 /**
@@ -92,13 +117,10 @@ export function evaluateBiomeDiffOverlay(
 
 	const engine = getOrCreateEngine(projectRoot);
 
-	// A new file has an empty baseline, so every proposed diagnostic is new.
+	// Confirm an existing path is readable text before asking the engine for its
+	// cached diagnostics. Directories and transiently unreadable files are not
+	// valid overlay targets and must short-circuit without touching the cache.
 	const existsOnDisk = existsSync(filePath);
-	const preEdit = existsOnDisk
-		? engine.getDiagnostics(filePath).filter((r) => r.tool === "biome")
-		: [];
-
-	// Short-circuit: content identical to disk (no-op edit) — nothing to diff.
 	if (existsOnDisk) {
 		let onDisk = "";
 		try {
@@ -108,6 +130,11 @@ export function evaluateBiomeDiffOverlay(
 		}
 		if (onDisk === proposedContent) return empty;
 	}
+
+	// A new file has an empty baseline, so every proposed diagnostic is new.
+	const preEdit = existsOnDisk
+		? engine.getCachedDiagnostics(filePath).filter((r) => r.tool === "biome")
+		: [];
 
 	const start = Date.now();
 	const overlay = engine.getBiomeDiagnosticsForOverlay(
@@ -253,7 +280,16 @@ export function evaluateTscDiffOverlay(
 		if (cached) {
 			preEdit = cached;
 		} else {
-			preEdit = engine.getTscDiagnosticsForOverlay(filePath, onDisk);
+			const preOutcome = engine.getTscDiagnosticsForOverlayTyped(filePath, onDisk);
+			if (preOutcome.status === "unavailable") {
+				// Never cache an unavailable run as "no diagnostics" — that would
+				// poison the baseline for the cooldown window. Report honestly.
+				return { ...empty, checkerUnavailable: preOutcome.reason };
+			}
+			// "skipped" (non-TS file / mode off): nothing to diff — the check
+			// deliberately does not apply here, distinct from checked-clean.
+			if (preOutcome.status === "skipped") return empty;
+			preEdit = preOutcome.findings;
 			preEditTscCache.set(cacheKey, preEdit);
 		}
 	}
@@ -263,9 +299,30 @@ export function evaluateTscDiffOverlay(
 	// multi-file edit's cross-file references resolve against the proposed
 	// combined state. The pre-edit baseline above stays disk-only, so new
 	// findings are correctly attributed to the batch, not pre-existing state.
-	const overlay = engine.getTscDiagnosticsForOverlay(filePath, proposedContent, siblings);
+	const overlayOutcome = engine.getTscDiagnosticsForOverlayTyped(
+		filePath,
+		proposedContent,
+		siblings,
+	);
 	const elapsedMs = Date.now() - start;
 	const exceededBudget = elapsedMs > TSC_BUDGET_MS;
+	if (overlayOutcome.status === "unavailable") {
+		// proposedFindings null = "don't know" (per the field doc) — the
+		// transient-debt ledger must not discharge on an unavailable run.
+		return {
+			newFindings: [],
+			proposedFindings: null,
+			elapsedMs,
+			exceededBudget,
+			checkerUnavailable: overlayOutcome.reason,
+		};
+	}
+	// "skipped": the check does not apply (non-TS / mode off) — nothing to
+	// diff, and NOT the same as checked-clean (proposedFindings stays null).
+	if (overlayOutcome.status === "skipped") {
+		return { newFindings: [], proposedFindings: null, elapsedMs, exceededBudget };
+	}
+	const overlay = overlayOutcome.findings;
 
 	const preKeys = new Set(preEdit.map(diagKey));
 	const newFindings = overlay.filter((r) => !preKeys.has(diagKey(r)));

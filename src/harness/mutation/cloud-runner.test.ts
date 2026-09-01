@@ -6,6 +6,7 @@ import {
 	MutationNotMeasurableError,
 	MutationRunnerBusyError,
 	MutationRunPendingError,
+	readExecutedTestCount,
 	readNotMeasurable,
 	type FetchLike,
 	type FetchResponse,
@@ -38,6 +39,37 @@ function okFetch(body: unknown): FetchLike {
 
 const CFG: CloudRunnerConfig = { url: "https://worker", timeoutMs: 1000 };
 
+describe("readExecutedTestCount", () => {
+	it("uses a valid explicit count when the runner provides one", () => {
+		expect(readExecutedTestCount({ testRun: { executedTestCount: 3 } })).toBe(3);
+	});
+
+	it("refuses Stryker's native test-file inventory because it includes skipped tests without their status", () => {
+		expect(
+			readExecutedTestCount({
+				testFiles: {
+					"src/a.test.ts": { tests: [{ id: "1" }, { id: "2" }] },
+					"src/b.test.ts": { tests: [{ id: "3" }] },
+				},
+			}),
+		).toBeNull();
+	});
+
+	it("rejects a malformed claimed count instead of softening to the native inventory", () => {
+		expect(
+			readExecutedTestCount({
+				testRun: { executedTestCount: "3" },
+				testFiles: { "src/a.test.ts": { tests: [{ id: "1" }] } },
+			}),
+		).toBeNull();
+	});
+
+	it("returns null for every native-report-only shape, including empty test files", () => {
+		expect(readExecutedTestCount({ testFiles: { "src/a.test.ts": { tests: "not-an-array" } } })).toBeNull();
+		expect(readExecutedTestCount({ testFiles: { "src/discovered.test.ts": { tests: [] } } })).toBeNull();
+	});
+});
+
 describe("createCloudMutationRunner — budget expiry yields a harvestable handle", () => {
 	it("P: throws MutationRunPendingError when the budget expires, not a generic error", async () => {
 		// The engine keeps working after we give up, and the runner retains the
@@ -65,12 +97,41 @@ describe("createCloudMutationRunner — budget expiry yields a harvestable handl
 	it("P: sends a client-minted job_id so a timed-out caller can still claim it", async () => {
 		let sent: Record<string, unknown> = {};
 		const capture: FetchLike = (_u, init) => {
+			// SAFETY: init.body is the JSON object this very test's runner just built.
 			sent = JSON.parse(init.body) as Record<string, unknown>;
 			return Promise.resolve(resp(REPORT));
 		};
 		await createCloudMutationRunner(CFG, capture).run("src/f.ts", SOURCE);
 		expect(typeof sent.job_id).toBe("string");
 		expect(String(sent.job_id).length).toBeGreaterThan(0);
+	});
+
+	it("P: the wire states whole-file scope + incremental:false EXPLICITLY, and never carries shard/range (review pass 19)", async () => {
+		let sent: Record<string, unknown> = {};
+		const capture: FetchLike = (_u, init) => {
+			// SAFETY: init.body is the JSON object this very test's runner just built.
+			sent = JSON.parse(init.body) as Record<string, unknown>;
+			return Promise.resolve(resp(REPORT));
+		};
+		// v1 sharding is retired — `shard` no longer even exists on the config
+		// type — and cache behavior is an explicit field, never inferred from a
+		// missing range (the runner's old !range ⇒ --incremental coupling).
+		await createCloudMutationRunner(CFG, capture).run("src/f.ts", SOURCE);
+		expect(sent.scope).toBe("whole_file");
+		expect(sent.incremental).toBe(false);
+		expect("shard" in sent).toBe(false);
+		expect("range" in sent).toBe(false);
+	});
+
+	it("N: no shard config → no shard field in the body (older Workers see the old wire shape)", async () => {
+		let sent: Record<string, unknown> = {};
+		const capture: FetchLike = (_u, init) => {
+			// SAFETY: init.body is the JSON object this very test's runner just built.
+			sent = JSON.parse(init.body) as Record<string, unknown>;
+			return Promise.resolve(resp(REPORT));
+		};
+		await createCloudMutationRunner(CFG, capture).run("src/f.ts", SOURCE);
+		expect("shard" in sent).toBe(false);
 	});
 
 	it("N: a NON-timeout failure stays a plain error, never a pending handle", async () => {
@@ -104,9 +165,22 @@ describe("createCloudMutationRunner", () => {
 	});
 
 	it("forward-parses an optional testRun signal from the response (spec §7)", async () => {
-		const withRun = { ...REPORT, testRun: { overlayGreen: false, redWitnessSatisfied: true } };
-		const { testRun } = await createCloudMutationRunner(CFG, okFetch(withRun)).run("src/f.ts", SOURCE);
-		expect(testRun).toEqual({ overlayGreen: false, redWitnessSatisfied: true });
+		const withRun = {
+			...REPORT,
+			testRun: { overlayGreen: true, redWitnessSatisfied: true, executedTestCount: 2 },
+		};
+		const { testRun, executedTestCount } = await createCloudMutationRunner(CFG, okFetch(withRun)).run(
+			"src/f.ts",
+			SOURCE,
+		);
+		expect(testRun).toEqual({ overlayGreen: true, redWitnessSatisfied: true });
+		expect(executedTestCount).toBe(2);
+	});
+
+	it("carries a missing executed-test count as null so the evaluator refuses clean", async () => {
+		const withRun = { ...REPORT, testRun: { overlayGreen: true, redWitnessSatisfied: true } };
+		const result = await createCloudMutationRunner(CFG, okFetch(withRun)).run("src/f.ts", SOURCE);
+		expect(result.executedTestCount).toBeNull();
 	});
 
 	it("treats a malformed/absent redWitnessSatisfied as null", async () => {
@@ -126,13 +200,15 @@ describe("createCloudMutationRunner", () => {
 
 	it("sends the file + overlay content and a bearer token", async () => {
 		const captured: { url?: string; body?: string; headers?: Record<string, string> } = {};
-		const spy: FetchLike = (url, init) => {
+		// The response echoes the overlay as its source so the content-binding
+		// check passes — this test asserts the OUTBOUND wire only.
+		const echo: FetchLike = (url, init) => {
 			captured.url = url;
 			captured.body = init.body;
 			captured.headers = init.headers;
-			return Promise.resolve(resp(REPORT));
+			return Promise.resolve(resp({ files: { "src/f.ts": { source: "OVERLAY", mutants: [] } } }));
 		};
-		await createCloudMutationRunner({ ...CFG, token: "T" }, spy).run("src/f.ts", "OVERLAY");
+		await createCloudMutationRunner({ ...CFG, token: "T" }, echo).run("src/f.ts", "OVERLAY");
 		expect(captured.url).toBe("https://worker");
 		expect(captured.headers?.authorization).toBe("Bearer T");
 		expect(captured.body).toContain("OVERLAY");
@@ -142,7 +218,7 @@ describe("createCloudMutationRunner", () => {
 		let body: string | undefined;
 		const spy: FetchLike = (_url, init) => {
 			body = init.body;
-			return Promise.resolve(resp(REPORT));
+			return Promise.resolve(resp({ files: { "src/f.ts": { source: "SRC", mutants: [] } } }));
 		};
 		const overlays = [
 			{ path: "src/f.ts", content: "SRC" },
@@ -153,11 +229,27 @@ describe("createCloudMutationRunner", () => {
 		expect(parsed.overlays).toEqual(overlays);
 	});
 
+	it("carries the CLI-selected exact test scope and its provenance on the wire", async () => {
+		let body: string | undefined;
+		const spy: FetchLike = (_url, init) => {
+			body = init.body;
+			return Promise.resolve(resp({ files: { "src/f.ts": { source: "SRC", mutants: [] } } }));
+		};
+		await createCloudMutationRunner(CFG, spy).run("src/f.ts", "SRC", undefined, {
+			testFiles: ["src/f.integration.test.ts", "src/f.mutation-kill.test.ts"],
+			scopeMode: "import_graph",
+		});
+		expect(JSON.parse(body ?? "{}")).toMatchObject({
+			testScope: ["src/f.integration.test.ts", "src/f.mutation-kill.test.ts"],
+			test_scope_mode: "import_graph",
+		});
+	});
+
 	it("omits the overlays key entirely when not provided (older-Worker back-compat)", async () => {
 		let body: string | undefined;
 		const spy: FetchLike = (_url, init) => {
 			body = init.body;
-			return Promise.resolve(resp(REPORT));
+			return Promise.resolve(resp({ files: { "src/f.ts": { source: "SRC", mutants: [] } } }));
 		};
 		await createCloudMutationRunner(CFG, spy).run("src/f.ts", "SRC");
 		expect(JSON.parse(body ?? "{}")).not.toHaveProperty("overlays");
@@ -189,6 +281,84 @@ describe("MutationNotMeasurableError — 'nothing to measure' is not 'runner bro
 	it("is NOT raised for an ordinary report", async () => {
 		const runner = jsonRunner({ files: { "src/a.ts": { source: "x", mutants: [] } } });
 		await expect(runner.run("src/a.ts", "x", [])).resolves.toBeDefined();
+	});
+
+	it("P: an EMPTY files report is refused — silence about the target is not measurement (review 2026-08-24 item 1)", async () => {
+		const runner = jsonRunner({ files: {} });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/no entry for src\/a\.ts/);
+	});
+
+	it("P: the Worker's RED-suite shape — {files:{}, testRun:{overlayGreen:false}} — is a RESULT, not an error (review 2026-08-25 pass 7)", async () => {
+		// Stryker never runs on a red overlay suite, so the report legitimately
+		// has no target entry. Throwing here turned a KNOWN red suite into
+		// "unavailable", which allow_unmeasured then allowed.
+		const runner = jsonRunner({ files: {}, testRun: { overlayGreen: false, redWitnessSatisfied: null } });
+		const out = await runner.run("src/a.ts", "x", []);
+		expect(out.mutants).toEqual([]);
+		expect(out.testRun?.overlayGreen).toBe(false);
+	});
+
+	it("N: a GREEN test run does not bypass target selection — the empty report is still refused", async () => {
+		const runner = jsonRunner({ files: {}, testRun: { overlayGreen: true, redWitnessSatisfied: null } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/no entry/);
+	});
+
+	it("P: a report mentioning only OTHER files is refused for the requested target", async () => {
+		const runner = jsonRunner({ files: { "src/other.ts": { source: "y", mutants: [] } } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/missing target is not a clean measurement/);
+	});
+
+	it("N: an absolute requested path canonicalizes against config.cwd and matches its repo-relative entry", async () => {
+		const fetchImpl: FetchLike = () =>
+			Promise.resolve(resp({ files: { "src/a.ts": { source: "x", mutants: [] } } }));
+		const runner = createCloudMutationRunner({ ...CFG, cwd: "/repo" }, fetchImpl);
+		await expect(runner.run("/repo/src/a.ts", "x", [])).resolves.toBeDefined();
+	});
+
+	it("P: a colliding path SUFFIX is refused — packages/x/src/a.ts is not src/a.ts (review 2026-08-25)", async () => {
+		const runner = jsonRunner({ files: { "packages/x/src/a.ts": { source: "x", mutants: [] } } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/no entry for src\/a\.ts/);
+	});
+
+	it("P: a bare basename is refused for a nested target — a.ts is not src/a.ts", async () => {
+		const runner = jsonRunner({ files: { "a.ts": { source: "x", mutants: [] } } });
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/no entry/);
+	});
+
+	it("P: only the TARGET entry's mutants are returned — foreign files' mutants never leak in", async () => {
+		const runner = jsonRunner({
+			files: {
+				"src/a.ts": { source: "x", mutants: [] },
+				"src/other.ts": {
+					source: "function g(y){ return y > 0; }",
+					mutants: [
+						{
+							mutatorName: "EqualityOperator",
+							replacement: ">=",
+							status: "Killed",
+							location: { start: { line: 1, column: 25 }, end: { line: 1, column: 26 } },
+						},
+					],
+				},
+			},
+		});
+		const out = await runner.run("src/a.ts", "x", []);
+		expect(out.mutants).toEqual([]);
+	});
+
+	it("P: a report describing STALE source is refused — a stale result never certifies a new edit", async () => {
+		const runner = jsonRunner({ files: { "src/a.ts": { source: "OLD CONTENT", mutants: [] } } });
+		await expect(runner.run("src/a.ts", "NEW CONTENT", [])).rejects.toThrow(/different source/);
+	});
+
+	it("P: two spellings resolving to one canonical target are refused as ambiguous", async () => {
+		const runner = jsonRunner({
+			files: {
+				"src/a.ts": { source: "x", mutants: [] },
+				"./src/a.ts": { source: "x", mutants: [] },
+			},
+		});
+		await expect(runner.run("src/a.ts", "x", [])).rejects.toThrow(/ambiguous/);
 	});
 
 	it("ignores a malformed not_measurable payload rather than inventing a reason", async () => {

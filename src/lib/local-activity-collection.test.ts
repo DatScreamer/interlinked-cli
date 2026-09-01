@@ -685,15 +685,7 @@ describe("readRecentLines", () => {
 
 	it("reassembles an ASCII line split across the 64KB chunk boundary", () => {
 		// Each line is ~70KB, so the tail scan needs multiple reads and the
-		// carry has to stitch the halves back together.
-		//
-		// SCOPE — this fixture is pure ASCII on purpose, and the assurance below
-		// extends no further than that. The scan slices the file on BYTE
-		// boundaries and decodes each slice on its own
-		// (`buffer.toString("utf-8") + carry`), which is lossless only while one
-		// character is one byte. A multi-byte character spanning the seam is
-		// silently destroyed — see the KNOWN DEFECT pair below. Do not read this
-		// test as "the seam is safe".
+		// raw-byte carry has to stitch the halves back together.
 		const big = "z".repeat(70 * 1024);
 		writeFileSync(file, `head-${big}\nmid-${big}\ntail-${big}\n`);
 		const lines = readRecentLines(file, 10);
@@ -727,11 +719,7 @@ describe("readRecentLines", () => {
 	});
 
 	it("still returns exactly one whole line when a multi-byte char straddles the seam", () => {
-		// The invariants that hold BOTH before and after the defect below is
-		// fixed: the line is neither dropped nor split in two, and its head is
-		// undamaged. This is the control that keeps the `it.fails` below honest —
-		// if the fixture or the reader regressed to 0 lines, this goes red rather
-		// than silently making the `it.fails` pass for the wrong reason.
+		// The line is neither dropped nor split in two, and its head is undamaged.
 		const payload = "é".repeat(ACCENTS);
 		writeFileSync(file, `${payload}\n`);
 		const lines = readRecentLines(file, 10);
@@ -739,27 +727,33 @@ describe("readRecentLines", () => {
 		expect(nonNull(lines[0]).slice(0, 4)).toBe("éééé");
 	});
 
-	// KNOWN DEFECT — reported, deliberately NOT pinned green.
-	// `readRecentLines` decodes each 64KB byte slice independently
-	// (local-activity-collection.ts:167, `buffer.toString("utf-8") + carry`), so
-	// the single character spanning the seam is destroyed: it comes back as two
-	// U+FFFD replacement characters, leaving the line one UTF-16 unit LONGER
-	// than the payload. JSON.parse still succeeds on such a line, so
-	// readCollectionActivity — and every caller of it — silently serves
-	// corrupted text with no warning. The fix is to carry raw BYTES across the
-	// seam (split the concatenated Buffer on the 0x0A byte) instead of decoding
-	// each slice on its own.
-	//
-	// `it.fails` asserts the DESIRED behavior: it is green while the bug exists
-	// and turns RED the moment the source is fixed. When that happens, delete
-	// `.fails` — do not weaken the assertions.
-	it.fails("does not corrupt a multi-byte character at the chunk seam", () => {
+	it("does not corrupt a multi-byte character at the chunk seam", () => {
 		const payload = "é".repeat(ACCENTS);
 		writeFileSync(file, `${payload}\n`);
 		const line = nonNull(readRecentLines(file, 10)[0]);
 		const REPLACEMENT_CHAR = String.fromCharCode(0xfffd); // U+FFFD
 		expect(line.includes(REPLACEMENT_CHAR)).toBe(false);
 		expect(line).toHaveLength(payload.length);
+	});
+
+	it("skips an oversized line while retaining older complete lines", () => {
+		const oversized = "x".repeat(4 * 1024 * 1024 + 1);
+		writeFileSync(file, `older\n${oversized}\n`);
+		expect(readRecentLines(file, 10)).toEqual(["older"]);
+	});
+
+	it("caps total retained line bytes even when maxLines is enormous", () => {
+		const payloadBytes = 3 * 1024 * 1024;
+		const oldest = `oldest-${"a".repeat(payloadBytes)}`;
+		const middle = `middle-${"b".repeat(payloadBytes)}`;
+		const newest = `newest-${"c".repeat(payloadBytes)}`;
+		writeFileSync(file, `${oldest}\n${middle}\n${newest}\n`);
+
+		const lines = readRecentLines(file, Number.MAX_SAFE_INTEGER);
+		expect(lines.map((line) => line.slice(0, 7))).toEqual(["newest-", "middle-"]);
+		expect(lines.reduce((bytes, line) => bytes + Buffer.byteLength(line), 0)).toBeLessThanOrEqual(
+			8 * 1024 * 1024,
+		);
 	});
 });
 

@@ -68,7 +68,7 @@ describe("Bug 5: uninstallAllClaudeHooks cleans ancestor settings", () => {
 						hooks: [
 							{
 								type: "command",
-								command: "node /path/to/interlinked-activity.mjs",
+								command: `node ${join(tempDir, ".interlinked", "hooks", "interlinked-activity.mjs")}`,
 							},
 						],
 					},

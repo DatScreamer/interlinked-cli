@@ -6,7 +6,6 @@ import type { TailScanStats } from "./reverse-reader.js";
 // Strip ANSI escape sequences so assertions are stable regardless of
 // whether the terminal-color path is active in this test environment.
 function strip(s: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI strip
 	return s.replace(/\x1b\[[0-9]+m/g, "");
 }
 

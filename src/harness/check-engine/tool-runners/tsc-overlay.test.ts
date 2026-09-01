@@ -8,10 +8,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runWithProjectCompilerLease } from "../../project-compiler-gate.js";
 import {
 	_setTscOverlayModeOverrideForTest,
 	clearTscOverlayCache,
 	runTscOverlay,
+	runTscOverlayTyped,
 } from "./tsc-overlay.js";
 
 // This suite exercises the in-process LanguageService logic itself (sibling
@@ -62,6 +64,72 @@ afterEach(() => {
 const A = "import { foo } from './b.js';\nexport const bar: number = foo;\n";
 const B_ON_DISK = "export const baz = 1;\n";
 const B_WITH_FOO = "export const foo = 1;\nexport const baz = 1;\n";
+
+describe("runTscOverlayTyped — skipped vs checked-clean vs unavailable (review pass 18)", () => {
+	// "Disabled" and "checked clean" must be different states: an operator who
+	// turned the overlay off has verified NOTHING, and no consumer may
+	// describe the result as tsc-verified.
+	it("P: mode 'off' returns status 'skipped' with the disable reason — never an empty 'ok'", () => {
+		_setTscOverlayModeOverrideForTest("off");
+		const dir = project({ "a.ts": "export const x = 1;\n" });
+		const out = runTscOverlayTyped({
+			filePath: join(dir, "a.ts"),
+			content: "export const x = 1;\n",
+			projectRoot: dir,
+		});
+		expect(out.status).toBe("skipped");
+	});
+
+	it("P: a non-TS file returns 'skipped', not 'ok'", () => {
+		const dir = project({ "a.ts": "export const x = 1;\n" });
+		const out = runTscOverlayTyped({
+			filePath: join(dir, "notes.md"),
+			content: "# notes\n",
+			projectRoot: dir,
+		});
+		expect(out.status).toBe("skipped");
+	});
+
+	it("N: a real in-process run on a clean TS file returns 'ok' with zero findings", () => {
+		const dir = project({ "a.ts": "export const x = 1;\n" });
+		const out = runTscOverlayTyped({
+			filePath: join(dir, "a.ts"),
+			content: "export const x = 2;\n",
+			projectRoot: dir,
+		});
+		expect(out).toEqual({ status: "ok", findings: [] });
+	});
+
+	it("N: in-process mode reports unavailable while another compiler owns the project", async () => {
+		const dir = project({ "a.ts": "export const x = 1;\n" });
+		let releaseBarrier: (() => void) | undefined;
+		let markStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const barrier = new Promise<void>((resolve) => {
+			releaseBarrier = resolve;
+		});
+		const owner = runWithProjectCompilerLease(dir, async () => {
+			markStarted?.();
+			await barrier;
+		});
+		await started;
+
+		const out = runTscOverlayTyped({
+			filePath: join(dir, "a.ts"),
+			content: "export const x = 2;\n",
+			projectRoot: dir,
+		});
+		expect(out).toEqual({
+			status: "unavailable",
+			reason: "in-process TypeScript overlay deferred because another compiler owns this project",
+		});
+
+		releaseBarrier?.();
+		await owner;
+	});
+});
 
 describe("runTscOverlay — sibling overlays (proposed combined state)", () => {
 	it(

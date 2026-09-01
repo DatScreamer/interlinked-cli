@@ -42,6 +42,9 @@ Everything is per-`cwd` under `<repo>/.interlinked/`. Key files:
 | `*-baseline.json`, `metric-caps.json` | mixed | ratchet water-lines (coverage/mutation/line-cap/caps); the daemon folds session evidence into three of them at SessionEnd, tighten-only — see **interlinked-quality-gates** |
 | `baseline-folds.jsonl` | local | audit row per SessionEnd water-line fold (what tightened, what was refused) |
 | `mutation-manifest.json` | mixed | stable per-mutant state for the live per-edit mutation ratchet |
+| `mutation-cloud-v3.local.json` | gitignored | experimental protocol-v3 endpoint, authority, key, runtime, and scheduler configuration |
+| `mutation-journal.sqlite` | local | authority-scoped durable mutation jobs, leases, authenticated evidence, manifest head, and outbox |
+| `mutation-findings.jsonl` | local | fsynced, deduplicated delivery records for durable background mutation findings |
 | `findings/corpus.jsonl` | committed-capable | common finding storage, including recorded simplification extensions |
 | `findings/simplification-runs.jsonl`, `debt/manual-marker-snapshots.jsonl` | local | explicit simplification-run and manual-marker snapshot receipts |
 | `semantic.json` / `.local.json` | team / local | optional local semantic-index policy / machine runtime topology |
@@ -75,7 +78,7 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 | Installing / enabling Interlinked, connecting a coding client/hook, daemon down or **zombie**, `doctor` fails, config/mode | **interlinked-setup** |
 | A Bash command or edit was **BLOCKED**; a sandbox/effect-residue warning; a `[interlinked:*]` warning; suppressions | **interlinked-harness** |
 | Running `interlinked verify`; a `pre_block` check blocked an edit; landing a cross-file refactor; scratch scripts | **interlinked-verify** |
-| Blocked by a **line-cap / function-token / coverage / complexity / CRAP / mutation** ratchet; configuring report or per-edit mutation; "can't lower a baseline"; `adopt`; automatic obligation or manual marker debt; **dead code** (`deadcode` scan + `--categorize` deletion-safety buckets, per-edit `dead_code_action`) | **interlinked-quality-gates** |
+| Blocked by a **line-cap / function-token / coverage / complexity / CRAP / mutation** ratchet; configuring report, per-edit, or durable `mutation cloud` work; operating the mutation journal; "can't lower a baseline"; `adopt`; automatic obligation or manual marker debt; **dead code** (`deadcode` scan + `--categorize` deletion-safety buckets, per-edit `dead_code_action`) | **interlinked-quality-gates** |
 | Finding, reviewing, recording, or auditing opportunities to delete, replace, defer, or shrink code; `simplify …`; simplification coverage/evidence/deep handoff | **interlinked-simplification** |
 | Installing a local embedding model; building, inspecting, searching, or repairing the optional function-vector index | **interlinked-semantic-index** |
 | An `npm/pip/cargo/…` install or manifest edit was blocked; the package **allowlist** | **interlinked-supply-chain** |
@@ -86,7 +89,8 @@ A **block reason is always surfaced.** Allow-time warnings are surfaced but easy
 
 ## Quick orientation
 ```bash
-interlinked enable          # canonical way to turn it on (hooks + skills + daemon)
+interlinked                 # guided human first run (posture + hooks + skills + daemon)
+interlinked enable          # explicit/automation install primitive
 interlinked status          # dashboard: sessions, recent activity, health
 interlinked doctor          # is everything installed & the daemon answering?
 interlinked harness status  # liveness: answering / ZOMBIE / not running

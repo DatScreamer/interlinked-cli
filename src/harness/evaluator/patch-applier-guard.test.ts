@@ -83,6 +83,57 @@ describe("detectPatchApplier — negative (must not fire)", () => {
 	it("N5: empty content", () => {
 		expect(detectPatchApplier("", "/tmp/s/scratchpad/apply.mjs")).toBeNull();
 	});
+
+	// 2026-08-27 dogfood: this guard twice refused a scratch PROBE whose only
+	// repo-shaped literal was its own IMPORT, while every write it made went to
+	// an mkdtemp path. A module specifier is resolved by the loader — it is
+	// never a write destination.
+	it("N6: a repo-shaped path in an import specifier is not a write target", () => {
+		const content = [
+			'import { mkdtempSync, writeFileSync } from "node:fs";',
+			'import { buildHookScript } from "../src/lib/hooks-template.js";',
+			"const dir = mkdtempSync(prefix);",
+			'writeFileSync(join(dir, "hook.mjs"), buildHookScript("v"));',
+		].join("\n");
+		expect(detectPatchApplier(content, "/repo/scratch/probe.mts")).toBeNull();
+	});
+
+	it("N7: the same exemption covers require() and dynamic import()", () => {
+		const content = [
+			'const { helper } = require("../src/lib/helper.js");',
+			'const mod = await import("../packages/core/index.js");',
+			'writeFileSync(join(tmp, "out.json"), data);',
+		].join("\n");
+		expect(detectPatchApplier(content, "/repo/scratch/probe.mjs")).toBeNull();
+	});
+
+	it("N8: a bare side-effect import of a repo path is not a write target", () => {
+		const content = ['import "../src/harness/register.js";', 'writeFileSync(tmpOut, "x");'].join("\n");
+		expect(detectPatchApplier(content, "/repo/scratch/probe.mjs")).toBeNull();
+	});
+});
+
+// The exemption must be POSITIONAL, not path-based: the same literal that is
+// exempt in an import position must still fire when it is a write destination.
+describe("detectPatchApplier — import exemption must not weaken detection", () => {
+	it("P6: an applier that ALSO imports the file it overwrites still fires", () => {
+		const content = [
+			'import { thing } from "../src/lib/thing.js";',
+			'writeFileSync("../src/lib/thing.ts", patched);',
+		].join("\n");
+		const hit = detectPatchApplier(content, "/repo/scratch/apply.mjs");
+		expect(hit).not.toBeNull();
+		expect(hit?.repoTarget).toContain("src/lib/thing.ts");
+	});
+
+	it("P7: an import line does not mask a computed process.cwd() destination", () => {
+		const content = [
+			'import { writeFileSync } from "node:fs";',
+			'import x from "../src/a.js";',
+			'writeFileSync(join(process.cwd(), "src/b.ts"), out);',
+		].join("\n");
+		expect(detectPatchApplier(content, "/repo/scratch/apply.mjs")).not.toBeNull();
+	});
 });
 
 describe("buildPatchApplierReason", () => {

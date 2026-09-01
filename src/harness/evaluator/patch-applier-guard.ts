@@ -46,6 +46,24 @@ const WRITE_CALL_RE =
 const REPO_TARGET_RE =
 	/['"`](?:\.\.\/|\/)?(?:src|lib|app|packages|tests?|docs)\/[^'"`\s]+['"`]|process\.cwd\s*\(\s*\)|\bos\.getcwd\s*\(\s*\)|['"`]\.\.\//;
 
+/** Module-specifier positions: `import … from "x"`, bare `import "x"`,
+ *  `export … from "x"`, `require("x")`, and dynamic `import("x")`. */
+const MODULE_SPECIFIER_RE =
+	/\b(?:import|export)\b[^;\n]*?\bfrom\s*['"`][^'"`]+['"`]|\bimport\s*\(\s*['"`][^'"`]+['"`]\s*\)|\bimport\s+['"`][^'"`]+['"`]|\brequire\s*\(\s*['"`][^'"`]+['"`]\s*\)/g;
+
+/** Remove module specifiers before looking for a write DESTINATION.
+ *
+ *  A path in an import position is resolved by the module loader; it is never
+ *  somewhere a script writes. Scanning raw content conflated the two, so this
+ *  guard twice blocked a scratch PROBE whose only repo-shaped literal was its
+ *  own import (`from "../src/lib/hooks-template.js"`) while every write it
+ *  made targeted an mkdtemp path (2026-08-27 dogfood). The write-call signal is
+ *  unchanged, and a real applier's destination appears in the write call rather
+ *  than in an import, so removing these positions costs no detection. */
+function stripModuleSpecifiers(content: string): string {
+	return content.replace(MODULE_SPECIFIER_RE, " ");
+}
+
 /** What fired, for the block reason. Both fields are the matched source text,
  *  trimmed — the agent needs to see its own line to know what to remove. */
 export interface PatchApplierEvidence {
@@ -81,7 +99,7 @@ export function detectPatchApplier(
 	// destination is normally a string literal, which stripping would erase.
 	const write = WRITE_CALL_RE.exec(stripCommentsAndStrings(content));
 	if (!write) return null;
-	const target = REPO_TARGET_RE.exec(content);
+	const target = REPO_TARGET_RE.exec(stripModuleSpecifiers(content));
 	if (!target) return null;
 	return { writeCall: write[0].trim(), repoTarget: target[0].trim() };
 }

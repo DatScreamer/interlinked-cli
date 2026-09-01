@@ -22,8 +22,20 @@ import { statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runningBuildStaleness, stalenessWarning } from "./build-staleness.js";
-import { recordDaemonEvent, readRecentDaemonEvents } from "./daemon-ledger.js";
-import { HANDOVER_CHURN_WINDOW_MS, churnBackstopEvent, handoverChurnExceeded } from "./handover-churn.js";
+import {
+	type DaemonLedgerEvent,
+	type HandoverOutcome,
+	recordDaemonEvent,
+	readRecentDaemonEvents,
+} from "./daemon-ledger.js";
+import {
+	HANDOVER_ATTEMPT_ENV,
+	HANDOVER_CHURN_WINDOW_MS,
+	churnBackstopEvent,
+	handoverChurnExceeded,
+	newHandoverAttemptId,
+	unresolvedAttemptExistsFor,
+} from "./handover-churn.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
 /** A fresher artifact must be at least this old — tsup may still be writing. */
@@ -127,62 +139,48 @@ function defaultStatMtimeMs(path: string): number | null {
 	}
 }
 
-/** Fire the detached restart. Failures are swallowed — the throttle expires
- *  and the next tick retries, since the artifact will still read as newer. */
-function spawnHandOver(deps: BuildRefreshDeps, own: OwnArtifact, cwd: string): void {
-	try {
-		const child = deps.spawn(process.execPath, [own.cliEntryPath, "harness", "restart"], {
-			cwd,
-			detached: true,
-			stdio: "ignore",
-		});
-		child.unref();
-	} catch {
-		/* intentional: retried on a later tick */
-	}
-}
-
-/**
- * Spawn the same battle-tested `harness restart` this watcher uses, for OTHER
- * planned exits — the rss-ceiling recycle foremost.
- *
- * Exists because the recycle originally just exited cleanly and waited for the
- * next tool call's self-heal — which never comes between turns. Measured
- * 2026-07-28: an rss-ceiling exit at 12:42 was followed by an ELEVEN-MINUTE
- * hole with no daemon, ending only when the user typed something. A planned
- * exit during activity must bring its own successor.
- *
- * Returns false when there is nothing to spawn (src-run daemon, no artifact),
- * OR when the {@link HANDOVER_CHURN_MAX_ATTEMPTS}-per-window backstop has
- * tripped — see ./handover-churn.ts. Either way callers fall back to a bare
- * exit + self-heal, which is NOT gated by this backstop (recovery must stay
- * reachable even while automatic handovers are suppressed).
- */
-export function spawnRestartViaCli(
-	moduleUrl: string,
+/** Fire the detached restart, threading the attempt id to the successor via
+ *  {@link HANDOVER_ATTEMPT_ENV} (spawn env inheritance carries it through
+ *  restart → start → daemon, where the startup guard stamps the `listening`
+ *  row). Returns whether a child was actually launched. */
+function spawnSuccessor(
+	spawn: typeof nodeSpawn,
+	own: OwnArtifact,
 	cwd: string,
-	spawn = nodeSpawn,
-	readEvents = readRecentDaemonEvents,
+	attemptId: string,
 ): boolean {
-	const own = resolveOwnArtifact(moduleUrl);
-	if (own === null) return false;
-	const nowMs = Date.now();
-	if (handoverChurnExceeded(readEvents(cwd), nowMs)) {
-		recordDaemonEvent(cwd, churnBackstopEvent(process.pid, nowMs, "rss-ceiling handover suppressed"));
-		return false;
-	}
 	try {
 		const child = spawn(process.execPath, [own.cliEntryPath, "harness", "restart"], {
 			cwd,
 			detached: true,
 			stdio: "ignore",
+			env: { ...process.env, [HANDOVER_ATTEMPT_ENV]: attemptId },
 		});
 		child.unref();
 		return true;
 	} catch {
-		// The bare-exit fallback still applies; self-heal covers the next call.
 		return false;
 	}
+}
+
+/** One typed attempt row. `spawned` is the only outcome the churn backstop
+ *  counts as unresolved (until a `listening` row acknowledges the id). */
+function attemptRow(args: {
+	nowMs: number;
+	reason: string;
+	outcome: HandoverOutcome;
+	attemptId: string;
+	detail?: string;
+}): DaemonLedgerEvent {
+	return {
+		at: args.nowMs,
+		pid: process.pid,
+		event: "handover",
+		reason: args.reason,
+		outcome: args.outcome,
+		attempt_id: args.attemptId,
+		...(args.detail !== undefined ? { detail: args.detail } : {}),
+	};
 }
 
 /**
@@ -229,10 +227,9 @@ export function startBuildRefreshWatcher(opts: BuildRefreshOptions): () => void 
 		lastAttemptMs = nowMs;
 		// Backstop before committing to another handover: bound how many
 		// unresolved attempts (any reason) this repo can accumulate — see
-		// ./handover-churn.ts. Checked here, not just inside
-		// `spawnRestartViaCli`, so a tripped backstop skips even the intent
-		// row below; there is no successor coming, so there is nothing to
-		// explain as "pending".
+		// ./handover-churn.ts. A tripped backstop skips even the intent row
+		// below; there is no successor coming, so there is nothing to explain
+		// as "pending".
 		if (handoverChurnExceeded(readRecentDaemonEvents(opts.cwd), nowMs)) {
 			opts.log(
 				"[build-refresh] handover churn backstop tripped — too many unresolved attempts in the last " +
@@ -242,25 +239,45 @@ export function startBuildRefreshWatcher(opts: BuildRefreshOptions): () => void 
 			recordDaemonEvent(opts.cwd, churnBackstopEvent(process.pid, nowMs, "build-refresh handover suppressed"));
 			return;
 		}
+		const detail = `artifact ${new Date(currentMtimeMs).toISOString()}`;
+		// Coalesce: one unresolved attempt per build artifact. A second daemon
+		// (or a second tick) noticing the SAME rebuild while a successor is
+		// mid-boot must not spawn another — the 2026-08-22 storm was exactly
+		// stacked successors killing each other pre-listening.
+		if (unresolvedAttemptExistsFor(readRecentDaemonEvents(opts.cwd), nowMs, detail)) {
+			opts.log(
+				`[build-refresh] handover for ${detail} already in flight — coalescing (no second successor).`,
+			);
+			return;
+		}
 		opts.log(
 			`[build-refresh] newer build detected (artifact ${new Date(currentMtimeMs).toISOString()} > running ${new Date(startedMtimeMs).toISOString()}) — handing over via \`interlinked harness restart\``,
 		);
-		// Ledger the INTENT before the restart lands. The restart retires this
-		// process with a plain SIGTERM, so the exit row alone reads "signal" —
-		// indistinguishable from a crash-restart. This adjacent row is what lets
-		// the cold-block message say "handed over to a newer build; normal after a
-		// rebuild" instead of implying the guard failed. One session lost hours to
+		// Typed attempt rows (attempt-ID protocol). `requested` before the spawn
+		// is the non-counting INTENT: the restart retires this process with a
+		// plain SIGTERM, so the exit row alone reads "signal" — indistinguishable
+		// from a crash-restart without an adjacent row. One session lost hours to
 		// exactly that ambiguity (2026-07-28), because ANY rebuild of the shared
 		// dist — including `interlinked reload` run in a SIBLING repo — schedules
-		// this handover in every guarded repo within a minute.
-		recordDaemonEvent(opts.cwd, {
-			at: nowMs,
-			pid: process.pid,
-			event: "handover",
-			reason: "build-refresh",
-			detail: `artifact ${new Date(currentMtimeMs).toISOString()}`,
-		});
-		spawnHandOver(deps, own, opts.cwd);
+		// this handover in every guarded repo within a minute. Only the `spawned`
+		// row COUNTS against the churn backstop, and the successor's `listening`
+		// row acknowledges the attempt id regardless of row ordering.
+		const attemptId = newHandoverAttemptId();
+		recordDaemonEvent(
+			opts.cwd,
+			attemptRow({ nowMs, reason: "build-refresh", outcome: "requested", attemptId, detail }),
+		);
+		const launched = spawnSuccessor(deps.spawn, own, opts.cwd, attemptId);
+		recordDaemonEvent(
+			opts.cwd,
+			attemptRow({
+				nowMs,
+				reason: "build-refresh",
+				outcome: launched ? "launcher_spawned" : "spawn_failed",
+				attemptId,
+				detail,
+			}),
+		);
 	}, intervalMs);
 	timer.unref();
 	return () => clearInterval(timer);

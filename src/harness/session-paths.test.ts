@@ -8,6 +8,7 @@ import {
 	cleanupOrphans,
 	daemonPathsFor,
 	discoverDaemons,
+	isDaemonSocketReady,
 	isDaemonSocketServing,
 	liveForeignDaemonPid,
 	sanitizeSessionId,
@@ -182,11 +183,14 @@ describe("isDaemonSocketServing", () => {
 	});
 
 	it("resolves true for a real listener actively accepting connections", async () => {
-		const sockPath = join(tmp, ".interlinked", "serving.sock");
-		server = createServer((sock) => sock.destroy());
+		const sockPath = join(tmp, ".interlinked", "harness.sock");
+		server = createServer((sock) => {
+			sock.once("data", () => sock.end('{"decision":"allow"}\n'));
+		});
 		await new Promise<void>((resolve) => nonNull(server).listen(sockPath, () => resolve()));
 
 		await expect(isDaemonSocketServing(sockPath)).resolves.toBe(true);
+		await expect(isDaemonSocketReady(sockPath)).resolves.toBe(true);
 	});
 
 	it("resolves false when the socket path does not exist (ENOENT — nobody ever bound it)", async () => {
@@ -205,6 +209,7 @@ describe("isDaemonSocketServing", () => {
 		writeFileSync(sockPath, ""); // recreate a plain file at the same path — nothing listens on it
 
 		await expect(isDaemonSocketServing(sockPath)).resolves.toBe(false);
+		await expect(isDaemonSocketReady(sockPath)).resolves.toBe(false);
 	});
 
 	it("resolves true on a bare successful connect, even when the listener never sends data back", async () => {
@@ -234,6 +239,7 @@ describe("isDaemonSocketServing", () => {
 		chmodSync(lockedDir, 0o000);
 		try {
 			await expect(isDaemonSocketServing(sockPath, { timeout_ms: 200 })).resolves.toBe(true);
+			await expect(isDaemonSocketReady(sockPath, { timeout_ms: 200 })).resolves.toBe(false);
 		} finally {
 			chmodSync(lockedDir, 0o700);
 		}

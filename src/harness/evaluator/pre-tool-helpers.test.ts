@@ -27,9 +27,14 @@ import type {
 
 // --- CheckEngine mock (only consumed by getPreToolUseDiagnostics) -----------
 let diagnosticsToReturn: CheckResult[] = [];
+const getCachedDiagnostics = vi.fn(() => diagnosticsToReturn);
+const getDiagnostics = vi.fn(() => {
+	throw new Error("PreToolUse must not run external diagnostics");
+});
 vi.mock("../check-engine/index.js", () => ({
 	getOrCreateEngine: () => ({
-		getDiagnostics: () => diagnosticsToReturn,
+		getCachedDiagnostics,
+		getDiagnostics,
 	}),
 }));
 
@@ -478,6 +483,8 @@ describe("getPreToolUseDiagnostics", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "pth-diag-"));
 		diagnosticsToReturn = [];
+		getCachedDiagnostics.mockClear();
+		getDiagnostics.mockClear();
 	});
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
@@ -525,6 +532,8 @@ describe("getPreToolUseDiagnostics", () => {
 		writeFileSync(f, "const x = 1;");
 		diagnosticsToReturn = [];
 		expect(getPreToolUseDiagnostics(f, dir, qc)).toEqual([]);
+		expect(getCachedDiagnostics).toHaveBeenCalledWith(f);
+		expect(getDiagnostics).not.toHaveBeenCalled();
 	});
 
 	// test-contract: public-api — tsc diagnostics use the singular header, unprefixed row, and documented remediation footer

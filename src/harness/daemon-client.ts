@@ -25,6 +25,11 @@ export interface RpcCallOptions {
 	timeout_ms?: number;
 	/** Explicit id. Defaults to a random value. */
 	id?: string;
+	/** Optional cancellation: on abort the socket is destroyed, the timer is
+	 *  cleared, and the call rejects with `new Error("aborted")`. Lets a
+	 *  multi-socket liveness race cancel its losing probes instead of leaving
+	 *  their sockets holding the event loop (review 2026-08-26). */
+	signal?: AbortSignal;
 }
 
 export interface DaemonClient {
@@ -53,7 +58,7 @@ export function createDaemonClient(socketPath: string): DaemonClient {
 				method,
 				params,
 			};
-			return callOverSocket(socketPath, request, timeoutMs);
+			return callOverSocket(socketPath, request, timeoutMs, opts.signal);
 		},
 	};
 }
@@ -62,17 +67,33 @@ function callOverSocket<M extends RpcMethod>(
 	socketPath: string,
 	request: RpcRequest<M>,
 	timeoutMs: number,
+	signal?: AbortSignal,
 ): Promise<RpcResult[M]> {
 	return new Promise((resolve, reject) => {
 		let socket: Socket | null = null;
 		let settled = false;
+		// ONE settlement helper: every path (success, error, close, timeout,
+		// abort) funnels through here, and cleanup — timer AND abort listener —
+		// happens exactly once. A long-lived signal reused across many calls must
+		// not accumulate completed listeners (review pass 16).
+		const onAbort = (): void => finish(() => reject(new Error("aborted")));
 		const finish = (fn: () => void): void => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(timer);
+			if (signal) signal.removeEventListener("abort", onAbort);
 			if (socket) socket.destroy();
 			fn();
 		};
 		const timer = setTimeout(() => finish(() => reject(new Error("timeout"))), timeoutMs);
+		if (signal) {
+			if (signal.aborted) {
+				// Pre-aborted: settle immediately, never open a socket.
+				onAbort();
+				return;
+			}
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
 		socket = createConnection(socketPath, () => {
 			(socket as Socket).write(encodeFrame(request));
 		});

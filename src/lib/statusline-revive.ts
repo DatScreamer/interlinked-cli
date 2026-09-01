@@ -1,16 +1,16 @@
 // ===========================================
 // Statusline daemon-down branch — grace, auto-revive, alarm
 // ===========================================
-// The generated statusline is the daemon's only idle-time heartbeat: the
+// The generated statusline is an idle-time liveness display: the
 // runner re-executes it every few seconds (refreshInterval) even when no
 // tools run. Before 2026-07-28 the down-branch only ALARMED — a daemon killed
 // during idle (jetsam on a swap-pinned 16GB box; ledger shows row-less
 // SIGKILLs at RSS as low as 450MB) stayed dead for HOURS, statusline red,
-// until the next tool call's self-heal fired. So the down-branch now spawns
-// the daemon itself: throttled by a marker file, arbitrated by the daemon's
-// own anti-stomp (a loser exits and writes its ledger row), rendered as a
-// calm "auto-reviving" row that escalates to the red alarm only when revival
-// is demonstrably failing.
+// until the next tool call's self-heal fired. Process management now belongs
+// exclusively to the hook recovery state machine, which is cross-process
+// single-flight and runs on ordinary events. This branch reports that state;
+// it never claims every edit is blocked, because deterministic inline gates
+// continue while ordinary work proceeds in degraded mode.
 //
 // Absolute node/server paths are BAKED at generation time (`interlinked
 // enable` / regeneration) because the render-time environment has no reliable
@@ -71,7 +71,7 @@ export function downBranchBash(b: ReviveBakes): string {
 	return `# Debounce transient restart windows. A self-healing respawn (or a SessionStart
 # relaunch) leaves harness.pid pointing at a dead process for ~1-3s; without a
 # grace period the statusline paints the full outage alarm on that blip even
-# though the cold-path gate is already blocking edits fail-closed.
+# while the hook recovery state machine is still within its boot window.
 DOWN_MARK="$ID/.statusline-down-since"
 DOWN_GRACE_SECS=6
 # No auto-revive here (2026-08-16): the hook supervisor (startup mutex +
@@ -90,7 +90,7 @@ if [ "$ALIVE" = "0" ]; then
     case "$SINCE" in *[!0-9]*) SINCE="$NOW";; esac
     if [ "$((NOW - SINCE))" -lt "$DOWN_GRACE_SECS" ]; then
         LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness restarting…\${RESET}"
-        LINE2="\${DIM}auto-recovering — edits blocked until it's back\${RESET}"
+        LINE2="\${DIM}recovery window — inline safety gates remain active\${RESET}"
         printf '%s\\n%s' "$LINE1" "$LINE2"
         exit 0
     fi
@@ -103,14 +103,14 @@ if [ "$ALIVE" = "0" ]; then
     # supervisor — the hook's (startup mutex + exponential backoff). The
     # statusline's job is to tell the truth, not to manage processes.
     if [ "$((NOW - SINCE))" -lt "$REVIVE_ALARM_SECS" ]; then
-        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness down — hook supervisor restarting it…\${RESET}"
-        LINE2="\${DIM}edits blocked (fail-closed) until it's back\${RESET}"
+        LINE1="\${YELLOW}\${BOLD}◆ interlinked\${RESET}\${SEP}\${YELLOW}↻ harness down — hook recovery active\${RESET}"
+        LINE2="\${DIM}degraded mode: inline deterministic gates only; full evaluator unavailable\${RESET}"
         printf '%s\\n%s' "$LINE1" "$LINE2"
         exit 0
     fi
     BRAND="\${RED}\${BOLD}◆ interlinked\${RESET}"
-    LINE1="\${BRAND}\${SEP}\${YELLOW}▼ harness offline — auto-revive failing\${RESET}\${SEP}\${RED}Claude is bypassing guardrails\${RESET}"
-    LINE2="\${CYAN}↻ interlinked harness start\${RESET}"
+    LINE1="\${BRAND}\${SEP}\${YELLOW}▼ harness offline — recovery not verified\${RESET}\${SEP}\${RED}full evaluator unavailable\${RESET}"
+    LINE2="\${CYAN}↻ interlinked harness status\${RESET}\${SEP}\${DIM}inline safety gates remain active\${RESET}"
     printf '%s\\n%s' "$LINE1" "$LINE2"
     exit 0
 fi

@@ -1,0 +1,48 @@
+{
+  "protocol_version": "interlinked-mutation/3.0",
+  "identity_algorithm": "interlinked-site-v2",
+  "vectors": [
+    {
+      "name": "named-function-single-site",
+      "file": "src/example.ts",
+      "content": "function bar(x: number): boolean { return x > 0; }",
+      "mutants": [
+        {
+          "mutator": "EqualityOperator",
+          "original_lexeme": ">",
+          "replacement": ">=",
+          "start_offset": 44,
+          "expected": {
+            "symbol_id": "bd7a3d4e4c807bb0fe0ae85b7a7c9a08dced6743290f2782d9bed21103734fd2",
+            "site_id": "67a4cfd9c412507fa3818f573c8d107ed6d68b476abd2cfa34c9675c75a773e5",
+            "mutant_id": "df07bc7c7d95ce1a647c84172748e00411fbe1defbb840186bee11834da0337a",
+            "qualified_name": "bar",
+            "symbol_context": "bar",
+            "ordinal_within_symbol": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "utf16-offset-after-astral-code-point",
+      "file": "src/emoji.ts",
+      "content": "function emoji(x: number): boolean { const marker = \"💡\"; return x > 1; }",
+      "mutants": [
+        {
+          "mutator": "EqualityOperator",
+          "original_lexeme": ">",
+          "replacement": ">=",
+          "start_offset": 67,
+          "expected": {
+            "symbol_id": "f5599241de8f5525132fc7f2d25911bd26ca7f8653eb5d98b2d52935c92c057d",
+            "site_id": "e5805f4509247d5d8b9849134e6bde445d4af951a2f0d4413efcda02969bd039",
+            "mutant_id": "d507b50ddbf34d0377441195ae75ed016cb9ed1317cf98606ab5b8b5d6716bab",
+            "qualified_name": "emoji",
+            "symbol_context": "emoji",
+            "ordinal_within_symbol": 0
+          }
+        }
+      ]
+    }
+  ]
+}

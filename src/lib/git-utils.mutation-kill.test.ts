@@ -221,9 +221,7 @@ describe("deriveProjectIdentity", () => {
 
 	// test-contract: boundary — once the remote URL yields a repo name, the toplevel fallback must not run or override it
 	it("does not fall back to git toplevel once the remote URL already yielded a repo name", () => {
-		mocks.execFileSync
-			.mockReturnValueOnce("git@github.com:user/my-project.git")
-			.mockReturnValueOnce("/some/other/DIFFERENT-NAME");
+		mocks.execFileSync.mockReturnValueOnce("git@github.com:user/my-project.git");
 		expect(deriveProjectIdentity(CWD)).toEqual({
 			workspaceKey: "my-project",
 			projectKey: "main",

@@ -14,7 +14,6 @@ import {
 	checkPlaceholderRuntimeConstant,
 	checkStubNotImplementedThrow,
 	checkSyncIoOnHotPath,
-	checkTypeSmuggling,
 	checkUnboundedPromiseAll,
 	checkUnionWidenedWithString,
 	checkUntestableTimeInSource,
@@ -115,22 +114,16 @@ export const AGENT_LAZINESS_ENTRIES: CheckRegistration[] = [
 		fn: checkDoubleCastUnknown,
 		resultsPropName: "doubleCastUnknown",
 	},
-	{
-		id: "type_smuggling",
-		phase: "post",
-		name: "Type-Smuggling Cast",
-		description:
-			"Detects TypeScript `as T` casts whose source expression's static type has no structural overlap with `T` — the cast lies, instead of narrowing or widening. Uses the TypeScript compiler API for assignability checks in both directions; `as unknown`/`as any`/`as const` are exempt.",
-		tier: 3,
-		determinism: "partially_deterministic",
-		severity: "warning",
-		pipeline: "agent_safety",
-		fix_instruction:
-			"`as T` is a lie when the source type and `T` share no structural relationship — TypeScript won't catch the bug at runtime. Either (a) validate the value with a schema parser (zod/valibot/ajv) at the boundary so the runtime shape matches the declared type, (b) narrow with a type guard (`if ('id' in value && typeof value.id === 'number') ...`), or (c) restructure so the source type already includes `T` in a union. If you genuinely need a wide cast as an escape hatch, use `as unknown as T` and document the invariant — but prefer validation first.",
-		fn: checkTypeSmuggling,
-		resultsPropName: "typeSmuggling",
-		content_keywords: [" as "],
-	},
+	// type_smuggling moved to VERIFY_ONLY (2026-08-22): its assignability test
+	// builds a full ts.Program per checked file, and a Program for one harness
+	// file pulls the whole import closure — ~2,900 SourceFiles, ~1.9GB of AST,
+	// per PostToolUse edit. Heap-snapshot-attributed as the daemon's recurring
+	// +1GB/tick RSS spikes and emergency-gc restarts. Deep-audit cadence
+	// (`interlinked verify`, own process) keeps the check; the hook path does
+	// not pay whole-program typechecking. Invocation:
+	// src/commands/verify/file-checks-endpoint-laziness.ts (the pre-existing
+	// verify call site — a second copy briefly added to file-checks-agent-safety
+	// doubled the program build and was removed 2026-08-23).
 	{
 		id: "union_widened_with_string",
 		phase: "post",

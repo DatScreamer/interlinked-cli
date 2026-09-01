@@ -109,7 +109,9 @@ export function parseInterlinkedTrailers(message: string): Record<string, string
 	const trailers: Record<string, string> = {};
 	const lines = message.split("\n");
 	for (const line of lines) {
-		const match = line.match(/^(Interlinked-\w[\w-]*):\s*(.+)$/);
+		// Value must start with a non-whitespace character: `\s*(.+)` alone
+		// backtracks on a whitespace-only remainder and records an empty value.
+		const match = line.match(/^(Interlinked-\w[\w-]*):\s*(\S.*)$/);
 		if (match) {
 			trailers[nonNull(match[1])] = nonNull(match[2]).trim();
 		}

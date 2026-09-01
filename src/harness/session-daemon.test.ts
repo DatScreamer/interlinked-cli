@@ -11,6 +11,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileMutationProcessIdentity } from "../lib/file-mutation-lock-identity.js";
 import { nonNull } from "../lib/non-null.js";
 import { encodeFrame, type RpcMessage, splitFrames } from "./daemon-protocol.js";
 import type { EvaluateUnifiedContext } from "./evaluator-unified.js";
@@ -20,6 +21,7 @@ import {
 	bindSessionSocket,
 	claimSessionPid,
 	DaemonOwnershipConflictError,
+	removeOwnedSessionArtifacts,
 	type SessionDaemonHandle,
 	startSessionDaemon,
 } from "./session-daemon.js";
@@ -29,12 +31,17 @@ import type { HarnessDecision } from "./types.js";
 import type { UnifiedHookEvent } from "./unified-event.js";
 
 // Partial mock: keep every real helper (daemonPathsFor, sanitizeSessionId, ...)
-// except `isDaemonSocketServing`, which the anti-stomp zombie-reap tests below
+// except `classifyDaemonSocket`, which the anti-stomp zombie-reap tests below
 // need to control deterministically (serving / not-serving / throwing) rather
 // than depend on a real socket-connect race.
 vi.mock("./session-paths.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./session-paths.js")>();
-	return { ...actual, isDaemonSocketServing: vi.fn(actual.isDaemonSocketServing) };
+	return { ...actual, classifyDaemonSocket: vi.fn(actual.classifyDaemonSocket) };
+});
+
+vi.mock("./daemon-process-identity.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./daemon-process-identity.js")>();
+	return { ...actual, readHarnessProcessIdentity: vi.fn(() => "verified-daemon") };
 });
 
 let tmp = "";
@@ -395,7 +402,7 @@ describe("startSessionDaemon", () => {
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
 		const sp = await import("./session-paths.js");
-		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(true);
+		vi.mocked(sp.classifyDaemonSocket).mockResolvedValueOnce("ready");
 
 		let caught: unknown;
 		try {
@@ -419,13 +426,58 @@ describe("startSessionDaemon", () => {
 		expect(readFileSync(paths.pid, "utf-8")).toBe("1");
 	});
 
+	it("refuses a protocol-ready framed socket whose pid file is missing", async () => {
+		const paths = makePaths("ready-no-pid");
+		writeFileSync(paths.socket, "listener-placeholder");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.classifyDaemonSocket).mockResolvedValueOnce("ready");
+		await expect(
+			startSessionDaemon({
+				paths,
+				session_id: "ready-no-pid",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			}),
+		).rejects.toBeInstanceOf(DaemonOwnershipConflictError);
+		expect(existsSync(paths.pid)).toBe(false);
+		expect(readFileSync(paths.socket, "utf8")).toBe("listener-placeholder");
+	});
+
+	it("preserves a protocol-silent listener with no pid rather than unlinking it", async () => {
+		const paths = makePaths("silent-no-pid");
+		writeFileSync(paths.socket, "listener-placeholder");
+		const sp = await import("./session-paths.js");
+		vi.mocked(sp.classifyDaemonSocket)
+			.mockResolvedValueOnce("occupied_unready")
+			.mockResolvedValueOnce("occupied_unready");
+		await expect(
+			startSessionDaemon({
+				paths,
+				session_id: "silent-no-pid",
+				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+			}),
+		).rejects.toThrow("did not prove the Interlinked protocol");
+		expect(existsSync(paths.pid)).toBe(false);
+		expect(readFileSync(paths.socket, "utf8")).toBe("listener-placeholder");
+	});
+
 	it("(b) a live but NOT SERVING incumbent is reaped and taken over (no throw)", async () => {
 		const paths = makePaths("owned-zombie");
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
 		const sp = await import("./session-paths.js");
-		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(false);
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		vi.mocked(sp.classifyDaemonSocket)
+			.mockResolvedValueOnce("occupied_unready")
+			.mockResolvedValueOnce("occupied_unready");
+		let alive = true;
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+			if (signal === "SIGTERM") alive = false;
+			if (signal === 0 && !alive) {
+				const error = new Error("gone") as NodeJS.ErrnoException;
+				error.code = "ESRCH";
+				throw error;
+			}
+			return true;
+		});
 
 		daemon = await startSessionDaemon({
 			paths,
@@ -440,12 +492,14 @@ describe("startSessionDaemon", () => {
 		killSpy.mockRestore();
 	});
 
-	it("(b2) a failed reap is logged but does not prevent takeover", async () => {
+	it("(b2) a failed verified reap aborts takeover and preserves the incumbent metadata", async () => {
 		const paths = makePaths("owned-zombie-log");
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
 		const sp = await import("./session-paths.js");
-		vi.mocked(sp.isDaemonSocketServing).mockResolvedValueOnce(false);
+		vi.mocked(sp.classifyDaemonSocket)
+			.mockResolvedValueOnce("occupied_unready")
+			.mockResolvedValueOnce("occupied_unready");
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
 			const error = new Error("operation not permitted") as NodeJS.ErrnoException;
 			error.code = "EPERM";
@@ -454,13 +508,16 @@ describe("startSessionDaemon", () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
 		try {
-			daemon = await startSessionDaemon({
+			await expect(
+				startSessionDaemon({
 				paths,
 				session_id: "owned-zombie-log",
 				state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
-			});
+				}),
+			).rejects.toThrow("could not be stopped");
 			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Could not signal zombie incumbent PID 1"));
-			expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
+			expect(readFileSync(paths.pid, "utf-8")).toBe("1");
+			expect(readFileSync(paths.socket, "utf-8")).toBe("");
 		} finally {
 			killSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -471,15 +528,35 @@ describe("startSessionDaemon", () => {
 		const paths = makePaths("owned-dead");
 		writeFileSync(paths.pid, "2147480000"); // effectively never live on a test host
 		const sp = await import("./session-paths.js");
-		vi.mocked(sp.isDaemonSocketServing).mockClear();
+		vi.mocked(sp.classifyDaemonSocket).mockClear();
 
 		daemon = await startSessionDaemon({
 			paths,
 			session_id: "owned-dead",
 			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
 		});
-		expect(vi.mocked(sp.isDaemonSocketServing)).not.toHaveBeenCalled();
+		expect(vi.mocked(sp.classifyDaemonSocket)).not.toHaveBeenCalled();
 		expect(readFileSync(paths.pid, "utf-8")).toBe(String(process.pid));
+	});
+
+	it("reclaims metadata whose numeric pid was reused by an unrelated process", async () => {
+		const paths = makePaths("reused-unrelated-pid");
+		writeFileSync(paths.pid, String(process.ppid));
+		const identity = await import("./daemon-process-identity.js");
+		vi.mocked(identity.readHarnessProcessIdentity).mockReturnValueOnce(null);
+		const killSpy = vi.spyOn(process, "kill");
+
+		daemon = await startSessionDaemon({
+			paths,
+			session_id: "reused-unrelated-pid",
+			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
+		});
+
+		expect(readFileSync(paths.pid, "utf8")).toBe(String(process.pid));
+		expect(killSpy.mock.calls.some((call) => call[1] === "SIGTERM" || call[1] === "SIGKILL")).toBe(
+			false,
+		);
+		killSpy.mockRestore();
 	});
 
 	it("(d) a throwing probe fails safe and defers to the incumbent (throws)", async () => {
@@ -487,7 +564,7 @@ describe("startSessionDaemon", () => {
 		writeFileSync(paths.pid, "1");
 		writeFileSync(paths.socket, "");
 		const sp = await import("./session-paths.js");
-		vi.mocked(sp.isDaemonSocketServing).mockRejectedValueOnce(new Error("unexpected probe failure"));
+		vi.mocked(sp.classifyDaemonSocket).mockRejectedValueOnce(new Error("unexpected probe failure"));
 
 		let caught: unknown;
 		try {
@@ -499,8 +576,8 @@ describe("startSessionDaemon", () => {
 		} catch (err) {
 			caught = err;
 		}
-		expect(caught).toBeInstanceOf(DaemonOwnershipConflictError);
-		expect((caught as DaemonOwnershipConflictError).ownerPid).toBe(1);
+		expect(caught).toBeInstanceOf(Error);
+		expect((caught as Error).message).toContain("Could not determine");
 		// Never stomped the placeholder socket while deferring.
 		expect(readFileSync(paths.socket, "utf-8")).toBe("");
 	});
@@ -560,6 +637,25 @@ describe("startSessionDaemon", () => {
 		expect(readFileSync(pidPath, "utf-8")).toBe(String(process.pid));
 	});
 
+	it("claimSessionPid: an expired claim lock is recovered even when its pid was reused", () => {
+		const pidPath = join(tmp, "reused-lock-owner.pid");
+		const identity = readFileMutationProcessIdentity(process.pid, Date.now());
+		writeFileSync(
+			`${pidPath}.claim`,
+			`${JSON.stringify({
+				pid: process.pid,
+				token: "abandoned-before-pid-reuse",
+				created_at_ms: Date.now() - 60_000,
+				boot_id: identity.bootId,
+				process_start_id: `${identity.processStartId ?? "unavailable"}:prior-owner`,
+			})}\n`,
+		);
+
+		expect(claimSessionPid(pidPath, process.pid)).toEqual({ claimed: true });
+		expect(readFileSync(pidPath, "utf8")).toBe(String(process.pid));
+		expect(existsSync(`${pidPath}.claim`)).toBe(false);
+	});
+
 	it("claimSessionPid: an existing claim by this same pid is re-claimed", () => {
 		const pidPath = join(tmp, "self-claim.pid");
 		writeFileSync(pidPath, String(process.pid));
@@ -598,6 +694,17 @@ describe("startSessionDaemon", () => {
 		daemon = null;
 		expect(existsSync(paths.pid)).toBe(false);
 		expect(existsSync(paths.socket)).toBe(false);
+	});
+
+	it("predecessor cleanup after handover preserves the successor pid and socket path", () => {
+		const paths = makePaths("handover-cleanup");
+		const predecessorPid = 41;
+		const successorPid = 42;
+		writeFileSync(paths.pid, String(successorPid));
+		writeFileSync(paths.socket, "successor-socket");
+		removeOwnedSessionArtifacts(paths, predecessorPid);
+		expect(readFileSync(paths.pid, "utf8")).toBe(String(successorPid));
+		expect(readFileSync(paths.socket, "utf8")).toBe("successor-socket");
 	});
 
 	it("daemon.shutdown RPC drives state.shutdown -> handle.stop() (line 134)", async () => {

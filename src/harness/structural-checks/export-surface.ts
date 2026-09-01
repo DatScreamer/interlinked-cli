@@ -111,9 +111,9 @@ export function checkExportRippleCompilation(
 	if (!available.find((t) => t.id === "tsc")?.available) return [];
 
 	const brokenFiles: Array<{ file: string; errors: number }> = [];
-
 	for (const affectedFile of filesToCheck) {
-		// Run tsc scoped to this file
+		// runTsc owns compiler admission. An outer lease here deadlocks the
+		// nested call and can turn a deferred compiler into a false-clean ripple.
 		const report = engine.runChecks(
 			{
 				projectRoot: engine.projectRoot,
@@ -123,6 +123,18 @@ export function checkExportRippleCompilation(
 			},
 			{ tools: ["tsc"], timeoutMs: RIPPLE_TSC_TIMEOUT_MS },
 		);
+
+		if (report.results.some((result) => result.ruleId === "tsc-unavailable")) {
+			return [
+				{
+					check: "export_ripple_compilation_deferred",
+					severity: "info",
+					message: `Deferred TypeScript ripple verification for ${relPath}: the compiler was unavailable.`,
+					file: filePath,
+					affectedFiles: filesToCheck,
+				},
+			];
+		}
 
 		const errorCount = report.results.filter((r) => r.severity === "error").length;
 		if (errorCount > 0) {

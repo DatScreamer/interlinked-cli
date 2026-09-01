@@ -80,7 +80,9 @@ function inlineGuardDisabled() {
 }
 
 function inlineGuardCheck(hookEvent, toolName, toolInput) {
-    if (hookEvent !== "PreToolUse" && hookEvent !== "BeforeTool") return null;
+    if (hookEvent !== "PreToolUse"
+        && hookEvent !== "BeforeTool"
+        && hookEvent !== "PermissionRequest") return null;
     if (!toolName) return null;
 
     // Intentional, recorded stand-down (interlinked disable) honors the marker

@@ -13,6 +13,8 @@ vi.mock("../mutation/harvest.js", () => ({
 vi.mock("../mutation/pending-registry.js", () => ({
 	overlayHash: vi.fn(),
 	pendingRegistry: vi.fn(),
+	initPendingRegistryStore: vi.fn(),
+	commitPendingRegistry: vi.fn(),
 }));
 vi.mock("../mutation/pending-runs.js", () => ({
 	takePending: vi.fn(),

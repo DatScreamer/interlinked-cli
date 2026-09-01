@@ -325,7 +325,7 @@ describe("runStructuralChecks — per-check dispatch", () => {
 		expect(checkSingleImplementationInterface).toHaveBeenCalled();
 	});
 
-	it("triggers the ripple-compilation + ripple-tests tier when export surface changed", () => {
+	it("leaves compilation and test execution to the async quality phase", () => {
 		(checkExportSurface as ReturnType<typeof vi.fn>).mockReturnValue([
 			{
 				check: "export_surface",
@@ -338,13 +338,8 @@ describe("runStructuralChecks — per-check dispatch", () => {
 
 		runStructuralChecks(writeEvent(TS), fullConfig(), graph, sessions, noExports, noBodies);
 
-		expect(checkExportRippleCompilation).toHaveBeenCalledWith(
-			TS,
-			"src/foo.ts",
-			["/repo/src/bar.ts"],
-			graph,
-		);
-		expect(checkRippleTests).toHaveBeenCalled();
+		expect(checkExportRippleCompilation).not.toHaveBeenCalled();
+		expect(checkRippleTests).not.toHaveBeenCalled();
 	});
 
 	it("skips ripple tier when export surface produced no affected files", () => {

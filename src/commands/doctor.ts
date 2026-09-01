@@ -9,7 +9,11 @@ import { getConfigDir, resolveConfig } from "../lib/config.js";
 import { c, divider, header } from "../lib/formatter.js";
 import { getOutputMode, output } from "../lib/output.js";
 import { adoptionArtifactChecks } from "./adopt.js";
+import { resolve } from "node:path";
+import { resolveHookBinaryPath } from "../lib/hooks.js";
 import { thinkingCaptureCheck } from "./doctor-capture.js";
+import { installedHookDriftChecks } from "./doctor-install-drift.js";
+import { postureEnumChecks } from "./doctor-posture.js";
 import {
 	authTokenCheck,
 	type CheckResult,
@@ -25,6 +29,7 @@ import {
 	statusIcon,
 	systemChecks,
 } from "./doctor-checks.js";
+import { countVerifiedOrphans } from "./doctor-system.js";
 import { skillInstallationChecks } from "./doctor-skills.js";
 import { probeHarnessLive } from "./harness-liveness.js";
 import { isHarnessRunning } from "./harness.js";
@@ -142,7 +147,6 @@ async function serverChecks(
 }
 
 export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Promise<void> {
-	const mode = getOutputMode(opts);
 	const cwd = process.cwd();
 	const results: CheckResult[] = [];
 	const resolvedConfig = resolveConfig(cwd);
@@ -157,7 +161,13 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// configuration ones. CPU/RAM/orphan-count problems matter even when
 	// the rest of the install is fine, and they're the most common cause
 	// of latency-budget overruns and runaway memory growth in the wild.
-	results.push(...systemChecks());
+	// Count orphans through the SAME verified sweep `harness status` and
+	// `harness reap` use — it resolves which daemons are actually answering and
+	// protects them. Doctor's private `ps` scan called the live daemon an
+	// orphan (a daemon is re-parented to pid 1 by definition) and offered a
+	// reap that would have killed it.
+	const orphanCount = await countVerifiedOrphans(cwd);
+	results.push(...systemChecks(orphanCount));
 
 	// ===========================================
 	// Local Checks (no server needed)
@@ -185,6 +195,13 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 
 	// 5. Client hooks installed
 	results.push(...clientHookChecks(cwd));
+
+	// 5-drift. Semantic verification of every manifest-tracked install — the
+	// same verifier the refresh command uses (review 2026-08-30: the check
+	// above only proves SOME Interlinked command exists, not a current one).
+	results.push(...installedHookDriftChecks(cwd, resolve(resolveHookBinaryPath(cwd, { writeFallback: false }))));
+	// 5-enums. Invalid posture-enum values the loader silently drops.
+	results.push(...postureEnumChecks(cwd));
 
 	// 5a. Native agent skill copies current for every detected client.
 	results.push(...skillInstallationChecks(cwd, opts.fix === true));
@@ -231,7 +248,15 @@ export async function doctorCommand(opts: { fix?: boolean; json?: boolean }): Pr
 	// ===========================================
 	// Output
 	// ===========================================
+	renderDoctorResults(opts, results, serverResults);
+}
 
+function renderDoctorResults(
+	opts: { fix?: boolean; json?: boolean },
+	results: CheckResult[],
+	serverResults: CheckResult[],
+): void {
+	const mode = getOutputMode(opts);
 	const allResults = [...results, ...serverResults];
 
 	output(mode, allResults, {

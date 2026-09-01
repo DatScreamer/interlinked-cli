@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 	startupInFlight: vi.fn(),
 	touchStartupLock: vi.fn(),
 	probeHarnessLive: vi.fn(),
+	probeHarnessSocket: vi.fn(),
 	livenessStatusValue: vi.fn(),
 	zombieWarningLine: vi.fn(),
 	reapOrphanHarnessesVerified: vi.fn(),
@@ -152,6 +153,7 @@ vi.mock("./harness-liveness.js", () => ({
 	},
 	livenessStatusValue: mocks.livenessStatusValue,
 	probeHarnessLive: mocks.probeHarnessLive,
+	probeHarnessSocket: mocks.probeHarnessSocket,
 	zombieWarningLine: mocks.zombieWarningLine,
 }));
 
@@ -161,10 +163,25 @@ vi.mock("./harness-daemon-control.js", () => ({
 	collectServingDaemonPids: vi.fn(),
 }));
 
-vi.mock("./harness-restart-guard.js", () => ({
-	reportRestartDecision: mocks.reportRestartDecision,
-	resolveRestartAction: mocks.resolveRestartAction,
-}));
+vi.mock("./harness-restart-guard.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./harness-restart-guard.js")>();
+	return {
+		reportRestartDecision: mocks.reportRestartDecision,
+		resolveRestartAction: mocks.resolveRestartAction,
+		// REAL attempt helpers, with only the ledger sink and env injected —
+		// the "records the explicit-restart ledger entry" pin below keeps
+		// asserting the genuine row shape (now written by beginRestartAttempt).
+		beginRestartAttempt: (cwd: string) =>
+			actual.beginRestartAttempt(cwd, {
+				recordEvent: (evt) => mocks.recordDaemonEvent(cwd, evt),
+				env: {},
+			}),
+		failRestartAttempt: (cwd: string, attemptId: string, detail: string) =>
+			actual.failRestartAttempt(cwd, attemptId, detail, {
+				recordEvent: (evt) => mocks.recordDaemonEvent(cwd, evt),
+			}),
+	};
+});
 
 vi.mock("./harness-lifecycle-helpers.js", () => ({
 	buildHarnessSpawnArgs: mocks.buildHarnessSpawnArgs,
@@ -256,6 +273,7 @@ beforeEach(() => {
 	mocks.waitForDaemonSocket.mockResolvedValue(false);
 	mocks.startupInFlight.mockReturnValue(false);
 	mocks.probeHarnessLive.mockResolvedValue(false);
+	mocks.probeHarnessSocket.mockResolvedValue(false);
 	mocks.livenessStatusValue.mockImplementation(
 		(state: string, pid: number | undefined) => `status:${state}:${pid ?? "?"}`,
 	);
@@ -300,8 +318,9 @@ afterEach(() => {
 // harnessStartCommand — already-running branch
 // ===========================================================================
 
-describe("harnessStartCommand — already-running data + text (mutantIds 757e969cbca7df94, 629bd81e92f8a72e, 4dd279457ed18d5a, c67b65ad85c99bbb)", () => {
-	it("captures the exact already_running data object with a non-empty reaped list", async () => {
+describe("harnessStartCommand — socket-authoritative already-running data + text", () => {
+	it("reports an answering daemon without running the orphan reaper", async () => {
+		mocks.probeHarnessSocket.mockResolvedValue(true);
 		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 999 });
 		mocks.reapOrphanHarnessesVerified.mockResolvedValue({
 			candidates: [],
@@ -312,23 +331,19 @@ describe("harnessStartCommand — already-running data + text (mutantIds 757e969
 		expect(capturedData).toContainEqual({
 			already_running: true,
 			pid: 999,
-			reaped: ["1111", "2222"],
+			reaped: [],
 		});
-		expect(logText()).toContain(
-			"Harness already running (PID 999); reaped 2 orphan(s): 1111, 2222",
-		);
+		expect(logText()).toBe("Harness already running (PID 999)");
+		expect(mocks.reapOrphanHarnessesVerified).not.toHaveBeenCalled();
 	});
 
-	it("prints the plain already-running line when nothing was reaped", async () => {
+	it("prints the plain already-running line for a pid-backed answering socket", async () => {
+		mocks.probeHarnessSocket.mockResolvedValue(true);
 		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 42 });
-		mocks.reapOrphanHarnessesVerified.mockResolvedValue({
-			candidates: [],
-			killed: [],
-			dryRun: false,
-		});
 		await harnessStartCommand({});
 		expect(logText()).toBe("Harness already running (PID 42)");
 		expect(logText()).not.toContain("reaped");
+		expect(mocks.reapOrphanHarnessesVerified).not.toHaveBeenCalled();
 	});
 
 	it("does not throw when the lock loser's holder is undefined (optional chaining)", async () => {
@@ -374,7 +389,8 @@ describe("harnessStopCommand — data objects + join separators (mutantIds 5c8bd
 	it("joins multiple survivors with comma-space and the kill hint with a single space", async () => {
 		mocks.stopAllDaemons.mockResolvedValue({ stopped: [], survived: [3, 4] });
 		await harnessStopCommand({});
-		expect(logText()).toContain("still running: 3, 4. Try: kill -9 3 4");
+		expect(logText()).toContain("PID(s) 3, 4 survived SIGKILL");
+		expect(logText()).toContain("Investigate process permissions or kernel state manually");
 	});
 
 	it("joins multiple stopped pids with comma-space in the success line", async () => {

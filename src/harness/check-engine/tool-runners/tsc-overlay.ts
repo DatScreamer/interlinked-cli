@@ -23,8 +23,12 @@
 // doc in tsc-overlay-sidecar-client.ts for why this stays synchronous.
 
 import { loadRules } from "../../rules-loader.js";
+import { tryAcquireProjectCompilerLease } from "../../project-compiler-gate.js";
 import type { CheckResult } from "../types.js";
-import { runOverlayViaSidecar } from "./tsc-overlay-sidecar-client.js";
+import {
+	runOverlayViaSidecarTyped,
+	type SidecarOverlayOutcome,
+} from "./tsc-overlay-sidecar-client.js";
 import {
 	clearOverlayServiceCache,
 	OVERLAY_EXT,
@@ -70,17 +74,56 @@ function getTscOverlayMode(projectRoot: string): TscOverlayMode {
 }
 
 /**
+ * Typed outcome of one overlay run. Three states, deliberately distinct
+ * (review pass 18 — "disabled" and "checked clean" must not share a shape):
+ *   "ok"          — the checker RAN; findings (possibly empty = checked clean)
+ *   "skipped"     — the check deliberately did not apply (non-TS extension,
+ *                   operator mode "off"); nothing was verified, and nothing
+ *                   was expected to be — transactions may proceed but must
+ *                   never describe the result as tsc-verified
+ *   "unavailable" — the checker SHOULD have run and could not (spawn
+ *                   failure, timeout, malformed reply, cooldown) —
+ *                   transaction consumers must abort, never read as clean
+ */
+export type TscOverlayOutcome = SidecarOverlayOutcome | { status: "skipped"; reason: string };
+
+/**
  * Run the overlay check against a proposed file content, dispatching to the
  * configured transport. Returns diagnostics FOR THAT FILE ONLY. Cross-file
  * regressions (an edit to A breaks B) are left to PostToolUse.
  */
-export function runTscOverlay(input: RunTscOverlayInput): CheckResult[] {
-	if (!OVERLAY_EXT.test(input.filePath)) return [];
+export function runTscOverlayTyped(input: RunTscOverlayInput): TscOverlayOutcome {
+	if (!OVERLAY_EXT.test(input.filePath)) {
+		return { status: "skipped", reason: "not a TypeScript/JavaScript file" };
+	}
 
 	const mode = getTscOverlayMode(input.projectRoot);
-	if (mode === "off") return [];
-	if (mode === "in-process") return runOverlayCheckInProcess(input);
-	return runOverlayViaSidecar(input);
+	if (mode === "off") return { status: "skipped", reason: "tsc overlay disabled by config" };
+	if (mode === "in-process") {
+		const releaseCompiler = tryAcquireProjectCompilerLease(input.projectRoot);
+		if (!releaseCompiler) {
+			return {
+				status: "unavailable",
+				reason: "in-process TypeScript overlay deferred because another compiler owns this project",
+			};
+		}
+		try {
+			return { status: "ok", findings: runOverlayCheckInProcess(input) };
+		} finally {
+			releaseCompiler();
+		}
+	}
+	return runOverlayViaSidecarTyped(input);
+}
+
+/**
+ * Legacy findings-only shape — "unavailable" collapses to `[]` (advisory
+ * callers keep today's behavior; the sidecar client's stderr warning is the
+ * visible signal). Transactional callers must use `runTscOverlayTyped`.
+ */
+export function runTscOverlay(input: RunTscOverlayInput): CheckResult[] {
+	const outcome = runTscOverlayTyped(input);
+	return outcome.status === "ok" ? outcome.findings : [];
 }
 
 /**

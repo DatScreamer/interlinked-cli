@@ -12,6 +12,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import type { TsgoDiagnostic } from "./daemon-protocol.js";
+import { tryRegisterWarmProjectCompiler } from "./project-compiler-gate.js";
 import {
 	buildInfoPath,
 	filterDiagnosticsForFile,
@@ -54,6 +55,82 @@ const WATCH_FRESH_WAIT_MS = 2000;
 const WATCH_POLL_INTERVAL_MS = 15;
 /** Time budget for the watch child's FIRST pass before we give up on it. */
 const WATCH_INITIAL_PASS_MS = 8000;
+/** Grace after SIGTERM before a stuck compiler process group is SIGKILLed. */
+const WATCH_STOP_GRACE_MS = 500;
+/** Poll interval while a terminated wrapper's process group is being reaped. */
+const WATCH_GROUP_REAP_POLL_MS = 10;
+
+function signalCompilerTree(child: ChildProcess, signal: NodeJS.Signals): void {
+	try {
+		if (child.pid !== undefined) process.kill(-child.pid, signal);
+		else child.kill(signal);
+	} catch {
+		try {
+			child.kill(signal);
+		} catch {
+			// The process was already reaped between the liveness check and signal.
+			void 0;
+		}
+	}
+}
+
+function compilerGroupIsAlive(processGroupId: number | undefined): boolean {
+	if (processGroupId === undefined) return false;
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error) {
+		// SAFETY: Node reports signal failures as ErrnoException; EPERM proves
+		// the group still exists even though this process cannot inspect it.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Resolve only when the child and its detached process group have exited. */
+function terminateCompilerProcess(child: ChildProcess): Promise<void> {
+	return new Promise<void>((resolveExit) => {
+		let settled = false;
+		let childExited = child.exitCode !== null || child.signalCode !== null;
+		let killTimer: ReturnType<typeof setTimeout> | null = null;
+		let reapTimer: ReturnType<typeof setTimeout> | null = null;
+		const processGroupId = process.platform === "win32" ? undefined : child.pid;
+		const finishAfterGroupExit = (): void => {
+			if (settled) return;
+			if (!childExited) return;
+			if (compilerGroupIsAlive(processGroupId)) {
+				if (reapTimer === null) {
+					reapTimer = setTimeout(() => {
+						reapTimer = null;
+						finishAfterGroupExit();
+					}, WATCH_GROUP_REAP_POLL_MS);
+				}
+				return;
+			}
+			settled = true;
+			if (killTimer) clearTimeout(killTimer);
+			if (reapTimer) clearTimeout(reapTimer);
+			resolveExit();
+		};
+		const noteChildExit = (): void => {
+			childExited = true;
+			finishAfterGroupExit();
+		};
+		if (!childExited) {
+			child.once("exit", noteChildExit);
+			child.once("close", noteChildExit);
+		}
+		// An error is not proof the OS process exited (a failed signal can emit
+		// one while the child is still alive). Escalate, but keep the compiler
+		// lease until `exit`/`close` provides the actual reap acknowledgement.
+		child.once("error", () => signalCompilerTree(child, "SIGKILL"));
+		signalCompilerTree(child, "SIGTERM");
+		killTimer = setTimeout(() => {
+			if (!settled) signalCompilerTree(child, "SIGKILL");
+		}, WATCH_STOP_GRACE_MS);
+		killTimer.unref?.();
+		if (childExited) finishAfterGroupExit();
+	});
+}
 
 /**
  * Wraps a single `tsgo --watch --noEmit` child. Parses its streamed pass
@@ -77,6 +154,8 @@ export class WatchProcess {
 	/** Resolvers waiting for the next completed pass. */
 	private passWaiters: Array<() => void> = [];
 	private idleTimer: NodeJS.Timeout | null = null;
+	private unregisterCompiler: (() => void) | null = null;
+	private stopPromise: Promise<void> | null = null;
 
 	constructor(
 		private readonly executable: string,
@@ -87,6 +166,9 @@ export class WatchProcess {
 	/** Spawn the `tsgo --watch` child. Idempotent-safe; never throws. */
 	start(): void {
 		if (this.child) return;
+		const unregister = tryRegisterWarmProjectCompiler(this.projectRoot, () => this.kill());
+		if (!unregister) return;
+		this.unregisterCompiler = unregister;
 		try {
 			// --pretty false → stable plain-text Form-1 diagnostics, no ANSI.
 			// --incremental + --tsBuildInfoFile → the watch child persists its
@@ -103,6 +185,9 @@ export class WatchProcess {
 			const child = spawn(this.executable, args, {
 				cwd: this.projectRoot,
 				stdio: ["ignore", "pipe", "pipe"],
+				// Give the watcher its own process group. Eviction must terminate
+				// wrapper-spawned descendants too, not merely the shell/launcher.
+				detached: true,
 			});
 			this.child = child;
 			this._state = WATCH_RUNNING;
@@ -112,7 +197,9 @@ export class WatchProcess {
 			// Parse stderr too: tsgo --watch keeps stderr empty today, but a
 			// future tsgo that splits streams still gets its diagnostics read.
 			child.stderr?.on("data", (b: Buffer) => this.ingest(b.toString("utf-8")));
-			child.on("error", () => this.markCrashed());
+			child.on("error", () => {
+				if (this.child === child) this.markCrashed();
+			});
 			child.on("exit", () => {
 				// An exit while we still hold the child reference is unexpected
 				// (we null `child` ourselves on a deliberate kill).
@@ -171,23 +258,34 @@ export class WatchProcess {
 		return filterDiagnosticsForFile(this.lastPassDiagnostics, path, this.projectRoot);
 	}
 
-	/** Kill the child cleanly. Idempotent; safe to call after a crash. */
-	kill(): void {
+	/**
+	 * Stop and reap the child. The returned promise resolves only after the OS
+	 * process exits; the compiler lease is deliberately held until then.
+	 */
+	kill(): Promise<void> {
+		return this.stop(WATCH_IDLE_EVICTED);
+	}
+
+	private stop(nextState: WatchProcessState): Promise<void> {
 		if (this.idleTimer) {
 			clearTimeout(this.idleTimer);
 			this.idleTimer = null;
 		}
+		if (this.stopPromise) return this.stopPromise;
 		const child = this.child;
 		this.child = null;
+		this._state = nextState;
 		// Release any pending waiters so callers don't hang on a killed child.
 		this.flushWaiters();
-		if (child) {
-			try {
-				child.kill("SIGTERM");
-			} catch (_err) {
-				void 0; // intentional: child already dead — non-fatal, nothing to do
-			}
+		if (!child) {
+			this.releaseCompilerRegistration();
+			return Promise.resolve();
 		}
+		this.stopPromise = terminateCompilerProcess(child).finally(() => {
+			this.releaseCompilerRegistration();
+			this.stopPromise = null;
+		});
+		return this.stopPromise;
 	}
 
 	// --- internals ----------------------------------------------------------
@@ -198,23 +296,15 @@ export class WatchProcess {
 		this.idleTimer = setTimeout(() => {
 			// Idle window elapsed with no TS check — evict the child. The next
 			// checkFile() will lazily respawn a fresh WatchProcess.
-			const child = this.child;
-			this.child = null;
-			this._state = WATCH_IDLE_EVICTED;
-			this.flushWaiters();
-			if (child) {
-				try {
-					child.kill("SIGTERM");
-				} catch (_err) {
-					void 0; // intentional: child already dead — non-fatal
-				}
-			}
+			void this.stop(WATCH_IDLE_EVICTED);
 		}, this.idleMs);
 		this.idleTimer.unref();
 	}
 
 	private markCrashed(): void {
 		this.child = null;
+		this.stopPromise = null;
+		this.releaseCompilerRegistration();
 		// An idle eviction also nulls `child`; don't let a late exit event
 		// downgrade a clean idle-evict into a "crashed" report.
 		if (this._state !== WATCH_IDLE_EVICTED) this._state = WATCH_CRASHED;
@@ -223,6 +313,12 @@ export class WatchProcess {
 			this.idleTimer = null;
 		}
 		this.flushWaiters();
+	}
+
+	private releaseCompilerRegistration(): void {
+		const unregister = this.unregisterCompiler;
+		this.unregisterCompiler = null;
+		unregister?.();
 	}
 
 	/** Feed streamed bytes through line splitting + pass-marker parsing. */

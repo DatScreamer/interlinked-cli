@@ -34,7 +34,7 @@ const {
 	// may be reading/building it concurrently), so "the build changed content"
 	// and "the server artifact is unreadable" are simulated by intercepting
 	// reads/stats for those two exact suffixes instead of touching real files.
-	fsControl: { buildRan: false, forceStatThrow: false },
+	fsControl: { buildRan: false, forceStatThrow: false, serverStatPath: "" },
 }));
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -48,6 +48,9 @@ vi.mock("node:fs", async (importOriginal) => {
 			const p = String(args[0]);
 			if (fsControl.forceStatThrow && p.endsWith("dist/harness/server.js")) {
 				throw new Error("ENOENT: simulated missing server artifact");
+			}
+			if (fsControl.serverStatPath && p.endsWith("dist/harness/server.js")) {
+				return actual.statSync(fsControl.serverStatPath);
 			}
 			return actual.statSync(...args);
 		},
@@ -92,6 +95,7 @@ beforeEach(() => {
 	writeHookScriptMock.mockReset();
 	fsControl.buildRan = false;
 	fsControl.forceStatThrow = false;
+	fsControl.serverStatPath = "";
 });
 
 afterEach(() => {
@@ -100,6 +104,7 @@ afterEach(() => {
 	process.exitCode = 0;
 	fsControl.buildRan = false;
 	fsControl.forceStatThrow = false;
+	fsControl.serverStatPath = "";
 });
 
 describe("findCliRoot", () => {
@@ -372,8 +377,11 @@ describe("reloadCommand — running-daemon detection (pidfile + ps parsing)", ()
 
 	it("skips the restart when the running daemon postdates the build, and no --force", async () => {
 		const cliRoot = findCliRoot();
-		expect(cliRoot).not.toBeNull();
-		const serverMtimeMs = statSync(join(cliRoot as string, "dist", "harness", "server.js")).mtimeMs;
+		if (cliRoot === null) throw new Error("expected to find the interlinked-cli root");
+		// Model an existing server artifact with stable repository input. Requiring
+		// live dist here made a clean checkout fail before reloadCommand ran.
+		fsControl.serverStatPath = join(cliRoot, "src", "harness", "server.ts");
+		const serverMtimeMs = statSync(join(cliRoot, "dist", "harness", "server.js")).mtimeMs;
 		const future = new Date(serverMtimeMs + 60_000).toISOString();
 		mkdirSync(join(dir, ".interlinked"), { recursive: true });
 		writeFileSync(join(dir, ".interlinked", "harness.pid"), "4242");

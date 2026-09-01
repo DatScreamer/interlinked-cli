@@ -245,7 +245,6 @@ export function checkSpecCountClaim(
 	const out: InlineMatch[] = [];
 	for (const ns of facts.namespaces) {
 		if (ns.uniqueCount < 2 || out.length >= MAX_MATCHES) continue;
-		const idLines = idLineSet(ns);
 		const defLines = defLineSet(ns);
 		// Format ids in the namespace's own notation (sol-max #26): a compact
 		// "B7" census must not be reported as dashed "B-7".
@@ -254,7 +253,7 @@ export function checkSpecCountClaim(
 		for (const claim of facts.countClaims) {
 			if (out.length >= MAX_MATCHES) break;
 			if (claim.value === ns.uniqueCount) continue;
-			if (!claimBindsToNamespace(claim, facts, idLines, defLines)) continue;
+			if (!claimBindsToNamespace(claim, facts, ns, defLines)) continue;
 			out.push({
 				line: claim.line,
 				text: siteText(

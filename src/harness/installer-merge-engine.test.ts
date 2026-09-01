@@ -1,7 +1,7 @@
 // Companion tests for installer-merge-engine.ts — merge engine, JSON-pointer
 // path helpers, and low-level fs helpers extracted from installer.ts.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -247,6 +247,12 @@ describe("readJson", () => {
 		expect(readJson(p)).toBeNull();
 	});
 
+	it("returns null when the parsed settings root is an array", () => {
+		const p = join(tmp, "array.json");
+		writeFileSync(p, "[]\n");
+		expect(readJson(p)).toBeNull();
+	});
+
 	it("returns an empty object when the parsed JSON is not an object", () => {
 		const p = join(tmp, "scalar.json");
 		writeFileSync(p, "42");
@@ -278,14 +284,49 @@ describe("writeAtomic", () => {
 		expect(JSON.parse(readFileSync(p, "utf-8"))).toEqual({ fresh: true });
 	});
 
-	it("swallows an rmSync failure and still lands the write via rename", () => {
+	// test-contract: bug — review 2026-08-30: the old helper DELETED the
+	// destination before renaming, leaving a crash window with no file at
+	// all. Replacement now goes through rename alone; rmSync must never fire.
+	it("replaces via rename alone — the destination is never unlinked first", () => {
 		const p = join(tmp, "swallow.json");
 		writeFileSync(p, "old content");
-		rmSyncMock.mockImplementationOnce(() => {
-			throw new Error("simulated rmSync failure");
-		});
-		expect(() => writeAtomic(p, { landed: true })).not.toThrow();
+		rmSyncMock.mockClear();
+		writeAtomic(p, { landed: true });
 		expect(JSON.parse(readFileSync(p, "utf-8"))).toEqual({ landed: true });
+		expect(rmSyncMock).not.toHaveBeenCalled();
+	});
+
+	// test-contract: invariant — the destination's file mode survives the
+	// replacement (snapshots/restores depend on it).
+	it("preserves the destination's file mode across the replacement", () => {
+		const p = join(tmp, "mode.json");
+		writeFileSync(p, "old content");
+		chmodSync(p, 0o600);
+		writeAtomic(p, { landed: true });
+		// SAFETY: statSync mode includes type bits; mask to permissions.
+		expect(statSync(p).mode & 0o777).toBe(0o600);
+	});
+});
+
+describe("removeJsonPath — prototype-chain hardening (review 2026-08-30)", () => {
+	// test-contract: security — the reviewer's repro: a manifest path of
+	// `__proto__.toString` reached INHERITED properties. Forbidden segments
+	// refuse outright and inherited members are never traversed.
+	it("refuses __proto__/prototype/constructor segments", () => {
+		const target = { hooks: { PreToolUse: [{ command: "x" }] } };
+		expect(removeJsonPath(target, "__proto__.toString")).toBe(false);
+		expect(removeJsonPath(target, "hooks.__proto__")).toBe(false);
+		expect(removeJsonPath(target, "constructor.prototype")).toBe(false);
+		expect(target.hooks.PreToolUse).toHaveLength(1);
+		// SAFETY: probing that the prototype survived — toString must remain.
+		expect(typeof ({} as Record<string, unknown>).toString).toBe("function");
+	});
+
+	// test-contract: security — inherited keys are not own data: stepping to
+	// them returns false rather than mutating shared prototypes.
+	it("never removes through an inherited (non-own) property", () => {
+		const target = { a: {} };
+		expect(removeJsonPath(target, "a.toString")).toBe(false);
 	});
 });
 

@@ -16,6 +16,7 @@
 // (trigram-index-mutation.ts) now bounds new growth at the source; clearing
 // the dirty layer here is the second line of defense for whatever had
 // already accumulated before that fix takes effect on a running daemon.
+import { clearCheckEngineDiagnosticCache } from "../check-engine/index.js";
 import { clearTscOverlayCache } from "../check-engine/tool-runners/tsc-overlay.js";
 import { clearManifestCache } from "../mutation/manifest.js";
 import type { TrigramIndex } from "../trigram-index.js";
@@ -29,6 +30,7 @@ import type { TrigramIndex } from "../trigram-index.js";
 export function makeShrinkIdleMemory(getTrigramIndex: () => TrigramIndex | null): () => void {
 	return () => {
 		clearManifestCache();
+		clearCheckEngineDiagnosticCache();
 		clearTscOverlayCache();
 		getTrigramIndex()?.clearDirty();
 		(globalThis as { gc?: () => void }).gc?.(); // SAFETY: gc exists only under --expose-gc (every spawn path passes it).

@@ -81,7 +81,14 @@ export interface SessionEndJobDeps {
 	spawn?: typeof nodeSpawn;
 	cliEntry?: string;
 	execPath?: string;
+	/** Test seam. Production uses the daemon-process singleton below. */
+	activeJobs?: Set<string>;
 }
+
+/** Detached does not mean unobservable: ChildProcess still emits exit/error in
+ * the daemon. Keep one active process per heavy job so a burst of SessionEnd
+ * events cannot multiply whole-repo scans and exhaust external-tool capacity. */
+const ACTIVE_SESSION_END_JOBS = new Set<string>();
 
 /**
  * Fire-and-forget governed background jobs at SessionEnd. Ships job 4 — the
@@ -110,23 +117,37 @@ const SESSION_END_JOBS: SessionEndJob[] = [
 	{ name: "coverage-ratchet", argv: ["coverage", "check", "--update-baseline"] },
 ];
 
-function spawnGovernedJob(
-	ctx: ServerRuntime,
-	plan: ResourcePlan,
-	spawn: typeof nodeSpawn,
-	execPath: string,
-	cliEntry: string,
-	job: SessionEndJob,
-): void {
+interface SpawnGovernedJobInput {
+	ctx: ServerRuntime;
+	plan: ResourcePlan;
+	spawn: typeof nodeSpawn;
+	execPath: string;
+	cliEntry: string;
+	job: SessionEndJob;
+	activeJobs: Set<string>;
+}
+
+function spawnGovernedJob(input: SpawnGovernedJobInput): void {
+	const { ctx, plan, spawn, execPath, cliEntry, job, activeJobs } = input;
+	if (activeJobs.has(job.name)) {
+		ctx.log(`[session-end:job] ${job.name} already running (skipped)`);
+		return;
+	}
 	const { file, args } = governedSpawn(plan.commandPrefix, execPath, [cliEntry, ...job.argv]);
 	try {
 		const child = spawn(file, args, { cwd: ctx.cwd, detached: true, stdio: "ignore" });
+		activeJobs.add(job.name);
 		child.on("error", (e: Error) => {
+			activeJobs.delete(job.name);
 			ctx.log(`[session-end:job] ${job.name} spawn failed (skipped): ${e.message}`);
+		});
+		child.on("exit", () => {
+			activeJobs.delete(job.name);
 		});
 		child.unref();
 		ctx.log(`[session-end:job] ${job.name} spawned (bg=${plan.background})`);
 	} catch (err) {
+		activeJobs.delete(job.name);
 		void err; // never-throw: a spawn failure must not break SessionEnd cleanup
 	}
 }
@@ -141,7 +162,12 @@ export function runSessionEndJobs(
 	const spawn = deps.spawn ?? nodeSpawn;
 	const execPath = deps.execPath ?? process.execPath;
 	const cliEntry = deps.cliEntry ?? resolveCliEntry();
+	// An injected spawn is normally a one-call test double, so it gets an
+	// isolated set unless the test explicitly asks to exercise single-flight.
+	const activeJobs = deps.activeJobs ?? (deps.spawn === undefined
+		? ACTIVE_SESSION_END_JOBS
+		: new Set<string>());
 	for (const job of SESSION_END_JOBS) {
-		spawnGovernedJob(ctx, plan, spawn, execPath, cliEntry, job);
+		spawnGovernedJob({ ctx, plan, spawn, execPath, cliEntry, job, activeJobs });
 	}
 }

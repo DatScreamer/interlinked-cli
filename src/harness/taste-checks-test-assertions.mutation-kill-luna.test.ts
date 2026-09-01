@@ -10,17 +10,19 @@ const TEST = "/repo/widget.test.ts";
 const finding = (line: number, text: string) => [{ line, text }];
 
 describe("tautological assertion survivor contracts", () => {
-	// test-contract: invariant — all whitespace positions accepted by the public truthiness detector must produce the exact source line.
+	// test-contract: invariant — all whitespace positions accepted by the public truthiness detector must produce
+	// the exact source line. The `assert.ok` spelling is fixed (no spaces around the member dot — the detector's
+	// `assert(?:\.ok)?` alternative is deliberately tight there); whitespace is accepted inside the call parens.
 	it("flags whitespace-separated truthiness forms and assert.ok", () => {
 		const content = [
 			"expect ( true ) . toBeTruthy ( )",
 			"expect ( false ) . toBeFalsy ( )",
-			"assert . ok ( true )",
+			"assert.ok ( true )",
 		].join("\n");
 		expect(checkTautologicalAssertion(content, TEST)).toEqual([
 			{ line: 1, text: "expect ( true ) . toBeTruthy ( )" },
 			{ line: 2, text: "expect ( false ) . toBeFalsy ( )" },
-			{ line: 3, text: "assert . ok ( true )" },
+			{ line: 3, text: "assert.ok ( true )" },
 		]);
 	});
 

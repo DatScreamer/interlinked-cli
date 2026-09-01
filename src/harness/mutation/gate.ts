@@ -8,15 +8,22 @@
 // runnerless install honestly discloses `[mutation:not-measured]` and never
 // claims a clean pass. The wiring into pre-tool-pipeline.ts is a thin call site.
 
-import { expectedCompanionTest, expectedSourceOfTest } from "../coverage-debt.js";
+import { expectedSourceOfTest } from "../coverage-debt.js";
 import { isTestPath } from "../coverage-test-selector.js";
-import { isRepoScratchPath } from "../large-file-policy.js";
 import type { HarnessDecision } from "../types/decisions.js";
 import { type ChangeSet, changedPaths, normalizeChangeSet } from "./changeset.js";
-import { editScope } from "./edit-range.js";
 import { evaluateMutation } from "./evaluate.js";
-import { collectLocalDeps } from "./local-deps.js";
-import { applyChangeSet } from "./provisioner.js";
+import * as gateDecision from "./gate-decision.js";
+import {
+	buildMutationOverlays,
+	type FileOverlay,
+	overlayContentFor,
+} from "./gate-overlays.js";
+import {
+	isMutationTarget,
+	MUTATION_CODE_EXT,
+	multiSourceNotMeasuredReason,
+} from "./mutation-target.js";
 import type { MutationRunOutput } from "./stryker-adapter.js";
 import { testEditEffect } from "./test-edit-effect.js";
 import type { MutationGateOutcome, MutationManifest, MutationReceipt } from "./types.js";
@@ -54,20 +61,39 @@ export interface PerEditMutationConfig {
 	/** Cloud Sandbox runner endpoint; absent → no runner → honest not-measured. */
 	runner_url?: string | undefined;
 	/**
-	 * Additional runner endpoints. When more than one runner is configured the
-	 * file's line span is partitioned across them and measured concurrently, which
-	 * is how a per-edit budget buys more mutants than one runner could finish.
-	 * Omitted / single ⇒ the unsharded path, byte-identical to before.
+	 * OBSOLETE (v1, review passes 11-19): line-range partitioning across
+	 * multiple endpoints is RETIRED — a mutant spanning a split vanished from
+	 * both sides. Extra entries are NOT used (no partition, no failover yet);
+	 * configuring them emits a loud one-time deprecation warning so nobody
+	 * believes three endpoints are serving when only the first is.
 	 */
 	runner_urls?: string[] | undefined;
+	/**
+	 * OBSOLETE (v1, review passes 11-19): cloud-side shard fan-out is RETIRED
+	 * with the rest of line-range execution. The value is IGNORED and emits a
+	 * loud one-time deprecation warning. Future exact-mutant-ID sharding is
+	 * plan 27 Appendix B work, behind new configuration, not this knob.
+	 */
+	cloud_shards?: number | undefined;
 	token?: string | undefined;
 }
 
-/** One proposed file state shipped to the runner (spec §7 atomic ChangeSet). */
-export interface FileOverlay {
-	path: string;
-	content: string;
+export type { FileOverlay } from "./gate-overlays.js";
+
+/** Exact tests selected by the CLI's dependency graph for this mutation run. */
+export interface MutationRunOptions {
+	testFiles: readonly string[];
+	scopeMode: "import_graph" | "companion_fallback";
 }
+
+/**
+ * Production test-scope decision made before the mutation runner is invoked.
+ * A reduced companion scope can still prove a survivor or red suite, but it
+ * can never certify clean. An unavailable scope does not run at all.
+ */
+export type MutationTestSelection =
+	| { kind: "selected"; options: MutationRunOptions; partial: boolean }
+	| { kind: "unavailable"; reason: string };
 
 /**
  * The mutation execution backend (cloud Sandbox runner / local Stryker).
@@ -76,26 +102,19 @@ export interface FileOverlay {
  * from git, so a test-first test that only exists locally must travel with the
  * edit or red/green + RED-witness can't see it). Always includes the primary.
  */
-/** 1-based inclusive line span of the primary file to measure. Omitted ⇒ whole file. */
-export interface MutationRange {
-	start: number;
-	end: number;
-}
-
 export interface MutationRunner {
 	available(): boolean;
 	/**
-	 * `range` restricts measurement to one line span so N runners can measure N
-	 * slices of the SAME edit concurrently — a model edits one file at a time, so
-	 * splitting by file would not parallelise the common case. Optional: a runner
-	 * that ignores it simply measures the whole file, which is always correct,
-	 * only slower.
+	 * One file, one WHOLE-FILE Stryker run (v1, review passes 11-19): line-range
+	 * execution is retired — a ranged run was a partial view that could find
+	 * adverse evidence but never certify clean, and a boundary-spanning mutant
+	 * could vanish from both sides of a split.
 	 */
 	run(
 		file: string,
 		overlayContent: string,
 		overlays?: FileOverlay[],
-		range?: MutationRange,
+		options?: MutationRunOptions,
 	): Promise<MutationRunOutput>;
 }
 
@@ -106,6 +125,15 @@ export interface MutationGateContext {
 	runner: MutationRunner | null;
 	baseManifest: MutationManifest;
 	readDisk: (file: string) => string | null;
+	/**
+	 * Dependency-graph-selected tests. The daemon always supplies this. Omitted
+	 * only by legacy/direct callers, which preserves their existing behavior
+	 * while the production path refuses to manufacture completeness.
+	 */
+	testSelection?: MutationTestSelection | undefined;
+	/** Production resolver, invoked only after normalization chooses the actual
+	 * source target (including a companion-test edit whose target is the SUT). */
+	selectTests?: ((target: string) => MutationTestSelection) | undefined;
 	/** Persistence sink for a measured-clean pass (manifest snapshot + receipt).
 	 *  Absent → evaluate-only. Persistence failures are swallowed — they must
 	 *  never break the gate (the allow still stands). */
@@ -133,8 +161,8 @@ export interface PendingHandle {
  * Pull the still-running job handles out of whatever a runner threw.
  *
  * Both shapes matter: a single runner rejects with `MutationRunPendingError`
- * directly, while the sharded runner wraps every shard's rejection in a
- * `ShardedRunFailure`. Anything else is a real failure with nothing to claim.
+ * directly, while a wrapper that aggregates several rejections carries them in
+ * a `pending` array. Anything else is a real failure with nothing to claim.
  * Structural checks, not `instanceof`, so this stays free of an import cycle
  * with the runners that depend on this module's types.
  */
@@ -220,10 +248,6 @@ function notMeasurableReasonOf(err: unknown): string | null {
 	return typeof reason === "string" && reason !== "" ? reason : "unspecified";
 }
 
-const RULE_ID = "per-edit-mutation";
-const CATEGORY = "mutation";
-const CODE_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
-
 /**
  * The file in this change set worth mutating.
  *
@@ -240,6 +264,18 @@ const CODE_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 export function primaryCodeFile(paths: string[]): string | null {
 	return paths.find(isMutationTarget) ?? null;
 }
+
+/**
+ * MUT-AC-26 (review passes 15-18): a change set with MORE THAN ONE eligible
+ * source file is NOT-MEASURED, honestly — measuring the first file while
+ * silently skipping the rest implied the whole set passed (the multi-file
+ * analog of the empty-report forged clean). Per-file aggregation is bar-C
+ * work; until it exists the gate refuses to pick a favorite. Today's
+ * normalizers (Write/Edit/MultiEdit) are single-file, so this fires only
+ * once a multi-file adapter (e.g. apply_patch) lands — it is the guard that
+ * keeps that adapter from silently under-measuring on day one.
+ */
+export { multiSourceNotMeasuredReason } from "./mutation-target.js";
 
 /**
  * What this change set should be measured against, including the TEST-EDIT case.
@@ -265,7 +301,7 @@ export function mutationTargetFor(paths: string[], exists: (path: string) => boo
 	const direct = primaryCodeFile(paths);
 	if (direct !== null) return direct;
 	for (const path of paths) {
-		if (!isTestPath(path) || !CODE_EXT.test(path)) continue;
+		if (!isTestPath(path) || !MUTATION_CODE_EXT.test(path)) continue;
 		const source = expectedSourceOfTest(path);
 		if (source !== path && isMutationTarget(source) && exists(source)) return source;
 	}
@@ -279,123 +315,50 @@ export function mutationTargetFor(paths: string[], exists: (path: string) => boo
  * rather than a second opinion — a probe script has no companion test by design,
  * so targeting it can only ever produce "no tests were executed".
  */
-function isMutationTarget(path: string): boolean {
-	if (!CODE_EXT.test(path)) return false;
-	if (isTestPath(path)) return false;
-	return !isRepoScratchPath(path.replace(/\\/g, "/"), undefined);
-}
-
-function overlayContentFor(changeSet: ChangeSet, file: string, diskContent: string): string | null {
-	const ops = changeSet.ops.filter((op) =>
-		op.kind === "rename" ? op.from === file || op.to === file : op.path === file,
-	);
-	return applyChangeSet(new Map([[file, diskContent]]), { ops }).get(file) ?? null;
-}
-
-function notMeasured(reason: string): MutationGateOutcome {
-	return { kind: "unavailable", reason, warning: `[mutation:not-measured] ${reason}` };
-}
-
-/**
- * The full proposed state to ship (spec §7): every ChangeSet path's overlay,
- * plus the primary's companion test read from LOCAL disk when it exists — a
- * test-first test lives only in the local tree until commit, so the runner's
- * git-cloned base has never seen it. The primary is always first.
- */
-function buildOverlays(args: {
-	changeSet: ChangeSet;
-	target: string;
-	overlayContent: string;
-	readDisk: (file: string) => string | null;
-}): FileOverlay[] {
-	const { changeSet, target, overlayContent, readDisk } = args;
-	const out: FileOverlay[] = [{ path: target, content: overlayContent }];
-	for (const path of changedPaths(changeSet)) {
-		if (path === target) continue;
-		const content = overlayContentFor(changeSet, path, readDisk(path) ?? "");
-		if (content !== null) out.push({ path, content });
-	}
-	const companion = expectedCompanionTest(target);
-	if (companion !== target && !out.some((o) => o.path === companion)) {
-		const disk = readDisk(companion);
-		if (disk !== null) out.push({ path: companion, content: disk });
-	}
-	addLocalDeps(out, target, companion, readDisk);
-	return out;
-}
-
-/**
- * Add the local files the overlay set depends on but does not yet carry.
+/** The run's evidence fields, forwarded to the evaluator only when the runner
+ *  actually reported them.
  *
- * The runner's checkout sits at a commit, so an uncommitted module the edited
- * file (or its test) imports is simply absent there — the test fails to load and
- * the run reports "no tests executed", which reaches the agent as an unhelpful
- * generic failure. Walking from BOTH the target and its companion matters: a new
- * module is often reached only through the test.
- *
- * Existing overlay entries always win; their content is the proposed text, and
- * re-reading them from disk would discard the very edit under measurement.
- */
-function addLocalDeps(
-	out: FileOverlay[],
-	target: string,
-	companion: string,
-	readDisk: (file: string) => string | null,
-): void {
-	const have = new Set(out.map((o) => o.path));
-	for (const entry of companion === target ? [target] : [target, companion]) {
-		for (const dep of collectLocalDeps(entry, readDisk)) {
-			if (have.has(dep)) continue;
-			const content = readDisk(dep);
-			if (content === null) continue;
-			have.add(dep);
-			out.push({ path: dep, content });
-		}
-	}
-}
-
-function failClosed(reason: string): HarnessDecision {
+ *  Absent must stay absent rather than becoming a value: the evaluator draws a
+ *  distinction between "the runner said nothing about this" and "the runner
+ *  reported it", and a default here would quietly erase that distinction and
+ *  manufacture evidence the run never produced. */
+function runEvidenceFields(result: {
+	droppedMutants?: number;
+	engineExitCode?: number | null;
+	executedTestCount?: number | null;
+}): { droppedMutants?: number; engineExitCode?: number | null; executedTestCount?: number | null } {
 	return {
-		decision: "block",
-		reason: `[interlinked:mutation] BLOCKED: ${reason} (unavailable_behavior=block).`,
-		rule_id: RULE_ID,
-		severity: "medium",
-		category: CATEGORY,
+		...(result.droppedMutants !== undefined ? { droppedMutants: result.droppedMutants } : {}),
+		...(result.engineExitCode !== undefined ? { engineExitCode: result.engineExitCode } : {}),
+		...(result.executedTestCount !== undefined ? { executedTestCount: result.executedTestCount } : {}),
 	};
 }
 
-/**
- * Persist the refreshed manifest + receipt iff the OUTCOME is a measured-clean
- * allow (spec §4/§12). Keyed off the outcome — not the wire decision — so
- * warn-mode (which downgrades blocks) can never launder a dirty run into a
- * manifest refresh. Returns a warning when persistence failed (the allow
- * stands; the next run simply re-measures), else null.
- */
-function persistIfCleanMeasured(
-	outcome: MutationGateOutcome,
-	persist: MutationGateContext["persist"],
-): string | null {
-	if (outcome.kind !== "measured" || outcome.decision !== "allow") return null;
-	if (!outcome.refreshedManifest || !persist) return null;
-	try {
-		persist(outcome.refreshedManifest, outcome.receipt);
-		return null;
-	} catch (err) {
-		const detail = err instanceof Error ? err.message : String(err);
-		return `[interlinked:mutation] manifest persistence failed (${detail}) — allow stands; next run re-measures.`;
-	}
+function unavailableTestSelection(selection: MutationTestSelection | undefined): string | null {
+	return selection?.kind === "unavailable" ? selection.reason : null;
 }
 
-function applyMode(decision: HarnessDecision, mode: PerEditMutationConfig["mode"]): HarnessDecision {
-	if (mode === "warn" && decision.decision === "block") {
-		return {
-			decision: "allow",
-			warnings: [decision.reason ?? "[interlinked:mutation] finding"],
-			rule_id: decision.rule_id,
-			category: decision.category,
-		};
-	}
-	return decision;
+function resolvedTestSelection(ctx: MutationGateContext, target: string): MutationTestSelection | undefined {
+	return ctx.selectTests?.(target) ?? ctx.testSelection;
+}
+
+function selectedRunOptions(selection: MutationTestSelection | undefined): MutationRunOptions | undefined {
+	return selection?.kind === "selected" ? selection.options : undefined;
+}
+
+function testSelectionIsPartial(selection: MutationTestSelection | undefined): boolean {
+	return selection?.kind === "selected" && selection.partial;
+}
+
+function runSelectedMutation(
+	runner: MutationRunner,
+	target: string,
+	overlayContent: string,
+	overlays: FileOverlay[],
+	options: MutationRunOptions | undefined,
+): Promise<MutationRunOutput> {
+	if (options === undefined) return runner.run(target, overlayContent, overlays);
+	return runner.run(target, overlayContent, overlays, options);
 }
 
 /** PreToolUse per-edit mutation gate (spec §4 / §12). Default-off; capability-aware. */
@@ -403,41 +366,85 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 	if (!ctx.config.enabled || ctx.config.mode === "off") return null;
 	const changeSet = normalizeChangeSet(ctx.toolName, ctx.toolInput);
 	if (changeSet === null) return null;
-	const target = mutationTargetFor(changedPaths(changeSet), (p) => ctx.readDisk(p) !== null);
+	const paths = changedPaths(changeSet);
+	const multiSourceReason = multiSourceNotMeasuredReason(paths);
+	if (multiSourceReason !== null) {
+		return gateDecision.unavailableDecision(ctx.config, multiSourceReason);
+	}
+	const target = mutationTargetFor(paths, (p) => ctx.readDisk(p) !== null);
 	if (target === null) return null;
 
 	if (ctx.runner === null || !ctx.runner.available()) {
-		if (ctx.config.unavailable_behavior === "block") return failClosed("mutation could not be measured");
-		return mutationOutcomeToDecision(notMeasured("no mutation runner configured"));
+		return gateDecision.unavailableDecision(ctx.config, "no mutation runner configured");
 	}
+	const testSelection = resolvedTestSelection(ctx, target);
+	const unavailableScope = unavailableTestSelection(testSelection);
+	if (unavailableScope !== null) return gateDecision.unavailableDecision(ctx.config, unavailableScope);
 
 	const disk = ctx.readDisk(target);
-	if (disk === null) return null;
+	if (disk === null) {
+		// A NEW file. It has a legitimate empty baseline and real proposed
+		// content, so it is squarely in scope — but v1 cannot certify it: with
+		// no prior manifest entry every mutant is first-sighting, which is
+		// baseline ADOPTION, not evidence that this edit is safe (the
+		// distinction the whole evidence contract turns on). Returning `null`
+		// here made the highest-risk edit in the tree — brand-new, untested
+		// code — the ONE edit that silently skipped the gate, and skipped it
+		// without leaving a trace anyone could audit. Not-measured is the
+		// honest answer: it warns, and under a fail-closed
+		// `unavailable_behavior` it blocks, exactly like every other case where
+		// the gate cannot see enough.
+		return gateDecision.unavailableDecision(
+			ctx.config,
+			`new file has no on-disk baseline to measure against (${target})`,
+		);
+	}
 	const overlayContent = overlayContentFor(changeSet, target, disk);
-	if (overlayContent === null) return null;
+	if (overlayContent === null) {
+		// The edit could not be applied to the on-disk content (a stale Edit
+		// whose old_string no longer matches, an unsupported payload shape).
+		// Silence here would report the same nothing as "not eligible".
+		return gateDecision.unavailableDecision(
+			ctx.config,
+			`could not reconstruct the proposed content for ${target}`,
+		);
+	}
 
-	// Measure the DIFF, not the file. The wire has carried `range` all along, but
-	// only the sharding path set it — so a three-line edit paid for every mutant
-	// in the module and reported survivors in code the edit never touched. A
-	// diffuse change degrades to `whole`, which is the previous behavior.
-	const scope = editScope(disk, overlayContent);
-
+	// v1 measures the WHOLE FILE (review passes 11-18): line-range execution is
+	// removed entirely — Stryker only emits mutants whose full AST span fits a
+	// range, so EVERY ranged run was a partial view that could find adverse
+	// evidence but never certify clean (a cost with no conclusive answer), and
+	// a boundary-spanning mutant could vanish from both sides of a split. The
+	// changed-region VERDICT scoping is unaffected: the evaluator still judges
+	// only changed symbols via the manifest's symbol hashes.
 	let result: MutationRunOutput;
 	try {
-		const overlays = buildOverlays({ changeSet, target, overlayContent, readDisk: ctx.readDisk });
-		result = await ctx.runner.run(
+		const runOptions = selectedRunOptions(testSelection);
+		const overlays = buildMutationOverlays({
+			changeSet,
 			target,
 			overlayContent,
-			overlays,
-			scope.kind === "span" ? scope.range : undefined,
-		);
+			readDisk: ctx.readDisk,
+			testFiles: runOptions?.testFiles ?? [],
+		});
+		result = await runSelectedMutation(ctx.runner, target, overlayContent, overlays, runOptions);
 	} catch (err) {
 		// A budget expiry is not a failure — the engine is still working and the
 		// runner retains the report, so hand the handles up for the next window.
 		// The answer is still "not measured", because right now it genuinely is.
 		const pending = pendingHandlesFrom(err);
 		if (pending.length > 0 && ctx.onPending) ctx.onPending(target, overlayContent, pending);
-		return mutationOutcomeToDecision(notMeasured(notMeasuredReason(err, pending.length)));
+		return gateDecision.unavailableDecision(ctx.config, notMeasuredReason(err, pending.length));
+	}
+	// Completeness gate (external review 2026-08-23, second pass, finding 1): a
+	// sharded run with ANY missing shard is a partial view — a survivor in the
+	// missing tile would be invisible, so evaluating it could persist a forged
+	// clean pass. Incomplete ⇒ honest not-measured; the manifest never moves.
+	if ((result.incompleteShards ?? 0) > 0) {
+		return gateDecision.unavailableDecision(
+			ctx.config,
+			`${result.incompleteShards} of the planned mutation shard(s) did not report — partial results never count as measured (a missing shard could be hiding survivors)`,
+		);
 	}
 	const outcome = evaluateMutation({
 		file: target,
@@ -446,12 +453,24 @@ export async function runPerEditMutationGate(ctx: MutationGateContext): Promise<
 		adapted: result.mutants,
 		siteCountThreshold: ctx.config.site_count_threshold ?? DEFAULT_SITE_COUNT_THRESHOLD,
 		testRun: result.testRun,
+		...runEvidenceFields(result),
 		at: ctx.at,
+		// v1 runs are always whole-file (line-range execution removed, review
+		// passes 11-18), so the run is never a partial view. The evaluator's
+		// partial-scope guards stay in place for any future scoped mode.
+		partialScope: testSelectionIsPartial(testSelection),
 		...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
 	});
-	const persistWarning = persistIfCleanMeasured(outcome, ctx.persist);
-	const decision = applyMode(mutationOutcomeToDecision(outcome), ctx.config.mode);
-	if (persistWarning) decision.warnings = [...(decision.warnings ?? []), persistWarning];
+	// An unavailable verdict from the evaluator (typescript missing, partial run
+	// with no finding, inconclusive statuses) obeys unavailable_behavior like
+	// every other "could not measure" exit (review 2026-08-24, item 4).
+	if (outcome.kind === "unavailable") {
+		return gateDecision.unavailableDecision(ctx.config, outcome.reason);
+	}
+	// One exit for measured + adoption outcomes: adoption persists FIRST and
+	// declares "adopted" only on success (review 2026-08-28 item 1); a measured
+	// clean persists with its failure downgraded to a warning, as before.
+	const decision = gateDecision.decideAndPersist(outcome, ctx.persist, ctx.config.mode);
 	// A test-only edit leaves the source untouched, so the ordinary "no new
 	// survivors" verdict is trivially satisfied and says nothing about whether
 	// the test was worth adding. Answer that question directly.

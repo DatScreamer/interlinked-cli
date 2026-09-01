@@ -19,6 +19,340 @@ const GRAPH_HISTORY_PATH = join(DATA_DIR, "graph-history.jsonl");
 const SUGGESTION_OUTCOMES_PATH = join(DATA_DIR, "suggestion-outcomes.jsonl");
 const RULES_STATS_PATH = join(DATA_DIR, "rules-stats.json");
 
+// activity.jsonl and collection.jsonl are rotated by maintenance commands.
+// The generated hook cannot import the CLI's file-mutation-lock module, so it
+// carries the same small on-disk protocol. Writers never append around a held
+// lock: they wait for the replacer, recover only abandoned owners, or fail the
+// surrounding best-effort write after a bounded wait.
+const FILE_MUTATION_LOCK_WAIT_MS = 15 * 1000;
+const FILE_MUTATION_LOCK_RETRY_MS = 5;
+const FILE_MUTATION_LOCK_STALE_MS = 10 * 60 * 1000;
+const FILE_MUTATION_LEGACY_IDENTITY_SKEW_MS = 2 * 1000;
+const FILE_MUTATION_IDENTITY_CACHE_MS = 1000;
+
+function fileMutationLockPath(path) {
+    return path + ".interlinked-mutation.lock";
+}
+
+function validFileMutationLockToken(token) {
+    return typeof token === "string" && /^[a-zA-Z0-9._-]{1,128}$/.test(token);
+}
+
+function fileMutationLockOwnerPath(path, token) {
+    if (!validFileMutationLockToken(token)) throw new TypeError("file-mutation lock token is not path-safe");
+    return join(fileMutationLockPath(path), "owner-" + token + ".json");
+}
+
+function fileMutationErrorCode(error) {
+    return error && typeof error === "object" && typeof error.code === "string"
+        ? error.code
+        : null;
+}
+
+function parseFileMutationLockOwner(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!Number.isSafeInteger(value.pid) || value.pid <= 0) return null;
+    if (!validFileMutationLockToken(value.token)) return null;
+    if (!Number.isFinite(value.acquired_at_ms) || value.acquired_at_ms <= 0) return null;
+    if (Object.hasOwn(value, "boot_id")
+        && (typeof value.boot_id !== "string" || value.boot_id.length === 0)) return null;
+    if (Object.hasOwn(value, "process_start_id")
+        && (typeof value.process_start_id !== "string" || value.process_start_id.length === 0)) return null;
+    return {
+        pid: value.pid,
+        token: value.token,
+        acquired_at_ms: value.acquired_at_ms,
+        ...(typeof value.boot_id === "string" ? { boot_id: value.boot_id } : {}),
+        ...(typeof value.process_start_id === "string" ? { process_start_id: value.process_start_id } : {}),
+    };
+}
+
+function readFileMutationLockOwner(ownerPath) {
+    try {
+        return parseFileMutationLockOwner(JSON.parse(readFileSync(ownerPath, "utf-8")));
+    } catch (_err) { void 0; return null; }
+}
+
+let cachedFileMutationBootIdentity;
+let cachedFileMutationLinuxClockTicks;
+let cachedFileMutationOwnIdentity;
+let recentFileMutationForeignIdentity;
+
+function readFileMutationBootIdentity() {
+    if (cachedFileMutationBootIdentity !== undefined) return cachedFileMutationBootIdentity;
+    try {
+        if (process.platform === "linux") {
+            const id = readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
+            const match = /^btime\\s+(\\d+)$/m.exec(readFileSync("/proc/stat", "utf-8"));
+            const startedAtMs = match ? Number(match[1]) * 1000 : null;
+            cachedFileMutationBootIdentity = id ? { id: "linux:" + id, startedAtMs } : null;
+            return cachedFileMutationBootIdentity;
+        }
+        if (process.platform === "darwin") {
+            const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+                encoding: "utf-8",
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 1000,
+            });
+            const match = /\\bsec\\s*=\\s*(\\d+)/.exec(output);
+            cachedFileMutationBootIdentity = match
+                ? { id: "darwin:" + match[1], startedAtMs: Number(match[1]) * 1000 }
+                : null;
+            return cachedFileMutationBootIdentity;
+        }
+    } catch (_err) { void 0; /* identity failure remains fail-conservative */ }
+    cachedFileMutationBootIdentity = null;
+    return null;
+}
+
+function readFileMutationLinuxClockTicks() {
+    if (cachedFileMutationLinuxClockTicks !== undefined) return cachedFileMutationLinuxClockTicks;
+    for (const executable of ["/usr/bin/getconf", "/bin/getconf"]) {
+        try {
+            const output = execFileSync(executable, ["CLK_TCK"], {
+                encoding: "utf-8",
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 1000,
+            }).trim();
+            const ticks = Number(output);
+            if (Number.isFinite(ticks) && Number.isSafeInteger(ticks) && ticks > 0) {
+                cachedFileMutationLinuxClockTicks = ticks;
+                return ticks;
+            }
+        } catch (_err) { void 0; /* try the other portable getconf path */ }
+    }
+    cachedFileMutationLinuxClockTicks = null;
+    return null;
+}
+
+function readFileMutationLinuxProcessStartIdentity(pid) {
+    const stat = readFileSync("/proc/" + pid + "/stat", "utf-8");
+    const close = stat.lastIndexOf(")");
+    const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\\s+/) : [];
+    const startTicks = fields[19];
+    if (!startTicks || !/^\\d+$/.test(startTicks)) return null;
+    const boot = readFileMutationBootIdentity();
+    const ticksPerSecond = readFileMutationLinuxClockTicks();
+    const startedAtMs = boot && boot.startedAtMs !== null && ticksPerSecond
+        ? boot.startedAtMs + (Number(startTicks) / ticksPerSecond) * 1000
+        : null;
+    return { id: "linux:" + startTicks, startedAtMs };
+}
+
+function readFileMutationProcessStartIdentity(pid) {
+    try {
+        if (process.platform === "linux") return readFileMutationLinuxProcessStartIdentity(pid);
+        if (process.platform === "darwin") {
+            const output = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+                encoding: "utf-8",
+                env: { LANG: "C", LC_ALL: "C", TZ: "UTC" },
+                maxBuffer: 4096,
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 1000,
+            }).trim().replace(/\\s+/g, " ");
+            const startedAtMs = Date.parse(output + " UTC");
+            return output && Number.isFinite(startedAtMs)
+                ? { id: "darwin:" + output, startedAtMs }
+                : null;
+        }
+    } catch (_err) { void 0; /* process may have exited during observation */ }
+    return null;
+}
+
+function readFileMutationProcessIdentity(pid, now) {
+    if (pid === process.pid && cachedFileMutationOwnIdentity) return cachedFileMutationOwnIdentity;
+    if (pid !== process.pid && recentFileMutationForeignIdentity
+        && recentFileMutationForeignIdentity.pid === pid
+        && now - recentFileMutationForeignIdentity.observedAtMs < FILE_MUTATION_IDENTITY_CACHE_MS) {
+        return recentFileMutationForeignIdentity.identity;
+    }
+    const boot = readFileMutationBootIdentity();
+    const start = readFileMutationProcessStartIdentity(pid);
+    const identity = {
+        bootId: boot ? boot.id : null,
+        bootStartedAtMs: boot ? boot.startedAtMs : null,
+        processStartId: start ? start.id : null,
+        processStartedAtMs: start ? start.startedAtMs : null,
+    };
+    if (pid === process.pid) cachedFileMutationOwnIdentity = identity;
+    else recentFileMutationForeignIdentity = { pid, observedAtMs: now, identity };
+    return identity;
+}
+
+function fileMutationOwnerIdentityIsStale(owner, identity) {
+    if (owner.boot_id && identity.bootId && owner.boot_id !== identity.bootId) return true;
+    if (owner.process_start_id && identity.processStartId
+        && owner.process_start_id !== identity.processStartId) return true;
+    // Only a complete matching tuple is definitive. Partial records can be
+    // published when one OS probe fails and still need the epoch fallback.
+    if (owner.boot_id && owner.process_start_id) return false;
+    if (identity.bootStartedAtMs !== null
+        && owner.acquired_at_ms + FILE_MUTATION_LEGACY_IDENTITY_SKEW_MS < identity.bootStartedAtMs) return true;
+    return identity.processStartedAtMs !== null
+        && owner.acquired_at_ms + FILE_MUTATION_LEGACY_IDENTITY_SKEW_MS < identity.processStartedAtMs;
+}
+
+function fileMutationOwnerIsAbandoned(owner, now) {
+    if (!processIsAlive(owner.pid)) return true;
+    return fileMutationOwnerIdentityIsStale(
+        owner,
+        readFileMutationProcessIdentity(owner.pid, now),
+    );
+}
+
+function observeFileMutationLock(path, lockPath) {
+    let entries;
+    try { entries = readdirSync(lockPath).sort(); }
+    catch (error) {
+        if (fileMutationErrorCode(error) === "ENOENT") return null;
+        if (fileMutationErrorCode(error) === "ENOTDIR") {
+            return { entries: [], legacy: true, owner: readFileMutationLockOwner(lockPath), ownerPath: lockPath };
+        }
+        return { entries: [], legacy: false, owner: null, ownerPath: null };
+    }
+    if (entries.length !== 1) return { entries, legacy: false, owner: null, ownerPath: null };
+    const entry = entries[0];
+    if (!entry || !entry.startsWith("owner-") || !entry.endsWith(".json")) {
+        return { entries, legacy: false, owner: null, ownerPath: null };
+    }
+    const ownerPath = join(lockPath, entry);
+    const owner = readFileMutationLockOwner(ownerPath);
+    const tokenFromName = entry.slice("owner-".length, -".json".length);
+    if (!owner || owner.token !== tokenFromName) {
+        return { entries, legacy: false, owner: null, ownerPath: null };
+    }
+    if (fileMutationLockOwnerPath(path, owner.token) !== ownerPath) {
+        return { entries, legacy: false, owner: null, ownerPath: null };
+    }
+    return { entries, legacy: false, owner, ownerPath };
+}
+
+function fileMutationLockAgeMs(lockPath, observation, now) {
+    if (observation.owner) return Math.max(0, now - observation.owner.acquired_at_ms);
+    try { return Math.max(0, now - statSync(lockPath).mtimeMs); }
+    catch (_err) { void 0; return 0; }
+}
+
+function sameFileMutationLockOwner(left, right) {
+    return !!left && !!right
+        && left.pid === right.pid
+        && left.token === right.token
+        && left.acquired_at_ms === right.acquired_at_ms
+        && left.boot_id === right.boot_id
+        && left.process_start_id === right.process_start_id;
+}
+
+function unlinkObservedFileMutationEntries(lockPath, observation) {
+    const first = observation.ownerPath || (observation.entries[0] && join(lockPath, observation.entries[0]));
+    if (!first) return true;
+    if (observation.owner
+        && !sameFileMutationLockOwner(readFileMutationLockOwner(first), observation.owner)) {
+        return false;
+    }
+    try { unlinkSync(first); }
+    catch (_err) {
+        // A competing recoverer retired the exact observed token. It owns
+        // recovery; never continue on to a successor lock directory.
+        return false;
+    }
+    for (const entry of observation.entries) {
+        const entryPath = join(lockPath, entry);
+        if (entryPath === first) continue;
+        try { unlinkSync(entryPath); }
+        catch (_err) { return false; }
+    }
+    return true;
+}
+
+function removeEmptyFileMutationLockDirectory(lockPath) {
+    try { rmdirSync(lockPath); return true; }
+    catch (error) {
+        if (fileMutationErrorCode(error) === "ENOENT") return true;
+        // ENOTEMPTY means a successor published its token. Leave it intact.
+        return false;
+    }
+}
+
+function removeObservedFileMutationLock(lockPath, observation) {
+    if (!unlinkObservedFileMutationEntries(lockPath, observation)) return false;
+    // A rolling-upgrade legacy lock is the file at lockPath itself. Once that
+    // exact file is unlinked, never rmdir the path: it may now be a successor.
+    if (observation.legacy) return true;
+    return removeEmptyFileMutationLockDirectory(lockPath);
+}
+
+function recoverAbandonedFileMutationLock(path, lockPath, now) {
+    const observation = observeFileMutationLock(path, lockPath);
+    if (!observation) return true;
+    const abandonedOwner = observation.owner !== null
+        && fileMutationOwnerIsAbandoned(observation.owner, now);
+    const malformedAndStale = observation.owner === null
+        && fileMutationLockAgeMs(lockPath, observation, now) >= FILE_MUTATION_LOCK_STALE_MS;
+    if (!abandonedOwner && !malformedAndStale) return false;
+    return removeObservedFileMutationLock(lockPath, observation);
+}
+
+function releaseFileMutationLock(lockPath, ownerPath, expectedOwner) {
+    const owner = readFileMutationLockOwner(ownerPath);
+    if (!sameFileMutationLockOwner(owner, expectedOwner)) return;
+    try { unlinkSync(ownerPath); }
+    catch (error) {
+        if (fileMutationErrorCode(error) === "ENOENT") return;
+        throw error;
+    }
+    removeEmptyFileMutationLockDirectory(lockPath);
+}
+
+function tryCreateFileMutationLease(path, lockPath, owner) {
+    try { mkdirSync(lockPath); }
+    catch (error) {
+        if (fileMutationErrorCode(error) === "EEXIST") return null;
+        throw error;
+    }
+    const ownerPath = fileMutationLockOwnerPath(path, owner.token);
+    try {
+        writeFileSync(ownerPath, JSON.stringify(owner), { flag: "wx" });
+        return { lockPath, ownerPath, owner };
+    } catch (error) {
+        removeEmptyFileMutationLockDirectory(lockPath);
+        // A stale recoverer can retire the empty directory between mkdir and
+        // the owner write. Retry; never enter without a durable owner entry.
+        if (fileMutationErrorCode(error) === "ENOENT") return null;
+        throw error;
+    }
+}
+
+function withFileMutationLock(path, action) {
+    const lockPath = fileMutationLockPath(path);
+    const startedAt = Date.now();
+    const token = randomUUID();
+    const identity = readFileMutationProcessIdentity(process.pid, startedAt);
+    const owner = {
+        pid: process.pid,
+        token,
+        acquired_at_ms: startedAt,
+        ...(identity.bootId ? { boot_id: identity.bootId } : {}),
+        ...(identity.processStartId ? { process_start_id: identity.processStartId } : {}),
+    };
+
+    while (true) {
+        const lease = tryCreateFileMutationLease(path, lockPath, owner);
+        if (lease) {
+            try { return action(); }
+            finally { releaseFileMutationLock(lease.lockPath, lease.ownerPath, lease.owner); }
+        }
+        if (recoverAbandonedFileMutationLock(path, lockPath, Date.now())) continue;
+        if (Date.now() - startedAt >= FILE_MUTATION_LOCK_WAIT_MS) {
+            throw new Error("timed out waiting for append/rotation lock " + lockPath);
+        }
+        blockingSleep(FILE_MUTATION_LOCK_RETRY_MS);
+    }
+}
+
+function appendFileWithMutationLock(path, data) {
+    return withFileMutationLock(path, function() { appendFileSync(path, data); });
+}
+
 function appendJsonl(path, record) {
     try {
         const dir = dirname(path);
@@ -135,15 +469,39 @@ function emitTestRunIfApplicable(sessionId, agentName, event) {
 }
 
 // --- costs.jsonl — token usage per turn from transcript_path ---
-// Reads the Claude Code transcript JSONL incrementally (cursor file) and
-// emits one row per assistant message with usage data attached. Triggered
-// on Stop and SessionEnd so the read happens at most once per turn.
-function emitCostsFromTranscript(sessionId, transcriptPath) {
+// Reads Claude Code assistant usage and Codex token_count events
+// incrementally. Codex's total_token_usage is cumulative; last_token_usage
+// is the per-model-call delta that belongs in this append-only ledger.
+function costProviderName(provider) {
+    if (provider === "claude") return "claude-code";
+    return typeof provider === "string" && provider ? provider : null;
+}
+
+function costsCursorKey(sessionId, transcriptPath, context) {
+    const provider = costProviderName(context && context.provider);
+    const subagentId = context && context.subagent_id;
+    // Keep the legacy Claude root key so upgrading does not replay a whole
+    // transcript into costs.jsonl. Provider/actor/path isolation is required
+    // for Codex and subagents because sibling hooks share the parent session.
+    if (provider === "claude-code" && !subagentId) return sessionId;
+    const identity = JSON.stringify([provider || "unknown", sessionId, subagentId || "root", transcriptPath]);
+    return "v2:" + createHash("sha256").update(identity).digest("hex");
+}
+
+function costTokenCount(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function emitCostsFromTranscript(sessionId, transcriptPath, context) {
     if (!sessionId || !transcriptPath || !existsSync(transcriptPath)) return;
+    const costContext = context || {};
+    const provider = costProviderName(costContext.provider);
+    const cursorKey = costsCursorKey(sessionId, transcriptPath, costContext);
     let cursor = {};
     try { cursor = JSON.parse(readFileSync(COSTS_CURSOR_PATH, "utf-8")) || {}; }
     catch (_err) { cursor = {}; }
-    const previousOffset = (cursor[sessionId] && typeof cursor[sessionId].offset === "number") ? cursor[sessionId].offset : 0;
+    const cursorEntry = cursor[cursorKey] && typeof cursor[cursorKey] === "object" ? cursor[cursorKey] : {};
+    const previousOffset = typeof cursorEntry.offset === "number" ? cursorEntry.offset : 0;
     let stat;
     try { stat = statSync(transcriptPath); } catch { return; }
     if (stat.size <= previousOffset) return;
@@ -155,28 +513,67 @@ function emitCostsFromTranscript(sessionId, transcriptPath) {
         chunk = buf.toString("utf-8");
     } finally { closeSync(fd); }
     let emitted = 0;
+    let codexModel = typeof cursorEntry.last_model === "string"
+        ? cursorEntry.last_model
+        : (typeof costContext.model === "string" ? costContext.model : null);
     for (const line of chunk.split("\\n")) {
         if (!line.trim()) continue;
         let obj;
         try { obj = JSON.parse(line); } catch { continue; }
-        if (obj.type !== "assistant") continue;
-        const usage = (obj.message && obj.message.usage) || obj.usage;
-        if (!usage) continue;
-        const model = (obj.message && obj.message.model) || obj.model || null;
-        appendJsonl(COSTS_PATH, {
+        const payload = obj && obj.payload;
+        if ((obj.type === "turn_context" || (obj.type === "response_item" && payload && payload.type === "turn_context"))
+            && payload && typeof payload.model === "string" && payload.model) {
+            codexModel = payload.model;
+        }
+        if (obj.type === "assistant") {
+            const usage = (obj.message && obj.message.usage) || obj.usage;
+            if (!usage) continue;
+            const row = {
+                ts: obj.timestamp || new Date().toISOString(),
+                session_id: sessionId,
+                message_id: (obj.message && obj.message.id) || obj.uuid || null,
+                model: (obj.message && obj.message.model) || obj.model || null,
+                input_tokens: usage.input_tokens || 0,
+                output_tokens: usage.output_tokens || 0,
+                cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+                stop_reason: (obj.message && obj.message.stop_reason) || null,
+            };
+            if (provider) row.provider = provider;
+            if (costContext.subagent_id) row.subagent_id = costContext.subagent_id;
+            appendJsonl(COSTS_PATH, row);
+            emitted++;
+            continue;
+        }
+        if (obj.type !== "event_msg" || !payload || payload.type !== "token_count") continue;
+        const info = payload.info;
+        // Deliberately ignore total_token_usage: it is a running total and
+        // appending it once per event would multiply the reported spend.
+        const usage = info && info.last_token_usage;
+        if (!usage || typeof usage !== "object") continue;
+        const row = {
             ts: obj.timestamp || new Date().toISOString(),
             session_id: sessionId,
-            message_id: (obj.message && obj.message.id) || obj.uuid || null,
-            model,
-            input_tokens: usage.input_tokens || 0,
-            output_tokens: usage.output_tokens || 0,
-            cache_read_input_tokens: usage.cache_read_input_tokens || 0,
-            cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
-            stop_reason: (obj.message && obj.message.stop_reason) || null,
-        });
+            message_id: null,
+            model: codexModel,
+            input_tokens: costTokenCount(usage.input_tokens),
+            output_tokens: costTokenCount(usage.output_tokens),
+            cache_read_input_tokens: costTokenCount(usage.cached_input_tokens),
+            cache_creation_input_tokens: costTokenCount(usage.cache_write_input_tokens),
+            reasoning_output_tokens: costTokenCount(usage.reasoning_output_tokens),
+            total_tokens: costTokenCount(usage.total_tokens),
+            stop_reason: null,
+        };
+        if (provider) row.provider = provider;
+        if (costContext.subagent_id) row.subagent_id = costContext.subagent_id;
+        appendJsonl(COSTS_PATH, row);
         emitted++;
     }
-    cursor[sessionId] = { offset: stat.size, last_emit_at: new Date().toISOString() };
+    cursor[cursorKey] = {
+        offset: stat.size,
+        last_emit_at: new Date().toISOString(),
+        ...(codexModel ? { last_model: codexModel } : {}),
+    };
     // Bound the cursor file at 100 sessions
     const keys = Object.keys(cursor);
     if (keys.length > 100) {
@@ -676,11 +1073,13 @@ function appendLocal(event, hookEvent, sessionId, agentName, workspaceKey, proje
         // decisions written by appendGuardDecision; session_end is just the
         // second chained record type. Maps to OWASP ASI11. Verify with:
         //   interlinked audit verify
-        if (AUDIT_GUARD_TYPES[record.type]) {
-            record.previousHash = readPreviousGuardHash();
-            record.hash = computeAuditHash(record);
-        }
-        appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
+        withFileMutationLock(ACTIVITY_PATH, function() {
+            if (AUDIT_GUARD_TYPES[record.type]) {
+                record.previousHash = readPreviousGuardHash();
+                record.hash = computeAuditHash(record);
+            }
+            appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
+        });
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
 
@@ -721,9 +1120,11 @@ function appendGuardDecision(decision, guardResult, event, hookEvent, sessionId,
         // Hash chain (OWASP ASI11): previousHash links to the most recent
         // hash-bearing guard_* entry; hash is sha256 over canonical JSON of
         // every field except 'hash' itself. Verify with: interlinked audit verify.
-        record.previousHash = readPreviousGuardHash();
-        record.hash = computeAuditHash(record);
-        appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
+        withFileMutationLock(ACTIVITY_PATH, function() {
+            record.previousHash = readPreviousGuardHash();
+            record.hash = computeAuditHash(record);
+            appendFileSync(ACTIVITY_PATH, JSON.stringify(record) + "\\n");
+        });
     } catch (_err) { void 0; /* intentional: no-op */ }
 }
 

@@ -8,18 +8,27 @@
 
 import {
 	appendFileSync,
-	closeSync,
 	existsSync,
 	mkdirSync,
-	openSync,
-	readFileSync,
-	readSync,
 	renameSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import {
+	MAX_CAPTURED_JSONL_LINE_BYTES,
+	readFileRange,
+	scanFileLines,
+} from "./bounded-file-io.js";
+import {
+	fileIdentity,
+	type FileIdentity,
+	sameFileIdentity,
+} from "./file-suffix-replacement.js";
+import { withFileMutationLock } from "./file-mutation-lock.js";
+import { isJsonObject } from "./json-types.js";
+import { parseLocalActivityEvent } from "./local-activity-collection.js";
 import {
 	getActivityPath,
 	getSyncErrorsPath,
@@ -33,16 +42,114 @@ import type {
 /**
  * Read the sync cursor (byte offset into activity.jsonl).
  */
+export const MAX_SYNC_STATE_BYTES = 64 * 1024;
+
+const EMPTY_SYNC_STATE: SyncState = { synced_through_bytes: 0, last_sync_at: "" };
+const SUMMARY_TOOL_TUPLE_LENGTH = 2;
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function countMap(value: unknown): Record<string, number> | null {
+	if (!isJsonObject(value)) return null;
+	// SAFETY: this null-prototype dictionary is populated only with own string
+	// keys whose values pass nonNegativeSafeInteger below.
+	const result: Record<string, number> = Object.create(null) as Record<string, number>;
+	for (const [key, count] of Object.entries(value)) {
+		if (!nonNegativeSafeInteger(count)) return null;
+		Object.defineProperty(result, key, {
+			value: count,
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return result;
+}
+
+function parseLastSyncSummary(value: unknown): LastSyncSummary | null {
+	if (!isJsonObject(value)) return null;
+	const byType = countMap(value.by_type);
+	const byAgent = countMap(value.by_agent);
+	if (!byType || !byAgent || !Array.isArray(value.top_tools)) return null;
+	const topTools: [string, number][] = [];
+	for (const entry of value.top_tools) {
+		if (
+			!Array.isArray(entry) ||
+			entry.length !== SUMMARY_TOOL_TUPLE_LENGTH ||
+			typeof entry[0] !== "string" ||
+			!nonNegativeSafeInteger(entry[1])
+		) {
+			return null;
+		}
+		topTools.push([entry[0], entry[1]]);
+	}
+	if (!isJsonObject(value.time_range)) return null;
+	if (
+		typeof value.server_url !== "string" ||
+		!(typeof value.workspace_id === "string" || value.workspace_id === null) ||
+		!nonNegativeSafeInteger(value.events_total) ||
+		!nonNegativeSafeInteger(value.accepted) ||
+		!nonNegativeSafeInteger(value.skipped) ||
+		!nonNegativeSafeInteger(value.scrubbed) ||
+		!nonNegativeSafeInteger(value.batches) ||
+		!nonNegativeSafeInteger(value.sessions) ||
+		typeof value.time_range.earliest !== "string" ||
+		typeof value.time_range.latest !== "string"
+	) {
+		return null;
+	}
+	return {
+		server_url: value.server_url,
+		workspace_id: value.workspace_id,
+		events_total: value.events_total,
+		accepted: value.accepted,
+		skipped: value.skipped,
+		scrubbed: value.scrubbed,
+		batches: value.batches,
+		by_type: byType,
+		by_agent: byAgent,
+		top_tools: topTools,
+		sessions: value.sessions,
+		time_range: {
+			earliest: value.time_range.earliest,
+			latest: value.time_range.latest,
+		},
+	};
+}
+
+function parseSyncState(value: unknown): SyncState | null {
+	if (!isJsonObject(value) || !nonNegativeSafeInteger(value.synced_through_bytes)) return null;
+	if (value.last_sync_at !== undefined && typeof value.last_sync_at !== "string") return null;
+	const state: SyncState = {
+		synced_through_bytes: value.synced_through_bytes,
+		last_sync_at: value.last_sync_at ?? "",
+	};
+	if (value.last_summary !== undefined) {
+		const summary = parseLastSyncSummary(value.last_summary);
+		if (summary) state.last_summary = summary;
+	}
+	return state;
+}
+
 export function readSyncState(cwd?: string): SyncState {
 	const path = getSyncStatePath(cwd);
 	if (!existsSync(path)) {
-		return { synced_through_bytes: 0, last_sync_at: "" };
+		return { ...EMPTY_SYNC_STATE };
 	}
 	try {
-		return JSON.parse(readFileSync(path, "utf-8"));
+		const bytes = statSync(path).size;
+		if (bytes > MAX_SYNC_STATE_BYTES) {
+			return { ...EMPTY_SYNC_STATE };
+		}
+		const parsed: unknown = JSON.parse(
+			readFileRange(path, 0, bytes, MAX_SYNC_STATE_BYTES).toString("utf8"),
+		);
+		return parseSyncState(parsed) ?? { ...EMPTY_SYNC_STATE };
 	} catch (_err) {
 		/* intentional: malformed sync-state JSON — reset to "never synced" */
-		return { synced_through_bytes: 0, last_sync_at: "" };
+		return { ...EMPTY_SYNC_STATE };
 	}
 }
 
@@ -138,60 +245,221 @@ export interface UnsyncedEvents {
 	newOffset: number;
 }
 
+export interface UnsyncedReadRange {
+	/** Override the persisted cursor (used by read-only/dry-run pagination). */
+	startOffset?: number;
+	/** Freeze a sync run at the activity-log size observed when it started. */
+	endExclusive?: number;
+	/** Reject pages read after compaction replaced the activity-log inode. */
+	expectedIdentity?: FileIdentity;
+}
+
+export interface ActivitySyncBasis {
+	identity: FileIdentity;
+	endExclusive: number;
+}
+
+export class SyncCursorInvalidatedError extends Error {
+	constructor(reason: string) {
+		super(`activity sync cursor basis changed: ${reason}`);
+		this.name = "SyncCursorInvalidatedError";
+	}
+}
+
+export function assertActivitySyncCursor(cursor: number, fileSize: number): void {
+	if (!Number.isSafeInteger(cursor) || cursor < 0) {
+		throw new SyncCursorInvalidatedError(`cursor ${cursor} is not a non-negative safe integer`);
+	}
+	if (cursor > fileSize) {
+		throw new SyncCursorInvalidatedError(`cursor ${cursor} exceeds the ${fileSize}-byte activity log`);
+	}
+}
+
+/** Capture the inode and EOF that all pages in one manual sync must retain. */
+export function captureActivitySyncBasis(expectedCursor: number, cwd?: string): ActivitySyncBasis {
+	const activityPath = getActivityPath(cwd);
+	return withFileMutationLock(activityPath, () => {
+		if (!existsSync(activityPath)) {
+			throw new SyncCursorInvalidatedError("activity log disappeared before sync started");
+		}
+		const currentCursor = readSyncState(cwd).synced_through_bytes;
+		if (currentCursor !== expectedCursor) {
+			throw new SyncCursorInvalidatedError(
+				`persisted cursor moved from ${expectedCursor} to ${currentCursor}`,
+			);
+		}
+		const endExclusive = statSync(activityPath).size;
+		assertActivitySyncCursor(expectedCursor, endExclusive);
+		return { identity: fileIdentity(activityPath), endExclusive };
+	});
+}
+
+function assertCheckpointBasis(
+	activityPath: string,
+	basis: ActivitySyncBasis,
+	nextCursor: number,
+): void {
+	if (!existsSync(activityPath)) {
+		throw new SyncCursorInvalidatedError("activity log disappeared before checkpoint");
+	}
+	if (!sameFileIdentity(fileIdentity(activityPath), basis.identity)) {
+		throw new SyncCursorInvalidatedError("activity log was replaced before checkpoint");
+	}
+	assertActivitySyncCursor(nextCursor, statSync(activityPath).size);
+}
+
+interface SyncCheckpoint {
+	basis: ActivitySyncBasis;
+	expectedCursor: number;
+	nextCursor: number;
+	summary?: LastSyncSummary;
+	cwd?: string;
+}
+
+/** Persist a checkpoint only while its inode and preceding cursor still match. */
+export function checkpointSyncState(checkpoint: SyncCheckpoint): void {
+	const activityPath = getActivityPath(checkpoint.cwd);
+	withFileMutationLock(activityPath, () => {
+		assertCheckpointBasis(activityPath, checkpoint.basis, checkpoint.nextCursor);
+		const currentCursor = readSyncState(checkpoint.cwd).synced_through_bytes;
+		if (currentCursor === checkpoint.nextCursor) return;
+		if (currentCursor !== checkpoint.expectedCursor) {
+			throw new SyncCursorInvalidatedError(
+				`persisted cursor moved from ${checkpoint.expectedCursor} to ${currentCursor}`,
+			);
+		}
+		updateSyncState(checkpoint.nextCursor, checkpoint.summary, checkpoint.cwd);
+	});
+}
+
+function snapshotEnd(requested: number | undefined, fileSize: number): number {
+	if (requested === undefined) return fileSize;
+	if (!Number.isSafeInteger(requested) || requested < 0) {
+		throw new SyncCursorInvalidatedError(`snapshot EOF ${requested} is invalid`);
+	}
+	if (requested > fileSize) {
+		throw new SyncCursorInvalidatedError(
+			`snapshot EOF ${requested} exceeds the current ${fileSize}-byte activity log`,
+		);
+	}
+	return requested;
+}
+
+function cursorStart(requested: number, endExclusive: number, fileSize: number): number {
+	assertActivitySyncCursor(requested, fileSize);
+	if (requested > endExclusive) {
+		throw new SyncCursorInvalidatedError(
+			`cursor ${requested} exceeds snapshot EOF ${endExclusive}`,
+		);
+	}
+	return requested;
+}
+
+function boundedReadRange(
+	fileSize: number,
+	persistedOffset: number,
+	range: UnsyncedReadRange,
+): { startOffset: number; endExclusive: number } {
+	const endExclusive = snapshotEnd(range.endExclusive, fileSize);
+	const startOffset = cursorStart(range.startOffset ?? persistedOffset, endExclusive, fileSize);
+	return { startOffset, endExclusive };
+}
+
+const MAX_SYNC_PAGE_BYTES = 8 * 1024 * 1024;
+
+interface UnsyncedScanState {
+	events: LocalActivityEvent[];
+	newOffset: number;
+	retainedBytes: number;
+}
+
+function consumeUnsyncedLine(
+	line: Parameters<Parameters<typeof scanFileLines>[1]>[0],
+	state: UnsyncedScanState,
+	eventLimit: number | undefined,
+): boolean | void {
+	if (!line.nonEmpty) {
+		state.newOffset = line.nextOffset;
+		return;
+	}
+	if (line.oversized) {
+		throw new RangeError(
+			`activity JSONL row at byte ${line.start} exceeds ${MAX_CAPTURED_JSONL_LINE_BYTES} bytes; cursor was not advanced`,
+		);
+	}
+	if (line.text === undefined) return;
+	let event: LocalActivityEvent | null;
+	try {
+		event = parseLocalActivityEvent(JSON.parse(line.text));
+	} catch {
+		state.newOffset = line.nextOffset;
+		return;
+	}
+	if (event === null) {
+		state.newOffset = line.nextOffset;
+		return;
+	}
+	const lineBytes = line.nextOffset - line.start;
+	if (state.retainedBytes + lineBytes > MAX_SYNC_PAGE_BYTES) return false;
+	state.events.push(event);
+	state.retainedBytes += lineBytes;
+	state.newOffset = line.nextOffset;
+	return eventLimit !== undefined && state.events.length >= eventLimit ? false : undefined;
+}
+
+function assertPageIdentity(path: string, expected: FileIdentity): void {
+	if (!sameFileIdentity(fileIdentity(path), expected)) {
+		throw new SyncCursorInvalidatedError("activity log was replaced during page read");
+	}
+}
+
 /**
  * Read unsynced events from the JSONL log (from byte offset to EOF).
  */
-export function getUnsyncedEvents(limit?: number, cwd?: string): UnsyncedEvents {
+export function getUnsyncedEvents(
+	limit?: number,
+	cwd?: string,
+	range: UnsyncedReadRange = {},
+): UnsyncedEvents {
 	const activityPath = getActivityPath(cwd);
+	const syncState = readSyncState(cwd);
 	if (!existsSync(activityPath)) {
+		assertActivitySyncCursor(range.startOffset ?? syncState.synced_through_bytes, 0);
 		return { events: [], newOffset: 0 };
 	}
 
-	const syncState = readSyncState(cwd);
+	const beforeIdentity = fileIdentity(activityPath);
+	if (range.expectedIdentity) assertPageIdentity(activityPath, range.expectedIdentity);
 	const fileSize = statSync(activityPath).size;
+	const { startOffset, endExclusive } = boundedReadRange(
+		fileSize,
+		syncState.synced_through_bytes,
+		range,
+	);
 
-	if (syncState.synced_through_bytes >= fileSize) {
-		return { events: [], newOffset: fileSize };
+	if (startOffset >= endExclusive) {
+		return { events: [], newOffset: endExclusive };
 	}
 
-	// Read from offset to EOF using low-level fs
-	const bytesToRead = fileSize - syncState.synced_through_bytes;
-	const fd = openSync(activityPath, "r");
-	const buffer = Buffer.alloc(bytesToRead);
-	readSync(fd, buffer, 0, bytesToRead, syncState.synced_through_bytes);
-	closeSync(fd);
+	// Parse one bounded line at a time. The old offset→EOF Buffer followed by a
+	// single `.toString("utf-8")` failed once the pending suffix crossed V8's
+	// string ceiling. Malformed rows within the line ceiling are consumed;
+	// oversized rows fail explicitly and leave their starting cursor pending.
+	const eventLimit = limit && limit > 0 ? limit : undefined;
+	const state: UnsyncedScanState = { events: [], newOffset: startOffset, retainedBytes: 0 };
+	scanFileLines(
+		activityPath,
+		(line) => consumeUnsyncedLine(line, state, eventLimit),
+		{
+			startOffset,
+			endExclusive,
+			maxCapturedLineBytes: MAX_CAPTURED_JSONL_LINE_BYTES,
+			// A newline is the append-only writer's commit marker. Keep a partial
+			// trailing row pending until a later append terminates it.
+			includeFinalLine: false,
+		},
+	);
+	assertPageIdentity(activityPath, beforeIdentity);
 
-	const chunk = buffer.toString("utf-8");
-	const lines = chunk.split("\n").filter(Boolean);
-
-	const events: LocalActivityEvent[] = [];
-	for (const line of lines) {
-		try {
-			events.push(JSON.parse(line));
-		} catch (_err) {
-			/* intentional: malformed JSONL — skip so sync can proceed */
-		}
-	}
-
-	if (limit && events.length > limit) {
-		// Calculate byte offset for partial sync
-		let partialBytes = 0;
-		const partialEvents: LocalActivityEvent[] = [];
-		for (const line of lines) {
-			if (partialEvents.length >= limit) break;
-			try {
-				partialEvents.push(JSON.parse(line));
-				partialBytes += Buffer.byteLength(`${line}\n`, "utf-8");
-			} catch (_err) {
-				/* intentional: still advance offset past the malformed line to avoid infinite retry */
-				partialBytes += Buffer.byteLength(`${line}\n`, "utf-8");
-			}
-		}
-		return {
-			events: partialEvents,
-			newOffset: syncState.synced_through_bytes + partialBytes,
-		};
-	}
-
-	return { events, newOffset: fileSize };
+	return { events: state.events, newOffset: state.newOffset };
 }

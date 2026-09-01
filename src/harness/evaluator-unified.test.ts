@@ -356,6 +356,20 @@ describe("toHarnessEvent — copilot runner", () => {
 	});
 });
 
+describe("toHarnessEvent — delivery metadata", () => {
+	it("carries the request-owned PostTool warning token through framed evaluation", () => {
+		const harness = toHarnessEvent(
+			makeEvent({
+				post_delivery_token: "delivery-token-0001",
+				post_delivery_pid: 4242,
+				phase: "post-tool",
+			}),
+		);
+		expect(harness.post_delivery_token).toBe("delivery-token-0001");
+		expect(harness.post_delivery_pid).toBe(4242);
+	});
+});
+
 describe("toHarnessEvent — runner attribution", () => {
 	it.each([
 		["claude-code", "claude"],

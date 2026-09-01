@@ -12,19 +12,17 @@
 // main file (the latter is pinned by source-level regression tests).
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { checkAssertionDensity, runBehavioralChecks } from "../behavioral-checks.js";
-import type { ProjectWideSweepResult } from "../quality-checks.js";
+import { isInsideRoot } from "../large-file-policy.js";
 import {
 	countSuppressionDirectives,
 	findProjectRoot,
-	formatQualityWarnings,
-	runProjectWideChecksAsync,
 	runQualityChecks,
 } from "../quality-checks.js";
+import { createChangeSetExternalBatch } from "../quality-checks/change-set-external.js";
 import { acknowledgeChecks, isAcknowledged } from "../session-state.js";
 import { runStructureChecks } from "../structure/structure-checks.js";
-import { sweepExpiredTransientDebts } from "../transient-debt-expiry.js";
 import { formatStructureWarnings } from "../structure/structure-formatter.js";
 import { loadStructureConfig } from "../structure/structure-loader.js";
 import type { GuardRulesConfig, HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
@@ -35,7 +33,7 @@ import {
 	buildSmartTscOpts,
 	collectQualityResultEntries,
 	expandQualitySiblings,
-	recordChecksRan,
+	isQualityDeferralName,
 	runScoredSuggestionsPhase,
 } from "./post-tool-file-checks-phases-quality.js";
 import type { ServerRuntime } from "./runtime-context.js";
@@ -43,6 +41,7 @@ import type { ServerRuntime } from "./runtime-context.js";
 // Re-export the scored-suggestions phase so the orchestrator keeps importing
 // it from this module entry (it now lives in the -quality sibling).
 export { runScoredSuggestionsPhase };
+export { runProjectWideSweepPhase } from "./post-tool-project-wide-sweep.js";
 
 /** Structure-check cold-build time budget (ms). When existing checks have
  *  already burned this much of the shared 15s PostToolUse window, the cold
@@ -99,15 +98,41 @@ export async function runQualityPhase(
 		: resolve(CWD, editedFilePath);
 	const currentBaseline = ctx.preEditBaselines.get(baselineFilePath);
 	previousSuppressionCount = currentBaseline?.suppressionCount ?? 0;
+	const requestPaths = acc.editedFilePaths ?? [];
+	if (!acc.externalCheckBatch && requestPaths.length > 1) {
+		const inRepoPaths = requestPaths.filter(
+			(path) => path.length > 0 && isInsideRoot(CWD, path),
+		);
+		if (inRepoPaths.length > 0) {
+			const newFilePaths = (checkEvent.change_set?.files ?? [])
+				.filter((effect) => effect.kind === "created")
+				.map((effect) => effect.path);
+			acc.externalCheckBatch = createChangeSetExternalBatch({
+				paths: inRepoPaths,
+				newFilePaths,
+				checks: rules.quality_checks,
+				cwd: CWD,
+				outToolMetrics: postToolMetrics,
+				outChecksRan: checksRan,
+			});
+		}
+	}
 	// Phase mark — everything from the last mark up to here was
 	// the structural-checks block (export-surface diff, project
 	// graph update, impact analysis, deletion-hygiene).
 	markPhase("structural_checks");
-	const rawQualityResults = await runQualityChecks(checkEvent, rules.quality_checks, CWD, {
+	const batchedExternalResults = acc.externalCheckBatch
+		? await acc.externalCheckBatch.resultsForFile(editedFilePath)
+		: [];
+	const perFileQualityResults = await runQualityChecks(checkEvent, rules.quality_checks, CWD, {
 		...qualityOpts,
 		...(currentBaseline !== undefined ? { baseline: currentBaseline } : {}),
 		...(rules.diff_aware !== undefined ? { diffAware: rules.diff_aware } : {}),
 		outToolMetrics: postToolMetrics,
+		// The tool-check loop records only checks that reached a verdict; a
+		// thrown or deferred handler must not be reported as `checks_ran`.
+		outChecksRan: checksRan,
+		skipMultiFileExternalChecks: acc.externalCheckBatch !== undefined,
 		// Mythos Phase 4: recency-weighted check depth.
 		// Cold files skip heuristic detectors at PostToolUse.
 		filePriority: ctx.filePriorityMap,
@@ -124,20 +149,22 @@ export async function runQualityPhase(
 		// still run. See `editedFileInRepo` above.
 		editedFileInRepo,
 	});
+	const rawQualityResults = [...batchedExternalResults, ...perFileQualityResults];
 	// Phase mark — runQualityChecks ran tsc/biome/inline checks.
 	// The subprocess time is captured in tool_breakdown; this
 	// phase covers their wall time + the inline-check residual.
 	markPhase("quality_checks");
 	// Clear consumed baseline
 	ctx.preEditBaselines.delete(baselineFilePath);
-	// Track which quality checks actually applied to this file type
-	recordChecksRan(rules.quality_checks, editedFilePath, checksRan);
-
 	// --- Session-ack suppression for quality checks ---
 	// Skip re-firing warnings the user already acknowledged for this file+check.
-	// Errors always re-fire regardless of acknowledgment.
+	// Errors and no-verdict deferrals always re-fire regardless of acknowledgment:
+	// suppressing a deferral could make the tail incorrectly report all-clean.
 	const qualityResults = rawQualityResults.filter(
-		(r) => r.severity === "error" || !isAcknowledged(session, editedFilePath, r.name),
+		(r) =>
+			r.severity === "error" ||
+			isQualityDeferralName(r.name) ||
+			!isAcknowledged(session, editedFilePath, r.name),
 	);
 
 	// --- Sibling expansion (PostToolUse fan-out) ---
@@ -154,110 +181,6 @@ export async function runQualityPhase(
 	applyQualityDecision(ctx, qualityResults, decision);
 
 	return previousSuppressionCount;
-}
-
-/**
- * Retire transient debts the whole-project tsc run no longer reproduces.
- *
- * Split out so the sweep phase stays under the complexity ratchet, and so the
- * "never throw on the check path" contract is stated once: a ledger write
- * failure must degrade to a stale warning, never to a lost PostToolUse
- * response. Callers must only invoke this when tsc actually ran.
- */
-function expireTransientDebtsAfterSweep(
-	sweepResult: ProjectWideSweepResult,
-	cwd: string,
-	log: (message: string) => void,
-): void {
-	try {
-		const expired = sweepExpiredTransientDebts(
-			cwd,
-			sweepResult.findings.map((f) => ({ file: f.file, message: f.message })),
-		);
-		if (expired.length > 0) {
-			log(
-				`Transient debt: expired ${expired.length} debt(s) a clean project typecheck no longer reproduces: ${expired
-					.map((d) => `${d.file} [${d.detector ?? "?"}]`)
-					.join(", ")}`,
-			);
-		}
-	} catch {
-		/* intentional: expiry is hygiene — never fail a PostToolUse response for it */
-	}
-}
-
-/**
- * Project-wide sweep phase (cross-file tsc/biome). Fires at most once per
- * event; debounced by edit cadence or export-surface change. Ends with the
- * `project_wide_sweep` phase mark.
- */
-export async function runProjectWideSweepPhase(
-	ctx: ServerRuntime,
-	editedFilePath: string,
-	editedFileInRepo: boolean,
-	exportSurfaceChanged: boolean,
-	decision: HarnessDecision,
-	acc: PerFileCheckCtx,
-): Promise<void> {
-	const CWD = ctx.cwd;
-	const log = ctx.log;
-	const rules = ctx.rules;
-	const { markPhase } = acc;
-
-	// ── Project-wide sweep (cross-file tsc/biome) ──
-	// Catches cross-file type errors and lint issues that per-file checks miss.
-	// Triggers: every N edits or immediately when export surface changed.
-	// Skipped for out-of-tree edits: the sweep runs project-rooted tsc/
-	// biome over CWD, so it must not fire for a file outside CWD (it
-	// would also wrongly advance the repo's sweep cadence counter).
-	const pwConfig = rules.project_wide_checks;
-	if (pwConfig?.enabled && editedFilePath && editedFileInRepo) {
-		ctx.projectWideSweepState.recordFileChecked(editedFilePath);
-		if (!acc.projectWideSweepFired) {
-			const intervalReached = ctx.projectWideSweepState.recordEdit(pwConfig);
-			const shouldSweep =
-				intervalReached || (pwConfig.on_export_change && exportSurfaceChanged);
-
-			if (shouldSweep) {
-				acc.projectWideSweepFired = true;
-				// Async sweep yields the event loop while tsc/biome subprocesses
-				// run, so other PostToolUse connections can be serviced during
-				// the up-to-30s sweep window instead of queueing behind it.
-				const sweepResult = await runProjectWideChecksAsync(
-					pwConfig,
-					ctx.projectWideSweepState,
-					CWD,
-				);
-
-				// A whole-project tsc run is the ONLY authoritative "does this
-				// still reproduce?" evidence the harness produces, so it is also
-				// the only thing that can retire a transient debt on a file no
-				// edit will reach again. Guarded on tsc having actually run —
-				// an empty finding list from a sweep that skipped tsc means "no
-				// evidence", not "clean", and would discharge everything.
-				if (sweepResult.toolsRun.includes("tsc")) {
-					expireTransientDebtsAfterSweep(sweepResult, CWD, log);
-				}
-				if (sweepResult.findings.length > 0) {
-					const sweepWarnings = formatQualityWarnings(sweepResult.findings);
-					decision.warnings = [
-						...(decision.warnings || []),
-						...sweepWarnings,
-					];
-					log(
-						`Project-wide sweep: ${sweepResult.findings.length} cross-file issue(s) from ${sweepResult.toolsRun.join(", ")} (${sweepResult.elapsedMs}ms)`,
-					);
-				} else {
-					log(
-						`Project-wide sweep: clean (${sweepResult.toolsRun.join(", ")}, ${sweepResult.elapsedMs}ms)`,
-					);
-				}
-			}
-		}
-	}
-	// Phase mark — project-wide sweep is debounced (every 5 edits), so
-	// for most events this will be ~0ms; only firings show real cost.
-	markPhase("project_wide_sweep");
 }
 
 /**

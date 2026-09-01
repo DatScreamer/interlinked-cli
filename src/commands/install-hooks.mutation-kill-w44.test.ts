@@ -16,7 +16,7 @@ vi.mock("../lib/hooks.js", () => ({
 	resolveHookBinaryPath: (...args: any[]) => (resolveHookBinaryPathMock as any)(...args),
 }));
 
-const writeModeMock: any = vi.fn();
+const writeModeMock: any = vi.fn(() => true);
 vi.mock("./mode.js", () => ({
 	writeMode: (...args: any[]) => (writeModeMock as any)(...args),
 }));
@@ -44,6 +44,8 @@ const { ALL_PRESETS } = await import("../harness/modes.js");
 
 function defaultInstallResult() {
 	return {
+		ok: true,
+		post_install_failures: [],
 		entries: [],
 		skipped: [],
 		manifest_path: "/fake/manifest.json",
@@ -59,6 +61,7 @@ let originalIsTTY: boolean | undefined;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	process.exitCode = undefined;
 	installHooksMock.mockReturnValue(defaultInstallResult());
 	manifestPathMock.mockReturnValue("/fake/manifest.json");
 	resolveHookBinaryPathMock.mockReturnValue("/fake/binary");
@@ -72,6 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	process.exitCode = undefined;
 	stdoutSpy.mockRestore();
 	stderrSpy.mockRestore();
 	Object.defineProperty(process.stdin, "isTTY", {
@@ -114,12 +118,13 @@ describe("installHooksCommand — writeFallback / cloud payload (mutant 443f1796
 	});
 });
 
-describe("resolveMode — unknown mode warning (mutant ef2ef587423771f3)", () => {
-	it("warns with the offending mode name when --mode is unrecognized", async () => {
+describe("resolveMode — explicit invalid mode refusal (mutant ef2ef587423771f3)", () => {
+	it("rejects before binary fallback or installation when --mode is unrecognized", async () => {
 		await installHooksCommand({ mode: "not-a-real-mode", json: true, dryRun: true });
-		expect(stderrText()).toContain(
-			"[interlinked] unknown mode 'not-a-real-mode'; falling back to balanced",
-		);
+		expect(stderrText()).toContain('unknown mode "not-a-real-mode"');
+		expect(stdoutText()).toContain('"ok":false');
+		expect(resolveHookBinaryPathMock).not.toHaveBeenCalled();
+		expect(installHooksMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -191,30 +196,32 @@ describe("parseRunners (mutants f0c1edd2a57e52e0, 91195e68e2570134, 8cd077e5ef93
 		expect(stderrText()).not.toContain("unknown runner");
 	});
 
-	it("warns with the exact unknown runner name and skips it", async () => {
+	it("rejects an unknown runner before calling the installer", async () => {
 		await installHooksCommand({
 			runner: "bogus,claude-code",
 			mode: "balanced",
 			json: true,
 			dryRun: true,
 		});
-		expect(stderrText()).toContain("[interlinked] warning: unknown runner bogus; skipping");
-		expect(installHooksMock).toHaveBeenCalledWith(
-			expect.objectContaining({ runners: ["claude-code"] }),
+		expect(stderrText()).toContain(
+			"[interlinked] unknown runner: bogus; no hooks were installed",
 		);
+		expect(installHooksMock).not.toHaveBeenCalled();
 	});
 });
 
 describe("VALID_RUNNERS / VALID_SCOPES literals (mutant symbol 41d0eb8f71fbd934)", () => {
-	it("recognizes cursor, gemini-cli, and codex as valid runners", async () => {
+	it("recognizes cursor, gemini-cli, codex, OpenCode, and Pi as valid runners", async () => {
 		await installHooksCommand({
-			runner: "cursor,gemini-cli,codex",
+			runner: "cursor,gemini-cli,codex,opencode,pi",
 			mode: "balanced",
 			json: true,
 			dryRun: true,
 		});
 		expect(installHooksMock).toHaveBeenCalledWith(
-			expect.objectContaining({ runners: ["cursor", "gemini-cli", "codex"] }),
+			expect.objectContaining({
+				runners: ["cursor", "gemini-cli", "codex", "opencode", "pi"],
+			}),
 		);
 		expect(stderrText()).not.toContain("unknown runner");
 	});

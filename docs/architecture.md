@@ -16,13 +16,17 @@ The Interlinked platform has two components with distinct roles:
 
 **Interlinked CLI** (this tool)
 - Local glue that covers what a remote MCP server cannot touch
-- Captures agent activity across Claude Code, Codex, Copilot CLI, Gemini CLI,
-  Cursor, OpenCode, and Pi
+- Captures the events that configured Claude Code, Codex, Copilot CLI, Gemini
+  CLI, Cursor, OpenCode, and Pi integrations actually deliver
 - Stores activity locally for offline use
 - Syncs activity to the Interlinked MCP Server for cross-agent visibility
 - Provides developer-facing observability (status, explain, activity)
 
-The activity log is the **shared coordination substrate** — every agent action is timestamped, stored locally, and (optionally) synced to the Interlinked MCP Server where it becomes queryable by other agents and visible to humans.
+The activity log is the **shared coordination substrate** — each event delivered
+to the running harness is timestamped, stored locally, and can optionally be
+synced to the Interlinked MCP Server where it becomes queryable by other agents
+and visible to humans. It is not proof of actions a provider never exposed or a
+hook never delivered.
 
 ### What the CLI is NOT
 
@@ -47,7 +51,7 @@ The local-first, hook-driven architecture draws inspiration from [Entire CLI](ht
 | Command | Purpose | Server? | Category |
 |---------|---------|---------|----------|
 | `enable` | Install hooks into AI coding clients, create `.interlinked/` config | No | Setup |
-| `disable` | Remove hooks from all clients | No | Setup |
+| `disable` | Stand the harness down; hooks and config remain unless `--uninstall` is passed | No | Setup |
 | `login` | OAuth PKCE browser flow for server authentication | Yes | Setup |
 | `setup` | One-command bootstrap (`enable` + conditional `login`) | Optional | Setup |
 | `status` | Local-first dashboard: sessions, activity, sync, server health | Optional | Observability |
@@ -114,28 +118,35 @@ When `server_url` is `localhost` or `127.0.0.1`, auth is skipped entirely. The s
 ### Event Capture Pipeline
 
 ```
-AI Agent (Claude Code / Codex / Copilot CLI / Gemini CLI / Cursor / OpenCode / Pi)
-    |
+Configured provider hook or managed bridge
+    |  (only events that provider surface delivers)
     v
-Hook Event (stdin JSON)
-    |
+Packaged runtime (dist/hook-entry.js)
+    |  normalize provider payload + call the repo daemon
     v
-Hook Script (.interlinked/hooks/interlinked-activity.mjs)
+Interlinked Harness (Unix socket)
     |
-    +--> Local Write (always, sync, ~0.1ms)
-    |     +-- .interlinked/activity.jsonl
-    |     +-- .interlinked/sessions/{sessionId}.json
+    +--> Persist delivered activity and session/timeline state under .interlinked/
     |
-    +--> Fire-and-forget POST (if sync_mode != "local")
-    |     +-- POST /api/hooks/activity (3s timeout, errors swallowed)
+    +--> Pre-tool: return the provider-specific allow / block / ask response
     |
-    +--> Batch Sync on Session End (if sync_mode == "realtime")
-          +-- POST /api/hooks/activity/batch (reliable, cursor-based)
+    +--> Post-tool: record the landed change and schedule external checks
+    |     +-- compiler/linter work runs asynchronously after the write
+    |     +-- findings are spooled and delivered once through a model-visible hook
+    |     +-- unavailable work is reported as NOT CHECKED, never as clean
+    |
+    +--> Optional buffered sync to the Interlinked MCP Server
 ```
+
+Hook-array providers and the OpenCode/Pi managed bridges converge on the same
+packaged runtime and daemon event loop. A generated
+`.interlinked/hooks/interlinked-activity.mjs` may remain for compatibility with
+legacy installs, but it is not the canonical adapter runtime.
 
 ### Event Normalization
 
-The hook script normalizes events from different AI clients into a common shape:
+The packaged runtime normalizes delivered events from different AI clients into
+a common shape:
 
 ```json
 {
@@ -207,7 +218,7 @@ Existing worktrees can still be listed and removed.
 |   +-- session-abc.json
 |   +-- session-def.json
 +-- hooks/
-    +-- interlinked-activity.mjs  # Generated hook script (gitignored)
+    +-- interlinked-activity.mjs  # Legacy compatibility runtime (gitignored)
 ```
 
 ### Server-Side Storage
@@ -279,7 +290,11 @@ Every command works without server connectivity:
 | `sync` | Fails with clear error: "Cannot reach server at {url}". |
 | `doctor` | Runs all local checks. Server checks report "unreachable". |
 
-The JSONL file is always written synchronously before any network call. Even if the process is killed mid-hook, the local event is preserved.
+The running daemon persists events it receives before optional buffered sync.
+Detached lifecycle delivery and asynchronous PostTool results can appear shortly
+after the originating provider action, and the cold fallback is not a complete
+capture path; readers should treat the log as durable evidence of delivered,
+persisted events rather than a universal transcript of agent activity.
 
 ## 7. Config System
 
@@ -315,12 +330,13 @@ The JSONL file is always written synchronously before any network call. Even if 
 
 The CLI includes a local harness server (`src/harness/`) that evaluates agent actions in real-time. It runs as a Node.js process with a repo-scoped legacy raw socket (`.interlinked/harness.sock`) and, in the default dual-protocol mode, a framed RPC front door (`.interlinked/harness-<session>.sock`, falling back to `.interlinked/harness-default.sock`).
 
-**Full documentation: `cli/docs/harness.md`** — includes architecture, all design decisions with rationale, complete guard rule reference, and testing instructions.
+**Full documentation: `docs/harness.md`** — includes architecture, design decisions,
+guard behavior, and testing instructions.
 
 ### Key Architectural Choices
 
 1. **Node.js on Unix socket** (not HTTP, not inline) — sub-5ms evaluation latency, stateful trajectory tracking, agent-agnostic
-2. **PreToolUse blocking + PostToolUse feedback** — fast pattern matching blocks before execution, slow checks (tsc, lint) provide stderr feedback after execution
+2. **PreToolUse blocking + asynchronous PostToolUse feedback** — fast deterministic checks can block before execution; external compiler/linter work runs after the write and its spooled findings are delivered once through a later model-visible hook
 3. **Optimistic file reservation** — check local cache (instant), confirm with server (async), 30s auto-release
 4. **Agent cohort model** — tracks all agents for one developer, distinguishes "my agent" from "other developer's agent"
 5. **Sleep/terminal prevention** — enforces MCP-first communication (agents should use `wait_for_work`, not `bash sleep`)
@@ -328,9 +344,14 @@ The CLI includes a local harness server (`src/harness/`) that evaluates agent ac
 
 ### Harness Protocol State Model
 
-Option C uses a **single repo daemon with per-session framed sockets**. One long-lived `server.ts` process owns cohort state, reservations, project graphs, route maps, error history, classifier state, activity/latency logging, and async analysis. The framed `session-daemon.ts` socket is a thin dispatcher front door in that same process, and hook RPCs are converted back into the legacy `HarnessEvent` path before evaluation so raw and framed transports share runtime side effects.
-
-This keeps `.interlinked/harness.sock` working for the generated legacy hook script while making the adapter-based `dist/hook-entry.js` framed path real. A true per-session state split would require a separate coordinator or durable on-disk locking for reservations and cohort awareness, so it is intentionally deferred until framed transport parity is proven.
+The current design uses a **single repo daemon with per-session framed sockets**.
+One long-lived `server.ts` process owns cohort state, reservations, project graphs,
+route maps, error history, classifier state, activity/latency logging, and async
+analysis. The packaged `dist/hook-entry.js` adapter runtime uses the framed path;
+`session-daemon.ts` is a thin dispatcher in that same process. Raw compatibility
+traffic is converted into the same `HarnessEvent` path, so both transports share
+runtime side effects. A true per-session state split would require a separate
+coordinator or durable on-disk locking for reservations and cohort awareness.
 
 ### Inspiration
 

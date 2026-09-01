@@ -29,6 +29,12 @@ const WALK_IGNORE_DIRS = new Set([
 	"target",
 	"vendor",
 	"coverage",
+	// Tool-managed tree COPIES: each Stryker sandbox clones the whole source
+	// tree, so walking them multiplies every real file by the sandbox count
+	// (found 2026-08-21: 3 sandboxes inflated gate-reach's denominator 5x,
+	// reporting coverage-ratchet reach as 22% when the true figure was ~98%).
+	".stryker-tmp",
+	".wrangler",
 	".next",
 	"out",
 	".venv",

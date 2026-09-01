@@ -316,7 +316,7 @@ duplicated policy numbers drift, which is a class this repo's own
 | `src/harness/types.ts` | All type definitions |
 | `src/harness/server.ts` | Node.js Unix socket server (main entry, `node:net`) |
 | `src/harness/evaluator.ts` | Guard evaluation: PreToolUse blocking + PostToolUse feedback |
-| `src/harness/rules-loader.ts` | <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> built-in rules + JSON config + hot-reload |
+| `src/harness/rules-loader.ts` | <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> built-in rules + JSON config + hot-reload |
 | `src/harness/session-state.ts` | Per-session trajectory tracking |
 | `src/harness/cohort.ts` | Agent cohort manager |
 | `src/harness/reservations.ts` | Auto file reservation with optimistic locking |
@@ -534,7 +534,7 @@ sit at 54% (20/37), so backfill those first. Re-derive these numbers with
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> built-in guard rules by category |
+| `docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> built-in guard rules by category |
 | `docs/generated/quality-checks.md` | All <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> PostToolUse quality checks |
 | `docs/generated/structural-checks.md` | All <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> structural checks by tier |
 | `docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |

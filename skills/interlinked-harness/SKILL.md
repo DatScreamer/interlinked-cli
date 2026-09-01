@@ -1,13 +1,14 @@
 ---
 name: interlinked-harness
-description: "Understand and respond to the Interlinked PreToolUse guard — the local daemon that BLOCKS dangerous tool calls before they run. Load this when a Bash command or file edit was refused with \"BLOCKED: … Suggestion: …\", when you see an `[interlinked:check-id]` warning tagged `[proven]` or `[heuristic]`, when a destructive command / force-push / protected-file / secret / repo-confinement rule fired, when a grep was answered by the index, or when you need to know how to legitimately suppress a false positive or disable a guard rule. Covers what blocks, how to read the reason, suppression grammar, determinism tags, and the fail-closed cold fallback."
+description: "Understand and respond to the Interlinked PreToolUse guard — the local daemon that BLOCKS dangerous tool calls before they run. Load this when a Bash command or file edit was refused with \"BLOCKED: … Suggestion: …\", when you see an `[interlinked:check-id]` warning tagged `[proven]` or `[heuristic]`, when a destructive command / force-push / protected-file / secret / repo-confinement rule fired, when a grep was answered by the index, or when you need to know how to legitimately suppress a false positive or disable a guard rule. Covers what blocks, how to read the reason, suppression grammar, determinism tags, and the degraded cold fallback."
 ---
 
 # interlinked-harness — the guard: what blocks you & how to respond
 
-Interlinked runs a **local daemon** that evaluates every agent tool call **before it runs**
-(PreToolUse). It is **default-permit with targeted forbid**: it allows everything except
-known-dangerous shapes, which it refuses with an actionable reason and a safer alternative.
+Interlinked runs a **local daemon** that evaluates each pre-execution event the installed
+runner exposes to its hook surface (PreToolUse). It is **default-permit with targeted
+forbid**: it allows everything except known-dangerous shapes, which it refuses with an
+actionable reason and a safer alternative.
 It is a fast deterministic guardrail, **not** a security trust boundary (it's local and
 bypassable) — so the right instinct when blocked is to take the suggested safe path, not to
 defeat the pattern.
@@ -20,8 +21,8 @@ defeat the pattern.
 - You need to legitimately suppress a check false-positive, or disable a wrong guard rule.
 
 ## Mental model
-- A hook ships each tool call to the daemon over a Unix socket. The daemon runs an ordered set of
-  phases; **the first phase that returns a terminal decision wins**.
+- Each installed hook event ships its payload to the daemon over a Unix socket. The daemon runs an
+  ordered set of phases; **the first phase that returns a terminal decision wins**.
 - Decisions: `block` (tool refused, you see the reason), `ask` (human confirmation — Claude and
   supported Cursor gates can ask natively; interactive Pi calls `ctx.ui.confirm`; headless Pi,
   OpenCode's stable tool gate, Codex `PreToolUse`, Copilot, and Gemini deny instead;
@@ -102,9 +103,39 @@ Every warning is tagged. `[proven]` = a real compiler/linter/scanner/parser/test
 produced it — authoritative, fix it. `[heuristic]` = regex/AST-shape match that could be a
 false positive — evaluate it. No tag = unknown check id (never guessed).
 
-**Visibility (Claude Code):** a **block reason is always surfaced.** PreToolUse allow-warnings
-are routed through `additionalContext` (you see them next turn); PostToolUse warnings go to
-stderr. Allow-warnings are easy to overlook — read them.
+**Visibility varies by runner.** On the supported Claude and Codex gate surfaces, a block reason
+is surfaced through the provider's blocking channel. Experimental adapters target their native
+response or exit-code shapes, but registration is not proof that every provider version enforces
+them identically. Claude and Codex use model-visible `additionalContext` only on events whose
+contracts support it. A Claude PermissionRequest deny uses
+`hookSpecificOutput.decision = { behavior: "deny", message }`, not PreToolUse's
+`permissionDecision`; allow/ask abstain on stdout, and non-blocking PermissionRequest diagnostics
+stay on stderr. Cursor uses `additional_context` on generic `postToolUse`. OpenCode
+appends post-tool feedback to tool output; Pi appends it to `tool_result` and can notify an
+interactive UI. Copilot remains stderr-only and some lifecycle events are observation-only.
+Allow-warnings are easy to overlook — read them.
+
+**Silence = no model-visible finding, NOT "everything was checked" (2026-08-27).** A served,
+clean PostToolUse result writes ZERO BYTES — no `[interlinked:Bash] all clean (354ms)` row, not
+even an empty `{}` envelope — because runners render one hook row per response and parallel tool
+calls multiplied that into unusable noise. Outage visibility is phase- and runtime-specific:
+
+| Result | What you see |
+|---|---|
+| Clean PostToolUse result served by the daemon | nothing (recorded locally only) |
+| Findings | one compact `[interlinked:<check>]` block |
+| Block | the reason plus the affected target — **including a block that carries no warnings** |
+| Daemon unavailable, packaged PreToolUse runtime | an explicit `evaluator skipped` diagnostic; code edits also report function-token enforcement as not measured |
+| Daemon unavailable, generated PostToolUse runtime | may remain model-silent while recording local `no_harness` status |
+
+No output therefore never proves the full daemon check set ran. To distinguish a served clean
+result from a silent degraded PostToolUse path, ask `interlinked harness status` or
+`interlinked doctor`; inspect `.interlinked/activity.jsonl` and the statusline for the per-call
+state.
+
+The block row is load-bearing: the response path decides on the DECISION, never on whether the
+warning list happens to be non-empty. If you are about to rely on "the harness would have caught
+it", confirm the daemon is answering first — silence is not evidence that it was.
 
 **Test edits use the same hook loop.** Deterministic introduced test theatre (assertion-free or
 tautological cases, SUT self-mocking, focus markers, unconditional skips) blocks before the write.
@@ -119,10 +150,30 @@ Do not trust a tool name as proof that no file changed. For Bash and other poten
 tools, the daemon snapshots Git-visible files plus standalone ignored local files (for example
 `.env`, while collapsing bulk ignored directory trees) before the call and attaches the observed
 created/modified/deleted ChangeSet after it. PostToolUse file checks prefer those observed paths over
-command text or runner-declared paths. A Stop-time `[interlinked:effect-residue]` warning means a
+command text or runner-declared paths.
+
+**A read-only tool contributes no observed paths.** The ChangeSet is a diff of the window the call
+occupied, not a record of what the call did, so on `Read` / `Glob` / `Grep` / `WebFetch` /
+`WebSearch` / `TodoRead` / `NotebookRead` / `ListFiles` every path in it was written by somebody
+else — another agent on the same tree, a background test run, a watcher. Those calls are charged
+nothing and run no file checks. `Bash` is NOT in that set and keeps its ChangeSet (it is the
+bash-edit obligation channel), and neither is an unknown tool, so a new writer cannot open the
+bypass by using an unfamiliar name. The list is one definition, at
+`src/lib/hook-read-only-tools.ts`. Claude Code's PostToolUse hook is also registered only for
+`Write|Edit|MultiEdit|NotebookEdit|Bash`; Codex keeps the all-tools matcher because `apply_patch`
+arrives through it. Reservation handling parses every `apply_patch` section destination and move
+source once; PreToolUse grants and PostToolUse idle-release scheduling consume the same ordered,
+de-duplicated path list. It preflights that full list before granting, so a later blocking path
+cannot strand an earlier lease when the tool never runs and therefore has no PostToolUse.
+
+A Stop-time `[interlinked:effect-residue]` warning means a
 PostToolUse was missing/unreconciled; the observed files were added to the touched-file rescan.
-Effects whose content hash matches another session's reconciled write are excluded (the warning
-reports the excluded count) — on a shared tree, one session is not charged for another's work.
+Effects reconciled by another actor are excluded (the warning reports the excluded count) — this
+includes another session and a sibling subagent that shares the same Codex session id, so one
+parallel actor is not charged for another's work. Actor identity is evidence-bounded: Interlinked
+uses the stable subagent id when Codex supplies one and otherwise stays at root-session scope.
+Persisted pre-upgrade rows with no actor field remain conservatively session-scoped; new rows
+distinguish a known root from a known child across daemon restarts.
 The noisy `.interlinked/` runtime tree stays collapsed, but its exact local policy/control files are
 observed and cannot be silenced by `skip_paths`.
 
@@ -157,17 +208,30 @@ Config lives in `.interlinked/guard-rules.json` (team) + `.interlinked/guard-rul
 - Team/local/distilled files hot-reload within ~2s (`watchFile`); `interlinked harness restart`
   forces a full reload.
 
-## The cold fallback (dead daemon fails closed)
-If a daemon **was** started for this project but the socket is now unreachable (crashed, hung,
-or a **zombie** — process alive, listener dead), the hook **BLOCKS** tool calls rather than run
-unguarded, and tries to self-heal. A subset of checks still runs inline even when the daemon is
-down: merge-conflict markers, **destructive commands**, **package installs**, and the **per-file
-line cap**. Fix: `interlinked harness start` / `restart`, then retry. (If no daemon ever ran
-here, calls are allowed instead.)
+## The cold fallback (daemon outage degrades; deterministic gates stay closed)
+If the configured daemon socket is unreachable — including a **zombie** with a live process but
+dead listener — every ordinary hook phase enters a cross-process, single-flight recovery path.
+Daemon absence alone does **not** blanket-block safe reads, diagnostics, or repair work. The
+current call proceeds in degraded mode after the inline deterministic subset runs:
+merge-conflict markers, **destructive commands**, **package installs**, graph-shard protection,
+file-dump limits, and the **per-file line cap**. Those checks still block when proven; checks that
+need the full evaluator are explicitly unavailable rather than silently reported clean.
 
-The block reason names which case it is. `interlinked harness status` confirms it — a red
-`ZOMBIE` line means a live PID is answering nothing, so trust the hook over the PID. See
-**interlinked-setup** for the three liveness states and the startup-failure ledger.
+`interlinked harness status`, `harness start` / `restart`, `doctor`, `disable`, and the exact
+`interlinked install-hooks --refresh --preserve-mode` repair remain executable during an outage
+and do not race the automatic launch. A recovery message says “launch attempted” only when this
+hook actually spawned; lock/backoff/stand-down paths do not claim that a supervisor is bringing
+anything back. A valid `guard-disabled.json` or `guard-disabled.local.json` marker suppresses
+self-heal. `interlinked harness status` confirms recovery — a red `ZOMBIE` line means a live PID
+is answering nothing, so trust the socket probe over the PID. See **interlinked-setup** for the
+liveness states and startup-failure ledger.
+
+If the installed hook binary itself is missing or broken, the self-contained wrapper follows the
+same no-deadlock boundary: Claude/Codex reserved read builtins and Cursor's dedicated
+`beforeReadFile` event proceed with an explicit degraded warning. Ambiguous generic names on
+other gates do not. Exact build/status/repair/non-destructive-disable commands remain available,
+while mutating and unknown tools receive the provider's native deny response. Shell commands are
+never inferred read-only from their text. Restore the runtime before relying on the full evaluator.
 
 ## Gotchas
 - **The "`sleep` is blocked" claim in old docs is stale** — there is no standalone `sleep`
@@ -177,6 +241,10 @@ The block reason names which case it is. `interlinked harness status` confirms i
   chained destructive tail still blocks; "test allowed it" ≠ "the real command is allowed".
 - **`harness restart` clears per-session trajectory state** — soft_block "retry allowed" memory
   and trajectory detectors reset. A restart mid-task can change guard behavior.
+- **SessionEnd heavy checks are single-flight per daemon** — a burst of agent shutdowns does not
+  start duplicate recurrence scans or coverage ratchets. While one detached job is still active,
+  later SessionEnd events log it as already running and skip that copy; the next run becomes
+  eligible when the child exits or the daemon restarts.
 - **`[interlinked:trajectory] …(shadow — would block)`** warnings are advisory only (shadow
   mode) — they preview a future gate; treat as signal, not a block.
 - **PreToolUse blocking**: Claude Code and Codex are supported. Claude also registers

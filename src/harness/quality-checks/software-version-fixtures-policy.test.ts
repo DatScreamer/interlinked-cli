@@ -10,7 +10,15 @@ const ALLOW_MARKER = "REAL_WORLD_VERSION_FIXTURE_OK";
 
 const FAST_MOVING_FIXTURE_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
 	{ label: "OpenAI numbered GPT model alias", re: /\bgpt-(?:4o|[0-9][A-Za-z0-9_.-]*)\b/i },
-	{ label: "OpenAI numbered o-series model alias", re: /\bo[0-9](?:-[A-Za-z0-9_.-]+)?\b/i },
+	{
+		label: "OpenAI numbered o-series model alias",
+		// Case-SENSITIVE on purpose: o-series product names are lowercase
+		// standalone tokens (`o1`, `o3`, `o4-mini`). REAL_WORLD_VERSION_FIXTURE_OK
+		// — these names ARE the subject of the pattern. An uppercase `O1`/`O2` is a
+		// test-case label prefix (`it("O1: …")`), not a model name — a /i flag
+		// here false-fired on exactly that label form.
+		re: /\bo[0-9](?:-[A-Za-z0-9_.-]+)?\b/,
+	},
 	{
 		label: "Anthropic numbered Claude family alias",
 		// Families enumerated (not `[a-z]+`) so synthetic fixtures like `claude-test-5`
@@ -42,6 +50,26 @@ describe("software version fixture policy", () => {
 				violations.join("\n"),
 			].join("\n"),
 		).toEqual([]);
+	});
+});
+
+describe("o-series pattern precision — positive (must fire)", () => {
+	it("flags real lowercase o-series model names used as fixtures", () => {
+		// REAL_WORLD_VERSION_FIXTURE_OK — the exact real names are the behavior under test.
+		const content = ['const model = "o1";', 'const other = "o4-mini";'].join("\n");
+		const violations = findVersionFixtureViolations("/x/sample.test.ts", content);
+		expect(violations).toHaveLength(2);
+		expect(violations[0]).toContain("OpenAI numbered o-series model alias");
+	});
+});
+
+describe("o-series pattern precision — negative (must not fire)", () => {
+	it("does not flag uppercase test-case label prefixes like it(\"O1: …\")", () => {
+		const content = [
+			'it("O1: a shrunk failing-test set re-opens the red debt", () => {',
+			'it("O2: a same-length but only-partially-overlapping set is CHANGED", () => {',
+		].join("\n");
+		expect(findVersionFixtureViolations("/x/sample.test.ts", content)).toEqual([]);
 	});
 });
 

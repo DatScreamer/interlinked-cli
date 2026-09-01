@@ -31,12 +31,27 @@ function deepMerge(base: JsonObject, patch: JsonObject): JsonObject {
 	return out;
 }
 
-/** Merge `patch` into `.interlinked/guard-rules.json` under `cwd`, creating
+/** Which config tier the merge targets. "team" = the committed
+ *  guard-rules.json; "local" = the gitignored personal overrides file. Added
+ *  2026-08-30: `interlinked mode --local` wrote its check-policy half to the
+ *  local file but its guard posture to the SHARED file — a personal mode
+ *  switch silently edited committed team policy. */
+export type GuardRulesWriteTarget = "team" | "local";
+
+/** Merge `patch` into the targeted guard-rules file under `cwd`, creating
  *  the file (and directory) when absent. A malformed existing file is left
  *  byte-identical and reported as a failure — silently replacing a corrupt
- *  team-shared config would destroy whatever the corruption was hiding. */
-export function mergeIntoGuardRules(cwd: string, patch: JsonObject): GuardRulesWriteResult {
-	const path = join(cwd, ".interlinked", "guard-rules.json");
+ *  config would destroy whatever the corruption was hiding. */
+export function mergeIntoGuardRules(
+	cwd: string,
+	patch: JsonObject,
+	target: GuardRulesWriteTarget = "team",
+): GuardRulesWriteResult {
+	const path = join(
+		cwd,
+		".interlinked",
+		target === "local" ? "guard-rules.local.json" : "guard-rules.json",
+	);
 	let existing: JsonObject = {};
 	if (existsSync(path)) {
 		try {

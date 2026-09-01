@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // write, and it must call the SAME gate the enforced Write/Edit path calls.
 const gateProposedContent = vi.fn();
 vi.mock("../harness/content-gate.js", () => ({
+	GATE_SEVERITY_ERROR: "error",
 	gateProposedContent: (...a: unknown[]) => gateProposedContent(...a),
 	formatGateResult: (r: { ok: boolean; failures: unknown[] }) =>
 		r.ok ? "interlinked gate: clean" : `interlinked gate: ${r.failures.length} failure(s)`,
@@ -66,7 +67,9 @@ describe("verify-changeset — preview-not-bypass self-gate", () => {
 		expect(process.exitCode).toBe(0);
 		expect(gateProposedContent).toHaveBeenCalledWith(
 			[{ path: target, content: "export const x = 1;\n" }],
-			expect.objectContaining({ skipPreWarn: true }),
+			// tscUnavailableSeverity "error": an unavailable type checker must
+			// fail the preview, never read as clean (see verify-changeset.ts).
+			expect.objectContaining({ skipPreWarn: true, tscUnavailableSeverity: "error" }),
 		);
 		const out = JSON.parse(logs.join("\n"));
 		expect(out.ok).toBe(true);

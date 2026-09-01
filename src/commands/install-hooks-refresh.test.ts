@@ -64,15 +64,30 @@ describe("refreshInstalledHooks — positive (must fire)", () => {
 		const doc = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
 			hooks: Record<string, unknown[]>;
 		};
-		const userHook = { command: "echo node /repo/dist/hook-entry.js # user note" };
-		for (const key of Object.keys(doc.hooks)) doc.hooks[key] = [userHook, ...(doc.hooks[key] ?? [])];
+		const userHooks = [
+			{ command: `echo ${NEW_BINARY} # user note` },
+			{ command: "node /home/user/hook-entry.js" },
+			{
+				command:
+					"node /home/user/hook-entry.js --runner user-runner --event BeforeTool",
+			},
+			{ command: "node /home/user/hook-entry.js --runner gemini-cli" },
+			{ command: "node /home/user/interlinked-activity.mjs" },
+		];
+		for (const key of Object.keys(doc.hooks)) {
+			doc.hooks[key] = [...userHooks, ...(doc.hooks[key] ?? [])];
+		}
 		writeFileSync(settingsPath, JSON.stringify(doc, null, 2));
 
 		const outcome = refreshInstalledHooks({ cwd, binaryPath: NEW_BINARY });
 		expect(outcome.ok).toBe(true);
 		const after = readFileSync(settingsPath, "utf-8");
-		expect(after).toContain("echo node /repo/dist/hook-entry.js # user note");
+		expect(after).toContain(`echo ${NEW_BINARY} # user note`);
+		expect(after).toContain("node /home/user/hook-entry.js");
+		expect(after).toContain("--runner user-runner --event BeforeTool");
+		expect(after).toContain("node /home/user/interlinked-activity.mjs");
 		expect(after).toContain(NEW_BINARY);
+		expect(after).not.toContain(`'${BINARY}'`);
 	});
 
 	// test-contract: invariant — idempotency: refreshing an already-current

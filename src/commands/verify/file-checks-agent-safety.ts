@@ -369,6 +369,10 @@ export function runAgentSafetyChecks(ctx: FileCheckContext): void {
 	r.halsteadDifficulty.push(
 		...toIssues("halstead_difficulty", relPath, maintainabilityCheck(content, file)),
 	);
+	// type_smuggling is verify-only since 2026-08-22 (its per-file ts.Program
+	// melted the daemon) — its verify invocation ALREADY lives in
+	// file-checks-endpoint-laziness.ts; a second call here double-built the
+	// ~1.9GB program per file (external review 2026-08-23, finding 5).
 	// property_test_candidate — verify-only: the detector reads the module's
 	// companion test files, so it is not the pure (content, filePath) function
 	// the PostToolUse registry contract requires (and the determinism-conformance

@@ -22,7 +22,11 @@
 
 import { isDaemonSocketServing, daemonSocketPaths } from "./harness/session-paths.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
-import { coldDaemonUnreachableBlockReason, findRepoRoot } from "./hook-entry-daemon-gate.js";
+import {
+	coldDaemonUnreachableBlockReason,
+	daemonRecoveryRoot,
+	findRepoRoot,
+} from "./hook-entry-daemon-gate.js";
 
 /** Connect budget for the freshness probe. */
 export const FRESH_PROBE_TIMEOUT_MS = 250;
@@ -57,6 +61,8 @@ export async function daemonAnswersNow(
  * whether it is actually down" step, and only on the block path, so the happy
  * path pays nothing.
  */
+/** @deprecated Compatibility/test surface for the retired blanket outage
+ * block. Do not call this from a hook runtime. */
 export async function coldDaemonUnreachableBlockReasonFresh(
 	event: UnifiedHookEvent,
 	cwd: string | undefined,
@@ -73,4 +79,18 @@ export async function coldDaemonUnreachableBlockReasonFresh(
 	const root = findRepoRoot(cwd ?? event.context?.cwd ?? process.cwd());
 	if (root === null) return reason;
 	return (await daemonAnswersNow(root, deps)) ? null : reason;
+}
+
+/** Recovery trigger for every hook phase, with the same fresh socket proof as
+ * the pre-tool legacy gate. A stale pid/ledger/socket snapshot must not launch
+ * a competing daemon when any socket is actually serving. */
+export async function daemonRecoveryRootFresh(
+	event: UnifiedHookEvent,
+	cwd: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+	deps: FreshnessProbeDeps = {},
+): Promise<string | null> {
+	const root = daemonRecoveryRoot(event, cwd, env);
+	if (root === null) return null;
+	return (await daemonAnswersNow(root, deps)) ? null : root;
 }

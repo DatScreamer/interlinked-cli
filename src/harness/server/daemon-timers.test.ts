@@ -6,18 +6,38 @@ vi.mock("node:v8", () => ({
 	// Default heap stats read: comfortable (no pressure) so tests that don't
 	// inject heapStats never trip the emergency shrink.
 	getHeapStatistics: () => ({ used_heap_size: 1, heap_size_limit: 1024 * 1024 * 1024 }),
+	getHeapSpaceStatistics: () => heapSpacesMock(),
 }));
+// Default: one big retained space + one sub-floor space that must be elided.
+const heapSpacesMock = vi.fn(() => [
+	{ space_name: "old_space", space_used_size: 1997 * 1024 * 1024 },
+	{ space_name: "new_space", space_used_size: 4 * 1024 * 1024 },
+]);
 
-import { installDaemonTimers } from "./daemon-timers.js";
+import { heapSpaceSummary, installDaemonTimers } from "./daemon-timers.js";
+
+describe("heapSpaceSummary — spike-row heap breakdown", () => {
+	it("P1: renders each over-floor space as name=NNNMB with _space trimmed", () => {
+		expect(heapSpaceSummary()).toContain("old=1997MB");
+	});
+
+	it("N1: elides spaces at or under the 16MB floor", () => {
+		expect(heapSpaceSummary()).not.toContain("new=");
+	});
+
+	it("P2: appends external memory once Buffers push it over the floor", () => {
+		// 48MB of Buffer-backed allocation lands in `external`, not the JS heap.
+		const pinned = Buffer.alloc(48 * 1024 * 1024, 1);
+		const summary = heapSpaceSummary();
+		expect(pinned.length).toBe(48 * 1024 * 1024);
+		expect(summary).toMatch(/external=\d+MB/);
+	});
+});
 
 /**
- * The memory timer exists because the daemon grows under sustained edit traffic
- * and, past roughly 750MB on a swap-bound machine, stops answering the socket
- * within the hook's timeout — alive but too slow. The agent reads that as a
- * dead guard and its next tool call is blocked; the old process meanwhile
- * lingers as an orphan holding the memory its replacement needs.
- *
- * Recycling early converts that hang into a sub-second restart.
+ * The memory timer is a machine-safety boundary: it must stop the bloated
+ * process before any replacement can overlap its heap. The next cold hook can
+ * continue deterministic guarding and trigger the single-flight self-heal.
  */
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -32,14 +52,16 @@ function harness(rss: number, ceiling: number) {
 	const shutdown = vi.fn();
 	const log = vi.fn();
 	const refreshStatuslineSnapshot = vi.fn();
+	const acquireRecycleLease = vi.fn(() => true);
 	const stop = installDaemonTimers({
 		refreshStatuslineSnapshot,
+		acquireRecycleLease,
 		shutdown,
 		log,
 		rssBytes: () => rss,
 		ceilingBytes: ceiling,
 	});
-	return { shutdown, log, refreshStatuslineSnapshot, stop };
+	return { acquireRecycleLease, shutdown, log, refreshStatuslineSnapshot, stop };
 }
 
 describe("installDaemonTimers — memory ceiling", () => {
@@ -50,10 +72,18 @@ describe("installDaemonTimers — memory ceiling", () => {
 		h.stop();
 	});
 
-	it("recycles once RSS is over the ceiling", () => {
+	it("gracefully stops on the first over-ceiling tick", () => {
 		const h = harness(600 * MB, 500 * MB);
-		vi.advanceTimersByTime(60_000);
-		expect(h.shutdown).toHaveBeenCalled();
+		vi.advanceTimersByTime(30_000);
+		expect(h.acquireRecycleLease).toHaveBeenCalledTimes(1);
+		expect(h.shutdown).toHaveBeenCalledTimes(1);
+		expect(
+			h.acquireRecycleLease.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		).toBeLessThan(
+			h.shutdown.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		const msg = h.log.mock.calls.map((c) => String(c[0])).join(" ");
+		expect(msg).toContain("stopping before replacement");
 		h.stop();
 	});
 
@@ -66,6 +96,16 @@ describe("installDaemonTimers — memory ceiling", () => {
 		expect(msg).toContain("600MB");
 		expect(msg).toContain("500MB");
 		expect(msg).toContain("Recycling");
+		expect(msg).toContain("release memory");
+		h.stop();
+	});
+
+	it("requests shutdown only once while process teardown is pending", () => {
+		const h = harness(600 * MB, 500 * MB);
+		vi.advanceTimersByTime(5 * 60_000);
+		expect(h.acquireRecycleLease).toHaveBeenCalledTimes(1);
+		expect(h.shutdown).toHaveBeenCalledTimes(1);
+		expect(h.log).toHaveBeenCalledTimes(1);
 		h.stop();
 	});
 
@@ -150,8 +190,8 @@ describe("installDaemonTimers — spike attribution", () => {
 });
 
 describe("installDaemonTimers — emergency heap-pressure shrink", () => {
-	// Storm postmortem 2026-08-17: the heap cap (2560MB) sits BELOW the RSS
-	// recycle ceiling (3584MB), so a transient allocation spike aborts V8
+	// The heap cap (1536MB) sits below the 2048MB RSS recycle ceiling, so a
+	// transient allocation spike can still abort V8
 	// before the graceful recycle can ever fire. The defense is an emergency
 	// shrink (cache drop + forced GC) the moment heap use crosses the
 	// pressure fraction — not only when idle.
@@ -172,15 +212,15 @@ describe("installDaemonTimers — emergency heap-pressure shrink", () => {
 	}
 
 	it("P: shrinks and reports with used/limit MB when heap use crosses the fraction", () => {
-		const h = pressureHarness(2000 * MB, 2560 * MB); // 78% > 75%
+		const h = pressureHarness(1200 * MB, 1536 * MB); // 78% > 75%
 		vi.advanceTimersByTime(30_000);
 		expect(h.shrinkIdleMemory).toHaveBeenCalledTimes(1);
-		expect(h.onHeapPressure).toHaveBeenCalledWith(2000, 2560);
+		expect(h.onHeapPressure).toHaveBeenCalledWith(1200, 1536);
 		h.stop();
 	});
 
 	it("N: stays quiet under the pressure fraction", () => {
-		const h = pressureHarness(1800 * MB, 2560 * MB); // 70% < 75%
+		const h = pressureHarness(1075 * MB, 1536 * MB); // 70% < 75%
 		vi.advanceTimersByTime(30_000);
 		expect(h.shrinkIdleMemory).not.toHaveBeenCalled();
 		expect(h.onHeapPressure).not.toHaveBeenCalled();
@@ -188,7 +228,7 @@ describe("installDaemonTimers — emergency heap-pressure shrink", () => {
 	});
 
 	it("N: fires at most once per cooldown window under sustained pressure", () => {
-		const h = pressureHarness(2400 * MB, 2560 * MB);
+		const h = pressureHarness(1400 * MB, 1536 * MB);
 		vi.advanceTimersByTime(30_000);
 		vi.advanceTimersByTime(30_000);
 		vi.advanceTimersByTime(30_000); // 90s elapsed — still inside the 120s cooldown
@@ -202,57 +242,6 @@ describe("installDaemonTimers — emergency heap-pressure shrink", () => {
 		const h = pressureHarness(2000 * MB, 0);
 		vi.advanceTimersByTime(30_000);
 		expect(h.shrinkIdleMemory).not.toHaveBeenCalled();
-		h.stop();
-	});
-});
-
-describe("installDaemonTimers — hand-over on recycle", () => {
-	// A bare exit waits for the NEXT tool call's self-heal, which never comes
-	// between turns: measured 2026-07-28, one rss-ceiling exit left an
-	// ELEVEN-MINUTE hole with no daemon until the user typed. These pin the fix.
-	function handoverHarness(handOverResult: boolean) {
-		const shutdown = vi.fn();
-		const requestHandOver = vi.fn(() => handOverResult);
-		const stop = installDaemonTimers({
-			refreshStatuslineSnapshot: vi.fn(),
-			shutdown,
-			requestHandOver,
-			log: vi.fn(),
-			rssBytes: () => 600 * MB,
-			ceilingBytes: 500 * MB,
-		});
-		return { shutdown, requestHandOver, stop };
-	}
-
-	it("prefers spawning a successor over a bare exit", () => {
-		const h = handoverHarness(true);
-		vi.advanceTimersByTime(30_000);
-		expect(h.requestHandOver).toHaveBeenCalledTimes(1);
-		expect(h.shutdown).not.toHaveBeenCalled();
-		h.stop();
-	});
-
-	it("does not spawn a second successor while the first is in flight", () => {
-		// Two restarts racing through anti-stomp buys nothing; wait out the
-		// patience window before retrying.
-		const h = handoverHarness(true);
-		vi.advanceTimersByTime(90_000);
-		expect(h.requestHandOver).toHaveBeenCalledTimes(1);
-		h.stop();
-	});
-
-	it("retries the hand-over after the patience window expires unanswered", () => {
-		const h = handoverHarness(true);
-		vi.advanceTimersByTime(4 * 30_000);
-		expect(h.requestHandOver).toHaveBeenCalledTimes(2);
-		h.stop();
-	});
-
-	it("falls back to a bare exit when nothing can be spawned", () => {
-		const h = handoverHarness(false);
-		vi.advanceTimersByTime(30_000);
-		expect(h.requestHandOver).toHaveBeenCalledTimes(1);
-		expect(h.shutdown).toHaveBeenCalledTimes(1);
 		h.stop();
 	});
 });

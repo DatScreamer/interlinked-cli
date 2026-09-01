@@ -252,7 +252,6 @@ describe("evaluatePreChecksTail — pushTailWarnings mutation contracts (wave 2)
 	// even though the call count would otherwise be within limit (distinguishes an
 	// always-true `session && ...` mutant).
 	it("never checks stale branches without a session", () => {
-		vi.mocked(checkStaleBranch).mockReturnValueOnce({ warning: "stale" });
 		const warnings: string[] = [];
 		evaluatePreChecksTail(event(), undefined, undefined, "Read", {}, warnings);
 		expect(checkStaleBranch).not.toHaveBeenCalled();

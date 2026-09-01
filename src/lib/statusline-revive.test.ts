@@ -3,7 +3,7 @@ import { downBranchBash, pidDiscoveryBash, resolveReviveBakes } from "./statusli
 
 /**
  * The statusline's daemon-down branch is DISPLAY-ONLY (2026-08-16): it renders
- * grace → "hook supervisor restarting" → offline alarm, and never spawns a
+ * grace → "hook recovery active" → offline alarm, and never spawns a
  * daemon itself. It used to be a second, unmutexed supervisor — every render
  * raced a raw `node server.js` against the hook supervisor's mutexed
  * self-heal, and the losers' stale pid files painted "restarting" forever.
@@ -22,14 +22,16 @@ describe("downBranchBash — positive (must render truthfully)", () => {
 	it("P2: shows the calm supervisor row under the alarm threshold, alarm past it", () => {
 		const b = downBranchBash(BAKES);
 		expect(b).toContain("REVIVE_ALARM_SECS=45");
-		expect(b).toContain("hook supervisor restarting it…");
-		expect(b).toContain("harness offline — auto-revive failing");
+		expect(b).toContain("harness down — hook recovery active");
+		expect(b).toContain("harness offline — recovery not verified");
 	});
 
-	it("P3: the offline alarm hands the human the manual command", () => {
+	it("P3: the offline alarm hands the human the diagnostic command", () => {
 		const b = downBranchBash(BAKES);
-		expect(b).toContain("interlinked harness start");
-		expect(b).toContain("edits blocked (fail-closed)");
+		expect(b).toContain("interlinked harness status");
+		expect(b).toContain("degraded mode: inline deterministic gates only");
+		expect(b).not.toContain("edits blocked");
+		expect(b).not.toContain("bypassing guardrails");
 	});
 
 	it("P4: clears both marker files once the daemon is back", () => {

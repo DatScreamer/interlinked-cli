@@ -111,6 +111,60 @@ describe("distStaleness", () => {
 		expect(result?.stale).toBe(false);
 	});
 
+	it("N: test sources never make the build stale — .test.ts / .spec.mts / __tests__ / __fixtures__ (review 2026-08-26)", () => {
+		// Tests are not bundled into dist; a fresh test file used to flip
+		// build_stale:true seconds after a rebuild (the reviewer's live FP).
+		const artifact = writeDist();
+		const realSrc = writeSrc("real.ts");
+		utimesSync(artifact, RECENT, RECENT);
+		utimesSync(realSrc, OLD, OLD);
+
+		const fresh = new Date(RECENT.getTime() + 60_000);
+		for (const rel of ["new-file.test.ts", "new-file.spec.mts"]) {
+			const p = join(root, "src", rel);
+			writeFileSync(p, "export {};\n");
+			utimesSync(p, fresh, fresh);
+		}
+		for (const dir of ["__tests__", "__fixtures__"]) {
+			const d = join(root, "src", dir);
+			mkdirSync(d, { recursive: true });
+			const p = join(d, "inside.ts");
+			writeFileSync(p, "export {};\n");
+			utimesSync(p, fresh, fresh);
+		}
+
+		const result = distStaleness(root);
+		expect(result?.newestSrcMs).toBe(OLD.getTime());
+		expect(result?.stale).toBe(false);
+	});
+
+	it("P: a PRODUCT source file beside excluded test files still flips stale", () => {
+		const artifact = writeDist();
+		utimesSync(artifact, OLD, OLD);
+		const testFile = writeSrc("thing.test.ts");
+		utimesSync(testFile, RECENT, RECENT);
+		const product = writeSrc("product.ts");
+		utimesSync(product, RECENT, RECENT);
+
+		const result = distStaleness(root);
+		expect(result?.stale).toBe(true);
+		expect(result?.newestSrcMs).toBe(RECENT.getTime());
+	});
+
+	it("P: the matcher anchors on the file END — thing.test.ts.bak.ts is PRODUCT source, not a test", () => {
+		const artifact = writeDist();
+		const realSrc = writeSrc("real.ts");
+		utimesSync(artifact, RECENT, RECENT);
+		utimesSync(realSrc, OLD, OLD);
+		const bak = writeSrc("thing.test.ts.bak.ts");
+		const fresh = new Date(RECENT.getTime() + 60_000);
+		utimesSync(bak, fresh, fresh);
+
+		const result = distStaleness(root);
+		expect(result?.stale).toBe(true);
+		expect(result?.newestSrcMs).toBe(fresh.getTime());
+	});
+
 	it("ignores ephemeral fixture-dir exhaust under src/ (leaked _*_fixtures-* mkdtemps)", () => {
 		// The harness's own test suites mkdtemp `_content_gate_fixtures-*` (and
 		// siblings) inside src/; interrupted runs leak them and live runs rewrite

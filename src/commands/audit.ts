@@ -7,18 +7,18 @@
 //
 // The hash chain itself lives in two places:
 //   - writer: src/lib/hook-template-chunks/session-state.ts::appendGuardDecision
-//   - verifier: src/lib/audit-chain.ts::verifyAuditChain
+//   - verifier: src/lib/audit-chain.ts::verifyAuditChainStreaming
 // This file is the CLI surface; it dispatches to the verifier and formats
 // results. Stays small so policy/format decisions don't drift.
 
 import type { OptionValues } from "commander";
-import { verifyAuditChain } from "../lib/audit-chain.js";
+import { verifyAuditChainStreaming } from "../lib/audit-chain.js";
 import { c } from "../lib/formatter.js";
 
 export async function auditVerifyCommand(opts: OptionValues): Promise<void> {
 	const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 	const isJson = Boolean(opts.json);
-	const result = verifyAuditChain(cwd);
+	const result = await verifyAuditChainStreaming(cwd);
 
 	const data = {
 		valid: result.valid,

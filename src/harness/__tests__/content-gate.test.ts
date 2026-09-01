@@ -28,6 +28,12 @@ import type {
 // real biome/tsc overlay so the rest of the suite exercises real toolchains.
 const RULEID_FALLBACK_MARKER = "__gate_ruleid_fallback_probe__";
 
+// Marker substring: paths containing this get a `checkerUnavailable` tsc
+// overlay result (the sidecar-never-ran shape) and a quiet biome result, so
+// the gate's "unavailable is not clean" branch can be pinned deterministically.
+const TSC_UNAVAILABLE_MARKER = "__gate_tsc_unavailable_probe__";
+const TSC_UNAVAILABLE_REASON = "sidecar killed by signal SIGTERM (test)";
+
 // Mock the diff-overlay module so we can drive the `f.ruleId ?? "biome"` /
 // `f.ruleId ?? "tsc"` default-code fallbacks in content-gate. These fire only
 // when a real biome/tsc finding has no ruleId — which the actual toolchains
@@ -51,18 +57,35 @@ vi.mock("../diff-overlay.js", async () => {
 		elapsedMs: 1,
 		exceededBudget: false,
 	});
-	const wrapBiome: typeof EvaluateBiomeDiffOverlay = (filePath, proposed, root) =>
-		filePath.includes(RULEID_FALLBACK_MARKER)
-			? synthetic("biome", filePath)
-			: actual.evaluateBiomeDiffOverlay(filePath, proposed, root);
-	const wrapTsc: typeof EvaluateTscDiffOverlay = (filePath, proposed, root) =>
-		filePath.includes(RULEID_FALLBACK_MARKER)
-			? synthetic("tsc", filePath)
-			: actual.evaluateTscDiffOverlay(filePath, proposed, root);
+	// NB: the marker consts are referenced ONLY inside these wrap functions
+	// (lazily, at call time) — the hoisted factory body itself must not touch
+	// module-level consts, they are still in their temporal dead zone here.
+	const wrapBiome: typeof EvaluateBiomeDiffOverlay = (filePath, proposed, root) => {
+		if (filePath.includes(RULEID_FALLBACK_MARKER)) return synthetic("biome", filePath);
+		if (filePath.includes(TSC_UNAVAILABLE_MARKER)) {
+			return { newFindings: [], elapsedMs: 0, exceededBudget: false };
+		}
+		return actual.evaluateBiomeDiffOverlay(filePath, proposed, root);
+	};
+	const wrapTsc: typeof EvaluateTscDiffOverlay = (filePath, proposed, root) => {
+		if (filePath.includes(RULEID_FALLBACK_MARKER)) return synthetic("tsc", filePath);
+		if (filePath.includes(TSC_UNAVAILABLE_MARKER)) {
+			return {
+				newFindings: [],
+				proposedFindings: null,
+				elapsedMs: 1,
+				exceededBudget: false,
+				checkerUnavailable: TSC_UNAVAILABLE_REASON,
+			};
+		}
+		return actual.evaluateTscDiffOverlay(filePath, proposed, root);
+	};
 	return { ...actual, evaluateBiomeDiffOverlay: wrapBiome, evaluateTscDiffOverlay: wrapTsc };
 });
 
 import { nonNull } from "../../lib/non-null.js";
+import { _setTscOverlayModeOverrideForTest } from "../check-engine/tool-runners/tsc-overlay.js";
+import { TSC_CHECKER_UNAVAILABLE_CODE } from "../diff-overlay.js";
 import { sweepStaleFixtureDirs } from "./fixture-hygiene.js";
 import {
 	formatGateResult,
@@ -73,9 +96,8 @@ import {
 } from "../content-gate.js";
 
 // NB: for this file CLI_ROOT resolves to `src/harness` (two levels up from
-// `src/harness/__tests__`), and that is exactly the `projectRoot` the gate is
-// called with — biome/tsc config is found by walking UP from there to the repo
-// root. (It is NOT the repo root; don't "fix" it.)
+// `src/harness/__tests__`). It is only the parent used to keep the disposable
+// project under the repository, where biome can discover the repository config.
 const CLI_ROOT = resolve(import.meta.dirname, "../..");
 // Fixture files live in a UNIQUE per-process `mkdtempSync` dir, so no two test
 // files (or parallel runs) ever write the same path — the parallel-safety
@@ -93,6 +115,7 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..");
 // still run on them.
 sweepStaleFixtureDirs(CLI_ROOT);
 const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_content_gate_fixtures-"));
+const FIXTURE_TSCONFIG = resolve(FIXTURE_DIR, "tsconfig.json");
 const CLEAN_FIXTURE = resolve(FIXTURE_DIR, "_gate_clean.ts");
 const BIOME_FIXTURE = resolve(FIXTURE_DIR, "_gate_biome.ts");
 const MIXED_FIXTURE_OK = resolve(FIXTURE_DIR, "_gate_mixed_ok.ts");
@@ -141,10 +164,36 @@ export async function ping(): Promise<void> {
 // the dir is a private per-process tmp dir, so per-test rewrites keep every
 // case hermetic (and resilient if a case mutates a fixture in place).
 beforeAll(() => {
+	// Pin the real tsc overlay to IN-PROCESS mode: the default sidecar
+	// transport spawns a cold child per call (slow, and under suite load it
+	// times out — now surfacing as a checkerUnavailable warning row that
+	// would perturb the exact-failures assertions below). The sidecar
+	// unavailable branch itself is pinned via TSC_UNAVAILABLE_MARKER and in
+	// tsc-overlay-sidecar-client.test.ts / multi-edit-sidecar-unavailable.test.ts.
+	_setTscOverlayModeOverrideForTest("in-process");
 	mkdirSync(FIXTURE_DIR, { recursive: true });
+	// Use the unique fixture directory as a real, tiny strict TS project. The
+	// compiler admission key is the project root, so this keeps parallel test
+	// workers from contending for the repository's production compiler lease.
+	// A local config also prevents the LanguageService from indexing the whole
+	// CLI merely to diagnose these two one-file overlay contracts.
+	writeFileSync(
+		FIXTURE_TSCONFIG,
+		JSON.stringify({
+			compilerOptions: {
+				exactOptionalPropertyTypes: true,
+				module: "ESNext",
+				moduleResolution: "Bundler",
+				skipLibCheck: true,
+				strict: true,
+				target: "ES2022",
+			},
+			include: ["*.ts", "*.mts"],
+		}),
+	);
 	writeFileSync(CLEAN_FIXTURE, CLEAN_CONTENT);
 	gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
-		projectRoot: CLI_ROOT,
+		projectRoot: FIXTURE_DIR,
 	});
 });
 beforeEach(() => {
@@ -164,6 +213,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
+	_setTscOverlayModeOverrideForTest(null);
 	// Remove the whole fixture subdir — cleaner than per-file rmSync and
 	// leaves no stray state if the test is aborted mid-run.
 	try {
@@ -177,7 +227,7 @@ describe("gateProposedContent", () => {
 	it("clean batch: returns ok with no failures", () => {
 		// Propose identical content — no new findings possible.
 		const result = gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(true);
 		expect(result.failures).toEqual([]);
@@ -191,7 +241,7 @@ describe("gateProposedContent", () => {
 		// Add a snippet that biome will flag as a new finding.
 		const bad = `${CLEAN_CONTENT}\nexport function _probe() {\n\treturn 1 == 1;\n}\n`;
 		const result = gateProposedContent([{ path: BIOME_FIXTURE, content: bad }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(false);
 		const biomeFails = result.failures.filter((f) => f.tool === "biome");
@@ -208,7 +258,7 @@ describe("gateProposedContent", () => {
 				{ path: MIXED_FIXTURE_OK, content: CLEAN_CONTENT }, // clean
 				{ path: MIXED_FIXTURE_BAD, content: bad }, // failing
 			],
-			{ projectRoot: CLI_ROOT },
+			{ projectRoot: FIXTURE_DIR },
 		);
 		expect(result.ok).toBe(false);
 		// Failures are all attributed to the bad fixture, not the clean one.
@@ -221,7 +271,7 @@ describe("gateProposedContent", () => {
 		// A clean new file has no proposed diagnostics even though both overlays run.
 		const nonExistent = resolve(FIXTURE_DIR, "_gate_does_not_exist.ts");
 		const result = gateProposedContent([{ path: nonExistent, content: CLEAN_CONTENT }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(true);
 		expect(result.failures.filter((f) => f.tool === "biome")).toEqual([]);
@@ -232,7 +282,7 @@ describe("gateProposedContent", () => {
 		const nonExistent = resolve(FIXTURE_DIR, "_gate_implicit_any.mts");
 		const proposed = "export const lengthOf = (line) => line.length;\n";
 		const result = gateProposedContent([{ path: nonExistent, content: proposed }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(false);
 		expect(result.failures).toEqual(
@@ -243,9 +293,51 @@ describe("gateProposedContent", () => {
 	});
 
 	it("empty batch: trivially ok", () => {
-		const result = gateProposedContent([], { projectRoot: CLI_ROOT });
+		const result = gateProposedContent([], { projectRoot: FIXTURE_DIR });
 		expect(result.ok).toBe(true);
 		expect(result.failures).toEqual([]);
+	});
+
+	// ─── checker-unavailable: "unavailable is not clean" ───
+	// The mocked tsc diff-overlay returns `checkerUnavailable` for marker
+	// paths — the shape the sidecar client produces on spawn failure /
+	// timeout / cooldown. The gate must SURFACE it, never swallow it.
+
+	// kind: policy — positive (must fire)
+	it("P: tsc checker unavailable surfaces as a visible warning by default (advisory path)", () => {
+		const marker = resolve(FIXTURE_DIR, `${TSC_UNAVAILABLE_MARKER}.ts`);
+		const result = gateProposedContent([{ path: marker, content: CLEAN_CONTENT }], {
+			projectRoot: FIXTURE_DIR,
+		});
+		// Advisory default: a warning, not a transaction-killer — but never silent.
+		expect(result.ok).toBe(true);
+		const rows = result.failures.filter((f) => f.code === TSC_CHECKER_UNAVAILABLE_CODE);
+		expect(rows).toHaveLength(1);
+		expect(nonNull(rows[0]).severity).toBe(GATE_SEVERITY_WARNING);
+		expect(nonNull(rows[0]).tool).toBe("tsc");
+		expect(nonNull(rows[0]).message).toContain(TSC_UNAVAILABLE_REASON);
+	});
+
+	// kind: policy — positive (must fire)
+	it("P: tscUnavailableSeverity=error makes an unavailable checker abort the batch (transactional path)", () => {
+		const marker = resolve(FIXTURE_DIR, `${TSC_UNAVAILABLE_MARKER}.ts`);
+		const result = gateProposedContent([{ path: marker, content: CLEAN_CONTENT }], {
+			projectRoot: FIXTURE_DIR,
+			tscUnavailableSeverity: GATE_SEVERITY_ERROR,
+		});
+		expect(result.ok).toBe(false);
+		const rows = result.failures.filter((f) => f.code === TSC_CHECKER_UNAVAILABLE_CODE);
+		expect(rows).toHaveLength(1);
+		expect(nonNull(rows[0]).severity).toBe(GATE_SEVERITY_ERROR);
+	});
+
+	// kind: policy — negative (must not fire)
+	it("N: an available checker produces no tsc-overlay-unavailable row", () => {
+		const result = gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
+			projectRoot: FIXTURE_DIR,
+			tscUnavailableSeverity: GATE_SEVERITY_ERROR,
+		});
+		expect(result.failures.filter((f) => f.code === TSC_CHECKER_UNAVAILABLE_CODE)).toEqual([]);
 	});
 
 	it("pre_block failure: an INTRODUCED eval() trips the registry as an error", () => {
@@ -255,7 +347,7 @@ describe("gateProposedContent", () => {
 		// warning. The introduced line is line 5 of the proposal.
 		const proposed = `${PRE_BLOCK_CONTENT}const risky = eval(process.argv[2] ?? "");\n`;
 		const result = gateProposedContent([{ path: PRE_BLOCK_FIXTURE, content: proposed }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(false);
 		const preBlock = result.failures.filter((f) => f.tool === "pre_block");
@@ -279,7 +371,7 @@ describe("gateProposedContent", () => {
 		// wall — one legacy finding blocking every unrelated future edit).
 		const result = gateProposedContent(
 			[{ path: PRE_BLOCK_FIXTURE, content: PRE_BLOCK_CONTENT }],
-			{ projectRoot: CLI_ROOT },
+			{ projectRoot: FIXTURE_DIR },
 		);
 		expect(result.ok).toBe(true);
 		const preBlock = result.failures.filter((f) => f.tool === "pre_block");
@@ -293,7 +385,7 @@ describe("gateProposedContent", () => {
 			`${PRE_BLOCK_CONTENT}// interlinked-ignore: eval_usage — sandboxed REPL, input is vetted\n` +
 			`const vetted = eval(process.argv[3] ?? "");\n`;
 		const result = gateProposedContent([{ path: PRE_BLOCK_FIXTURE, content: proposed }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		// The introduced eval is suppressed; the pre-existing one still warns.
 		expect(result.failures.filter((f) => f.tool === "pre_block" && f.severity === "error")).toEqual(
@@ -319,9 +411,9 @@ describe("gateProposedContent", () => {
 	it("projectRoot omitted + path outside the project: falls all the way through to cwd", () => {
 		// A path OUTSIDE the harness cwd makes findProjectRoot() return null
 		// (it clamps every result to within cwd), so the gate reaches the final
-		// `?? process.cwd()` leg. The path doesn't exist on disk, so biome/tsc
-		// diff-overlays are skipped; pre_block still runs on the eval() content.
-		const outsidePath = resolve(tmpdir(), "_interlinked_gate_outside_probe.ts");
+		// `?? process.cwd()` leg. JavaScript keeps this root-resolution test out
+		// of the TypeScript compiler lane while still exercising the registry.
+		const outsidePath = resolve(tmpdir(), "_interlinked_gate_outside_probe.js");
 		const result = gateProposedContent([{ path: outsidePath, content: PRE_BLOCK_CONTENT }]);
 		expect(result.ok).toBe(false);
 		expect(result.failures.some((f) => f.tool === "pre_block" && f.code === "eval_usage")).toBe(
@@ -336,7 +428,7 @@ describe("gateProposedContent", () => {
 		// On-disk is clean; proposed introduces a string→number assignment.
 		const proposed = `${CLEAN_CONTENT}\nconst _bad: number = "not a number";\n`;
 		const result = gateProposedContent([{ path: TSC_FIXTURE, content: proposed }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		expect(result.ok).toBe(false);
 		const tscFails = result.failures.filter((f) => f.tool === "tsc");
@@ -355,7 +447,7 @@ describe("gateProposedContent", () => {
 		// a warning. With ONLY that finding, the batch stays ok=true.
 		const proposed = `${CLEAN_CONTENT}\nexport function deref(x: string | undefined): number {\n\treturn x.length;\n}\n`;
 		const result = gateProposedContent([{ path: TSC_FIXTURE, content: proposed }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 		});
 		const tscFails = result.failures.filter((f) => f.tool === "tsc");
 		expect(tscFails.length).toBeGreaterThan(0);
@@ -377,7 +469,7 @@ describe("gateProposedContent", () => {
 		// quiet, so the batch is clean.
 		const result = gateProposedContent(
 			[{ path: PRE_WARN_FIXTURE, content: PRE_WARN_CONTENT }],
-			{ projectRoot: CLI_ROOT },
+			{ projectRoot: FIXTURE_DIR },
 		);
 		expect(result.failures.filter((f) => f.tool === "pre_warn")).toEqual([]);
 		expect(result.ok).toBe(true);
@@ -386,7 +478,7 @@ describe("gateProposedContent", () => {
 	it("pre_warn enabled: floating-promise content surfaces a pre_warn warning (non-blocking)", () => {
 		const result = gateProposedContent(
 			[{ path: PRE_WARN_FIXTURE, content: PRE_WARN_CONTENT }],
-			{ projectRoot: CLI_ROOT, skipPreWarn: false },
+			{ projectRoot: FIXTURE_DIR, skipPreWarn: false },
 		);
 		const preWarn = result.failures.filter((f) => f.tool === "pre_warn");
 		expect(preWarn.length).toBeGreaterThan(0);
@@ -409,7 +501,7 @@ describe("gateProposedContent", () => {
 		// skipPreWarn=false on content with NO pre_warn triggers exercises the
 		// pre_warn loop's empty-matches continue path without producing failures.
 		const result = gateProposedContent([{ path: CLEAN_FIXTURE, content: CLEAN_CONTENT }], {
-			projectRoot: CLI_ROOT,
+			projectRoot: FIXTURE_DIR,
 			skipPreWarn: false,
 		});
 		expect(result.ok).toBe(true);
@@ -424,7 +516,7 @@ describe("gateProposedContent", () => {
 		const proposed = `${CLEAN_CONTENT}\nexport const marker = 1;\n`;
 		const result = gateProposedContent(
 			[{ path: RULEID_FALLBACK_FIXTURE, content: proposed }],
-			{ projectRoot: CLI_ROOT },
+			{ projectRoot: FIXTURE_DIR },
 		);
 		const biomeFail = result.failures.find((f) => f.tool === "biome");
 		const tscFail = result.failures.find((f) => f.tool === "tsc");

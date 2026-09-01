@@ -490,6 +490,22 @@ describe("checkPersistentWarningEscalation — advisory/heuristic tier gate", ()
 		expect(out).toEqual([]);
 	});
 
+	it.each([
+		"external_check_deferred",
+		"affected_tests_deferred",
+		"project_typecheck_deferred",
+		"project_tests_deferred",
+	])("operational non-verdict %s never escalates into a source error", (checkName) => {
+		const session = makeSession({ warnings_issued: repeatedRecord(checkName, 5) });
+		const out = checkPersistentWarningEscalation(
+			session,
+			"src/foo.ts",
+			[{ name: checkName, lines: [40], determinism: "fully_deterministic" }],
+			new Set([40]),
+		);
+		expect(out).toEqual([]);
+	});
+
 	it("default-gate proven warning (typescript) repeated still escalates as before", () => {
 		const session = makeSession({ warnings_issued: repeatedRecord("typescript", 5) });
 		const out = checkPersistentWarningEscalation(session, "src/foo.ts", ["typescript"]);

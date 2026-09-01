@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import type { AsyncAnalysisManager } from "./async-analysis.js";
 import type { ContentScanner } from "./content-scanner/types.js";
+import { pidFileNames, removePidFileIfOwned } from "./daemon-pid-ownership.js";
 import type { ReservationManager } from "./reservations.js";
 import { LineFramer } from "./server/socket-framing.js";
 import {
@@ -77,6 +78,16 @@ export interface SocketLifecycle {
 	startRawServer: (reporter?: RawListenReporter) => void;
 	setFramedDaemon: (handle: SessionDaemonHandle | null) => void;
 	setUnwatchers: (unwatchRules: () => void, unwatchSettings: () => void) => void;
+}
+
+function removeOwnedRawArtifacts(args: {
+	pidPath: string;
+	socketPath: string;
+	removeSocket: boolean;
+}): void {
+	if (!pidFileNames(args.pidPath, process.pid)) return;
+	if (args.removeSocket) cleanupSocketAt(args.socketPath);
+	removePidFileIfOwned(args.pidPath, process.pid);
 }
 
 /** Build the socket + process-lifecycle cluster. The function bodies are moved
@@ -166,12 +177,16 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 		// Owns ONLY the legacy `harness.pid`. The framed `harness-<session>.pid`
 		// is removed by `session-daemon.handle.stop()` (session-daemon.ts:167-169)
 		// — the side that wrote it owns the lifecycle, so we don't touch it here.
-		removeFileIfExists(PID_PATH);
+		removePidFileIfOwned(PID_PATH, process.pid);
 	}
 
 	function shutdown(): void {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		if (pidHealTimer) {
+			clearInterval(pidHealTimer);
+			pidHealTimer = null;
+		}
 		// Always-armed force-exit. Any path that hangs for more than 3 s — a
 		// pinned client connection, an async drain that never resolves, a third-
 		// party shutdown handler that throws — will fall through to this rather
@@ -183,14 +198,13 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 				void logErr; /* intentional: logger may already be torn down */
 			}
 			try {
-				removePidFile();
-			} catch (rmErr) {
-				void rmErr; /* intentional: best-effort cleanup during forced exit */
-			}
-			try {
-				if (RUN_RAW_SOCKET) cleanupSocket();
-			} catch (sockErr) {
-				void sockErr; /* intentional: best-effort cleanup during forced exit */
+				removeOwnedRawArtifacts({
+					pidPath: PID_PATH,
+					socketPath: SOCKET_PATH,
+					removeSocket: RUN_RAW_SOCKET,
+				});
+			} catch (cleanupErr) {
+				void cleanupErr; /* intentional: best-effort cleanup during forced exit */
 			}
 			process.exit(1);
 		}, SHUTDOWN_GRACE_MS);
@@ -245,8 +259,11 @@ export function createSocketLifecycle(deps: SocketLifecycleDeps): SocketLifecycl
 		} catch (closeErr) {
 			void closeErr; /* intentional: close() can throw if the server is already closed */
 		}
-		if (RUN_RAW_SOCKET) cleanupSocket();
-		removePidFile();
+		removeOwnedRawArtifacts({
+			pidPath: PID_PATH,
+			socketPath: SOCKET_PATH,
+			removeSocket: RUN_RAW_SOCKET,
+		});
 		unwatchRules();
 		unwatchSettings();
 		process.exit(0);

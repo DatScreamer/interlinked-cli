@@ -245,7 +245,11 @@ describe("interlinked write — single-file mode", () => {
 		const r = await withStdin(content, () => run(target, { stdin: true }));
 
 		expect(r.exitCode).toBeUndefined();
-		expect(mockGate).toHaveBeenCalledWith([{ path: target, content }]);
+		expect(mockGate).toHaveBeenCalledWith(
+			[{ path: target, content }],
+			// Transactional path: unavailable tsc checker aborts (review pass 18).
+			{ tscUnavailableSeverity: "error" },
+		);
 		// Atomic write: a temp file written, then renamed into place.
 		expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
 		const [tmpPath, writtenContent] = nonNull(mockWriteFileSync.mock.calls[0]);
@@ -268,7 +272,11 @@ describe("interlinked write — single-file mode", () => {
 
 		expect(r.exitCode).toBeUndefined();
 		expect(mockReadFileSync).toHaveBeenCalledWith(src, "utf-8");
-		expect(mockGate).toHaveBeenCalledWith([{ path: target, content }]);
+		expect(mockGate).toHaveBeenCalledWith(
+			[{ path: target, content }],
+			// Transactional path: unavailable tsc checker aborts (review pass 18).
+			{ tscUnavailableSeverity: "error" },
+		);
 	});
 
 	it("errors (exit 2) when --from-file source does not exist", async () => {
@@ -457,10 +465,13 @@ describe("interlinked write — batch manifest validation", () => {
 		);
 		const r = await run(undefined, { batch: manifestPath });
 		expect(r.exitCode).toBeUndefined();
-		expect(mockGate).toHaveBeenCalledWith([
-			{ path: a, content: "export const a = 1;\n" },
-			{ path: b, content: "export const b = 2;\n" },
-		]);
+		expect(mockGate).toHaveBeenCalledWith(
+			[
+				{ path: a, content: "export const a = 1;\n" },
+				{ path: b, content: "export const b = 2;\n" },
+			],
+			{ tscUnavailableSeverity: "error" },
+		);
 		// Two temps written, two renames.
 		expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
 		expect(mockRenameSync).toHaveBeenCalledTimes(2);

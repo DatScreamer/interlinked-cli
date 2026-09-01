@@ -25,7 +25,7 @@ import {
 } from "./baseline-autofold.js";
 import type { GuardRulesConfig, HarnessEvent, SessionTrajectory } from "./types.js";
 
-// biome-ignore lint/suspicious/noExplicitAny: outcome shape mirrors FoldOutcome for mock returns
+// The loose return type mirrors FoldOutcome variants used by the mock call sites.
 function noChangeOutcome(kind: string): any {
 	return { kind, changed: 0, refused: 0, skipped: "no-change", details: [], dryRun: false };
 }
@@ -114,6 +114,9 @@ describe("runBaselineAutoFold", () => {
 
 		expect(result.outcomes.map((o) => o.kind)).toEqual([
 			"coverage",
+			// coverage_edit joined the fold plan in 2379f19 (edit-baseline gained
+			// an always-on SessionEnd producer).
+			"coverage_edit",
 			"untested_files",
 			"large_files",
 		]);

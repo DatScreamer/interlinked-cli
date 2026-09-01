@@ -28,6 +28,7 @@ import {
 	evaluateBiomeDiffOverlay,
 	evaluateTscDiffOverlay,
 	isTscFindingBlocking,
+	TSC_CHECKER_UNAVAILABLE_CODE,
 } from "./diff-overlay.js";
 import {
 	lineList,
@@ -105,6 +106,15 @@ export interface GateOptions {
 	 * explicit knob for future callers that want the warnings surfaced.
 	 */
 	skipPreWarn?: boolean;
+	/**
+	 * Severity assigned when the tsc diff-overlay reports the checker itself
+	 * was UNAVAILABLE (sidecar spawn failure / timeout / cooldown) — the file
+	 * was not type-checked at all. Unavailable is not clean: transactional
+	 * callers (verify-changeset, batch landings) should pass
+	 * GATE_SEVERITY_ERROR so the batch aborts; the default keeps the ordinary
+	 * single-edit advisory path at a visible warning.
+	 */
+	tscUnavailableSeverity?: GateSeverity;
 }
 
 /**
@@ -179,9 +189,22 @@ function applyBiomeOverlayPhase(ctx: GatePhaseContext): void {
 }
 
 /** Phase 3: tsc diff-overlay. New files use an empty diagnostic baseline. */
-function applyTscOverlayPhase(ctx: GatePhaseContext): void {
+function applyTscOverlayPhase(ctx: GatePhaseContext, unavailableSeverity: GateSeverity): void {
 	const { path, content, projectRoot, failures } = ctx;
 	const tscOverlay = evaluateTscDiffOverlay(path, content, projectRoot);
+	if (tscOverlay.checkerUnavailable !== undefined) {
+		failures.push({
+			path,
+			tool: "tsc",
+			code: TSC_CHECKER_UNAVAILABLE_CODE,
+			line: 0,
+			message:
+				`type checker unavailable (${tscOverlay.checkerUnavailable}) — ` +
+				"this file was NOT type-checked; unavailable is not clean",
+			severity: unavailableSeverity,
+		});
+		return;
+	}
 	for (const f of tscOverlay.newFindings) {
 		const blocking = isTscFindingBlocking(f);
 		failures.push({
@@ -240,6 +263,7 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 	const start = Date.now();
 	const failures: GateFailure[] = [];
 	const skipPreWarn = opts.skipPreWarn !== false; // default true
+	const tscUnavailableSeverity = opts.tscUnavailableSeverity ?? GATE_SEVERITY_WARNING;
 
 	for (const { path, content } of batch) {
 		const projectRoot =
@@ -249,7 +273,7 @@ export function gateProposedContent(batch: GateInputEntry[], opts: GateOptions =
 
 		applyPreBlockPhase(ctx);
 		applyBiomeOverlayPhase(ctx);
-		applyTscOverlayPhase(ctx);
+		applyTscOverlayPhase(ctx, tscUnavailableSeverity);
 		applyPreWarnPhase(ctx, instructions, skipPreWarn);
 	}
 

@@ -8,12 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	spawn: vi.fn(),
 	existsSync: vi.fn(),
+	readFileSync: vi.fn(),
 	unlinkSync: vi.fn(),
 	getOutputMode: vi.fn(),
 	output: vi.fn(),
 	outputError: vi.fn(),
 	waitForDaemonSocket: vi.fn(),
 	acquireStartupLock: vi.fn(),
+	touchStartupLockHolder: vi.fn(),
+	transferStartupLock: vi.fn(),
 	reapOrphanHarnessesVerified: vi.fn(),
 	stopAllDaemons: vi.fn(),
 	getHarnessServerPath: vi.fn(),
@@ -24,13 +27,27 @@ const mocks = vi.hoisted(() => ({
 	closeDaemonStderrLog: vi.fn(),
 	readDaemonStderrLog: vi.fn(),
 	expectedSocketPaths: vi.fn(),
+	classifyDaemonSocket: vi.fn(),
+	isDaemonSocketReady: vi.fn(),
+	readHarnessProcessIdentity: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
-vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, unlinkSync: mocks.unlinkSync }));
+vi.mock("node:fs", () => ({
+	existsSync: mocks.existsSync,
+	readFileSync: mocks.readFileSync,
+	unlinkSync: mocks.unlinkSync,
+}));
+vi.mock("../harness/daemon-process-identity.js", () => ({
+	readHarnessProcessIdentity: mocks.readHarnessProcessIdentity,
+}));
 vi.mock("../harness/startup-lock.js", () => ({
 	acquireStartupLock: mocks.acquireStartupLock,
 	waitForDaemonSocket: mocks.waitForDaemonSocket,
+	// Heartbeat while waiting for readiness (startup-lock work, 2026-08) —
+	// a no-op here; these contracts cover readiness detection, not the lock.
+	touchStartupLockHolder: mocks.touchStartupLockHolder,
+	transferStartupLock: mocks.transferStartupLock,
 }));
 vi.mock("../lib/output.js", () => ({
 	getOutputMode: mocks.getOutputMode,
@@ -60,6 +77,10 @@ vi.mock("./harness-process.js", () => ({
 	readDaemonStderrLog: mocks.readDaemonStderrLog,
 }));
 vi.mock("./harness-status-helpers.js", () => ({ expectedSocketPaths: mocks.expectedSocketPaths }));
+vi.mock("../harness/session-paths.js", () => ({
+	classifyDaemonSocket: mocks.classifyDaemonSocket,
+	isDaemonSocketReady: mocks.isDaemonSocketReady,
+}));
 
 import {
 	buildHarnessSpawnArgs,
@@ -71,8 +92,12 @@ import {
 	stopRunningHarnessForRestart,
 } from "./harness-lifecycle-helpers.js";
 
-function child(pid = 4321): EventEmitter & { pid: number; unref: ReturnType<typeof vi.fn> } {
-	return Object.assign(new EventEmitter(), { pid, unref: vi.fn() });
+function child(pid = 4321): EventEmitter & {
+	pid: number;
+	kill: ReturnType<typeof vi.fn>;
+	unref: ReturnType<typeof vi.fn>;
+} {
+	return Object.assign(new EventEmitter(), { pid, kill: vi.fn(), unref: vi.fn() });
 }
 
 beforeEach(() => {
@@ -81,6 +106,14 @@ beforeEach(() => {
 	mocks.getSocketPath.mockReturnValue("/tmp/harness.sock");
 	mocks.getPidPath.mockReturnValue("/tmp/harness.pid");
 	mocks.expectedSocketPaths.mockReturnValue(["/tmp/harness.sock"]);
+	mocks.classifyDaemonSocket.mockResolvedValue("absent");
+	mocks.isDaemonSocketReady.mockResolvedValue(true);
+	mocks.readFileSync.mockReturnValue("777");
+	mocks.readHarnessProcessIdentity.mockReturnValue({
+		bootId: "boot",
+		startId: "start",
+	});
+	mocks.transferStartupLock.mockReturnValue(true);
 	mocks.openDaemonStderrLog.mockReturnValue(undefined);
 	mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 777 });
 	mocks.reapOrphanHarnessesVerified.mockResolvedValue(undefined);
@@ -132,7 +165,7 @@ describe("buildHarnessSpawnArgs — exact argv construction", () => {
 	// test-contract: public-api — "--expose-gc" and "--cwd" tokens must be present verbatim.
 	it("builds the exact verbose framed argv", () => {
 		expect(buildHarnessSpawnArgs("server.mjs", "/repo", "framed", "session-1", { verbose: true })).toEqual([
-			"--max-old-space-size=2560",
+			"--max-old-space-size=1536",
 			"--expose-gc",
 			"server.mjs",
 			"--cwd",
@@ -148,7 +181,7 @@ describe("buildHarnessSpawnArgs — exact argv construction", () => {
 	// test-contract: boundary — opts.verbose must gate the "--verbose" token, not always push it.
 	it("omits --verbose when opts.verbose is false", () => {
 		expect(buildHarnessSpawnArgs("server.mjs", "/repo", "raw", "ignored", { verbose: false })).toEqual([
-			"--max-old-space-size=2560",
+			"--max-old-space-size=1536",
 			"--expose-gc",
 			"server.mjs",
 			"--cwd",
@@ -160,6 +193,28 @@ describe("buildHarnessSpawnArgs — exact argv construction", () => {
 });
 
 describe("daemonizeHarness — readiness detection and failure reporting", () => {
+	// test-contract: concurrency — a detached child without the owner-checked
+	// startup lease is terminated before any later start can overlap it.
+	it("terminates a detached child when the startup lease cannot transfer", async () => {
+		const spawned = child(101);
+		mocks.spawn.mockReturnValue(spawned);
+		mocks.transferStartupLock.mockReturnValue(false);
+		await expect(
+			daemonizeHarness({
+				mode: "normal",
+				cwd: "/repo",
+				nodePath: "/node",
+				spawnArgs: ["server"],
+				protocol: "raw",
+				sessionId: "s",
+				serverPath: "server",
+			}),
+		).rejects.toThrow("without a transferable startup lease");
+		expect(mocks.transferStartupLock).toHaveBeenCalledWith("/repo", { childPid: 101 });
+		expect(spawned.kill).toHaveBeenCalledWith("SIGTERM");
+		expect(spawned.unref).not.toHaveBeenCalled();
+	});
+
 	// test-contract: invariant — stderr log must only be read when NOT ready.
 	it("does not read the stderr log once the daemon becomes ready on the first check", async () => {
 		mocks.spawn.mockReturnValue(child(101));
@@ -183,7 +238,9 @@ describe("daemonizeHarness — readiness detection and failure reporting", () =>
 		vi.useFakeTimers();
 		const spawned = child(80);
 		mocks.spawn.mockReturnValue(spawned);
-		mocks.existsSync.mockReturnValue(false);
+		// A stale inode exists, but no listener accepts a connection.
+		mocks.existsSync.mockReturnValue(true);
+		mocks.isDaemonSocketReady.mockResolvedValue(false);
 		mocks.isHarnessRunning.mockReturnValue({ running: false });
 		mocks.readDaemonStderrLog.mockReturnValue("");
 		let normalText = "";
@@ -203,6 +260,7 @@ describe("daemonizeHarness — readiness detection and failure reporting", () =>
 		await vi.advanceTimersByTimeAsync(500);
 		await promise;
 		expect(normalText).toContain("Failed to start harness after 1s.");
+		expect(mocks.isDaemonSocketReady).toHaveBeenCalledWith("/tmp/harness.sock");
 	});
 
 	// test-contract: invariant — readiness requires ALL sockets, not just one.
@@ -211,7 +269,7 @@ describe("daemonizeHarness — readiness detection and failure reporting", () =>
 		const spawned = child(55);
 		mocks.spawn.mockReturnValue(spawned);
 		mocks.expectedSocketPaths.mockReturnValue(["/a.sock", "/b.sock"]);
-		mocks.existsSync.mockImplementation((p: string) => p === "/a.sock");
+		mocks.isDaemonSocketReady.mockImplementation(async (p: string) => p === "/a.sock");
 		mocks.isHarnessRunning.mockReturnValue({ running: false });
 		let jsonData: unknown;
 		mocks.output.mockImplementation((_mode, _data, renderers) => {
@@ -241,6 +299,7 @@ describe("daemonizeHarness — readiness detection and failure reporting", () =>
 		const spawned = child(95);
 		mocks.spawn.mockReturnValue(spawned);
 		mocks.existsSync.mockReturnValue(false);
+		mocks.isDaemonSocketReady.mockResolvedValue(false);
 		mocks.isHarnessRunning.mockReturnValue({ running: false });
 		mocks.readDaemonStderrLog.mockReturnValue("");
 		let normalText = "";
@@ -270,6 +329,7 @@ describe("daemonizeHarness — readiness detection and failure reporting", () =>
 		const spawned = child(90);
 		mocks.spawn.mockReturnValue(spawned);
 		mocks.existsSync.mockReturnValue(false);
+		mocks.isDaemonSocketReady.mockResolvedValue(false);
 		mocks.isHarnessRunning.mockReturnValue({ running: false });
 		const longOutput = `  ${"x".repeat(600)}  \n`;
 		mocks.readDaemonStderrLog.mockReturnValue(longOutput);
@@ -333,9 +393,11 @@ describe("cleanStaleRestartFiles — delete-when-stale conditions", () => {
 		expect(mocks.unlinkSync.mock.calls.sort()).toEqual([["/tmp/harness.pid"], ["/tmp/harness.sock"]]);
 	});
 
-	// test-contract: invariant — a live harness must protect both files from deletion.
-	it("deletes nothing while a harness is running", async () => {
+	// test-contract: invariant — a protocol-ready live harness must protect both
+	// files from deletion; PID liveness alone is not socket readiness.
+	it("deletes nothing while a protocol-ready harness is running", async () => {
 		mocks.existsSync.mockReturnValue(true);
+		mocks.classifyDaemonSocket.mockResolvedValue("ready");
 		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 55 });
 		await cleanStaleRestartFiles("/repo", { discover: () => [] });
 		expect(mocks.unlinkSync).not.toHaveBeenCalled();
@@ -351,7 +413,9 @@ describe("cleanStaleRestartFiles — delete-when-stale conditions", () => {
 });
 
 describe("inlineJsonRestartStart — server resolution, argv, and poll convergence", () => {
-	// test-contract: bug — a resolvable but missing-on-disk server path must still error.
+	// test-contract: bug — a resolvable but missing-on-disk server path must
+	// still error AND exit nonzero (review 2026-08-30: output() only prints,
+	// so automation received exit 0 for a failed restart).
 	it("treats a resolved server path that does not exist on disk as missing", async () => {
 		mocks.getHarnessServerPath.mockReturnValue("/opt/server.mjs");
 		mocks.existsSync.mockReturnValue(false);
@@ -359,9 +423,37 @@ describe("inlineJsonRestartStart — server resolution, argv, and poll convergen
 		mocks.output.mockImplementation((_mode, _data, renderers) => {
 			jsonData = renderers.json();
 		});
+		process.exitCode = 0;
 		await inlineJsonRestartStart("/repo", {}, "raw", "s", 1, "json");
 		expect(jsonData).toEqual({ status: "error", message: "Harness server not found" });
 		expect(mocks.spawn).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+	});
+
+	// test-contract: bug — review 2026-08-30: a live pid with no sockets was
+	// reported "restarted" with exit 0. It must report failed_not_listening
+	// and exit nonzero; a dead daemon reports failed, also nonzero.
+	it("reports failed_not_listening (exit 1) for a live pid with no sockets", async () => {
+		vi.useFakeTimers();
+		mocks.getHarnessServerPath.mockReturnValue("server.mjs");
+		// Server artifact exists; the SOCKET never does.
+		mocks.existsSync.mockImplementation((p: string) => !String(p).includes(".sock"));
+		mocks.isDaemonSocketReady.mockResolvedValue(false);
+		mocks.spawn.mockReturnValue(child(303));
+		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 303 });
+		let jsonData: { status?: string } = {};
+		mocks.output.mockImplementation((_mode, _data, renderers) => {
+			jsonData = renderers.json() as { status?: string };
+		});
+		process.exitCode = 0;
+		const run = inlineJsonRestartStart("/repo", {}, "raw", "s", 1, "json");
+		await vi.advanceTimersByTimeAsync(31_000);
+		await run;
+		expect(jsonData.status).toBe("failed_not_listening");
+		expect(process.exitCode).toBe(1);
+		process.exitCode = 0;
+		vi.useRealTimers();
 	});
 
 	// test-contract: public-api — exact spawn argv/options:
@@ -378,7 +470,18 @@ describe("inlineJsonRestartStart — server resolution, argv, and poll convergen
 		await inlineJsonRestartStart("/repo", { verbose: true }, "framed", "session-2", 17, "json");
 		expect(mocks.spawn).toHaveBeenCalledWith(
 			process.execPath,
-			["server.mjs", "--cwd", "/repo", "--protocol", "framed", "--session-id", "session-2", "--verbose"],
+			[
+				"--max-old-space-size=1536",
+				"--expose-gc",
+				"server.mjs",
+				"--cwd",
+				"/repo",
+				"--protocol",
+				"framed",
+				"--session-id",
+				"session-2",
+				"--verbose",
+			],
 			{ stdio: "ignore", detached: true, cwd: "/repo" },
 		);
 		expect(jsonData).toEqual({
@@ -401,11 +504,15 @@ describe("inlineJsonRestartStart — server resolution, argv, and poll convergen
 			jsonData = renderers.json();
 		});
 		await inlineJsonRestartStart("/repo", { verbose: false }, "raw", "s", 1, "json");
-		expect(mocks.spawn).toHaveBeenCalledWith(process.execPath, ["server.mjs", "--cwd", "/repo", "--protocol", "raw"], {
-			stdio: "ignore",
-			detached: true,
-			cwd: "/repo",
-		});
+		expect(mocks.spawn).toHaveBeenCalledWith(
+			process.execPath,
+			["--max-old-space-size=1536", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "raw"],
+			{
+				stdio: "ignore",
+				detached: true,
+				cwd: "/repo",
+			},
+		);
 		expect(jsonData).toMatchObject({ status: "restarted", new_pid: 203 });
 	});
 
@@ -437,6 +544,7 @@ describe("inlineJsonRestartStart — server resolution, argv, and poll convergen
 		mocks.getHarnessServerPath.mockReturnValue("server.mjs");
 		mocks.expectedSocketPaths.mockReturnValue(["/a.sock", "/b.sock"]);
 		mocks.existsSync.mockImplementation((p: string) => p === "server.mjs" || p === "/a.sock");
+		mocks.isDaemonSocketReady.mockImplementation(async (p: string) => p === "/a.sock");
 		mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 9 });
 		mocks.spawn.mockReturnValue(child(9));
 		let jsonData: unknown;
@@ -448,7 +556,7 @@ describe("inlineJsonRestartStart — server resolution, argv, and poll convergen
 		expect(jsonData).toBeUndefined();
 		await vi.advanceTimersByTimeAsync(500);
 		expect(jsonData).toBeUndefined();
-		mocks.existsSync.mockReturnValue(true);
+		mocks.isDaemonSocketReady.mockResolvedValue(true);
 		await vi.advanceTimersByTimeAsync(500);
 		await promise;
 		expect(jsonData).toMatchObject({ status: "restarted" });

@@ -43,7 +43,8 @@ export interface RawMutant {
 	originalLexeme: string;
 	/** The replacement token, e.g. ">=". */
 	replacement: string;
-	/** 0-based character offset of the mutated token's start (engine-provided). */
+	/** 0-based UTF-16 code-unit offset (JavaScript string index) of the
+	 * mutated token's start (engine-provided). */
 	startOffset: number;
 }
 
@@ -183,6 +184,16 @@ export interface TestRunResult {
 	redWitnessSatisfied: boolean | null;
 }
 
+/** What a receipt actually attests (review 2026-08-28 item 2). A receipt
+ *  without this field used to look identical for a first-sighting adoption and
+ *  a measured-clean pass, so every durable consumer — the run ledger, the
+ *  dashboard — read adoption as clean. `finding` marks a measured BLOCK's
+ *  receipt (second pass, finding 5: a blocked result must not carry a receipt
+ *  claiming clean, even though the gate never persists one — the type itself
+ *  must not permit the false statement). Only `baseline_adopted` and
+ *  `measured_clean` ever reach persistence; not-measured runs write nothing. */
+export type ReceiptOutcome = "baseline_adopted" | "measured_clean" | "finding";
+
 /** A receipt is valid ONLY against the exact measured overlay content (spec §8). */
 export interface MutationReceipt {
 	/** Hash of the proposed overlay content actually run. */
@@ -193,6 +204,8 @@ export interface MutationReceipt {
 	engine: string;
 	engineVersion: string;
 	measuredAt: string;
+	/** What this receipt attests — adoption is NOT clean. */
+	outcome: ReceiptOutcome;
 }
 
 /** Recorded when a measurement could not complete (parent doc §12, case 3). */
@@ -204,10 +217,39 @@ export interface MutationObligation {
 }
 
 /**
- * The gate outcome. Only `kind: "measured"` may block, refresh the manifest, or
- * mark the edit mutation-clean; `unavailable` is an honest not-measured allow.
+ * The gate outcome. Only `kind: "measured"` may block or mark the edit
+ * mutation-clean; `baseline_adopted` records a first sighting's floor without
+ * certifying anything; `unavailable` is an honest not-measured allow.
  */
 export type MutationGateOutcome =
+	| {
+			/** FIRST measured sighting of this file (review 2026-08-28 item 1):
+			 *  the run RECORDS the pre-existing survivor floor so brownfield
+			 *  adoption is possible — an allow that persists — but it is NOT a
+			 *  clean verdict: nothing was compared against a baseline, because
+			 *  this run IS the baseline. `_ready` because adoption is DECLARED
+			 *  only after the persistence CALLBACK completes (review item 1) — which
+			 *  is NOT an atomic or crash-durable commit; the file-based sequence can
+			 *  still be partial after a crash until the SQLite journal lands: the gate
+			 *  layer persists this outcome and downgrades the message to
+			 *  "measured but NOT adopted" when persistence fails or is absent.
+			 *  Reaching this outcome requires the current v2 evidence checks
+			 *  (a green testRun, a positive executed-test count, engine exit 0,
+			 *  and no adapter-dropped rows — config hash / runner identity remain
+			 *  open, plan 27); a red suite still produces a measured block, and
+			 *  oversize is deliberately NOT enforced on first sighting (the
+			 *  site count reflects the whole file, not the edit). */
+			kind: "baseline_adoption_ready";
+			receipt: MutationReceipt;
+			/** The floor to persist — same role as a measured-clean allow's
+			 *  refreshedManifest, never absent here. */
+			refreshedManifest: MutationManifest;
+			/** The adoption message to surface IF persistence succeeds. */
+			warning: string;
+			/** RED-witness (spec §7) must survive adoption: a new test that never
+			 *  failed on base is still worth a warning on a first sighting. */
+			redWitnessFailed?: boolean;
+	  }
 	| {
 			kind: "measured";
 			decision: "allow" | "block";

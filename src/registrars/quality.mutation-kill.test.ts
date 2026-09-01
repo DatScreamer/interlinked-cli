@@ -105,10 +105,11 @@ describe("registerQualityCommands — command + option descriptions (mutation-ki
 	it("verify", () => {
 		const cmd = top(build(), "verify");
 		expect(cmd.description()).toBe(
-			"Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.",
+			"Run the default high-signal external catalog plus diff-safe inline checks. Target can be a local path, GitHub URL, or any git remote URL.",
 		);
 		expect(optionDescriptions(cmd)).toEqual({
-			"--only": "Run only tsc or biome (e.g., --only tsc)",
+			"--only":
+				"Run one named external check (for example: tsc, biome, oxlint, eslint, semgrep, gitleaks, knip, docs-check, sca)",
 			"--suggestions": "Also run scored regex heuristics (sql-injection, perf, quality)",
 			"--json": "Machine-readable output",
 			"--details": "Show per-file details for all findings",
@@ -313,7 +314,7 @@ describe("registerQualityCommands — command + option descriptions (mutation-ki
 	it("mutation (parent — no own options)", () => {
 		const cmd = top(build(), "mutation");
 		expect(cmd.description()).toBe(
-			"Per-file mutation-score ratchet — fails on any file whose mutation score drops",
+			"Mutation testing: report-score ratchet, local runner measurement, and experimental durable cloud jobs",
 		);
 		expect(optionDescriptions(cmd)).toEqual({});
 	});
@@ -341,10 +342,11 @@ describe("registerQualityCommands — command + option descriptions (mutation-ki
 	it("mutation > measure", () => {
 		const cmd = child(top(build(), "mutation"), "measure");
 		expect(cmd.description()).toBe(
-			"Measure one file against the mutation runner. Read-only by default; --record folds a CLEAN report into the SAME manifest the per-edit gate enforces against, via seedFileBaseline — closes the gap where out-of-band re-measurement (e.g. scratch/measure-file.mts) never reached the ratchet.",
+			"Measure one file with a local mutation runner. Read-only by default; --record persists only a complete, conclusive result as local manifest baseline state. Recording never certifies the file as clean.",
 		);
 		expect(optionDescriptions(cmd)).toEqual({
-			"--record": "Persist the measured result into .interlinked/mutation-manifest.json",
+			"--record":
+				"Persist a complete, conclusive result as local manifest baseline state (never a clean certification)",
 			"--runner-url": "Override the configured runner endpoint(s)",
 			"--budget-ms": "Total time to keep retrying busy/unreachable endpoints (default: 900000)",
 			"--skip-preflight":
@@ -377,7 +379,7 @@ describe("registerQualityCommands — command + option descriptions (mutation-ki
 	it("mutation > sweep", () => {
 		const cmd = child(top(build(), "mutation"), "sweep");
 		expect(cmd.description()).toBe(
-			"Re-measure mutation targets and record each clean result into the manifest. Defaults to the ranked survivor work-list; --all-eligible performs a full source census. Repeat --runner-url to fan out across runner boxes.",
+			"Re-measure local mutation targets and persist each complete, conclusive result as baseline state, never as a clean certification. Defaults to the ranked survivor work-list; --all-eligible performs a full source census. Repeat --runner-url to fan out across runner boxes.",
 		);
 		expect(optionDescriptions(cmd)).toEqual({
 			"--file": "Only files whose path contains this (case-insensitive)",

@@ -57,4 +57,31 @@ describe("LineFramer", () => {
 		const f = new LineFramer();
 		expect(f.push("a\n\n\nb\n")).toEqual(["a", "b"]);
 	});
+
+	// Regression pin for the 2026-08-27 daemon melt: the old implementation
+	// (`buffer += chunk` + full-buffer indexOf) flattened the whole buffer on
+	// every chunk, so a single large line arriving in socket-sized chunks cost
+	// O(n²) memmove — ~90MB took minutes and stalled the event loop into the
+	// "zombie" liveness state. The array-of-parts framer is O(n): this bound
+	// passes in well under a second; the old code cannot meet it.
+	it(
+		"frames a 32MB single-line payload delivered in 64KB chunks in linear time",
+		{ timeout: 10_000 },
+		() => {
+			const f = new LineFramer();
+			const chunk = "x".repeat(64 * 1024);
+			const chunks = 512; // 32MB total
+			const started = performance.now();
+			for (let i = 0; i < chunks; i++) {
+				expect(f.push(chunk)).toEqual([]);
+			}
+			const [line] = f.push("\n");
+			const elapsedMs = performance.now() - started;
+			expect(line?.length).toBe(chunks * chunk.length);
+			expect(f.pending).toBe("");
+			// Generous bound: linear framing measures ~50-150ms here; the old
+			// quadratic framer takes minutes. Headroom covers slow CI machines.
+			expect(elapsedMs).toBeLessThan(5_000);
+		},
+	);
 });

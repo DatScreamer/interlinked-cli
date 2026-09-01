@@ -41,7 +41,7 @@ function dateNowSequence(values: number[]): () => number {
 	};
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+// Vitest spy handles carry awkward overloaded generics.
 function logLines(logSpy: any): string[] {
 	return logSpy.mock.calls.map((c: unknown[]) => c.join(" "));
 }
@@ -79,11 +79,11 @@ describe("index-cmd — command/option descriptions (must fire on string-literal
 });
 
 describe("index-cmd — build command (elapsed arithmetic, progress threshold, base-commit slice, clear-line)", () => {
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let logSpy: any;
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let writeSpy: any;
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let dateSpy: any;
 
 	beforeEach(() => {
@@ -153,9 +153,9 @@ describe("index-cmd — build command (elapsed arithmetic, progress threshold, b
 });
 
 describe("index-cmd — update command (elapsed arithmetic)", () => {
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let logSpy: any;
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let dateSpy: any;
 
 	beforeEach(() => {
@@ -189,9 +189,9 @@ describe("index-cmd — update command (elapsed arithmetic)", () => {
 
 describe("index-cmd — status command (meta text lines, optional chaining, freshness boundaries)", () => {
 	let tmpDir: string;
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let logSpy: any;
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let dateSpy: any;
 
 	beforeEach(() => {
@@ -303,7 +303,7 @@ describe("index-cmd — status command (meta text lines, optional chaining, fres
 });
 
 describe("index-cmd — query command (candidate truncation boundary)", () => {
-	// biome-ignore lint/suspicious/noExplicitAny: vitest spy handles carry awkward overloaded generics
+	// Vitest spy handles carry awkward overloaded generics.
 	let logSpy: any;
 
 	beforeEach(() => {

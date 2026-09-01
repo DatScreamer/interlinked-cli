@@ -374,20 +374,26 @@ describe("copilot-cli adapter — ask→deny includes Targets", () => {
 		"preToolUse",
 	);
 
-	it("ask collapses to deny (exit 2) with targets appended to the stderr reason", () => {
+	it("ask collapses to Copilot deny JSON with targets appended to the reason", () => {
 		const out = adapter.encodeDecision(
 			{ decision: "ask", reason: "confirm?", resolved_targets: TARGETS_TWO_FILES },
 			event,
 		);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toContain("confirm?");
-		expect(out.stderr).toContain("Targets:");
-		expect(out.stderr).toContain("• file: src/legacy.ts");
+		expect(out.exit_code).toBe(0);
+		expect(JSON.parse(out.stdout || "{}")).toEqual({
+			permissionDecision: "deny",
+			permissionDecisionReason: expect.stringMatching(
+				/confirm\?[\s\S]*Targets:[\s\S]*• file: src\/legacy\.ts/,
+			),
+		});
 	});
 
 	it("ask without resolved_targets renders unchanged from baseline (regression)", () => {
 		const out = adapter.encodeDecision({ decision: "ask", reason: "confirm?" }, event);
-		expect(out.exit_code).toBe(2);
-		expect(out.stderr).toBe("confirm?");
+		expect(out.exit_code).toBe(0);
+		expect(JSON.parse(out.stdout || "{}")).toEqual({
+			permissionDecision: "deny",
+			permissionDecisionReason: "confirm?",
+		});
 	});
 });

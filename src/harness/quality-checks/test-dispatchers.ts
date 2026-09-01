@@ -8,13 +8,13 @@
 // Keeps the runQualityChecks main body lean: the dispatch loop in
 // quality-checks.ts just looks up the dispatcher by LanguageId and calls it.
 
-import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, extname, relative, resolve, sep } from "node:path";
 import { nonNull } from "../../lib/non-null.js";
 import type { LanguageId, LanguageProfile } from "../types.js";
 import { findDirectImporters } from "./direct-importers.js";
 import { buildTestCandidates, classifyTestFailure } from "./test-classifier.js";
+import { runBoundedTestProcess } from "./test-process-gate.js";
 
 /**
  * `affected_tests` only, TypeScript/JavaScript: ceiling on how many DIRECT
@@ -61,19 +61,21 @@ export interface TestDispatcherResult {
 
 /**
  * Dispatch an affected_tests run for the given language. Returns zero or
- * more results to append to the check pipeline's findings. Must never
- * throw; all errors become "silent skip" so a missing toolchain doesn't
- * spam the agent.
+ * more results to append to the check pipeline's findings. Must never throw;
+ * unavailable/interrupted execution becomes an explicit deferred warning so
+ * a missing toolchain or killed runner cannot be mistaken for a clean test.
  */
-type TestDispatcher = (input: TestDispatcherInput) => TestDispatcherResult[];
+export type TestDispatcher = (
+	input: TestDispatcherInput,
+) => TestDispatcherResult[] | Promise<TestDispatcherResult[]>;
 
 /** Public API — consumed by quality-checks.runQualityChecks. */
-export const TEST_DISPATCHERS: Partial<Record<LanguageId, TestDispatcher>> = {
+export const TEST_DISPATCHERS = {
 	typescript: runVitestDispatcher,
 	python: runPytestDispatcher,
 	rust: runCargoTestDispatcher,
 	go: runGoTestDispatcher,
-};
+} satisfies Partial<Record<LanguageId, TestDispatcher>>;
 
 // ===========================================
 // Shared helpers
@@ -86,15 +88,11 @@ function truncateTail(output: string, lines = 8): string {
 	return output.split("\n").slice(-lines).join("\n");
 }
 
-function combinedOutput(result: SpawnSyncReturns<string>): string {
+function combinedOutput(result: { stdout?: string | null; stderr?: string | null }): string {
 	const stdout = (result.stdout || "").trim();
 	const stderr = (result.stderr || "").trim();
 	if (stdout && stderr) return `${stderr}\n${stdout}`;
 	return stdout || stderr;
-}
-
-function isToolNotInstalled(result: SpawnSyncReturns<string>): boolean {
-	return !!result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 // ===========================================
@@ -104,32 +102,49 @@ function isToolNotInstalled(result: SpawnSyncReturns<string>): boolean {
 // First tries `vitest --related` for module-graph-aware discovery, then
 // falls back to filename-convention test lookup.
 
-function runVitestDispatcher(input: TestDispatcherInput): TestDispatcherResult[] {
+const DEFERRED_TEST_REASONS = {
+	busy: "another test check is running",
+	timeout: "test process timed out",
+	interrupted: "test process was interrupted",
+	unavailable: "test process could not be started",
+} as const;
+
+function deferredTestResult(
+	input: TestDispatcherInput,
+	reason: keyof typeof DEFERRED_TEST_REASONS,
+): TestDispatcherResult {
+	return {
+		name: "affected_tests_deferred",
+		severity: "warning",
+		message: `Affected tests deferred for ${input.filePath} (${DEFERRED_TEST_REASONS[reason]})`,
+		file: input.filePath,
+		detail: "No test verdict was produced. The daemon kept serving instead of queueing more memory-heavy work; re-run the affected test after the active check finishes.",
+	};
+}
+
+async function runVitestDispatcher(input: TestDispatcherInput): Promise<TestDispatcherResult[]> {
 	const { filePath, absPath, profile, checkCwd, timeoutMs, severity, checkName } = input;
 	const results: TestDispatcherResult[] = [];
 	const runnerCmd = profile.test_runner?.command || "npx vitest run";
 	if (!runnerCmd.includes("vitest")) return [];
 
 	// 1) vitest --related
-	const relatedResult = spawnSync(
-		"npx",
-		["vitest", "run", "--related", absPath, "--reporter=verbose"],
-		{
-			shell: false,
-			timeout: timeoutMs,
-			cwd: checkCwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
+	const relatedRun = await runBoundedTestProcess({
+		command: "npx",
+		args: ["vitest", "run", "--related", absPath, "--reporter=verbose"],
+		cwd: checkCwd,
+		timeoutMs,
+	});
+	if (relatedRun.kind === "deferred") return [deferredTestResult(input, relatedRun.reason)];
+	const relatedResult = relatedRun;
 
 	const relatedOutput = combinedOutput(relatedResult);
 	const unknownOption = /unknown option/i.test(relatedOutput);
 	let ranViaRelated = false;
 
-	if (!relatedResult.error && relatedResult.status !== null && !unknownOption) {
+	if (!unknownOption) {
 		ranViaRelated = true;
-		if (relatedResult.status !== 0) {
+		if (relatedResult.code !== 0) {
 			const classification = classifyTestFailure(
 				`related:${absPath}`,
 				relatedOutput,
@@ -160,19 +175,15 @@ function runVitestDispatcher(input: TestDispatcherInput): TestDispatcherResult[]
 				? testFile.slice(checkCwd.length + 1)
 				: testFile;
 			const runnerParts = runnerCmd.split(/\s+/).filter(Boolean);
-			const result = spawnSync(
-				nonNull(runnerParts[0]),
-				[...runnerParts.slice(1), relTest, "--reporter=verbose"],
-				{
-					shell: false,
-					timeout: timeoutMs,
-					cwd: checkCwd,
-					encoding: "utf-8",
-					stdio: ["pipe", "pipe", "pipe"],
-				},
-			);
-			if (isToolNotInstalled(result)) return results;
-			if (result.status !== 0 && result.status !== null) {
+			const run = await runBoundedTestProcess({
+				command: nonNull(runnerParts[0]),
+				args: [...runnerParts.slice(1), relTest, "--reporter=verbose"],
+				cwd: checkCwd,
+				timeoutMs,
+			});
+			if (run.kind === "deferred") return [...results, deferredTestResult(input, run.reason)];
+			const result = run;
+			if (result.code !== 0) {
 				const output = combinedOutput(result);
 				const classification = classifyTestFailure(`conv:${relTest}`, output, "typescript");
 				if (classification !== "pre-existing") {
@@ -192,7 +203,7 @@ function runVitestDispatcher(input: TestDispatcherInput): TestDispatcherResult[]
 	// companion test belonging to a file that DIRECTLY imports the edited
 	// file is a distinct concern from the edited file's own test, so this
 	// runs regardless of whether phases 1/2 found (or reported) anything.
-	results.push(...runDirectImporterCompanions(input));
+	results.push(...(await runDirectImporterCompanions(input)));
 
 	return results;
 }
@@ -228,7 +239,9 @@ export function capDependentTests(
  * {@link capDependentTests}. Under cap: every companion test file runs in
  * ONE vitest invocation (not one spawn per file).
  */
-function runDirectImporterCompanions(input: TestDispatcherInput): TestDispatcherResult[] {
+async function runDirectImporterCompanions(
+	input: TestDispatcherInput,
+): Promise<TestDispatcherResult[]> {
 	const { filePath, absPath, profile, checkCwd, timeoutMs, severity, checkName } = input;
 	const cap = input.maxDependentTests ?? DEFAULT_MAX_DEPENDENT_TESTS;
 
@@ -265,19 +278,15 @@ function runDirectImporterCompanions(input: TestDispatcherInput): TestDispatcher
 	);
 	const runnerCmd = profile.test_runner?.command || "npx vitest run";
 	const runnerParts = runnerCmd.split(/\s+/).filter(Boolean);
-	const result = spawnSync(
-		nonNull(runnerParts[0]),
-		[...runnerParts.slice(1), ...relTests, "--reporter=verbose"],
-		{
-			shell: false,
-			timeout: timeoutMs,
-			cwd: checkCwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
-	if (isToolNotInstalled(result)) return [];
-	if (result.status === 0 || result.status === null) return [];
+	const run = await runBoundedTestProcess({
+		command: nonNull(runnerParts[0]),
+		args: [...runnerParts.slice(1), ...relTests, "--reporter=verbose"],
+		cwd: checkCwd,
+		timeoutMs,
+	});
+	if (run.kind === "deferred") return [deferredTestResult(input, run.reason)];
+	const result = run;
+	if (result.code === 0) return [];
 
 	const output = combinedOutput(result);
 	const classification = classifyTestFailure(`direct-importers:${absPath}`, output, "typescript");
@@ -306,25 +315,20 @@ function runDirectImporterCompanions(input: TestDispatcherInput): TestDispatcher
 // collect the whole project — we only care about tests related to the
 // edited source file.
 
-function runPytestDispatcher(input: TestDispatcherInput): TestDispatcherResult[] {
+async function runPytestDispatcher(input: TestDispatcherInput): Promise<TestDispatcherResult[]> {
 	const testFile = findFirstExistingCandidate(input.absPath, input.profile);
 	if (!testFile) return [];
 	const rel = relativizeFromRoot(testFile, input.checkCwd);
-	const result = spawnSync(
-		"python",
-		["-m", "pytest", "-x", "--tb=short", "-q", rel],
-		{
-			shell: false,
-			timeout: input.timeoutMs,
-			cwd: input.checkCwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
-	if (isToolNotInstalled(result)) return [];
-	if (result.status === 0 || result.status === null) return [];
+	const run = await runBoundedTestProcess({
+		command: "python",
+		args: ["-m", "pytest", "-x", "--tb=short", "-q", rel],
+		cwd: input.checkCwd,
+		timeoutMs: input.timeoutMs,
+	});
+	if (run.kind === "deferred") return [deferredTestResult(input, run.reason)];
+	if (run.code === 0) return [];
 
-	const output = combinedOutput(result);
+	const output = combinedOutput(run);
 	const classification = classifyTestFailure(`pytest:${rel}`, output, "python");
 	if (classification === "pre-existing") return [];
 
@@ -348,22 +352,17 @@ function runPytestDispatcher(input: TestDispatcherInput): TestDispatcherResult[]
 // classifying pre-existing (unresolved imports, missing manifest) — a
 // false-positive here silently hides a real regression.
 
-function runCargoTestDispatcher(input: TestDispatcherInput): TestDispatcherResult[] {
-	const result = spawnSync(
-		"cargo",
-		["test", "--no-run", "--message-format=short"],
-		{
-			shell: false,
-			timeout: input.timeoutMs,
-			cwd: input.checkCwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
-	if (isToolNotInstalled(result)) return [];
-	if (result.status === 0 || result.status === null) return [];
+async function runCargoTestDispatcher(input: TestDispatcherInput): Promise<TestDispatcherResult[]> {
+	const run = await runBoundedTestProcess({
+		command: "cargo",
+		args: ["test", "--no-run", "--message-format=short"],
+		cwd: input.checkCwd,
+		timeoutMs: input.timeoutMs,
+	});
+	if (run.kind === "deferred") return [deferredTestResult(input, run.reason)];
+	if (run.code === 0) return [];
 
-	const output = combinedOutput(result);
+	const output = combinedOutput(run);
 	const classification = classifyTestFailure(`cargo:${input.checkCwd}`, output, "rust");
 	if (classification === "pre-existing") return [];
 
@@ -384,23 +383,22 @@ function runCargoTestDispatcher(input: TestDispatcherInput): TestDispatcherResul
 // Scopes to the edited file's package. Running `go test ./...` on every
 // edit is too slow and pollutes output with failures in unrelated packages.
 
-function runGoTestDispatcher(input: TestDispatcherInput): TestDispatcherResult[] {
+async function runGoTestDispatcher(input: TestDispatcherInput): Promise<TestDispatcherResult[]> {
 	const pkgDir = dirname(input.absPath);
 	const relPkg = relative(input.checkCwd, pkgDir) || ".";
 	// Prepend ./ to avoid accidental module-path interpretation.
 	const pkgArg = relPkg.startsWith(".") ? relPkg : `./${relPkg.split(sep).join("/")}`;
 
-	const result = spawnSync("go", ["test", "-count=1", pkgArg], {
-		shell: false,
-		timeout: input.timeoutMs,
+	const run = await runBoundedTestProcess({
+		command: "go",
+		args: ["test", "-count=1", pkgArg],
 		cwd: input.checkCwd,
-		encoding: "utf-8",
-		stdio: ["pipe", "pipe", "pipe"],
+		timeoutMs: input.timeoutMs,
 	});
-	if (isToolNotInstalled(result)) return [];
-	if (result.status === 0 || result.status === null) return [];
+	if (run.kind === "deferred") return [deferredTestResult(input, run.reason)];
+	if (run.code === 0) return [];
 
-	const output = combinedOutput(result);
+	const output = combinedOutput(run);
 	const classification = classifyTestFailure(`gotest:${pkgArg}`, output, "go");
 	if (classification === "pre-existing") return [];
 

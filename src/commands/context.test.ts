@@ -229,6 +229,11 @@ describe("contextCommand: json mode", () => {
 		expect(out.hooks).toEqual({
 			installed_version: "9.9.9",
 			current_version: "9.9.9",
+			// A sentinel with no `+mode-` suffix has no baked mode to report.
+			// `stale` now compares the sentinel's VERSION part, so a bare
+			// `9.9.9` still reads as current instead of the old comparison that
+			// marked every mode-suffixed install stale.
+			installed_mode: null,
 			stale: false,
 		});
 		expect((out.clients as Record<string, unknown>).detected).toEqual(["claude"]);

@@ -32,6 +32,12 @@ const mutationAcceptCommand = vi.fn();
 const mutationMeasureCommand = vi.fn();
 const mutationSurvivorsCommand = vi.fn();
 const mutationSweepCommand = vi.fn();
+const mutationCloudV3OnboardCommand = vi.fn();
+const mutationCloudV3SubmitEditCommand = vi.fn();
+const mutationCloudV3SubmitCommand = vi.fn();
+const mutationCloudV3ProcessCommand = vi.fn();
+const mutationCloudV3DeadLettersCommand = vi.fn();
+const mutationCloudV3RedriveCommand = vi.fn();
 const designCommand = vi.fn();
 
 vi.mock("../commands/check.js", () => ({
@@ -87,6 +93,14 @@ vi.mock("../commands/mutation-survivors.js", () => ({
 }));
 vi.mock("../commands/mutation-sweep.js", () => ({
 	mutationSweepCommand: (...args: unknown[]) => mutationSweepCommand(...args),
+}));
+vi.mock("../commands/mutation-cloud-v3.js", () => ({
+	mutationCloudV3OnboardCommand: (...args: unknown[]) => mutationCloudV3OnboardCommand(...args),
+	mutationCloudV3SubmitEditCommand: (...args: unknown[]) => mutationCloudV3SubmitEditCommand(...args),
+	mutationCloudV3SubmitCommand: (...args: unknown[]) => mutationCloudV3SubmitCommand(...args),
+	mutationCloudV3ProcessCommand: (...args: unknown[]) => mutationCloudV3ProcessCommand(...args),
+	mutationCloudV3DeadLettersCommand: (...args: unknown[]) => mutationCloudV3DeadLettersCommand(...args),
+	mutationCloudV3RedriveCommand: (...args: unknown[]) => mutationCloudV3RedriveCommand(...args),
 }));
 vi.mock("../commands/design.js", () => ({
 	designCommand: (...args: unknown[]) => designCommand(...args),
@@ -167,7 +181,10 @@ describe("registerQualityCommands — structure", () => {
 			// and drops its disposition (plan 18 §1.3). Records dead_code/unresolved
 			// without touching status; supports --list / --show; monotonic under
 			// baseline_integrity_gate so a hand-added record is blocked (§1.4).
-			["accept", "baseline", "check", "disposition", "measure", "survivors", "sweep"].sort(),
+			["accept", "baseline", "check", "cloud", "disposition", "measure", "survivors", "sweep"].sort(),
+		);
+		expect(sub(sub(program, "mutation"), "cloud").commands.map((c) => c.name()).sort()).toEqual(
+			["dead-letters", "onboard", "process", "redrive", "submit", "submit-edit"],
 		);
 	});
 
@@ -994,6 +1011,129 @@ describe("mutation subcommands — action wiring", () => {
 		const program = build();
 		await program.parseAsync(["mutation", "sweep"], { from: "user" });
 		expect(mutationSweepCommand).toHaveBeenCalledWith({});
+	});
+
+	it("cloud submit forwards only explicit local opt-in inputs", async () => {
+		const program = build();
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"submit",
+			"--request",
+			"request.json",
+			"--artifact",
+			"source.bundle",
+			"--cwd",
+			"/repo",
+			"--json",
+		], { from: "user" });
+		expect(mutationCloudV3SubmitCommand).toHaveBeenCalledWith({
+			request: "request.json",
+			artifact: "source.bundle",
+			config: ".interlinked/mutation-cloud-v3.local.json",
+			cwd: "/repo",
+			json: true,
+		});
+	});
+
+	it("cloud submit-edit exposes only one target plus local opt-in runtime options", async () => {
+		const program = build();
+		const command = sub(sub(sub(program, "mutation"), "cloud"), "submit-edit");
+		expect(command.options.map(({ long }) => long).sort()).toEqual(["--config", "--cwd", "--json"]);
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"submit-edit",
+			"src/answer.ts",
+			"--cwd",
+			"/repo",
+			"--json",
+		], { from: "user" });
+		expect(mutationCloudV3SubmitEditCommand).toHaveBeenCalledWith("src/answer.ts", {
+			config: ".interlinked/mutation-cloud-v3.local.json",
+			cwd: "/repo",
+			json: true,
+		});
+	});
+
+	it("cloud onboard exposes no request, artifact, or adoption-intent options", async () => {
+		const program = build();
+		const cloud = sub(sub(program, "mutation"), "cloud");
+		const onboard = sub(cloud, "onboard");
+		expect(onboard.options.map(({ long }) => long).sort()).toEqual(["--config", "--cwd", "--json"]);
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"onboard",
+			"src/answer.ts",
+			"--cwd",
+			"/repo",
+			"--json",
+		], { from: "user" });
+		expect(mutationCloudV3OnboardCommand).toHaveBeenCalledWith("src/answer.ts", {
+			config: ".interlinked/mutation-cloud-v3.local.json",
+			cwd: "/repo",
+			json: true,
+		});
+	});
+
+	it("cloud process forwards the durable runtime config without enabling the edit gate", async () => {
+		const program = build();
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"process",
+			"--config",
+			"custom.local.json",
+		], { from: "user" });
+		expect(mutationCloudV3ProcessCommand).toHaveBeenCalledWith({ config: "custom.local.json" });
+	});
+
+	it("cloud dead-letters forwards the bounded list options", async () => {
+		const program = build();
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"dead-letters",
+			"--limit",
+			"7",
+			"--cwd",
+			"/repo",
+			"--json",
+		], { from: "user" });
+		expect(mutationCloudV3DeadLettersCommand).toHaveBeenCalledWith({
+			limit: "7",
+			config: ".interlinked/mutation-cloud-v3.local.json",
+			cwd: "/repo",
+			json: true,
+		});
+	});
+
+	it("cloud redrive forwards the job id and fencing token without processing", async () => {
+		const program = build();
+		await program.parseAsync([
+			"mutation",
+			"cloud",
+			"redrive",
+			"job-dead-1",
+			"--redrive-token",
+			"token-1",
+			"--config",
+			"custom.local.json",
+		], { from: "user" });
+		expect(mutationCloudV3RedriveCommand).toHaveBeenCalledWith("job-dead-1", {
+			redriveToken: "token-1",
+			config: "custom.local.json",
+		});
+		expect(mutationCloudV3ProcessCommand).not.toHaveBeenCalled();
+	});
+
+	it("cloud redrive requires its fencing token before dispatch", async () => {
+		const program = build();
+		await expect(
+			program.parseAsync(["mutation", "cloud", "redrive", "job-dead-1"], { from: "user" }),
+		).rejects.toMatchObject({ code: "commander.missingMandatoryOptionValue" });
+		expect(mutationCloudV3RedriveCommand).not.toHaveBeenCalled();
 	});
 });
 

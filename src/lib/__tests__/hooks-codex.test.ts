@@ -49,7 +49,7 @@ describe("hook script generation", () => {
 		expect(generatedScript).toContain("permission_suggestions");
 	});
 
-	it("includes all 14 Claude Code events in script", () => {
+	it("includes all 16 Claude events normalized by the fallback script", () => {
 		writeHookScript("/repo");
 
 		const generatedScript = String(mockWriteFileSync.mock.calls[0][1]);
@@ -62,10 +62,12 @@ describe("hook script generation", () => {
 			"PostToolUse",
 			"PostToolUseFailure",
 			"PermissionRequest",
+			"WorktreeCreate",
 			"SubagentStart",
 			"SubagentStop",
 			"Notification",
 			"PreCompact",
+			"PostCompact",
 			"TaskCompleted",
 			"TeammateIdle",
 		];
@@ -117,9 +119,14 @@ describe("hook script generation", () => {
 
 		// Only proven read-only tools fast-path. Bash, edit tools, and unknown
 		// tools all reach the daemon so observed effects decide the work.
+		// The list is interpolated from `lib/hook-read-only-tools.ts` (JSON, so
+		// no spaces after the commas) — ONE definition shared with the daemon's
+		// path resolver, which must not attribute observed writes to a call that
+		// cannot write.
 		expect(generatedScript).toContain("knownReadOnlyPostTools");
-		expect(generatedScript).toContain('"Read", "Glob", "Grep"');
+		expect(generatedScript).toContain('["Read","Glob","Grep"');
 		expect(generatedScript).not.toContain('knownReadOnlyPostTools = new Set(["Bash"');
+		expect(generatedScript).not.toMatch(/knownReadOnlyPostTools = new Set\(\[[^\]]*"Bash"/);
 
 		// Phase 1: skipPostCheck disarmed so every Post* failure reaches the
 		// harness for triage/recurrence/recovery. The legacy gate that limited

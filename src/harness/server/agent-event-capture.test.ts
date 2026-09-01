@@ -166,6 +166,15 @@ describe("resolveFinalMessage", () => {
 });
 
 describe("buildAgentEventRecord", () => {
+	it.each(["opencode", "pi"] as const)("preserves the %s provider identity", (agentSource) => {
+		const rec = buildAgentEventRecord(
+			stopEvent({ agent_source: agentSource }),
+			"subagent_stop",
+			"/fallback",
+		);
+		expect(rec.provider).toBe(agentSource);
+	});
+
 	it("maps a SubagentStop with full context", () => {
 		const rec = buildAgentEventRecord(
 			stopEvent({

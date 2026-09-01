@@ -74,6 +74,143 @@ export function mergeTeamRules(config: GuardRulesConfig, team: Partial<GuardRule
 	if (team.grep_acceleration) {
 		config.grep_acceleration = { ...config.grep_acceleration, ...team.grep_acceleration };
 	}
+	// Mutation-directed strict profile: a plain {enabled} boolean with no
+	// command surface, so team config may set it. The committed
+	// guard-rules.json carried this section while only the LOCAL merge honored
+	// it (review 2026-08-29) — loadRules() returned undefined and the strict
+	// profile silently never fired: the recurring "configured but unreachable"
+	// class, proven to exist on the team side too. Pinned by the loadRules
+	// filesystem test in mutation-directed-guard.team-config.test.ts.
+	if (team.mutation_directed_strict_profile) {
+		config.mutation_directed_strict_profile = {
+			...config.mutation_directed_strict_profile,
+			...team.mutation_directed_strict_profile,
+		};
+	}
+	// Mode/wizard POSTURE sections (review 2026-08-30 P0): `interlinked mode`
+	// and the setup wizard write these to the committed file, but the team
+	// tier refused every one — three different modes wrote three different
+	// JSONs that all LOADED identically. Only the whitelisted safe fields
+	// (booleans + three known enum strings) pass; runtime/endpoint/number
+	// knobs (budget_ms, timeouts) stay local-tier.
+	applyTeamStructuralPosture(config, team);
+	applyTeamBooleanPosture(config, team);
+}
+
+/** Enum-valued structural fields a mode/wizard legitimately sets, with their
+ *  ONLY legal values (review 2026-08-30: field-name whitelisting alone let
+ *  `test_first_mode: "typo"` into the runtime config). An invalid value is
+ *  dropped — it never enters the loaded configuration. */
+const TEAM_STRUCTURAL_ENUM_VALUES: Record<string, ReadonlySet<string>> = {
+	test_first_mode: new Set(["nudge", "warn", "enforce"]),
+	characterize_mode: new Set(["block", "warn", "off"]),
+	dead_code_action: new Set(["flag", "delete"]),
+};
+
+export interface PostureEnumViolation {
+	field: string;
+	/** JSON-rendered offending value — non-strings (7, null, [], {}) are as
+	 *  invalid as a typo string and must be reported the same way. */
+	value: string;
+}
+
+/** The REAL built-in posture per enum field. An invalid value is replaced
+ *  with this — never merely deleted (review 2026-08-30 third pass: a deleted
+ *  field read as `undefined`, and consumers applied their OWN fallbacks, so
+ *  an invalid `test_first_mode` silently downgraded the built-in `enforce`
+ *  to a consumer's `warn`). */
+const POSTURE_ENUM_DEFAULTS: Record<string, string> = {
+	test_first_mode: "enforce",
+	characterize_mode: "warn",
+	dead_code_action: "flag",
+};
+
+/** ONE pure validator over a RAW `structural_checks` value (a parsed config
+ *  file's section, before any merge filtering). Shared by the loader's
+ *  sanitize step and doctor — doctor must examine the raw FILE, because the
+ *  team merge drops invalid values before they could be reported. */
+export function postureEnumViolationsIn(rawStructural: unknown): PostureEnumViolation[] {
+	if (rawStructural === null || typeof rawStructural !== "object" || Array.isArray(rawStructural)) {
+		return [];
+	}
+	// SAFETY: the guard above leaves exactly a non-null, non-array object;
+	// every field read below is individually type-checked.
+	const section = rawStructural as Record<string, unknown>;
+	const out: PostureEnumViolation[] = [];
+	for (const [field, allowed] of Object.entries(TEAM_STRUCTURAL_ENUM_VALUES)) {
+		if (!Object.hasOwn(section, field)) continue;
+		const value = section[field];
+		// A PRESENT field is invalid when it is not a string OR not an allowed
+		// string (review 2026-08-30 fourth pass: 7 / null / [] / {} were
+		// neither valid nor reported).
+		if (typeof value !== "string" || !allowed.has(value)) {
+			out.push({ field, value: JSON.stringify(value) ?? "undefined" });
+		}
+	}
+	return out;
+}
+
+/** The FINAL enum boundary (review 2026-08-30 second pass): the team merge
+ *  filters values on the way in, but the LOCAL tier is trusted and merged
+ *  wholesale — so `test_first_mode: "typo"` in guard-rules.local.json still
+ *  reached the runtime config. Run after BOTH merges: an invalid value is
+ *  REPLACED with the real built-in default (never deleted — see
+ *  {@link POSTURE_ENUM_DEFAULTS}) and returned for reporting. */
+export function sanitizePostureEnums(config: GuardRulesConfig): PostureEnumViolation[] {
+	// SAFETY: structural_checks is a plain settings object; the writes below set
+	// only whitelisted boolean/enum keys, preserving its declared shape.
+	const target = config.structural_checks as unknown as Record<string, unknown>;
+	const violations = postureEnumViolationsIn(target);
+	for (const violation of violations) {
+		target[violation.field] = POSTURE_ENUM_DEFAULTS[violation.field];
+	}
+	return violations;
+}
+
+/** structural_checks from team config: per-check boolean toggles (test_first,
+ *  dead_imports, enabled, …) plus the three posture enums with validated
+ *  values. A number here is a perf/runtime knob and never merges from the
+ *  committed file. */
+function applyTeamStructuralPosture(config: GuardRulesConfig, team: Partial<GuardRulesConfig>): void {
+	const override = team.structural_checks;
+	if (!override || typeof override !== "object") return;
+	// SAFETY: structural_checks is a plain settings object; the writes below set
+	// only whitelisted boolean/enum keys, preserving its declared shape.
+	const target = config.structural_checks as unknown as Record<string, unknown>;
+	for (const [key, value] of Object.entries(override)) {
+		if (typeof value === "boolean") target[key] = value;
+		else if (typeof value === "string" && TEAM_STRUCTURAL_ENUM_VALUES[key]?.has(value)) {
+			target[key] = value;
+		}
+	}
+}
+
+/** The named boolean-only posture fields the team tier accepts per section.
+ *  Everything else in these sections (budget_ms, block_on_*, thresholds)
+ *  stays personal/local. */
+const TEAM_BOOLEAN_POSTURE_FIELDS = [
+	["per_edit_coverage", ["enabled", "debt_mode"]],
+	["verification_stop_checks", ["enabled"]],
+	["commit_cadence", ["enabled"]],
+	["diff_aware", ["enabled"]],
+] as const satisfies ReadonlyArray<readonly [keyof GuardRulesConfig, readonly string[]]>;
+
+function applyTeamBooleanPosture(config: GuardRulesConfig, team: Partial<GuardRulesConfig>): void {
+	for (const [section, fields] of TEAM_BOOLEAN_POSTURE_FIELDS) {
+		const override: unknown = team[section];
+		if (!override || typeof override !== "object") continue;
+		// SAFETY: every section named in the table defaults to a real object in
+		// default-config.ts (nullish fallback covers absence); only whitelisted
+		// boolean keys are written, so the section's declared shape is kept.
+		const target = (config[section] ?? {}) as unknown as Record<string, unknown>;
+		for (const field of fields) {
+			const value = (override as Record<string, unknown>)[field];
+			if (typeof value === "boolean") target[field] = value;
+		}
+		// SAFETY: same object (or a fresh one for an absent section) with only
+		// its own boolean fields set.
+		config[section] = target as never;
+	}
 }
 
 /**
@@ -195,6 +332,10 @@ export function mergeLocalOverrides(
 	// same as every sibling flag added after the silently-dropped bug class
 	// above was found.
 	mergeOptionalSection(config, local, "mutation_directed_strict_profile");
+	// `interlinked mode --local` writes its guard posture (incl. commit_cadence)
+	// to guard-rules.local.json (2026-08-30); the section must merge locally or
+	// the personal mode switch is the silently-dropped class again.
+	mergeOptionalSection(config, local, "commit_cadence");
 }
 
 /**

@@ -37,6 +37,8 @@ const CHECK_INSTRUCTIONS: Record<string, string> = {
 	jsdoc_param_mismatch: "Update JSDoc @param tags to match the actual function parameters.",
 	export_ripple_compilation:
 		"The export change broke downstream importers. Fix the type errors in the listed files, or revert the export change and update importers first.",
+	export_ripple_compilation_deferred:
+		"Wait for the in-flight compiler check, then retry or run interlinked verify. This hook did not start a second compiler.",
 	export_ripple_tests:
 		"Tests are failing after this export surface change. Fix the source so existing tests pass. Do NOT modify tests to suppress failures.",
 };

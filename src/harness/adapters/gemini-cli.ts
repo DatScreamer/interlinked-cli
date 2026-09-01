@@ -74,7 +74,7 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 			return { path, fragment: { hooks }, mergeStrategy: "array-append" };
 		},
 
-		encodeDecision(decision, _event): AdapterOutput {
+		encodeDecision(decision, event): AdapterOutput {
 			// Gemini CLI's decision protocol is provisional; match Cursor-style
 			// stdout JSON until the native shape is settled.
 			const stderr = (decision.warnings ?? []).join("\n");
@@ -97,6 +97,17 @@ export function createGeminiCliAdapter(opts: GeminiCliAdapterOptions = {}): Runn
 						ask: true,
 						reason: decision.reason ?? "Confirmation required",
 					}),
+					stderr: stderr || undefined,
+					exit_code: 0,
+				};
+			}
+			if (event.runner_native_event === "AfterTool") {
+				// Gemini parses exit-0 stdout as JSON and its hook contract requires
+				// a valid JSON document even for a no-op. Therefore true zero-byte
+				// silence is not portable here; emit the smallest valid no-op (`{}`)
+				// instead of a redundant allow envelope on every clean tool result.
+				return {
+					stdout: "{}",
 					stderr: stderr || undefined,
 					exit_code: 0,
 				};

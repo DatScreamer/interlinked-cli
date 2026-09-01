@@ -46,6 +46,38 @@ describe("formatQualityWarnings determinism tag", () => {
 		expect(out).toContain("[interlinked:typescript] [proven]");
 	});
 
+	it("renders test deferral as no verdict and never as a failing test", () => {
+		const out = nonNull(
+			formatQualityWarnings([
+				{
+					name: "affected_tests_deferred",
+					severity: "warning",
+					message: "Affected tests deferred for src/a.ts (another test check is running)",
+					detail: "No test verdict was produced.",
+				},
+			])[0],
+		);
+		expect(out).toContain("Affected tests deferred");
+		expect(out).toContain("No test result exists");
+		expect(out).not.toContain("test file for this source file is failing");
+	});
+
+	it("renders an external-tool deferral as no verdict and never as a finding", () => {
+		const out = nonNull(
+			formatQualityWarnings([
+				{
+					name: "external_check_deferred",
+					severity: "warning",
+					message: "External check deferred for src/a.ts (typescript)",
+					detail: "No check verdict was produced.",
+				},
+			])[0],
+		);
+		expect(out).toContain("No external-check verdict exists");
+		expect(out).not.toContain("Fix the type errors");
+		expect(out).not.toContain("found issues");
+	});
+
 	it("omits the tag entirely for an unregistered check id", () => {
 		const out = nonNull(formatQualityWarnings([res("totally_made_up_check_zzz")])[0]);
 		expect(out).toContain("[interlinked:totally_made_up_check_zzz]");

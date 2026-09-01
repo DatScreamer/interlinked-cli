@@ -3,8 +3,8 @@
 // ===========================================
 // Runs expensive PostToolUse checks (structural, impact) asynchronously.
 // Overlapping requests are coalesced — only the latest pending context runs.
-// Findings are written to pending-quality-warnings.json for retrieval
-// on the next PreToolUse.
+// Findings are written to pending-async-findings.json for retrieval through
+// this manager's file-scoped consume() path.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

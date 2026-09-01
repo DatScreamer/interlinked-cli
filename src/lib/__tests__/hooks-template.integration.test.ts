@@ -516,6 +516,52 @@ describe("buildHookScript", () => {
 			tool_input: { file_path: join(dir, "dist/generated.ts"), content: "export const generated = true;" },
 			tool_response: {},
 		});
+		const permissionPayload = () => ({
+			hook_event_name: "PermissionRequest",
+			session_id: "permission-answer",
+			tool_name: "Bash",
+			tool_input: { command: "echo mutate" },
+		});
+
+		it("P: generated Claude PermissionRequest block emits the exact deny contract", async () => {
+			const { stdout, stderr, requests } = await runAgainstDaemon(
+				{ decision: "block", reason: "policy denied", warnings: [] },
+				permissionPayload,
+			);
+			expect(requests.length, `stderr=${stderr}`).toBeGreaterThan(0);
+			expect(JSON.parse(stdout.trim())).toEqual({
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: { behavior: "deny", message: "policy denied" },
+				},
+			});
+			expect(stdout).not.toContain("permissionDecision");
+		});
+
+		it("N: generated Claude PermissionRequest ask abstains on stdout", async () => {
+			const { stdout, stderr, requests } = await runAgainstDaemon(
+				{ decision: "ask", reason: "confirm this call", warnings: [] },
+				permissionPayload,
+			);
+			expect(requests.length).toBeGreaterThan(0);
+			expect(stdout).toBe("");
+			expect(stderr).toContain("confirm this call");
+		});
+
+		it("N: generated Claude PermissionRequest allow warnings stay off stdout", async () => {
+			const { stdout, stderr, requests } = await runAgainstDaemon(
+				{
+					decision: "allow",
+					warnings: ["advisory only"],
+					additional_context: "permission context is stderr-only",
+				},
+				permissionPayload,
+			);
+			expect(requests.length).toBeGreaterThan(0);
+			expect(stdout).toBe("");
+			expect(stderr).toContain("advisory only");
+			expect(stderr).toContain("permission context is stderr-only");
+		});
 
 		// The reviewer's finding: the response path tested `warnings.length > 0`
 		// BEFORE `decision === "block"`, so this exact reply — a decision the
@@ -631,6 +677,29 @@ describe("buildHookScript", () => {
 			const parsed = JSON.parse(res.stdout.trim());
 			const reason = String(parsed.hookSpecificOutput?.permissionDecisionReason ?? parsed.reason ?? "");
 			expect(reason).toMatch(/BLOCKED/i);
+		});
+
+		it("P: generated-hook inline PermissionRequest block uses decision.behavior, not permissionDecision", () => {
+			const res = runGeneratedHook(
+				{
+					hook_event_name: "PermissionRequest",
+					session_id: "permission-inline-block",
+					tool_name: "Bash",
+					tool_input: { command: "rm -rf /" },
+				},
+				"claude",
+			);
+			expect(res.error, `spawn failed: ${res.error}`).toBeUndefined();
+			expect(JSON.parse(res.stdout.trim())).toEqual({
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: {
+						behavior: "deny",
+						message: expect.stringMatching(/BLOCKED/i),
+					},
+				},
+			});
+			expect(res.stdout).not.toContain("permissionDecision");
 		});
 
 		it.each(["opencode", "pi"])(

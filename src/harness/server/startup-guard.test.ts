@@ -6,9 +6,13 @@
 // replacement contract — the latch that decides pre-listen from post-listen,
 // and the terminal exit (distinct code + ledger row) that replaces surviving.
 
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { DaemonLedgerEvent } from "../daemon-ledger.js";
 import { DaemonOwnershipConflictError } from "../session-daemon.js";
+import { acquireStartupLock, startupLockPath } from "../startup-lock.js";
 import {
 	createStartupGuard,
 	EXIT_STARTUP_FAILED,
@@ -31,6 +35,7 @@ function makeGuard(overrides: Partial<StartupGuardOptions> = {}) {
 	const exit = vi.fn();
 	const logAlways = vi.fn();
 	const install = vi.fn();
+	const releaseStartup = vi.fn();
 	const guard = createStartupGuard({
 		cwd: "/repo",
 		runRaw: true,
@@ -39,24 +44,27 @@ function makeGuard(overrides: Partial<StartupGuardOptions> = {}) {
 		exit,
 		recordEvent: (evt) => events.push(evt),
 		install,
+		releaseStartup,
 		...overrides,
 	});
-	return { guard, events, exit, logAlways, install };
+	return { guard, events, exit, logAlways, install, releaseStartup };
 }
 
 describe("createStartupGuard — the listening latch", () => {
 	// P1: dual mode is complete only when BOTH sockets have reported.
 	it("stays incomplete until every socket this mode runs reports", () => {
-		const { guard, events } = makeGuard();
+		const { guard, events, releaseStartup } = makeGuard();
 		expect(guard.isStartupComplete()).toBe(false);
 		guard.note("framed");
 		expect(guard.isStartupComplete()).toBe(false);
 		expect(events).toHaveLength(0);
+		expect(releaseStartup).not.toHaveBeenCalled();
 		guard.note("raw");
 		expect(guard.isStartupComplete()).toBe(true);
 		expect(events).toEqual([
 			{ at: expect.any(Number), pid: process.pid, event: "listening" },
 		]);
+		expect(releaseStartup).toHaveBeenCalledTimes(1);
 	});
 
 	// P2: a mode that runs one socket waits for exactly that one.
@@ -76,12 +84,40 @@ describe("createStartupGuard — the listening latch", () => {
 
 	// P3: the ledger row is written once, not once per report.
 	it("records the `listening` row exactly once however often sockets report", () => {
-		const { guard, events } = makeGuard();
+		const { guard, events, releaseStartup } = makeGuard();
 		guard.note("raw");
 		guard.note("framed");
 		guard.note("framed");
 		guard.note("raw");
 		expect(events.filter((e) => e.event === "listening")).toHaveLength(1);
+		expect(releaseStartup).toHaveBeenCalledTimes(1);
+	});
+
+	// P4 (attempt-ID protocol, 2026-08-29): a daemon spawned by a handover
+	// acknowledges the attempt on its listening row — the pairing key that
+	// makes churn counting order-independent.
+	it("stamps the handover attempt id on the listening row", () => {
+		const { guard, events } = makeGuard({ attemptId: "abc12345" });
+		guard.note("raw");
+		guard.note("framed");
+		expect(events).toEqual([
+			{ at: expect.any(Number), pid: process.pid, event: "listening", attempt_id: "abc12345" },
+		]);
+	});
+
+	// P5: the default path consumes (reads + CLEARS) the inherited env var, so
+	// a later handover this daemon spawns cannot leak a stale id.
+	it("consumes INTERLINKED_HANDOVER_ATTEMPT from the env by default", () => {
+		process.env.INTERLINKED_HANDOVER_ATTEMPT = "feed5eed";
+		try {
+			const { guard, events } = makeGuard();
+			expect(process.env.INTERLINKED_HANDOVER_ATTEMPT).toBeUndefined();
+			guard.note("raw");
+			guard.note("framed");
+			expect(events[0]?.attempt_id).toBe("feed5eed");
+		} finally {
+			delete process.env.INTERLINKED_HANDOVER_ATTEMPT;
+		}
 	});
 
 	// N1: a guard that has not been told about any bind must never claim to be
@@ -97,12 +133,50 @@ describe("createStartupGuard — the listening latch", () => {
 		const { guard, install } = makeGuard();
 		expect(install).toHaveBeenCalledWith(guard);
 	});
+
+	it("releases the real daemon-owned startup lease after the final listener", () => {
+		const root = mkdtempSync(join(tmpdir(), "interlinked-startup-guard-"));
+		try {
+			const lease = acquireStartupLock(root);
+			expect(lease.acquired).toBe(true);
+			const guard = createStartupGuard({
+				cwd: root,
+				runRaw: false,
+				runFramed: true,
+				logAlways: vi.fn(),
+				recordEvent: vi.fn(),
+				install: vi.fn(),
+			});
+			expect(existsSync(startupLockPath(root))).toBe(true);
+			guard.note("framed");
+			expect(existsSync(startupLockPath(root))).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("releases the startup lease even when recording the listening row fails", () => {
+		const releaseStartup = vi.fn();
+		const guard = createStartupGuard({
+			cwd: "/repo",
+			runRaw: true,
+			runFramed: false,
+			logAlways: vi.fn(),
+			recordEvent: () => {
+				throw new Error("ledger unavailable");
+			},
+			releaseStartup,
+			install: vi.fn(),
+		});
+		expect(() => guard.note("raw")).toThrow("ledger unavailable");
+		expect(releaseStartup).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("createStartupGuard — fail()", () => {
 	// P1: distinct exit code + a `startup-failed` ledger row for THIS pid.
 	it("logs, records startup-failed, and exits with the distinct code", () => {
-		const { guard, events, exit, logAlways } = makeGuard();
+		const { guard, events, exit, logAlways, releaseStartup } = makeGuard();
 		guard.fail("raw socket bind", Object.assign(new Error("listen EADDRINUSE"), {
 			code: "EADDRINUSE",
 		}));
@@ -116,6 +190,10 @@ describe("createStartupGuard — fail()", () => {
 		// The detail stays ONE line even though the log carries the full stack.
 		expect(row?.detail).not.toContain("\n");
 		expect(String(logAlways.mock.calls[0]?.[0])).toContain("FATAL during startup");
+		expect(releaseStartup).toHaveBeenCalledTimes(1);
+		expect(releaseStartup.mock.invocationCallOrder[0]).toBeLessThan(
+			exit.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 	});
 
 	// P2: a non-Error rejection value still produces a usable row.
@@ -131,6 +209,26 @@ describe("createStartupGuard — fail()", () => {
 		guard.onStartupFailure?.("uncaughtException", new Error("boom"));
 		expect(exit).toHaveBeenCalledWith(EXIT_STARTUP_FAILED);
 		expect(events.find((e) => e.event === "exit")?.detail).toContain("uncaughtException");
+	});
+
+	it("still releases the startup lease and exits when the ledger write fails", () => {
+		const exit = vi.fn();
+		const releaseStartup = vi.fn();
+		const guard = createStartupGuard({
+			cwd: "/repo",
+			runRaw: true,
+			runFramed: false,
+			logAlways: vi.fn(),
+			exit,
+			recordEvent: () => {
+				throw new Error("ledger unavailable");
+			},
+			releaseStartup,
+			install: vi.fn(),
+		});
+		expect(() => guard.fail("raw bind", new Error("boom"))).toThrow("ledger unavailable");
+		expect(releaseStartup).toHaveBeenCalledTimes(1);
+		expect(exit).toHaveBeenCalledWith(EXIT_STARTUP_FAILED);
 	});
 });
 

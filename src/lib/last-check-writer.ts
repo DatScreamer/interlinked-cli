@@ -68,9 +68,28 @@ function toolLabel(event: UnifiedHookEvent): string {
 	return "tool";
 }
 
+/** Post-tool BLOCK row (Grok 2026-08-28 issue 11): decision outranks warning
+ *  count — a `decision: "block"` with an empty warning list used to write
+ *  `result=clean` while the model saw the block (the .mjs and the claude-code
+ *  adapter both branch on the decision first). */
+function postToolBlockFields(
+	event: UnifiedHookEvent,
+	decision: HarnessDecision,
+	elapsedMs: number,
+): LastCheckFields {
+	const fields: LastCheckFields = {
+		result: "block",
+		tool: toolLabel(event),
+		file: extractEventFile(event),
+		ms: elapsedMs,
+	};
+	if (decision.rule_id) fields.rule = decision.rule_id;
+	return fields;
+}
+
 /**
  * Map a (event, decision) pair to last-check fields, mirroring the .mjs
- * call sites: pre-tool blocks; post-tool warn/clean. Everything else —
+ * call sites: pre-tool blocks; post-tool block/warn/clean. Everything else —
  * pre-tool allow/ask, lifecycle events — returns null (no write).
  */
 export function deriveLastCheckFields(
@@ -94,6 +113,7 @@ export function deriveLastCheckFields(
 	}
 	if (event.phase === "post-tool") {
 		const warnings = decision.warnings ?? [];
+		if (decision.decision === "block") return postToolBlockFields(event, decision, elapsedMs);
 		if (warnings.length > 0) {
 			return {
 				result: "warn",

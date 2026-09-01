@@ -15,11 +15,17 @@ import { runToolCheckLoop, type ToolCheckLoopContext, yieldEventLoop } from "./t
 
 // --- module-boundary mocks ------------------------------------------------
 
-vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
-
 vi.mock("../check-engine/index.js", () => ({
 	configNameToToolId: vi.fn(),
 	getOrCreateEngine: vi.fn(),
+}));
+
+vi.mock("../project-heavy-process-lock.js", () => ({
+	tryAcquireProjectHeavyProcessLease: vi.fn(),
+}));
+
+vi.mock("../check-engine/spawn-async.js", () => ({
+	runProcessAsync: vi.fn(),
 }));
 
 vi.mock("../check-engine/output-parsers.js", () => ({
@@ -37,7 +43,7 @@ vi.mock("../language-profiles.js", () => ({
 }));
 
 vi.mock("./dependency-audit.js", () => ({
-	resolveDependencyAuditCommand: vi.fn(),
+	resolveDependencyAuditCommandAsync: vi.fn(),
 }));
 
 vi.mock("./inline-language-checks.js", () => ({
@@ -90,12 +96,18 @@ vi.mock("./test-dispatchers.js", () => ({
 
 // --- typed handles to the mocks -------------------------------------------
 
-import { spawnSync } from "node:child_process";
-import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
+import {
+	type CheckResult,
+	configNameToToolId,
+	getOrCreateEngine,
+} from "../check-engine/index.js";
+import type { SkipEntry } from "../check-engine/types.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
+import { runProcessAsync } from "../check-engine/spawn-async.js";
 import { isGeneratedFile, isTestFile } from "../checks/shared.js";
 import { getProfileForFile } from "../language-profiles.js";
-import { resolveDependencyAuditCommand } from "./dependency-audit.js";
+import { tryAcquireProjectHeavyProcessLease } from "../project-heavy-process-lock.js";
+import { resolveDependencyAuditCommandAsync } from "./dependency-audit.js";
 import { runInlineLanguageChecks } from "./inline-language-checks.js";
 import { checkLockfileDrift } from "./lockfile-drift.js";
 import { checkPackageJsonConsistency } from "./package-json.js";
@@ -108,7 +120,9 @@ import { findAnyTypes } from "./strong-typing.js";
 import { isLikelyTestFile } from "./test-classifier.js";
 import { TEST_DISPATCHERS } from "./test-dispatchers.js";
 
-const mockSpawnSync = vi.mocked(spawnSync);
+const mockRunProcessAsync = vi.mocked(runProcessAsync);
+const mockTryHeavyProcess = vi.mocked(tryAcquireProjectHeavyProcessLease);
+const mockReleaseHeavyProcess = vi.fn();
 const mockConfigNameToToolId = vi.mocked(configNameToToolId);
 const mockGetOrCreateEngine = vi.mocked(getOrCreateEngine);
 const mockParseNpmAuditJson = vi.mocked(parseNpmAuditJson);
@@ -116,7 +130,7 @@ const mockParseOsvScannerJson = vi.mocked(parseOsvScannerJson);
 const mockIsGeneratedFile = vi.mocked(isGeneratedFile);
 const mockIsTestFile = vi.mocked(isTestFile);
 const mockGetProfileForFile = vi.mocked(getProfileForFile);
-const mockResolveDependencyAuditCommand = vi.mocked(resolveDependencyAuditCommand);
+const mockResolveDependencyAuditCommand = vi.mocked(resolveDependencyAuditCommandAsync);
 const mockRunInlineLanguageChecks = vi.mocked(runInlineLanguageChecks);
 const mockCheckLockfileDrift = vi.mocked(checkLockfileDrift);
 const mockCheckPackageJsonConsistency = vi.mocked(checkPackageJsonConsistency);
@@ -169,12 +183,18 @@ function makeCtx(over: Partial<ToolCheckLoopContext> = {}): ToolCheckLoopContext
 
 /** Build a minimal engine whose runChecksAsync resolves to the given report. */
 function engineReturning(report: {
-	results: { file: string; line: number; message: string }[];
+	results: Array<Pick<CheckResult, "file" | "line" | "message" | "ruleId">>;
 	metrics?: { tool: string; elapsedMs: number; findingCount: number }[];
+	skipped?: Array<{
+		check: string;
+		reason: string;
+		category: SkipEntry["category"];
+	}>;
 }) {
 	const runChecksAsync = vi.fn().mockResolvedValue({
 		results: report.results,
 		metrics: report.metrics ?? [],
+		skipped: report.skipped ?? [],
 	});
 	// Cast through unknown — the loop only ever calls runChecksAsync.
 	mockGetOrCreateEngine.mockReturnValue({ runChecksAsync } as unknown as ReturnType<
@@ -183,22 +203,23 @@ function engineReturning(report: {
 	return runChecksAsync;
 }
 
-/** Minimal SpawnSync-shaped return. */
-function spawnResult(over: Partial<ReturnType<typeof spawnSync>> = {}) {
+/** Minimal async-process return. */
+function processResult(over: Partial<Awaited<ReturnType<typeof runProcessAsync>>> = {}) {
 	return {
-		pid: 1,
-		output: [],
 		stdout: "",
 		stderr: "",
-		status: 0,
-		signal: null,
+		code: 0,
+		timedOut: false,
+		killed: false,
 		...over,
-	} as unknown as ReturnType<typeof spawnSync>;
+	};
 }
 
 beforeEach(() => {
 	// Reset call history + restore the default-return mocks each test.
-	mockSpawnSync.mockReset();
+	mockRunProcessAsync.mockReset().mockResolvedValue(processResult());
+	mockReleaseHeavyProcess.mockReset();
+	mockTryHeavyProcess.mockReset().mockReturnValue(mockReleaseHeavyProcess);
 	mockConfigNameToToolId.mockReset();
 	mockGetOrCreateEngine.mockReset();
 	mockParseNpmAuditJson.mockReset();
@@ -496,104 +517,117 @@ describe("runToolCheckLoop — dependency_audit", () => {
 		});
 
 	it("skips when resolveDependencyAuditCommand returns null (unknown file)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		mockResolveDependencyAuditCommand.mockResolvedValue(null);
 		const out = await runToolCheckLoop(auditCtx());
 		expect(out).toEqual([]);
-		expect(mockSpawnSync).not.toHaveBeenCalled();
+		expect(mockRunProcessAsync).not.toHaveBeenCalled();
+		expect(mockReleaseHeavyProcess).toHaveBeenCalledTimes(1);
 	});
 
-	it("skips silently when the audit tool is missing (ENOENT)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	it("reports no verdict when the audit tool is unavailable", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(
-			spawnResult({ error: Object.assign(new Error("nope"), { code: "ENOENT" }) }),
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: null }));
+		const out = await runToolCheckLoop(auditCtx());
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("runner was unavailable");
+	});
+
+	it("returns no finding when the admitted audit completes cleanly", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 0 }));
+		const out = await runToolCheckLoop(auditCtx());
+		expect(out).toEqual([]);
+	});
+
+	it("reports no verdict when the audit times out", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
+			cmd: ["npm", "audit", "--json"],
+			parser: "npm-audit",
+		});
+		mockRunProcessAsync.mockResolvedValue(
+			processResult({ code: null, timedOut: true, killed: true }),
 		);
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out).toEqual([]);
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("timed out");
 	});
 
-	it("skips when status is 0 (clean)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
-			cmd: ["npm", "audit", "--json"],
-			parser: "npm-audit",
-		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 0 }));
+	it("declines immediately when another heavyweight process owns admission", async () => {
+		mockTryHeavyProcess.mockReturnValue(null);
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out).toEqual([]);
-	});
-
-	it("skips when status is null (timeout)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
-			cmd: ["npm", "audit", "--json"],
-			parser: "npm-audit",
-		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: null }));
-		const out = await runToolCheckLoop(auditCtx());
-		expect(out).toEqual([]);
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("capacity is busy");
+		expect(mockResolveDependencyAuditCommand).not.toHaveBeenCalled();
+		expect(mockRunProcessAsync).not.toHaveBeenCalled();
 	});
 
 	it("npm-audit parser: surfaces parsed detail on non-zero exit", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "{json}" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "{json}" }));
 		mockParseNpmAuditJson.mockReturnValue({ detail: "3 high severity" } as never);
 		const out = await runToolCheckLoop(auditCtx());
 		expect(out).toHaveLength(1);
 		expect(out[0]?.message).toBe("Dependency vulnerabilities found after editing package.json");
 		expect(out[0]?.detail).toBe("3 high severity");
 		// command resolved against the project-root cwd
-		expect(mockSpawnSync).toHaveBeenCalledWith(
+		expect(mockRunProcessAsync).toHaveBeenCalledWith(
 			"npm",
 			["audit", "--json"],
-			expect.objectContaining({ cwd: "/proj", shell: false }),
+			expect.objectContaining({ cwd: "/proj" }),
 		);
+		expect(mockReleaseHeavyProcess).toHaveBeenCalledTimes(1);
 	});
 
-	it("npm-audit parser: empty detail falls back to the run-command hint", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	it("npm-audit parser: unparsable non-zero output is an explicit deferral", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "{}" }));
-		// summary?.detail ?? "" => "" so the `detail || fallback` kicks in
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "{}" }));
 		mockParseNpmAuditJson.mockReturnValue(null);
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out[0]?.detail).toBe("Run `npm` for details (parser: npm-audit)");
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("without a parseable report");
 	});
 
 	it("osv-scanner parser: uses summary.detail", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["osv-scanner", "scan"],
 			parser: "osv-scanner",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "{osv}" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "{osv}" }));
 		mockParseOsvScannerJson.mockReturnValue({ detail: "CVE-2026-1" } as never);
 		const out = await runToolCheckLoop(auditCtx());
 		expect(out[0]?.detail).toBe("CVE-2026-1");
 	});
 
-	it("osv-scanner parser: skips when summary is null (non-zero but unparsable)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	it("osv-scanner parser: reports no verdict when non-zero output is unparsable", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["osv-scanner", "scan"],
 			parser: "osv-scanner",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "garbage" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "garbage" }));
 		mockParseOsvScannerJson.mockReturnValue(null);
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out).toEqual([]);
+		expect(out[0]?.name).toBe("external_check_deferred");
 	});
 
 	it("other parser (pip-audit): surfaces the stderr tail", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["pip-audit", "--format", "json"],
 			parser: "pip-audit",
 		});
-		mockSpawnSync.mockReturnValue(
-			spawnResult({ status: 1, stderr: "l1\nl2\nl3\nl4\nl5\nl6\nl7" }),
+		mockRunProcessAsync.mockResolvedValue(
+			processResult({ code: 1, stderr: "l1\nl2\nl3\nl4\nl5\nl6\nl7" }),
 		);
 		const out = await runToolCheckLoop(auditCtx());
 		// only the first 5 stderr lines
@@ -601,17 +635,17 @@ describe("runToolCheckLoop — dependency_audit", () => {
 	});
 
 	it("other parser: empty stderr falls back to 'vulnerabilities found'", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["cargo", "audit", "--json"],
 			parser: "cargo-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stderr: "" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stderr: "" }));
 		const out = await runToolCheckLoop(auditCtx());
 		expect(out[0]?.detail).toBe("vulnerabilities found");
 	});
 
 	it("forwards use_osv_scanner / offline config into the resolver", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		mockResolveDependencyAuditCommand.mockResolvedValue(null);
 		const out = await runToolCheckLoop(
 			auditCtx({
 				checks: {
@@ -1098,6 +1132,71 @@ describe("runToolCheckLoop — command/engine branch", () => {
 		);
 	});
 
+	it("reports resource contention as no verdict instead of clean", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		engineReturning({
+			results: [],
+			skipped: [
+				{
+					check: "biome",
+					reason: "external-tool capacity is busy",
+					category: "resource_busy",
+				},
+			],
+		});
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { biome: cfg({ command: "biome" }) }, editedFileInRepo: true }),
+		);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				severity: "warning",
+				message: "External check deferred for src/x.ts (biome)",
+				detail: "No check verdict was produced: external-tool capacity is busy",
+			}),
+		]);
+	});
+
+	it("reports a runner exception as no verdict instead of clean", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		const runChecksAsync = vi.fn().mockRejectedValue(new Error("runner crashed"));
+		mockGetOrCreateEngine.mockReturnValue({ runChecksAsync } as never);
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { biome: cfg({ command: "biome" }) }, editedFileInRepo: true }),
+		);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				detail: "No check verdict was produced: runner crashed",
+			}),
+		]);
+	});
+
+	it("maps a tsc-unavailable sentinel to no verdict instead of a type error or clean", async () => {
+		mockConfigNameToToolId.mockReturnValue("tsc" as never);
+		engineReturning({
+			results: [
+				{
+					file: "tsconfig.json",
+					line: 0,
+					message: "[interlinked:tsc-unavailable] TypeScript was NOT CHECKED: compiler timed out",
+					ruleId: "tsc-unavailable",
+				},
+			],
+		});
+		const out = await runToolCheckLoop(
+			makeCtx({ checks: { typescript: cfg({ command: "tsc" }) }, editedFileInRepo: true }),
+		);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				severity: "warning",
+				message: "External check deferred for src/x.ts (typescript)",
+			}),
+		]);
+		expect(out[0]?.message).not.toContain("found new issues");
+	});
+
 	it("aggregates engine findings into one result with file(line): message detail", async () => {
 		mockConfigNameToToolId.mockReturnValue("biome" as never);
 		engineReturning({
@@ -1132,7 +1231,7 @@ describe("runToolCheckLoop — command/engine branch", () => {
 		);
 		expect(out[0]?.detail).toContain("src/x.ts(14): m14");
 		expect(out[0]?.detail).not.toContain("src/x.ts(15): m15");
-		expect(out[0]?.detail).toContain("... (3 more)");
+		expect(out[0]?.detail).toContain("... (3 more groups)");
 	});
 
 	it("tsc without smart-filter: filterToFile false, targetFile is the edited file", async () => {
@@ -1205,17 +1304,22 @@ describe("runToolCheckLoop — command/engine branch", () => {
 // ==========================================================================
 
 describe("runToolCheckLoop — error isolation & boundaries", () => {
-	it("swallows a thrown timeout error and continues (returns no finding)", async () => {
+	it("turns a thrown timeout into an explicit no-verdict warning", async () => {
 		mockConfigNameToToolId.mockReturnValue("biome" as never);
 		const runChecksAsync = vi.fn().mockRejectedValue(new Error("ETIMEDOUT: tsc timed out"));
 		mockGetOrCreateEngine.mockReturnValue({ runChecksAsync } as never);
 		const out = await runToolCheckLoop(
 			makeCtx({ checks: { biome: cfg({ command: "biome" }) }, editedFileInRepo: true }),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				detail: "No check verdict was produced: ETIMEDOUT: tsc timed out",
+			}),
+		]);
 	});
 
-	it("swallows a non-timeout thrown error and continues", async () => {
+	it("turns a named-handler exception into an explicit no-verdict warning", async () => {
 		mockContainsSecrets.mockImplementation(() => {
 			throw new Error("boom");
 		});
@@ -1225,10 +1329,15 @@ describe("runToolCheckLoop — error isolation & boundaries", () => {
 				checks: { secrets_in_source: cfg() },
 			}),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				detail: "No check verdict was produced: check handler threw: boom",
+			}),
+		]);
 	});
 
-	it("swallows a non-Error throw (String(err) branch)", async () => {
+	it("reports a non-Error named-handler throw through the same no-verdict path", async () => {
 		// A non-Error rejection value held in a variable — exercises the
 		// `String(err)` fallback in the catch (err is not an Error instance).
 		const nonError: unknown = "plain string failure";
@@ -1241,7 +1350,12 @@ describe("runToolCheckLoop — error isolation & boundaries", () => {
 				checks: { secrets_in_source: cfg() },
 			}),
 		);
-		expect(out).toEqual([]);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				detail: "No check verdict was produced: check handler threw: plain string failure",
+			}),
+		]);
 	});
 
 	it("one failing check does not block a later passing check", async () => {
@@ -1259,9 +1373,11 @@ describe("runToolCheckLoop — error isolation & boundaries", () => {
 				getSharedContent: () => "const a: any = 1;",
 			}),
 		);
-		// secrets threw; strong_typing still produced its finding
-		expect(out).toHaveLength(1);
-		expect(out[0]?.name).toBe("strong_typing");
+		// secrets threw and is explicit; strong_typing still produces its finding.
+		expect(out.map((result) => result.name)).toEqual([
+			"external_check_deferred",
+			"strong_typing",
+		]);
 	});
 
 	it("fires onCheckBoundary with yield_<name> then inline_<name> per check", async () => {
@@ -1276,7 +1392,7 @@ describe("runToolCheckLoop — error isolation & boundaries", () => {
 		expect(boundaries).toEqual(["yield_secrets_in_source", "inline_secrets_in_source"]);
 	});
 
-	it("fires the inline_<name> boundary even when the check throws", async () => {
+	it("records a deferred_<name> boundary, never inline_<name>, when the check throws", async () => {
 		mockContainsSecrets.mockImplementation(() => {
 			throw new Error("boom");
 		});
@@ -1288,7 +1404,70 @@ describe("runToolCheckLoop — error isolation & boundaries", () => {
 				onCheckBoundary: (n) => boundaries.push(n),
 			}),
 		);
-		expect(boundaries).toContain("inline_secrets_in_source");
+		expect(boundaries).toContain("deferred_secrets_in_source");
+		expect(boundaries).not.toContain("inline_secrets_in_source");
+	});
+
+	it("records checks_ran only for real verdicts, excluding thrown and deferred checks", async () => {
+		mockContainsSecrets.mockImplementation(() => {
+			throw new Error("boom");
+		});
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		engineReturning({
+			results: [],
+			skipped: [
+				{ check: "biome", reason: "compiler capacity is busy", category: "resource_busy" },
+			],
+		});
+		const checksRan: string[] = [];
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({
+				event: { ...baseEvent, tool_input: { content: "x" } },
+				checks: {
+					secrets_in_source: cfg(),
+					biome_lint: cfg({ command: "biome" }),
+					strong_typing: cfg(),
+				},
+				getSharedContent: () => "const ok = 1;",
+				outChecksRan: checksRan,
+				onCheckBoundary: (name) => boundaries.push(name),
+			}),
+		);
+		expect(out.map((result) => result.name)).toEqual([
+			"external_check_deferred",
+			"external_check_deferred",
+		]);
+		expect(checksRan).toEqual(["strong_typing"]);
+		expect(boundaries).toContain("deferred_secrets_in_source");
+		expect(boundaries).toContain("deferred_biome_lint");
+		expect(boundaries).toContain("inline_strong_typing");
+	});
+
+	it("treats an enabled but missing external tool as deferred, never clean", async () => {
+		mockConfigNameToToolId.mockReturnValue("biome" as never);
+		engineReturning({
+			results: [],
+			skipped: [{ check: "biome", reason: "not installed", category: "tool_missing" }],
+		});
+		const checksRan: string[] = [];
+		const boundaries: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({
+				checks: { biome_lint: cfg({ command: "biome" }) },
+				outChecksRan: checksRan,
+				onCheckBoundary: (name) => boundaries.push(name),
+			}),
+		);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "external_check_deferred",
+				detail: expect.stringContaining("not installed"),
+			}),
+		]);
+		expect(checksRan).toEqual([]);
+		expect(boundaries).toContain("deferred_biome_lint");
+		expect(boundaries).not.toContain("inline_biome_lint");
 	});
 });
 
@@ -1324,7 +1503,7 @@ describe("runToolCheckLoop — fallback branches", () => {
 		mockGetProfileForFile.mockReturnValue(null);
 		const { findProjectRoot } = await import("./project-root.js");
 		vi.mocked(findProjectRoot).mockReturnValueOnce(null);
-		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		mockResolveDependencyAuditCommand.mockResolvedValue(null);
 		const out = await runToolCheckLoop(
 			makeCtx({
 				// no "/" → `filePath.split("/").pop()` is the whole string (still truthy
@@ -1346,7 +1525,7 @@ describe("runToolCheckLoop — fallback branches", () => {
 	});
 
 	it("dependency_audit: empty filename via trailing slash hits the pop `|| \"\"` fallback", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		mockResolveDependencyAuditCommand.mockResolvedValue(null);
 		const out = await runToolCheckLoop(
 			makeCtx({
 				// trailing slash → split("/").pop() === "" → `|| ""` evaluates RHS

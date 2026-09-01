@@ -1,0 +1,15 @@
+{
+  "schema_version": "simplification-benchmark-pair/v1",
+  "fixture_id": "positive-native-runtime-facility",
+  "remedy": "native",
+  "contract": {
+    "description": "A pinned platform capability replaces a compatibility shim after identical contract fixtures pass.",
+    "required_behaviors": ["runtime version is pinned by the capability catalog", "watch returns the platform event stream"],
+    "scorer_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "variants": {
+    "overbuilt": [{ "path": "src/watch.ts", "language": "typescript", "content": "import { nativeWatch } from 'platform';\nfunction compatibilityWatch(path: string) { return nativeWatch(path); }\nexport const watch = compatibilityWatch;\n" }],
+    "minimal": [{ "path": "src/watch.ts", "language": "typescript", "content": "export { nativeWatch as watch } from 'platform';\n" }]
+  },
+  "expected": { "overbuilt_matching_findings_min": 1, "minimal_total_findings_max": 0, "rank_margin_min": 0.1, "protected_false_positives_max": 0 }
+}

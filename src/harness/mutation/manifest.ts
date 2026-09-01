@@ -169,24 +169,51 @@ function parseManifestShell(value: unknown): MutationManifest | null {
 // this module, so the bridge was deleted the same day — advisory readers use
 // the sidecar; only blocking gates load the manifest, and only off the hot
 // path. History: repair-followups.txt #25.
-export function loadManifest(dir: string): MutationManifest | null {
+/** Review 2026-08-28 item 4: "no manifest" and "a manifest I cannot read" are
+ *  different facts. Collapsing both to null let a corrupt manifest flow into
+ *  `emptyManifest(...)` at the production gate, where the next successful run
+ *  ADOPTED a fresh floor over the damaged history — resetting the ratchet.
+ *  Only `missing` may start adoption; `corrupt` must read as not-measured and
+ *  leave the file in place for recovery. */
+export type ManifestLoadState =
+	| { kind: "missing" }
+	| { kind: "valid"; manifest: MutationManifest }
+	| { kind: "corrupt"; detail: string };
+
+export function loadManifestState(dir: string): ManifestLoadState {
 	const path = mutationManifestPath(dir);
-	if (!existsSync(path)) return null;
+	if (!existsSync(path)) return { kind: "missing" };
 	try {
 		const stat = statSync(path);
 		const hit = cachedManifest(path, stat.mtimeMs, stat.size);
-		if (hit) return hit;
+		if (hit) return { kind: "valid", manifest: hit };
 		const shell = parseManifestShell(JSON.parse(readFileSync(path, "utf-8")));
-		if (shell === null) return null;
+		if (shell === null) {
+			return { kind: "corrupt", detail: "manifest JSON parsed but does not match the manifest schema" };
+		}
 		// Repo root = the parent of the `.interlinked` dir this manifest lives in
 		// (every caller passes `resolve(cwd, ".interlinked")` as `dir` — see
 		// `normalizeManifestKey`'s docstring).
 		const manifest: MutationManifest = { ...shell, files: healManifestFiles(shell.files, dirname(dir)) };
 		manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
-		return manifest;
-	} catch {
-		return null;
+		return { kind: "valid", manifest };
+	} catch (err) {
+		return { kind: "corrupt", detail: err instanceof Error ? err.message : String(err) };
 	}
+}
+
+/** Legacy view: valid → manifest, anything else → null. Callers that must NOT
+ *  treat corrupt as a fresh start (the production gate) use `loadManifestState`. */
+export function loadManifest(dir: string): MutationManifest | null {
+	const state = loadManifestState(dir);
+	return state.kind === "valid" ? state.manifest : null;
+}
+
+/** Reader-side wording (Grok 2026-08-28 issue 19): "no manifest — measure
+ *  first" is the WRONG steer when the file exists but is damaged — the record
+ *  command now refuses over corrupt history, so the user needs the truth. */
+export function corruptManifestMessage(dir: string, detail: string): string {
+	return `Mutation manifest at ${join(dir, "mutation-manifest.json")} is CORRUPT (${detail}) — not "missing". The file is preserved for recovery; repair or remove it deliberately before measuring again.`;
 }
 
 /**
@@ -235,113 +262,21 @@ export function saveManifest(dir: string, manifest: MutationManifest): void {
 	manifestCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, manifest };
 }
 
-/** Every read of a file's records funnels through `normalizeManifestKey` too —
- *  a caller that still hands in an absolute/`./`/backslash path reads the
- *  SAME record `applyMeasuredRun` would write, instead of silently missing it. */
-function fileRecords(manifest: MutationManifest, file: string, cwd?: string): Record<StableId, SymbolRecord> {
-	return manifest.files[normalizeManifestKey(file, cwd)] ?? {};
-}
-
-/**
- * Has this file ever been measured into the manifest?
- *
- * False means there is no prior state to diff against, so "changed region" is
- * meaningless — EVERY symbol reads as changed and every existing survivor reads
- * as new. Judging an edit against that produces a guaranteed rejection whose
- * size reflects the file, not the change. Callers use this to treat the first
- * measurement of a file as BASELINE ESTABLISHMENT rather than a verdict.
- */
-// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
-export function hasFileBaseline(manifest: MutationManifest, file: string, cwd?: string): boolean {
-	return Object.keys(fileRecords(manifest, file, cwd)).length > 0;
-}
-
-/** Symbols whose hash differs from the base manifest (or are new) — the changed region (spec §3). */
-// interlinked: defer function_arg_count -- positional (base, next, file, cwd) mirrors the survivor-diff call sites; options-object refactor tracked with the branded-key work
-export function changedSymbols(
-	base: MutationManifest,
-	file: string,
-	overlayHashes: Map<StableId, SymbolHashEntry>,
-	cwd?: string,
-): Set<StableId> {
-	const records = fileRecords(base, file, cwd);
-	const changed = new Set<StableId>();
-	for (const [symbolId, entry] of overlayHashes) {
-		const prior = records[symbolId];
-		if (!prior || prior.symbolHash !== entry.symbolHash) changed.add(symbolId);
-	}
-	return changed;
-}
-
-/** mutantIds accepted (grandfathered survivors + reviewed equivalents) in the base. */
-// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
-export function acceptedSurvivors(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
-	const out = new Set<StableId>();
-	for (const symbol of Object.values(fileRecords(base, file, cwd))) {
-		for (const m of Object.values(symbol.mutants)) {
-			if (m.status === "survived" || m.status === "equivalent") out.add(m.mutantId);
-		}
-	}
-	return out;
-}
-
-/** symbolIds currently quarantined (identity unstable → survivors WARN, not BLOCK). */
-// interlinked: defer same_typed_primitive_params -- (file, cwd) is the repo-wide documented convention for manifest path helpers (see manifest-key.ts); branded ManifestKey refactor is tracked work
-export function quarantinedSymbols(base: MutationManifest, file: string, cwd?: string): Set<StableId> {
-	const out = new Set<StableId>();
-	for (const [symbolId, symbol] of Object.entries(fileRecords(base, file, cwd))) {
-		if (symbol.instability.quarantined) out.add(symbolId);
-	}
-	return out;
-}
-
-function toRecord(identity: MutantIdentity, status: MutantStatus, firstSeen: string): MutantRecord {
-	return {
-		mutantId: identity.mutantId,
-		siteId: identity.siteId,
-		mutator: identity.mutator,
-		originalLexeme: identity.originalLexeme,
-		replacement: identity.replacement,
-		ordinalWithinSymbol: identity.ordinalWithinSymbol,
-		status,
-		firstSeen,
-	};
-}
-
-export interface MeasuredMutant {
-	identity: MutantIdentity;
-	status: MutantStatus;
-}
-
-export interface SurvivorDiffSets {
-	changed: Set<StableId>;
-	accepted: Set<StableId>;
-	quarantined: Set<StableId>;
-}
-
-/**
- * The invariant (spec §5): a NEW changed-region survivor is a `survived` mutant
- * whose symbol changed, not already accepted, in a non-quarantined symbol. These
- * are the records that BLOCK; survivors in quarantined symbols are handled as
- * WARN by the caller.
- */
-export function computeNewSurvivors(
-	measured: MeasuredMutant[],
-	sets: SurvivorDiffSets,
-	firstSeen: string,
-): MutantRecord[] {
-	const out: MutantRecord[] = [];
-	for (const m of measured) {
-		const id = m.identity;
-		const isNewSurvivor =
-			m.status === "survived" &&
-			sets.changed.has(id.symbolId) &&
-			!sets.accepted.has(id.mutantId) &&
-			!sets.quarantined.has(id.symbolId);
-		if (isNewSurvivor) out.push(toRecord(id, m.status, firstSeen));
-	}
-	return out;
-}
+// Read-side survivor-diff helpers moved to manifest-diff.ts (2026-08-25, line
+// cap); re-exported so `from "./manifest.js"` importers are untouched.
+export {
+	acceptedSurvivors,
+	changedSymbols,
+	computeNewSurvivors,
+	hasFileBaseline,
+	missingUnchangedMutants,
+	type MeasuredMutant,
+	priorStatuses,
+	quarantinedSymbols,
+	type SurvivorDiffSets,
+	toMutantRecord,
+} from "./manifest-diff.js";
+import { fileRecords, type MeasuredMutant, toMutantRecord } from "./manifest-diff.js";
 
 // ============================================================
 // Measured-run refresh + receipt persistence (spec §4/§12)
@@ -358,18 +293,44 @@ interface RefreshSymbolArgs {
 	ms: MeasuredMutant[];
 	at: string;
 	threshold: number;
+	/** The run measured a LINE RANGE, not the whole file (MeasuredRunArgs.partial). */
+	partial?: boolean;
+}
+
+/** The symbol's next mutant map. A PARTIAL run's measured set is a floor, not
+ *  a census (Stryker only emits mutants whose whole span fits the range), so
+ *  under `partial` the prior records are retained and measured statuses win
+ *  per mutantId — absent ids are never deleted. A full run replaces. */
+// interlinked: defer function_arg_count -- private helper with one call site;
+// the four params are distinct types readable at a glance, and an options
+// object would only restate the RefreshSymbolArgs it was extracted from.
+function nextMutantMap(
+	prev: SymbolRecord | undefined,
+	ms: MeasuredMutant[],
+	at: string,
+	partial: boolean,
+): Record<StableId, MutantRecord> {
+	const mutants: Record<StableId, MutantRecord> = partial && prev ? { ...prev.mutants } : {};
+	for (const m of ms) {
+		const firstSeen = prev?.mutants[m.identity.mutantId]?.firstSeen ?? at;
+		mutants[m.identity.mutantId] = toMutantRecord(m.identity, m.status, firstSeen);
+	}
+	return mutants;
 }
 
 function refreshSymbol(args: RefreshSymbolArgs): SymbolRecord {
-	const { prev, symbolId, entry, ms, at, threshold } = args;
+	const { prev, symbolId, entry, ms, at, threshold, partial } = args;
 	// Differential runs skip unchanged symbols: no fresh measurements + same hash
 	// → carry the prior record forward verbatim (don't discard knowledge).
 	if (ms.length === 0 && prev && prev.symbolHash === entry.symbolHash) return prev;
-	const mutants: Record<StableId, MutantRecord> = {};
-	for (const m of ms) {
-		const firstSeen = prev?.mutants[m.identity.mutantId]?.firstSeen ?? at;
-		mutants[m.identity.mutantId] = toRecord(m.identity, m.status, firstSeen);
-	}
+	// PARTIAL-SCOPE LAUNDERING GUARD (external review 2026-08-23, third pass,
+	// finding 1 — independently reproduced: prev knew m1+m2, a ranged run
+	// emitted only m1, and this function dropped m2 while advancing the
+	// generation). A CHANGED symbol under a partial run keeps its prior record
+	// verbatim — only a full-scope run may replace it; with no prior record the
+	// measured floor is adopted (all we know beats nothing).
+	if (partial === true && prev !== undefined && prev.symbolHash !== entry.symbolHash) return prev;
+	const mutants = nextMutantMap(prev, ms, at, partial === true);
 	// Identity churn only counts against an UNCHANGED hash — a changed symbol is
 	// EXPECTED to mint new mutant ids (spec §6 of the identity spec).
 	const churned =
@@ -392,6 +353,10 @@ export interface MeasuredRunArgs {
 	 *  inside {@link normalizeManifestKey} — pass the daemon's actual `ctx.cwd`
 	 *  when it can diverge from the process cwd (e.g. an explicit `--cwd`). */
 	cwd?: string;
+	/** True when the run measured a LINE RANGE rather than the whole file. A
+	 *  partial run may only ADD knowledge (merge; changed symbols keep their
+	 *  prior record) — it must never replace a symbol's complete record. */
+	partial?: boolean;
 }
 
 /**
@@ -431,6 +396,7 @@ export function applyMeasuredRun(args: MeasuredRunArgs): MutationManifest {
 			ms: bySymbol.get(symbolId) ?? [],
 			at,
 			threshold,
+			partial: args.partial === true,
 		});
 	}
 	return { ...base, generation: base.generation + 1, authoritativeAt: at, files: { ...base.files, [file]: nextFile } };
@@ -440,14 +406,19 @@ export function mutationReceiptsPath(dir: string): string {
 	return join(dir, "mutation-receipts.jsonl");
 }
 
-/** Append one receipt line (measured-clean passes only — spec §9/§12). */
+/** Append one receipt line. Two outcomes reach persistence — measured-clean
+ *  passes AND first-sighting adoptions (spec §9/§12; 2026-08-28) — and the
+ *  receipt's own `outcome` field says which. Findings/not-measured never do. */
 export function appendReceipt(dir: string, receipt: MutationReceipt): void {
 	const path = mutationReceiptsPath(dir);
 	mkdirSync(dirname(path), { recursive: true });
 	appendFileSync(path, `${JSON.stringify(receipt)}\n`, "utf-8");
 }
 
-/** fs persister for a measured-clean pass: manifest snapshot + receipt line. */
+/** fs persister for a persisting outcome (measured-clean or adoption):
+ *  manifest snapshot + receipt line — in that order, with NO transaction
+ *  (MUT-AC-11): a crash between the two leaves a manifest without its
+ *  receipt, which is why the gate's failure wording says "PARTIAL". */
 export function makeManifestPersister(
 	dir: string,
 ): (manifest: MutationManifest, receipt: MutationReceipt) => void {

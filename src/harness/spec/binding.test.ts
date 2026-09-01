@@ -11,7 +11,7 @@ describe("claimBindsToNamespace", () => {
 		expect(ns).toBeDefined();
 		if (!ns) return;
 		const claim = f.countClaims[0];
-		expect(claim && claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(true);
+		expect(claim && claimBindsToNamespace(claim, f, ns, defLineSet(ns))).toBe(true);
 	});
 
 	it("binds via heading-section containment, not mere presence elsewhere", () => {
@@ -22,7 +22,28 @@ describe("claimBindsToNamespace", () => {
 		);
 		const ns = f.namespaces[0];
 		const claim = f.countClaims[0];
-		expect(ns && claim && claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(
+		expect(ns && claim && claimBindsToNamespace(claim, f, ns, defLineSet(ns))).toBe(
+			true,
+		);
+	});
+
+	it("N-enum1: does not bind from ONE incidental id on the claim line (stop-digest FPs 2026-08-21)", () => {
+		// "F9 — the --help audit lists 83 commands" is a findings-table row, not
+		// a registry enumeration; binding command→F here flagged every "N
+		// commands" claim repo-wide against the F census.
+		const f = facts(["F9 — the audit lists 83 widgets in one screen.", "- F1 a", "- F2 b"].join("\n"));
+		const ns = f.namespaces[0];
+		const claim = f.countClaims[0];
+		expect(ns && claim ? claimBindsToNamespace(claim, f, ns, defLineSet(ns)) : null).toBe(
+			false,
+		);
+	});
+
+	it("P-enum1: still binds from a same-line enumeration of two or more ids", () => {
+		const f = facts("Three gates (G1, G2) plus G7 compose.");
+		const ns = f.namespaces[0];
+		const claim = f.countClaims[0];
+		expect(ns && claim ? claimBindsToNamespace(claim, f, ns, defLineSet(ns)) : null).toBe(
 			true,
 		);
 	});
@@ -31,7 +52,7 @@ describe("claimBindsToNamespace", () => {
 		const f = facts(["Six reasons this works.", "- W1 a", "- W2 b", "- W3 c"].join("\n"));
 		const ns = f.namespaces[0];
 		const claim = f.countClaims[0];
-		expect(ns && claim ? claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns)) : null).toBe(
+		expect(ns && claim ? claimBindsToNamespace(claim, f, ns, defLineSet(ns)) : null).toBe(
 			false,
 		);
 	});
@@ -132,7 +153,7 @@ describe("binding hardening (round 7)", () => {
 		const f = facts("## Bets\n- X1\n## Gates\n- X2\n- X3\nSix bets.");
 		const ns = f.namespaces[0];
 		const claim = f.countClaims[0];
-		expect(ns && claim ? claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns)) : null).toBe(false);
+		expect(ns && claim ? claimBindsToNamespace(claim, f, ns, defLineSet(ns)) : null).toBe(false);
 	});
 
 	it("does not bind on an even two-section split (#27)", () => {
@@ -167,7 +188,7 @@ describe("binding hardening (round 7)", () => {
 		expect(f.namespaces.length).toBe(2);
 		const claim = f.countClaims[0];
 		for (const ns of f.namespaces) {
-			expect(claim && claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(false);
+			expect(claim && claimBindsToNamespace(claim, f, ns, defLineSet(ns))).toBe(false);
 		}
 	});
 
@@ -225,9 +246,8 @@ describe("binding hardening (round 7)", () => {
 		const f = facts(parts.join("\n"));
 		const start = Date.now();
 		for (const ns of f.namespaces) {
-			const idLines = idLineSet(ns);
 			const defLines = defLineSet(ns);
-			for (const claim of f.countClaims) claimBindsToNamespace(claim, f, idLines, defLines);
+			for (const claim of f.countClaims) claimBindsToNamespace(claim, f, ns, defLines);
 		}
 		// Current unmemoized code runs this in ~1460ms; the memoized path measured 6ms.
 		expect(Date.now() - start).toBeLessThan(500);
@@ -240,9 +260,9 @@ describe("binding hardening (round 7)", () => {
 		expect(ns).toBeDefined();
 		if (!ns || !claim) return;
 		const defLines = defLineSet(ns);
-		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(true);
-		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(true);
-		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns))).toBe(true);
+		expect(claimBindsToNamespace(claim, f, ns, defLines)).toBe(true);
+		expect(claimBindsToNamespace(claim, f, ns, defLines)).toBe(true);
+		expect(claimBindsToNamespace(claim, f, ns, defLineSet(ns))).toBe(true);
 	});
 
 	it("memoization does not leak across facts objects (#30)", () => {
@@ -250,7 +270,7 @@ describe("binding hardening (round 7)", () => {
 		const run = (f: ReturnType<typeof facts>): boolean | null => {
 			const ns = f.namespaces[0];
 			const claim = f.countClaims[0];
-			return ns && claim ? claimBindsToNamespace(claim, f, idLineSet(ns), defLineSet(ns)) : null;
+			return ns && claim ? claimBindsToNamespace(claim, f, ns, defLineSet(ns)) : null;
 		};
 		expect(run(facts(doc))).toBe(false);
 		expect(run(facts(doc))).toBe(false);
@@ -264,8 +284,8 @@ describe("binding hardening (round 7)", () => {
 		expect(ns).toBeDefined();
 		if (!ns || !claim) return;
 		const defLines = defLineSet(ns);
-		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(false);
-		expect(claimBindsToNamespace(claim, f, idLineSet(ns), defLines)).toBe(false);
+		expect(claimBindsToNamespace(claim, f, ns, defLines)).toBe(false);
+		expect(claimBindsToNamespace(claim, f, ns, defLines)).toBe(false);
 		expect(localNounBindings(f).size).toBe(0);
 	});
 });

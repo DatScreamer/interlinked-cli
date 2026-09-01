@@ -31,6 +31,7 @@ function freshVfs(): VFS {
 
 const unlinked: string[] = [];
 const written: Array<{ path: string; data: string }> = [];
+const readPaths: string[] = [];
 
 vi.mock("node:fs", () => ({
 	existsSync: (p: string) => vfs.existing.has(p),
@@ -44,6 +45,7 @@ vi.mock("node:fs", () => ({
 		return { mtimeMs: f.mtimeMs ?? 0, size: f.size ?? 0 };
 	},
 	readFileSync: (p: string) => {
+		readPaths.push(p);
 		const f = vfs.files[p];
 		if (!f || f.content === undefined) throw new Error(`ENOENT read ${p}`);
 		return f.content;
@@ -76,7 +78,6 @@ import { cleanCommand } from "./clean.js";
 
 const HOOK_SESSIONS = "/repo/.interlinked/hooks/agent-sessions";
 const ACTIVITY = "/repo/.interlinked/activity.jsonl";
-const SYNC_STATE = "/repo/.interlinked/sync-state.json";
 const LOCAL_SESSIONS = "/repo/.interlinked/sessions";
 const CLAUDE_SETTINGS = "/repo/.claude/settings.json";
 const GEMINI_SETTINGS = "/repo/.gemini/settings.json";
@@ -98,6 +99,7 @@ beforeEach(() => {
 	vfs = freshVfs();
 	unlinked.length = 0;
 	written.length = 0;
+	readPaths.length = 0;
 	logs = [];
 	vi.spyOn(process, "cwd").mockReturnValue("/repo");
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
@@ -236,52 +238,25 @@ describe("clean — large activity log", () => {
 		expect(out).toContain("would truncate");
 	});
 
-	it("--force: truncates to last 10K lines and resets sync cursor", async () => {
+	it("--force: refuses a >16 MiB fallback before readFileSync when positional I/O is unavailable", async () => {
 		vfs.existing.add(ACTIVITY);
-		// 10,005 non-empty lines + a trailing newline that filter(Boolean) drops
-		const lines = Array.from({ length: 10005 }, (_, i) => `{"n":${i}}`);
-		const content = `${lines.join("\n")}\n`;
-		vfs.files[ACTIVITY] = { size: 60 * 1024 * 1024, content };
+		vfs.files[ACTIVITY] = { size: 60 * 1024 * 1024, content: "must-not-read\n" };
 		await cleanCommand({ force: true });
 
-		// Two writes: truncated activity + sync-state reset
-		expect(written).toHaveLength(2);
-		const actWrite = written.find((w) => w.path === ACTIVITY);
-		const keptLines = (actWrite as { data: string }).data.trim().split("\n");
-		expect(keptLines).toHaveLength(10000);
-		expect(keptLines[0]).toBe('{"n":5}'); // slice(-10000) of 10005 -> drops first 5
-		expect(keptLines.at(-1)).toBe('{"n":10004}');
-
-		const syncWrite = written.find((w) => w.path === SYNC_STATE);
-		const syncPayload = JSON.parse((syncWrite as { data: string }).data) as {
-			synced_through_bytes: number;
-			last_sync_at: null;
-			reason: string;
-			reset_at: string;
-		};
-		expect(syncPayload.synced_through_bytes).toBe(0);
-		expect(syncPayload.last_sync_at).toBeNull();
-		expect(syncPayload.reason).toBe("activity_log_truncated");
-		expect(typeof syncPayload.reset_at).toBe("string");
-
-		// Normal --force renderer prints the "truncated <detail>" action line.
-		const out = allOutput();
-		expect(out).toContain("truncated Activity log is 60.0 MB");
-		expect(out).toContain("Removed 2 item(s).");
+		expect(readPaths).not.toContain(ACTIVITY);
+		expect(written).toEqual([]);
+		expect(allOutput()).toContain("not truncated");
+		expect(allOutput()).toContain("Removed 0 item(s).");
 	});
 
-	it("--force json mode lists both truncation entries in `removed`", async () => {
+	it("--force json mode reports no removal when bounded truncation is unavailable", async () => {
 		vfs.existing.add(ACTIVITY);
 		vfs.files[ACTIVITY] = { size: 60 * 1024 * 1024, content: "a\nb\n" };
 		await cleanCommand({ force: true, json: true });
 		const payload = lastJson();
-		const removed = payload.removed as string[];
-		expect(removed).toEqual([
-			`${ACTIVITY} (truncated to 10K lines)`,
-			`${SYNC_STATE} (sync cursor reset)`,
-		]);
+		expect(payload.removed).toEqual([]);
 		expect(payload.dry_run).toBe(false);
-		expect(payload.total_removed).toBe(2);
+		expect(payload.total_removed).toBe(0);
 	});
 
 	it("statSync throwing on activity log is swallowed", async () => {
@@ -475,8 +450,9 @@ describe("clean — combined categories in one run", () => {
 		expect(out).toContain("Orphaned hook entries");
 		// unlinked: hook session + local session (not the log, not the orphan)
 		expect(unlinked).toEqual([`${HOOK_SESSIONS}/s.json`, `${LOCAL_SESSIONS}/l.json`]);
-		// removed count = 2 unlinks + 2 truncation-related entries = 4
-		expect(out).toContain("Removed 4 item(s).");
+		// Positional I/O is intentionally unavailable in this virtual filesystem,
+		// so only the two session files are removed.
+		expect(out).toContain("Removed 2 item(s).");
 		expect(out).toContain("1 orphaned hook(s) found");
 	});
 

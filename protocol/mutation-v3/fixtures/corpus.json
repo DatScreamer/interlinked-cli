@@ -1,0 +1,1300 @@
+{
+  "protocol_version": "interlinked-mutation/3.0",
+  "corpus_version": 3,
+  "description": "Cross-repository acceptance corpus for the mutation protocol v3 result envelope. Both the interlinked-cloud producer and the interlinked-cli consumer MUST pass every case: accepted cases must parse (and producers must be able to emit them) with the expected mechanical classification (the CLI harness additionally runs every accepted case through the FULL authentication chain with fabricated signed receipts + structural report); rejected cases must be refused with a reason containing reason_includes. The envelope carries EVIDENCE, never a clean verdict. Mutant rows carry evaluator-grade identity provenance under identity_algorithm interlinked-site-v2. Change this corpus only together with the schema on both sides.",
+  "cases": [
+    {
+      "name": "success-complete-mutation-result",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "complete",
+        "observations": {
+          "killed": 2,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "envelope": {
+        "protocol_version": "interlinked-mutation/3.0",
+        "kind": "mutation_result",
+        "job": {
+          "tenant": "t_dev",
+          "project": "p_cli",
+          "repository": "github.com/QuentinCody/interlinked-cli",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "target_file": "src/lib/example.ts",
+          "target_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "job_key": "job_0001"
+        },
+        "acceptance_receipt_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution_receipt_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "attempt_id": "attempt_0001",
+        "result_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "signature": {
+          "key_id": "k_runner",
+          "value": "sig-value-0001"
+        },
+        "seq": 7,
+        "occurred_at": "2026-08-31T12:00:00.000Z",
+        "scope": {
+          "mode": "import_graph",
+          "test_files": [
+            "src/lib/example.test.ts"
+          ],
+          "incremental": false,
+          "mutation_scope": "whole_file"
+        },
+        "engine": {
+          "name": "stryker",
+          "version": "8.2.0",
+          "config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "exit_code": 0
+        },
+        "runner": {
+          "build": "runner-build-2026-08-31",
+          "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "census": {
+          "generated": 3,
+          "executable": 2,
+          "approved_excluded": 1
+        },
+        "excluded": [
+          {
+            "mutant_id": "9999999999999999999999999999999999999999999999999999999999999999",
+            "policy_id": "policy-string-literal-noise",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0,
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120
+          }
+        ],
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ],
+        "identity_algorithm": "interlinked-site-v2",
+        "test_run": {
+          "executed_test_count": 12,
+          "overlay_green": true,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        },
+        "report": {
+          "r2_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "bytes": 20480,
+          "content_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      }
+    },
+    {
+      "name": "success-mutation-result-with-survivor",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "complete",
+        "observations": {
+          "killed": 1,
+          "survived": 1,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "job": {
+          "tenant": "t_dev",
+          "project": "p_cli",
+          "repository": "github.com/QuentinCody/interlinked-cli",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "target_file": "src/lib/example.ts",
+          "target_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "job_key": "job_0002"
+        },
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "survived",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "success-mutation-result-uncovered-debt",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "complete",
+        "observations": {
+          "killed": 1,
+          "survived": 0,
+          "uncovered": 1,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "uncovered",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "partial-mutation-result-inconclusive",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "partial",
+        "reason_includes": "inconclusive",
+        "observations": {
+          "killed": 1,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 1,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "timeout",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "success-not-mutatable-controlled",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "complete",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "envelope": {
+        "protocol_version": "interlinked-mutation/3.0",
+        "kind": "not_mutatable",
+        "job": {
+          "tenant": "t_dev",
+          "project": "p_cli",
+          "repository": "github.com/QuentinCody/interlinked-cli",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "target_file": "src/lib/constants.ts",
+          "target_content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "job_key": "job_0003"
+        },
+        "acceptance_receipt_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "execution_receipt_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "attempt_id": "attempt_0003",
+        "result_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+        "signature": {
+          "key_id": "k_runner",
+          "value": "sig-value-0003"
+        },
+        "seq": 3,
+        "occurred_at": "2026-08-31T12:05:00.000Z",
+        "scope": {
+          "mode": "companion_fallback",
+          "test_files": [
+            "src/lib/constants.test.ts"
+          ],
+          "incremental": false,
+          "mutation_scope": "whole_file"
+        },
+        "engine": {
+          "name": "stryker",
+          "version": "8.2.0",
+          "config_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "exit_code": 0
+        },
+        "runner": {
+          "build": "runner-build-2026-08-31",
+          "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "census": {
+          "generated": 0,
+          "executable": 0,
+          "approved_excluded": 0
+        },
+        "test_run": {
+          "executed_test_count": 5,
+          "overlay_green": true,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        },
+        "report": {
+          "r2_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "bytes": 512,
+          "content_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      }
+    },
+    {
+      "name": "malformed-not-mutatable-without-report",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "report"
+      },
+      "base": "success-not-mutatable-controlled",
+      "delete": [
+        "report"
+      ]
+    },
+    {
+      "name": "malformed-zero-byte-report",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "integer from 1 through 16777216"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "report": {
+          "r2_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "bytes": 0,
+          "content_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      }
+    },
+    {
+      "name": "success-not-mutatable-no-test-policy",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "complete",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-not-mutatable-controlled",
+      "patch": {
+        "scope": {
+          "mode": "glob_fallback",
+          "test_files": [],
+          "incremental": false,
+          "mutation_scope": "whole_file"
+        },
+        "test_run": {
+          "executed_test_count": 0,
+          "overlay_green": true,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        },
+        "no_test_policy": "policy-generated-data-table"
+      }
+    },
+    {
+      "name": "adverse-suite-red-bare",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "partial",
+        "reason_includes": "red",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": true
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "suite_red",
+        "engine": {
+          "name": "stryker",
+          "version": "8.2.0",
+          "config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "exit_code": 1
+        },
+        "test_run": {
+          "executed_test_count": 12,
+          "overlay_green": false,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        }
+      },
+      "delete": [
+        "census",
+        "excluded",
+        "mutants",
+        "identity_algorithm",
+        "report"
+      ]
+    },
+    {
+      "name": "adverse-suite-red-with-grouped-evidence",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "partial",
+        "observations": {
+          "killed": 1,
+          "survived": 1,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": true
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "suite_red",
+        "census": {
+          "generated": 2,
+          "executable": 2,
+          "approved_excluded": 0
+        },
+        "excluded": [],
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "survived",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ],
+        "test_run": {
+          "executed_test_count": 12,
+          "overlay_green": false,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        }
+      },
+      "delete": [
+        "report"
+      ]
+    },
+    {
+      "name": "adverse-execution-failed-partial-evidence",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "partial",
+        "reason_includes": "execution failed",
+        "observations": {
+          "killed": 0,
+          "survived": 1,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "execution_failed",
+        "failure_classification": "sandbox_timeout",
+        "evidence_completeness": "partial",
+        "census": {
+          "generated": 1,
+          "executable": 1,
+          "approved_excluded": 0
+        },
+        "excluded": [],
+        "mutants": [
+          {
+            "mutant_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "survived",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      },
+      "delete": [
+        "scope",
+        "engine",
+        "runner",
+        "test_run",
+        "report"
+      ]
+    },
+    {
+      "name": "terminal-execution-failed-none",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "none",
+        "reason_includes": "sandbox_oom",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "execution_failed",
+        "failure_classification": "sandbox_oom",
+        "evidence_completeness": "none"
+      },
+      "delete": [
+        "scope",
+        "engine",
+        "runner",
+        "census",
+        "excluded",
+        "mutants",
+        "identity_algorithm",
+        "test_run",
+        "report"
+      ]
+    },
+    {
+      "name": "terminal-cancelled-pre-execution",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "none",
+        "reason_includes": "cancelled",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "cancelled",
+        "cancellation_reason": "operator_stop",
+        "terminalization_record_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "delete": [
+        "execution_receipt_hash",
+        "attempt_id",
+        "scope",
+        "engine",
+        "runner",
+        "census",
+        "excluded",
+        "mutants",
+        "identity_algorithm",
+        "test_run",
+        "report"
+      ]
+    },
+    {
+      "name": "terminal-expired",
+      "expected": {
+        "parse": "accepted",
+        "completeness": "none",
+        "reason_includes": "expired",
+        "observations": {
+          "killed": 0,
+          "survived": 0,
+          "uncovered": 0,
+          "inconclusive": 0,
+          "suite_red": false
+        }
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "expired",
+        "expiry_reason": "lease_deadline_passed",
+        "terminalization_record_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "delete": [
+        "execution_receipt_hash",
+        "attempt_id",
+        "scope",
+        "engine",
+        "runner",
+        "census",
+        "excluded",
+        "mutants",
+        "identity_algorithm",
+        "test_run",
+        "report"
+      ]
+    },
+    {
+      "name": "malformed-not-object",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "object"
+      },
+      "envelope": "this is not an envelope"
+    },
+    {
+      "name": "malformed-wrong-version",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "protocol_version"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "protocol_version": "interlinked-mutation/2.0"
+      }
+    },
+    {
+      "name": "malformed-unknown-kind",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "kind"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "kind": "partial_result"
+      }
+    },
+    {
+      "name": "malformed-unknown-top-level-key",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "unknown key"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "vendor_extra": true
+      }
+    },
+    {
+      "name": "malformed-unknown-nested-key",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "unknown key \"smuggled\""
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "engine": {
+          "name": "stryker",
+          "version": "8.2.0",
+          "config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "exit_code": 0,
+          "smuggled": 1
+        }
+      }
+    },
+    {
+      "name": "malformed-engine-id-as-identity",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "mutant_id"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "stryker-1",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-missing-identity-provenance",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "mutator"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-wrong-identity-algorithm",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "identity_algorithm"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "identity_algorithm": "stryker-native-v1"
+      }
+    },
+    {
+      "name": "malformed-truncated-census",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "generated must equal executable + approved_excluded"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "census": {
+          "generated": 10,
+          "executable": 2,
+          "approved_excluded": 1
+        }
+      }
+    },
+    {
+      "name": "malformed-row-shortfall",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "one status row per executable mutant"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-exclusion-shortfall",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "one excluded row per approved exclusion"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "excluded": []
+      }
+    },
+    {
+      "name": "malformed-exclusion-overlap",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "disjoint"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "excluded": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "policy_id": "policy-string-literal-noise",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0,
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-zero-generated-mutation-result",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "not_mutatable kind"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "census": {
+          "generated": 0,
+          "executable": 0,
+          "approved_excluded": 0
+        },
+        "excluded": [],
+        "mutants": []
+      }
+    },
+    {
+      "name": "malformed-both-receipt-hashes",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "exactly one"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "terminalization_record_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "name": "malformed-evidence-kind-on-terminalization-arm",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "requires an execution receipt"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "terminalization_record_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "delete": [
+        "execution_receipt_hash",
+        "attempt_id"
+      ]
+    },
+    {
+      "name": "malformed-attempt-without-execution",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "no attempt ran"
+      },
+      "base": "terminal-cancelled-pre-execution",
+      "patch": {
+        "attempt_id": "attempt_ghost"
+      }
+    },
+    {
+      "name": "malformed-zero-executed-tests",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "executed_test_count"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "test_run": {
+          "executed_test_count": 0,
+          "overlay_green": true,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        }
+      }
+    },
+    {
+      "name": "malformed-red-mutation-result",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "suite_red kind"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "test_run": {
+          "executed_test_count": 12,
+          "overlay_green": false,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        }
+      }
+    },
+    {
+      "name": "malformed-nonzero-engine-exit",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "exit_code 0"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "engine": {
+          "name": "stryker",
+          "version": "8.2.0",
+          "config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "exit_code": 1
+        }
+      }
+    },
+    {
+      "name": "malformed-incremental-scope",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "incremental"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "scope": {
+          "mode": "import_graph",
+          "test_files": [
+            "src/lib/example.test.ts"
+          ],
+          "incremental": true,
+          "mutation_scope": "whole_file"
+        }
+      }
+    },
+    {
+      "name": "malformed-range-mutation-scope",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "whole_file"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "scope": {
+          "mode": "import_graph",
+          "test_files": [
+            "src/lib/example.test.ts"
+          ],
+          "incremental": false,
+          "mutation_scope": "range"
+        }
+      }
+    },
+    {
+      "name": "malformed-bad-hash-format",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "sha-256"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "result_hash": "not-a-hash"
+      }
+    },
+    {
+      "name": "malformed-bad-timestamp",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "RFC3339"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "occurred_at": "2026-13-99T99:99:99Z"
+      }
+    },
+    {
+      "name": "malformed-lone-surrogate-string",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "well-formed"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "job": {
+          "tenant": "t_dev\ud800",
+          "project": "p_cli",
+          "repository": "github.com/QuentinCody/interlinked-cli",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "target_file": "src/lib/example.ts",
+          "target_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "job_key": "job_0001"
+        }
+      }
+    },
+    {
+      "name": "malformed-traversal-target-path",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "repo-relative"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "job": {
+          "tenant": "t_dev",
+          "project": "p_cli",
+          "repository": "github.com/QuentinCody/interlinked-cli",
+          "commit": "0123456789abcdef0123456789abcdef01234567",
+          "target_file": "../../etc/passwd",
+          "target_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "job_key": "job_0001"
+        }
+      }
+    },
+    {
+      "name": "malformed-duplicate-test-files",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "duplicates"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "scope": {
+          "mode": "import_graph",
+          "test_files": [
+            "src/lib/example.test.ts",
+            "src/lib/example.test.ts"
+          ],
+          "incremental": false,
+          "mutation_scope": "whole_file"
+        }
+      }
+    },
+    {
+      "name": "malformed-arbitrary-no-test-policy",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "policy-"
+      },
+      "base": "success-not-mutatable-no-test-policy",
+      "patch": {
+        "no_test_policy": "trust-me"
+      }
+    },
+    {
+      "name": "malformed-bad-image-digest",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "image digest"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "runner": {
+          "build": "runner-build-2026-08-31",
+          "image_digest": "latest"
+        }
+      }
+    },
+    {
+      "name": "malformed-missing-report",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "report"
+      },
+      "base": "success-complete-mutation-result",
+      "delete": [
+        "report"
+      ]
+    },
+    {
+      "name": "malformed-suite-red-uncoupled-evidence",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "travel together"
+      },
+      "base": "adverse-suite-red-with-grouped-evidence",
+      "delete": [
+        "mutants"
+      ]
+    },
+    {
+      "name": "malformed-suite-red-green-overlay",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "overlay_green"
+      },
+      "base": "adverse-suite-red-bare",
+      "patch": {
+        "test_run": {
+          "executed_test_count": 12,
+          "overlay_green": true,
+          "red_witness_satisfied": null,
+          "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "runner_name": "vitest",
+          "runner_version": "3.2.0"
+        }
+      }
+    },
+    {
+      "name": "malformed-failed-none-with-evidence",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "forbids evidence blocks"
+      },
+      "base": "terminal-execution-failed-none",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "5555555555555555555555555555555555555555555555555555555555555555",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "survived",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-failed-partial-without-evidence",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "requires at least one evidence block"
+      },
+      "base": "terminal-execution-failed-none",
+      "patch": {
+        "evidence_completeness": "partial"
+      }
+    },
+    {
+      "name": "malformed-failed-unmarked-completeness",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "evidence_completeness"
+      },
+      "base": "terminal-execution-failed-none",
+      "delete": [
+        "evidence_completeness"
+      ]
+    },
+    {
+      "name": "malformed-mutant-status",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "status"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "vanished",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-duplicate-mutant-id",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "unique"
+      },
+      "base": "success-complete-mutation-result",
+      "patch": {
+        "mutants": [
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "EqualityOperator",
+            "original_lexeme": ">",
+            "replacement": ">=",
+            "start_offset": 120,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          },
+          {
+            "mutant_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "mutator": "ArithmeticOperator",
+            "original_lexeme": "+",
+            "replacement": "-",
+            "start_offset": 240,
+            "status": "killed",
+            "site_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbol_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "qualified_name": "example",
+            "symbol_context": "example",
+            "ordinal_within_symbol": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-missing-signature",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "signature"
+      },
+      "base": "success-complete-mutation-result",
+      "delete": [
+        "signature"
+      ]
+    },
+    {
+      "name": "malformed-missing-job-binding",
+      "expected": {
+        "parse": "rejected",
+        "reason_includes": "job"
+      },
+      "base": "success-complete-mutation-result",
+      "delete": [
+        "job"
+      ]
+    }
+  ]
+}

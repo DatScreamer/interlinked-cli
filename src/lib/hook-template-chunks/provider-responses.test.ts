@@ -1,5 +1,9 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { PROVIDER_RESPONSES_CHUNK } from "./provider-responses.js";
+import {
+	NATIVE_GATE_DENY_RESPONSE_CHUNK,
+	PROVIDER_RESPONSES_CHUNK,
+} from "./provider-responses.js";
 
 // PROVIDER_RESPONSES_CHUNK is a template-literal string that becomes runtime
 // JS in the generated `.interlinked/hooks/interlinked-activity.mjs`. We
@@ -7,6 +11,33 @@ import { PROVIDER_RESPONSES_CHUNK } from "./provider-responses.js";
 // variables defined in the surrounding template), so we verify shape: the
 // per-provider formatters exist, the dispatcher is depth-1, and each
 // provider's documented response shape is present.
+
+function executeProviderResponse(
+	responseType: string,
+	data: Record<string, unknown>,
+	hookEvent = "PermissionRequest",
+): { response: unknown; stderr: string } {
+	let stderr = "";
+	const sandbox: Record<string, unknown> = {
+		detectedClient: "claude",
+		hookEvent,
+		cursorNativeEvent: undefined,
+		responseType,
+		data,
+		process: {
+			stderr: {
+				write(value: unknown) {
+					stderr += String(value);
+				},
+			},
+		},
+	};
+	runInNewContext(
+		`${NATIVE_GATE_DENY_RESPONSE_CHUNK}\n${PROVIDER_RESPONSES_CHUNK}\nresult = formatProviderResponse(responseType, data);`,
+		sandbox,
+	);
+	return { response: sandbox.result, stderr };
+}
 
 describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 	it("is a non-empty string", () => {
@@ -29,7 +60,7 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain('detectedClient === "codex"');
 	});
 
-	it("Claude pre_block uses the legacy {decision: 'block'} shape", () => {
+	it("Claude post_block uses the top-level decision: 'block' shape", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain('decision: "block"');
 		expect(PROVIDER_RESPONSES_CHUNK).toContain("reason: data.reason");
 	});
@@ -38,6 +69,37 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 		expect(PROVIDER_RESPONSES_CHUNK).toContain("hookSpecificOutput");
 		expect(PROVIDER_RESPONSES_CHUNK).toContain('permissionDecision: "deny"');
 		expect(PROVIDER_RESPONSES_CHUNK).toContain("permissionDecisionReason");
+	});
+
+	it.each(["pre_block", "pre_block_grep"])(
+		"P: Claude PermissionRequest %s emits the exact native deny object",
+		(responseType) => {
+			const { response, stderr } = executeProviderResponse(responseType, {
+				reason: "policy denied",
+			});
+			expect(response).toEqual({
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: { behavior: "deny", message: "policy denied" },
+				},
+			});
+			expect(stderr).toBe("");
+		},
+	);
+
+	it("P: Claude PreToolUse block keeps permissionDecision", () => {
+		const { response } = executeProviderResponse(
+			"pre_block",
+			{ reason: "policy denied" },
+			"PreToolUse",
+		);
+		expect(response).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "policy denied",
+			},
+		});
 	});
 
 	it("Claude pre_ask uses permissionDecision: 'ask' with optional systemMessage", () => {
@@ -54,6 +116,23 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 			'const isPermissionRequest = preEventEcho === "PermissionRequest"',
 		);
 		expect(claudeBlock?.[0]).toMatch(/pre_ask[\s\S]*isPermissionRequest[\s\S]*return \{\};/);
+	});
+
+	it("N: Claude PermissionRequest ask emits no JSON fields and keeps its message on stderr", () => {
+		const { response, stderr } = executeProviderResponse("pre_ask", {
+			reason: "agent-safe reason",
+			systemMessage: "user-only explanation",
+		});
+		expect(response).toEqual({});
+		expect(stderr).toBe("user-only explanation\n");
+	});
+
+	it("N: Claude PermissionRequest allow context emits no JSON fields and stays on stderr", () => {
+		const { response, stderr } = executeProviderResponse("pre_allow", {
+			additionalContext: "permission context",
+		});
+		expect(response).toEqual({});
+		expect(stderr).toBe("permission context\n");
 	});
 
 	it("Copilot collapses ask → deny (no ask primitive)", () => {
@@ -78,11 +157,15 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 	});
 
 	it("Codex PermissionRequest uses hookSpecificOutput.decision.behavior", () => {
-		// Codex has its own permission shape, distinct from Claude's
+		// PermissionRequest has its own phase shape, distinct from PreToolUse's
 		// permissionDecision field.
-		expect(PROVIDER_RESPONSES_CHUNK).toContain("function codexPermissionDeny(");
-		expect(PROVIDER_RESPONSES_CHUNK).toContain('hookEventName: "PermissionRequest"');
-		expect(PROVIDER_RESPONSES_CHUNK).toContain('behavior: "deny"');
+		expect(NATIVE_GATE_DENY_RESPONSE_CHUNK).toContain(
+			"function nativeGateDenyResponse(",
+		);
+		expect(NATIVE_GATE_DENY_RESPONSE_CHUNK).toContain(
+			'hookEventName: "PermissionRequest"',
+		);
+		expect(NATIVE_GATE_DENY_RESPONSE_CHUNK).toContain('behavior: "deny"');
 	});
 
 	it("Codex PreToolUse uses permissionDecision while PostToolUse uses continuation", () => {
@@ -90,8 +173,13 @@ describe("PROVIDER_RESPONSES_CHUNK — shape", () => {
 			/function formatCodexResponse[\s\S]*?function formatProviderResponse/,
 		);
 		expect(codexBlock).not.toBeNull();
-		expect(codexBlock?.[0]).toContain('hookEventName: "PreToolUse"');
-		expect(codexBlock?.[0]).toContain('permissionDecision: "deny"');
+		expect(codexBlock?.[0]).toContain("nativeGateDenyResponse");
+		expect(NATIVE_GATE_DENY_RESPONSE_CHUNK).toContain(
+			'hookEventName: "PreToolUse"',
+		);
+		expect(NATIVE_GATE_DENY_RESPONSE_CHUNK).toContain(
+			'permissionDecision: "deny"',
+		);
 		expect(codexBlock?.[0]).toContain('decision: "block"');
 	});
 

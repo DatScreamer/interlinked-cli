@@ -4,12 +4,15 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
     spawn: vi.fn(),
     existsSync: vi.fn(),
+	readFileSync: vi.fn(),
     unlinkSync: vi.fn(),
     getOutputMode: vi.fn(),
     output: vi.fn(),
     outputError: vi.fn(),
     waitForDaemonSocket: vi.fn(),
     acquireStartupLock: vi.fn(),
+    touchStartupLockHolder: vi.fn(),
+    transferStartupLock: vi.fn(),
     reapOrphanHarnessesVerified: vi.fn(),
     stopAllDaemons: vi.fn(),
     getHarnessServerPath: vi.fn(),
@@ -20,13 +23,25 @@ const mocks = vi.hoisted(() => ({
     closeDaemonStderrLog: vi.fn(),
     readDaemonStderrLog: vi.fn(),
     expectedSocketPaths: vi.fn(),
+	classifyDaemonSocket: vi.fn(),
+	isDaemonSocketReady: vi.fn(),
+	readHarnessProcessIdentity: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
-vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, unlinkSync: mocks.unlinkSync }));
+vi.mock("node:fs", () => ({
+	existsSync: mocks.existsSync,
+	readFileSync: mocks.readFileSync,
+	unlinkSync: mocks.unlinkSync,
+}));
+vi.mock("../harness/daemon-process-identity.js", () => ({
+	readHarnessProcessIdentity: mocks.readHarnessProcessIdentity,
+}));
 vi.mock("../harness/startup-lock.js", () => ({
     acquireStartupLock: mocks.acquireStartupLock,
     waitForDaemonSocket: mocks.waitForDaemonSocket,
+    touchStartupLockHolder: mocks.touchStartupLockHolder,
+    transferStartupLock: mocks.transferStartupLock,
 }));
 vi.mock("../lib/output.js", () => ({
     getOutputMode: mocks.getOutputMode,
@@ -56,6 +71,10 @@ vi.mock("./harness-process.js", () => ({
     readDaemonStderrLog: mocks.readDaemonStderrLog,
 }));
 vi.mock("./harness-status-helpers.js", () => ({ expectedSocketPaths: mocks.expectedSocketPaths }));
+vi.mock("../harness/session-paths.js", () => ({
+	classifyDaemonSocket: mocks.classifyDaemonSocket,
+	isDaemonSocketReady: mocks.isDaemonSocketReady,
+}));
 
 import {
     buildHarnessSpawnArgs,
@@ -79,6 +98,14 @@ beforeEach(() => {
     mocks.getSocketPath.mockReturnValue("/tmp/harness.sock");
     mocks.getPidPath.mockReturnValue("/tmp/harness.pid");
     mocks.expectedSocketPaths.mockReturnValue(["/tmp/harness.sock"]);
+	mocks.classifyDaemonSocket.mockResolvedValue("absent");
+	mocks.isDaemonSocketReady.mockResolvedValue(true);
+	mocks.readFileSync.mockReturnValue("777");
+	mocks.readHarnessProcessIdentity.mockReturnValue({
+		bootId: "boot",
+		startId: "start",
+	});
+    mocks.transferStartupLock.mockReturnValue(true);
     mocks.openDaemonStderrLog.mockReturnValue(undefined);
     mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 777 });
     mocks.reapOrphanHarnessesVerified.mockResolvedValue(undefined);
@@ -89,7 +116,7 @@ describe("harness lifecycle public contracts", () => {
     // test-contract: public-api — spawn arguments preserve the heap cap, GC switch, cwd, protocol, session, and verbose flag.
     it("builds the exact framed verbose argv", () => {
         expect(buildHarnessSpawnArgs("server.mjs", "/repo", "framed", "session-1", { verbose: true })).toEqual([
-            "--max-old-space-size=2560", "--expose-gc", "server.mjs", "--cwd", "/repo",
+            "--max-old-space-size=1536", "--expose-gc", "server.mjs", "--cwd", "/repo",
             "--protocol", "framed", "--session-id", "session-1", "--verbose",
         ]);
     });
@@ -97,11 +124,12 @@ describe("harness lifecycle public contracts", () => {
     // test-contract: boundary — raw protocol intentionally omits a session selector while retaining the protocol selector.
     it("omits session-id for raw protocol", () => {
         expect(buildHarnessSpawnArgs("server.mjs", "/repo", "raw", "ignored", {})).toEqual([
-            "--max-old-space-size=2560", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "raw",
+            "--max-old-space-size=1536", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "raw",
         ]);
     });
 
-    // test-contract: invariant — only stale socket and pid artifacts are removed; a live harness protects both files.
+	// test-contract: invariant — only stale socket and pid artifacts are removed;
+	// a protocol-ready live harness protects both files.
     it("cleans stale artifacts only when no harness is running", async () => {
         mocks.existsSync.mockReturnValue(true);
         mocks.isHarnessRunning.mockReturnValue({ running: false });
@@ -110,6 +138,7 @@ describe("harness lifecycle public contracts", () => {
         expect(mocks.unlinkSync).toHaveBeenCalledWith("/tmp/harness.pid");
 
         mocks.unlinkSync.mockClear();
+		mocks.classifyDaemonSocket.mockResolvedValue("ready");
         mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 55 });
         await cleanStaleRestartFiles("/repo", { discover: () => [], reap: () => ({ candidates: [], killed: [], dryRun: false }) });
         expect(mocks.unlinkSync).not.toHaveBeenCalled();
@@ -137,8 +166,8 @@ describe("harness lifecycle public contracts", () => {
         expect(mocks.output).toHaveBeenCalledOnce();
     });
 
-    // test-contract: boundary — framed daemons retain a stale socket because that socket is part of the framed protocol contract.
-    it("does not unlink the stale raw socket for framed protocol", async () => {
+    // test-contract: boundary — parent daemonization never unlinks a socket; child-side anti-stomp owns stale cleanup for every protocol.
+    it("does not unlink a socket before framed child startup", async () => {
         const spawned = child();
         mocks.spawn.mockReturnValue(spawned);
         mocks.existsSync.mockReturnValue(true);
@@ -163,7 +192,7 @@ describe("harness lifecycle public contracts", () => {
         mocks.isHarnessRunning.mockReturnValue({ running: true, pid: 202 });
         mocks.output.mockImplementation((_mode, _data, renderers) => renderers.json());
         await inlineJsonRestartStart("/repo", { verbose: true }, "framed", "session-2", 17, "json");
-        expect(mocks.spawn).toHaveBeenCalledWith(process.execPath, ["server.mjs", "--cwd", "/repo", "--protocol", "framed", "--session-id", "session-2", "--verbose"], { stdio: "ignore", detached: true, cwd: "/repo" });
+        expect(mocks.spawn).toHaveBeenCalledWith(process.execPath, ["--max-old-space-size=1536", "--expose-gc", "server.mjs", "--cwd", "/repo", "--protocol", "framed", "--session-id", "session-2", "--verbose"], { stdio: "ignore", detached: true, cwd: "/repo" });
         expect(mocks.spawn.mock.results[0]?.value.unref).toHaveBeenCalledOnce();
         expect(mocks.output.mock.calls.at(-1)?.[1]).toEqual({});
     });

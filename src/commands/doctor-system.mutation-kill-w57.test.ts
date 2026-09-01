@@ -127,35 +127,40 @@ describe("observeCliResolution — fs resolution shape (kills d75a37bb, 8c28b333
 	});
 });
 
-describe("runSystemChecks — orphan-harness ps parsing regex (best-effort attempt)", () => {
-	it("counts only lines with ppid<=1 AND matching command substring", () => {
-		execSyncMock.mockImplementation((cmd: string) => {
-			if (cmd.startsWith("ps ")) {
-				return [
-					"123    1  node /path/interlinked-cli/dist/harness/server.js --verbose",
-					"456    1  some-other-process",
-					"789  999  node /path/interlinked-cli/dist/harness/server.js --verbose",
-					"111    1  node /path/interlinked-cli/dist/harness/server.js --verbose",
-				].join("\n");
-			}
+// The `ps`-parsing cases these replaced drove doctor's PRIVATE orphan scanner,
+// which is deleted: it counted every daemon (re-parented to pid 1 by
+// definition) and disagreed with `harness status`. The count now arrives from
+// the canonical protection-aware sweep, so the surviving contract is how
+// runSystemChecks RENDERS what it is given — including "unavailable".
+describe("runSystemChecks — orphan row rendering", () => {
+	it("renders the supplied count without consulting ps", () => {
+		execSyncMock.mockImplementation(() => {
 			throw new Error("not found");
 		});
 
-		const results = runSystemChecks();
+		const results = runSystemChecks(2);
 		const orphanResult = results.find((r) => r.name === "Orphan harness daemons");
 		expect(orphanResult).toBeDefined();
 		expect(orphanResult?.status).toBe("warn");
 		expect(orphanResult?.message).toContain("2 orphan daemons found");
 	});
 
-	it("reports zero orphans and pass status when ps output is empty", () => {
-		execSyncMock.mockImplementation((cmd: string) => {
-			if (cmd.startsWith("ps ")) return "";
+	it("reports zero orphans and pass status for a count of 0", () => {
+		execSyncMock.mockImplementation(() => {
 			throw new Error("not found");
 		});
-		const results = runSystemChecks();
+		const results = runSystemChecks(0);
 		const orphanResult = results.find((r) => r.name === "Orphan harness daemons");
 		expect(orphanResult?.status).toBe("pass");
 		expect(orphanResult?.message).toBe("0 orphans — auto-reaper working as expected");
+	});
+
+	it("does not turn an unavailable probe into a clean zero", () => {
+		execSyncMock.mockImplementation(() => {
+			throw new Error("not found");
+		});
+		const orphanResult = runSystemChecks(null).find((r) => r.name === "Orphan harness daemons");
+		expect(orphanResult?.status).toBe("warn");
+		expect(orphanResult?.message).toContain("could not determine orphan count");
 	});
 });

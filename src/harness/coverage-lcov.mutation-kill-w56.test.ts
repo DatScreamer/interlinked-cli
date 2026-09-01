@@ -18,7 +18,6 @@ describe("parseLcov — normalizeSourcePath backslash handling (P1: must fire)",
 		expect(Array.from(cov.files.keys())).toEqual(["src/foo.ts"]);
 	});
 });
-
 describe("resolveSfAcc — empty path leaves current file unchanged (P1)", () => {
 	it("drops detail records when SF path is empty and no prior file is current", () => {
 		const cov = parseLcov("SF:\nDA:1,1\nend_of_record\n");
@@ -179,4 +178,3 @@ describe("perFileCoverageFromCanonical — fallback hits from covered>0 (P1)", (
 		expect(result.functions[0]?.hits).toBe(1);
 	});
 });
-

@@ -69,6 +69,8 @@ describe("provider capability catalog", () => {
 			install: true,
 			phase: "permission-request",
 			control: "permission",
+			model_context: false,
+			missing_runtime: "fail_closed",
 		});
 		expect(eventCapability(CLAUDE_CODE_CAPABILITIES, "PostToolUseFailure")).toMatchObject({
 			install: false,

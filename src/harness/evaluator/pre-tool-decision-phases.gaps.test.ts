@@ -10,7 +10,10 @@ vi.mock("../graph-prediction-pre-tool.js", () => ({
 }));
 
 import { CohortManager } from "../cohort.js";
-import { ReservationManager } from "../reservations.js";
+import {
+	type ReservationBatchOptions,
+	ReservationManager,
+} from "../reservations.js";
 import type {
 	GuardRulesConfig,
 	HarnessEvent,
@@ -71,7 +74,13 @@ function makeRules(overrides?: Partial<GuardRulesConfig>): GuardRulesConfig {
 }
 
 function mockReservations(conflict: ReservationConflict | null): ReservationManager {
-	return { checkAndReserve: () => conflict } as unknown as ReservationManager;
+	return {
+		checkAndReserveBatch: ({ filePaths, shouldBlock }: ReservationBatchOptions) => {
+			if (!conflict) return null;
+			const filePath = filePaths[0] ?? "";
+			return shouldBlock(filePath, conflict) ? { filePath, conflict } : null;
+		},
+	} as unknown as ReservationManager;
 }
 
 // ============================================================

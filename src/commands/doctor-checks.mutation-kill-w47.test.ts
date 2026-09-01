@@ -1,7 +1,22 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Node worker threads hold a process-local homedir independently of their
+// thread-local `process.env` copy. Stryker runs Vitest in workers, so mutating
+// HOME inside the test would otherwise leave `os.homedir()` pointed at the real
+// user directory. Model the CLI's environment lookup explicitly while keeping
+// tmpdir and every other os API real.
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>();
+	const homedir = (): string => process.env.HOME ?? actual.homedir();
+	return {
+		...actual,
+		homedir,
+		default: { ...actual, homedir },
+	};
+});
 import { HOOK_SCRIPT_VERSION } from "../lib/hooks.js";
 import {
 	authTokenCheck,
@@ -165,7 +180,11 @@ describe("clientHookChecks — positive (must fire)", () => {
 		expect(row?.status).toBe("pass");
 	});
 
-	it("P2: Gemini CLI settings.json present with a hook marker -> exact name 'Gemini CLI hooks'", () => {
+	// Row labels now come from the client registry (`clientHookTargets`), which
+	// carries the full product names — doctor no longer restates them, and no
+	// longer restates PATHS either (its hardcoded `.codex/config.toml` was
+	// pointing at the feature-flag file rather than the hook file).
+	it("P2: Gemini CLI settings.json present with a hook marker -> exact name 'Google Gemini CLI hooks'", () => {
 		mkfile(
 			".gemini/settings.json",
 			JSON.stringify({
@@ -177,15 +196,15 @@ describe("clientHookChecks — positive (must fire)", () => {
 			}),
 		);
 		const out = clientHookChecks(cwd);
-		expect(out.map((r) => r.name)).toContain("Gemini CLI hooks");
+		expect(out.map((r) => r.name)).toContain("Google Gemini CLI hooks");
 	});
 
-	it("P3: Codex CLI dir present without config.toml -> exact message 'config.toml not found'", () => {
+	it("P3: Codex CLI dir present without hooks.json -> exact message 'hooks.json not found'", () => {
 		mkdir(".codex");
 		const out = clientHookChecks(cwd);
-		const row = out.find((r) => r.name === "Codex CLI hooks");
+		const row = out.find((r) => r.name === "OpenAI Codex CLI hooks");
 		expect(row?.status).toBe("warn");
-		expect(row?.message).toBe("config.toml not found");
+		expect(row?.message).toBe("hooks.json not found");
 	});
 });
 

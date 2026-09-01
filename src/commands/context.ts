@@ -16,6 +16,7 @@ import {
 	resolveConfig,
 } from "../lib/config.js";
 import { c, header, kvLine } from "../lib/formatter.js";
+import { parseHookSentinel } from "../lib/hook-version.js";
 import { getHookScriptPath, HOOK_SCRIPT_VERSION } from "../lib/hooks.js";
 import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
@@ -219,8 +220,18 @@ export async function contextCommand(options: ContextOptions): Promise<void> {
 		},
 		hooks: {
 			installed_version: hookVersion,
+			// Compare like with like. `installed_version` is the FULL sentinel
+			// baked into the hook (`0.1.0+mode-quality`); comparing it against
+			// the bare package version marked every correct install stale.
+			// `stale` here means VERSION drift (the CLI was upgraded past the
+			// installed hook). Mode drift — a hook baked with another mode's
+			// timeouts — needs the configured mode resolved, which is doctor's
+			// job and reported by its own row; `installed_mode` is surfaced so
+			// this output still shows what was baked.
 			current_version: HOOK_SCRIPT_VERSION,
-			stale: hookVersion !== null && hookVersion !== HOOK_SCRIPT_VERSION,
+			installed_mode: hookVersion === null ? null : parseHookSentinel(hookVersion).mode,
+			stale:
+				hookVersion !== null && parseHookSentinel(hookVersion).version !== HOOK_SCRIPT_VERSION,
 		},
 		clients: {
 			detected: installedClients.map((c) => c.name),

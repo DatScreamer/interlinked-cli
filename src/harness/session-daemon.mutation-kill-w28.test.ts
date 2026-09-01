@@ -98,12 +98,9 @@ function makeEvaluatorContext(): EvaluateUnifiedContext {
 // claimSessionPid
 // ---------------------------------------------------------------------------
 describe("claimSessionPid — mutation kills", () => {
-	// test-contract: kill (mutantId d82479441e5c0780, whole-condition->false;
-	// mutantId f629584712951dd9, return-block->{}) — a live foreign owner must
-	// short-circuit BEFORE any write attempt. Either mutant falls through to the
-	// wx-write attempt instead, which is observable as a nonzero writeFileSync
-	// call count even though the final {claimed:false} value looks the same.
-	it("takes zero write actions when a live foreign owner already holds the pid", () => {
+	// test-contract: security — arbitration may create its companion lock, but
+	// a live foreign owner prevents any replacement file from being authored.
+	it("does not author a PID replacement when a live foreign owner holds the pid", () => {
 		const pidPath = join(tmp, "live-foreign.pid");
 		writeFileSync(pidPath, String(process.pid)); // self — guaranteed alive
 		const writeSpy = vi.mocked(fsMod.writeFileSync);
@@ -111,7 +108,12 @@ describe("claimSessionPid — mutation kills", () => {
 		const foreignClaimant = process.pid === 1 ? 2 : 1;
 		const claim = claimSessionPid(pidPath, foreignClaimant);
 		expect(claim).toEqual({ claimed: false, ownerPid: process.pid });
-		expect(writeSpy).not.toHaveBeenCalled();
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+		expect(writeSpy).toHaveBeenCalledWith(
+			`${pidPath}.claim`,
+			expect.stringContaining(`"pid":${process.pid}`),
+			{ flag: "wx" },
+		);
 	});
 
 	// test-contract: kill (mutantId 90e6fe99049dc35a, `existingPid !== null` ->
@@ -122,20 +124,31 @@ describe("claimSessionPid — mutation kills", () => {
 	// evaluates the remaining clauses and DOES call `process.kill`.
 	it("never probes process liveness when no pid file exists yet", () => {
 		const pidPath = join(tmp, "fresh-claim.pid");
+		const writeSpy = vi.mocked(fsMod.writeFileSync);
+		writeSpy.mockClear();
 		const killSpy = vi.spyOn(process, "kill");
 		const claim = claimSessionPid(pidPath, process.pid);
 		expect(claim).toEqual({ claimed: true });
 		expect(killSpy).not.toHaveBeenCalled();
+		expect(writeSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+		expect(
+			writeSpy.mock.calls.every((call) => {
+				const options = call[2];
+				return (
+					typeof options === "object" &&
+					options !== null &&
+					"flag" in options &&
+					options.flag === "wx"
+				);
+			}),
+		).toBe(true);
+		expect(writeSpy.mock.calls.some((call) => call[0] === pidPath)).toBe(false);
 		killSpy.mockRestore();
 	});
 
-	// test-contract: kill (mutantId 3b7651da03ddea96, `racedPid !== null` ->
-	// true) — force a raced EEXIST on the first wx write (via a mocked
-	// one-shot throw) with no real file ever created, so the re-read
-	// (`racedPid`) is genuinely null. The real `racedPid !== null` clause is
-	// false and short-circuits before `isProcessAlive`; the mutant forces it
-	// true and reaches the `process.kill` probe.
-	it("never probes process liveness on a raced re-check when nothing was actually written", () => {
+	// test-contract: boundary — a reported EEXIST with no durable lock record
+	// is retried as a vanished contender, never interpreted as a live owner.
+	it("never probes process liveness when a raced claim lock vanished", () => {
 		const pidPath = join(tmp, "raced-claim.pid");
 		const writeSpy = vi.mocked(fsMod.writeFileSync);
 		writeSpy.mockClear();
@@ -509,34 +522,23 @@ describe("handle.stop() — mutation kills", () => {
 		clearSpy.mockRestore();
 	});
 
-	// test-contract: kill (mutantId 5dad9008b2cd65e3, `{force:true}` -> `{}`;
-	// mutantId 371860cf9e123d69, the nested `true` -> `false`) — assert the
-	// EXACT rmSync call arguments for pid cleanup in stop().
-	// Note: the original version of this test also asserted an rmSync call
-	// for paths.socket, but Node auto-unlinks a unix-domain-socket file when
-	// its server.close() completes, so by the time stop()'s cleanup loop
-	// runs, existsSync(paths.socket) is genuinely false and rmSync is never
-	// called for it — that second expectation was asserting behavior the
-	// source never produces. Removed; the pid assertion alone still kills
-	// both mutants (wrong args, or the guard forced false so no call at all).
-	it("removes pid and socket via the exact rmSync(path, { force: true }) calls", async () => {
+	// test-contract: public-api — stop releases the PID ownership record; the
+	// helper's own suite pins the successor-preserving conditional unlink.
+	it("removes its owned pid record on stop", async () => {
 		const paths = makePaths("stop-cleanup-args");
 		daemon = await startSessionDaemon({
 			paths,
 			session_id: "stop-cleanup-args",
 			state: { tsgo: makeTsgo(), getEvaluatorContext: makeEvaluatorContext },
 		});
-		const rmSpy = vi.mocked(fsMod.rmSync);
-		rmSpy.mockClear();
 		await daemon.stop();
 		daemon = null;
-		expect(rmSpy).toHaveBeenCalledWith(paths.pid, { force: true });
+		expect(existsSync(paths.pid)).toBe(false);
 	});
 
-	// test-contract: kill (mutantId cbcc2a87eb6eafbc, `existsSync(path)` ->
-	// true) — a path removed externally BEFORE stop() runs must be skipped by
-	// stop()'s cleanup loop (existsSync guard), not re-passed to rmSync.
-	it("skips rmSync for a path that was already removed externally", async () => {
+	// test-contract: boundary — external PID removal before stop remains an
+	// idempotent cleanup case and is never recreated.
+	it("tolerates a pid record removed externally before stop", async () => {
 		const paths = makePaths("stop-skip-missing");
 		daemon = await startSessionDaemon({
 			paths,
@@ -545,11 +547,8 @@ describe("handle.stop() — mutation kills", () => {
 		});
 		rmSync(paths.pid, { force: true });
 		expect(existsSync(paths.pid)).toBe(false);
-		const rmSpy = vi.mocked(fsMod.rmSync);
-		rmSpy.mockClear();
 		await daemon.stop();
 		daemon = null;
-		const calledForPid = rmSpy.mock.calls.some((c) => c[0] === paths.pid);
-		expect(calledForPid).toBe(false);
+		expect(existsSync(paths.pid)).toBe(false);
 	});
 });

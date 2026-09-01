@@ -15,96 +15,49 @@
 // servers, and process lifecycle. `processEvent` builds a `ServerRuntime`
 // context once and delegates each event branch to the extracted pipelines.
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { parseArgs } from "node:util";
-import {
-	autoStripAllScopes,
-	defaultStripAuditLogPath,
-	describeReason as describeMalformedReason,
-} from "../lib/settings-validator.js";
-import { createAsyncAnalysisManager } from "./async-analysis.js";
-import { AsyncFindingQueue } from "./async-finding-queue.js";
-import {
-	type AutoCoordinationState,
-	DEFAULT_AUTO_COORDINATION_CONFIG,
-} from "./auto-coordinate.js";
-import { spawnRestartViaCli, startBuildRefreshWatcher } from "./build-refresh.js";
 import { registerAllBuiltinVerifyPasses } from "./check-pipeline/builtin-verify-passes.js";
 import { astComplexityAvailable } from "./checks/cyclomatic-ast.js";
-import { CohortManager, setActiveCohort } from "./cohort.js";
-import { compileAllowlist } from "./content-scanner/allowlist.js";
-import { createScanner } from "./content-scanner/registry.js";
-import type { ContentScanner } from "./content-scanner/types.js";
-import { makeHeapPressureLedger, recordDaemonEvent, recordDaemonExit } from "./daemon-ledger.js";
-import { ErrorHistory } from "./error-history.js";
-import { resetProjectSetupWarningsCache } from "./evaluator/pre-tool.js";
+import { recordDaemonEvent, recordDaemonExit } from "./daemon-ledger.js";
 import { type FilePriority } from "./file-priority.js";
 import { FileContentCache } from "./grep-accelerator.js";
-import { createLearnedRulesStore } from "./learned-rules.js";
-import { sweepStaleLiveSnapshots } from "./live-snapshot.js";
-import { makeShrinkIdleMemory } from "./server/idle-shrink.js";
-import {
-	type ClassifierSessionState,
-	resolveApiKey,
-} from "./policy-classifier.js";
 import { ProjectGraph } from "./project-graph.js";
-import { ProjectWideSweepState } from "./quality-checks.js";
-import { ReservationManager } from "./reservations.js";
-import { RouteMap } from "./route-map.js";
-import { loadRules, watchRulesFiles } from "./rules-loader.js";
-import { writeActivityRecord, writeGuardDecisionRecord } from "./server/activity-writer.js";
-import { antiStompDepsFor, settleIncumbentAtBind } from "./server/incumbent-check.js";
-import { parseProtocolMode, resolveIdleTimeoutMs, stringArg } from "./server/cli-args.js";
-import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
-import { heapSpaceSummary, installDaemonTimers } from "./server/daemon-timers.js";
+import { loadRules } from "./rules-loader.js";
 import {
-	buildStartupMessage,
-	computeClassifierStatusLine,
-	createProtocolStatus,
-	formatScannerStatusLine,
-	type HarnessProtocolMode,
-	type ProtocolStatusFile,
-} from "./server/protocol-status.js";
+	writeActivityRecord,
+	writeGuardDecisionRecord,
+	writeLifecycleActivityRecord,
+} from "./server/activity-writer.js";
+import { writeCollectionRecord as appendCollectionRecord } from "./server/collection-writer.js";
 import {
 	getGraphForFile as resolveGraphForFile,
 	type ServerRuntime,
 } from "./server/runtime-context.js";
-import { ensureDirectory, removeFileIfExists } from "./server/socket-lifecycle.js";
-import { createStatusWriters } from "./server/status-writers.js";
-import { createServerBridge, type ServerBridge } from "./server-bridge.js";
+import { installEarlyShutdown, readServerCliConfig } from "./server/server-cli-bootstrap.js";
+import { createDaemonState } from "./server/server-daemon-state.js";
+import { activateDaemon } from "./server/server-daemon-activation.js";
 import { createEventLoop } from "./server-event-loop.js";
 import { createSocketLifecycle } from "./server-socket-lifecycle.js";
-import { createStartupGuard, runStartupSelfCheck, startFramedDaemonOrExit } from "./server/startup-guard.js";
-import { daemonPathsFor } from "./session-paths.js";
-import { SessionTracker } from "./session-state.js";
-import { watchSettingsFiles } from "./settings-watcher.js";
-import { readSponsorSettingsFromConfig, startSponsorRuntime } from "./sponsor/runtime.js";
+import { createStartupGuard } from "./server/startup-guard.js";
 import { guardTallySnapshot } from "./guard-tally.js";
 import { writeStatuslineArtifacts } from "./statusline-snapshot.js";
 import { TrigramIndex } from "./trigram-index.js";
-import { createTsgoRunner } from "./tsgo-runner.js";
-import type { GuardRulesConfig, HarnessDecision, HarnessEvent, PreEditBaseline } from "./types.js";
+import type { GuardRulesConfig, HarnessDecision, HarnessEvent } from "./types.js";
 
 // ===========================================
 // CLI Arguments
 // ===========================================
 
-const { values: args } = parseArgs({
-	options: {
-		socket: { type: "string", short: "s" },
-		"pid-file": { type: "string" },
-		"idle-timeout": { type: "string" },
-		cwd: { type: "string" },
-		protocol: { type: "string" },
-		"session-id": { type: "string" },
-		verbose: { type: "boolean", short: "v", default: false },
-	},
-	strict: false,
-});
-
-const CWD = stringArg(args.cwd) || process.cwd();
-const INTERLINKED_DIR = join(CWD, ".interlinked");
+const cliConfig = readServerCliConfig();
+const {
+	cwd: CWD,
+	interlinkedDir: INTERLINKED_DIR,
+	socketPath: SOCKET_PATH,
+	pidPath: PID_PATH,
+	runRawSocket: RUN_RAW_SOCKET,
+	runFramedSocket: RUN_FRAMED_SOCKET,
+	idleTimeoutMs: IDLE_TIMEOUT_MS,
+	verbose: VERBOSE,
+} = cliConfig;
 
 // Register the bundled verify-pass filters (Mythos Phase 3). Module-load
 // side effect: every PostToolUse detector now runs through the second-
@@ -119,60 +72,17 @@ registerAllBuiltinVerifyPasses();
 // before each advisory inline detector pass; cold files (>180 days
 // unchanged) skip the heavier checks entirely.
 let filePriorityMap = new Map<string, FilePriority>();
-const SOCKET_PATH = stringArg(args.socket) || join(INTERLINKED_DIR, "harness.sock");
-const PID_PATH = stringArg(args["pid-file"]) || join(INTERLINKED_DIR, "harness.pid");
-
-// Early SIGTERM/SIGINT handler, installed BEFORE heavy startup work: Node
-// delivers signals on JS turn boundaries, and synchronous module init queues a
-// SIGTERM for seconds (symptom: every `harness restart` fell through to
-// SIGKILL). Minimal handler now; the bottom-of-file code upgrades it to the
-// real graceful `shutdown()` once startup completes.
-let _shutdownReady = false;
-let _shutdownPending = false;
-function _earlyShutdown(): void {
-	if (_shutdownReady) {
-		// Real handler is in place; this branch is unreachable in practice
-		// (process.on rebinds), but defensive against double-binding.
-		return;
-	}
-	_shutdownPending = true;
-	// Best-effort artifact cleanup so the next startup doesn't see a stale
-	// pid file from a daemon that was killed mid-init.
-	removeFileIfExists(PID_PATH);
-	// Hard exit after a short window if the real shutdown never wires up.
-	// 1500 ms covers cold-cache module init (~1s on this repo) but stays
-	// tight enough that the user perceives the shutdown as snappy. Forced
-	// exit isn't graceful, but the daemon hasn't accepted external
-	// connections yet — there's nothing to drain.
-	const t = setTimeout(() => {
-		process.exit(0);
-	}, 1500);
-	t.unref();
-}
-process.on("SIGTERM", _earlyShutdown);
-process.on("SIGINT", _earlyShutdown);
-const PROTOCOL_MODE: HarnessProtocolMode = parseProtocolMode(stringArg(args.protocol));
-const RUN_RAW_SOCKET = PROTOCOL_MODE !== "framed";
-const RUN_FRAMED_SOCKET = PROTOCOL_MODE !== "raw";
+const earlyShutdown = installEarlyShutdown(PID_PATH);
 // Arms the process-level survival handlers (crash-loop fix) with a STARTUP
 // exception: an uncaught error before every socket is bound is fatal, not
 // survivable — surviving it is how a deaf daemon is born (F1, 2026-08-14).
 const startupGuard = createStartupGuard({ cwd: CWD, runRaw: RUN_RAW_SOCKET, runFramed: RUN_FRAMED_SOCKET, logAlways });
-const FRAMED_SESSION_ID = stringArg(args["session-id"]) || process.env.INTERLINKED_SESSION_ID || "default";
-const FRAMED_PATHS = daemonPathsFor(CWD, FRAMED_SESSION_ID);
 // Always-on by default. Per-session Maps (classifierSessions, autoCoordStates,
 // preEditBaselines) drop on SessionEnd, so resident memory stabilizes around
 // ~30 MB per daemon — it doesn't grow with uptime. The original orphan-
 // accumulation concern (many daemons × many CWDs) is handled by the explicit
 // `interlinked harness clean` command, not by an idle timer.
 // Set `--idle-timeout <ms>` to opt back into auto-shutdown if you want it.
-const IDLE_TIMEOUT_DEFAULT_MS = 0;
-const IDLE_TIMEOUT_MS = resolveIdleTimeoutMs(
-	stringArg(args["idle-timeout"]),
-	IDLE_TIMEOUT_DEFAULT_MS,
-);
-const VERBOSE = args.verbose;
-
 /** Milliseconds in one minute — for converting IDLE_TIMEOUT_MS into a human-readable log line. */
 const MS_PER_MINUTE = 60_000;
 
@@ -181,80 +91,31 @@ const MS_PER_MINUTE = 60_000;
 // ===========================================
 
 let rules: GuardRulesConfig = loadRules(CWD);
-const cohort = new CohortManager(); setActiveCohort(cohort); // provider: see cohort.ts
-const sessions = new SessionTracker();
-
-// --- Statusline status-file writers ---
-// One-line marker files the bash statusline polls (classifier readiness,
-// content-scanner lifecycle, pending-review count). Constructed early so the
-// content-scanner block below can write its initial status. See
-// `server/status-writers.ts`.
+const daemonState = createDaemonState({ cli: cliConfig, rules, log, logAlways });
 const {
+	cohort,
+	sessions,
 	writeClassifierStatus,
-	writeScannerStatus,
 	writeReviewPendingMarker,
-} = createStatusWriters(INTERLINKED_DIR);
-
-// --- Async-deferred finding queue ---
-// Holds findings computed off the hook critical path (slow checks);
-// drained into PreToolUse output and cleared on SessionEnd. No enqueuers
-// are wired yet — drain is a no-op until the first async check lands
-// (see docs/plans/08 and async-finding-queue.ts).
-const asyncFindings = new AsyncFindingQueue();
-
-// --- Learned rules (cross-session permission learning) ---
-const learnedRules = createLearnedRulesStore(INTERLINKED_DIR);
-
-// --- Async analysis (background check coalescing) ---
-const asyncAnalysis = createAsyncAnalysisManager(INTERLINKED_DIR);
-
-// --- LLM policy classifier session state ---
-// Per-session classifier state (call count, consecutive failures).
-const classifierSessions = new Map<string, ClassifierSessionState>();
-
-// ML content scanner (OpenAI privacy-filter / gpt-oss-safeguard). Off by default;
-// opt in via `.interlinked/guard-rules.local.json` → `"content_scanner": {"enabled": true}`.
-// Undefined when disabled or misconfigured — both read paths below null-check.
-const contentScanner: ContentScanner | undefined = rules.content_scanner
-	? createScanner(rules.content_scanner)
-	: undefined;
-// Compile the allowlist once at startup so we don't pay regex/string-building
-// cost on every scan. Recompiled on hot-reload (see watchRulesFiles below).
-let compiledAllowlist = compileAllowlist(rules.content_scanner?.allowlist);
-if (contentScanner) {
-	// Visible at startup so agents know the scanner is in-line.
-	logAlways(`Content scanner: enabled (${contentScanner.name} / ${contentScanner.runtime})`);
-	if (contentScanner.onStatusChange) {
-		// Statusline writer — every lifecycle transition (spawn, ready, dormant,
-		// disabled) lands a single-line marker at .interlinked/content-scanner.status.
-		contentScanner.onStatusChange((s) => {
-			writeScannerStatus(formatScannerStatusLine(s));
-		});
-	} else {
-		// HTTP backends don't currently surface state — treat them as running.
-		writeScannerStatus(`ready:${contentScanner.runtime}`);
-	}
-} else {
-	writeScannerStatus("disabled");
-}
-
-// --- Auto-coordination state ---
-const autoCoordStates = new Map<string, AutoCoordinationState>();
-const indexWarningSent = new Set<string>();
-const autoCoordConfig = {
-	...DEFAULT_AUTO_COORDINATION_CONFIG,
-	...(rules.auto_coordination || {}),
-};
-
-// --- Pre-edit baseline cache (diff-aware quality checks) ---
-// Captured on PreToolUse for Edit/Write tools, consumed on PostToolUse.
-const preEditBaselines = new Map<string, PreEditBaseline>();
-const routeMap = new RouteMap(CWD);
-const errorHistory = new ErrorHistory(INTERLINKED_DIR, rules.error_memory);
-
-// --- Project-wide check sweep state ---
-// Tracks edit count and reported findings for debounced cross-file sweeps.
-const projectWideSweepState = new ProjectWideSweepState();
+	asyncFindings,
+	learnedRules,
+	asyncAnalysis,
+	classifierSessions,
+	contentScanner,
+	compiledAllowlist: initialCompiledAllowlist,
+	autoCoordStates,
+	indexWarningSent,
+	autoCoordConfig,
+	preEditBaselines,
+	routeMap,
+	errorHistory,
+	projectWideSweepState,
+	serverBridge,
+	reservations,
+	protocolStatusPath: PROTOCOL_STATUS_PATH,
+	protocolStatus,
+} = daemonState;
+let compiledAllowlist = initialCompiledAllowlist;
 
 // --- Multi-project graph cache ---
 // Lazily creates a ProjectGraph per project root so structural checks work
@@ -329,37 +190,7 @@ if (astComplexityAvailable()) {
 let structureGraph: import("./structure/artifact-graph.js").ArtifactGraph | null = null;
 let structureConfigCache: import("./structure/types.js").StructureConfig | null = null;
 
-// Create server bridge for reservation sync and guard event reporting
-const serverBridge: ServerBridge | null = createServerBridge(CWD);
-if (serverBridge) {
-	log("Server bridge connected");
-} else {
-	log("No server configured — running in local-only mode");
-}
-
-const reservationEventsPath = join(CWD, ".interlinked", "reservation-events.jsonl");
-const reservations = new ReservationManager(
-	serverBridge || undefined,
-	undefined,
-	(event) => {
-		try {
-			const dir = dirname(reservationEventsPath);
-			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-			appendFileSync(reservationEventsPath, `${JSON.stringify(event)}\n`);
-		} catch (_err) {
-			/* intentional: reservation-events is best-effort observability */
-		}
-	},
-);
 let idleTimer: ReturnType<typeof setTimeout>;
-
-const PROTOCOL_STATUS_PATH = join(INTERLINKED_DIR, "harness-protocol.json");
-const protocolStatus: ProtocolStatusFile = createProtocolStatus({
-	protocol: PROTOCOL_MODE,
-	rawSocketPath: RUN_RAW_SOCKET ? SOCKET_PATH : null,
-	framedSocketPath: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
-	framedSessionId: RUN_FRAMED_SOCKET ? FRAMED_SESSION_ID : null,
-});
 
 // ===========================================
 // Logging
@@ -500,6 +331,13 @@ function writeCollectionRecord(event: HarnessEvent, decision?: HarnessDecision):
 	if (decision) writeGuardDecisionRecord(event, decision, CWD);
 }
 
+/** Persist non-tool lifecycle events to the full-fidelity activity stream only.
+ *  The collection schema is tool-only, so lifecycle events must not enter the
+ *  collection dual-write above. */
+function writeLifecycleRecord(event: HarnessEvent, decision?: HarnessDecision): void {
+	writeLifecycleActivityRecord(event, CWD, decision);
+}
+
 // ===========================================
 // Event Processing
 // ===========================================
@@ -521,6 +359,7 @@ const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = cr
 	syncRuntimeIn,
 	syncRuntimeOut,
 	writeCollectionRecord,
+	writeLifecycleActivityRecord: writeLifecycleRecord,
 });
 
 // ===========================================
@@ -540,12 +379,7 @@ const { evaluateEventLine, evaluateUnifiedViaRuntime, writeProtocolStatus } = cr
 // untouched and every caller states its reason at the call site.
 const DAEMON_STARTED_MS = Date.now();
 recordDaemonEvent(CWD, { at: DAEMON_STARTED_MS, pid: process.pid, event: "start" });
-const shutdownWith = (reason: string): void => {
-	recordDaemonExit(CWD, reason, DAEMON_STARTED_MS);
-	shutdown();
-};
-const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, setUnwatchers } =
-	createSocketLifecycle({
+const socketLifecycle = createSocketLifecycle({
 		socketPath: SOCKET_PATH,
 		pidPath: PID_PATH,
 		runRawSocket: RUN_RAW_SOCKET,
@@ -558,244 +392,42 @@ const { cleanupSocket, writePidFile, shutdown, startRawServer, setFramedDaemon, 
 		log,
 		logAlways,
 	});
+const shutdownWith = (reason: string): void => {
+	recordDaemonExit(CWD, reason, DAEMON_STARTED_MS);
+	socketLifecycle.shutdown();
+};
 
 // ===========================================
 // Start Server
 // ===========================================
 
-// Who owns this socket? The verdict comes from a CONNECT, never from the pid
-// table (see server/incumbent-check.ts, which carries the full history): a
-// socket that accepts proves a live incumbent — deferred to, never stomped,
-// never signalled, this process exits 0 as "already running". A socket that
-// refuses proves a corpse whatever the pid file claims: it is unlinked, and a
-// live-but-deaf owner is reaped, before this process binds. That second branch
-// is what ends the "every newcomer exits startup-failed on the same stale
-// socket while nothing serves" deadlock measured 2026-08-15.
-const antiStompDeps = antiStompDepsFor(CWD, logAlways);
-await settleIncumbentAtBind({ socketPath: SOCKET_PATH, pidPath: PID_PATH, cwd: CWD, logAlways });
-
-// Clean up stale raw socket from previous run. Framed startup performs its own
-// PID-aware stale-artifact check before removing `harness-*.sock`.
-if (RUN_RAW_SOCKET) {
-	cleanupSocket();
-	ensureDirectory(SOCKET_PATH);
-}
-writePidFile();
-writeProtocolStatus();
-
-// Sweep orphaned `<id>.live.json` snapshots older than 48h. A session that
-// hasn't sent an event in two days is stale enough that its snapshot is no
-// longer load-bearing — keeping it around just delays GC and clutters
-// `interlinked status`. Live snapshots from sessions still active in the
-// last 48h survive and will hydrate on their next event.
-{
-	const sweep = sweepStaleLiveSnapshots(CWD);
-	if (sweep.removed.length > 0) {
-		log(
-			`Reaped ${sweep.removed.length} stale live snapshot(s) (of ${sweep.scanned} scanned)`,
-		);
-	}
-}
-
-// Watch rules files for hot-reload
-const unwatchRules = watchRulesFiles(CWD, (newRules) => {
-	rules = newRules;
-	serverRuntime.rules = rules;
-	// Update classifier status on config reload
-	writeClassifierStatus(computeClassifierStatusLine(rules));
-	// Update scanner status on config reload. If the user toggled off via
-	// `interlinked scanner off`, the flag flips here; scan paths already
-	// short-circuit on rules.content_scanner?.enabled so no further scans run.
-	// The existing sidecar stays alive until its idle timer fires, which is
-	// fine — it just sits dormant. On toggle-back-on we reuse the live scanner.
-	if (!rules.content_scanner?.enabled) {
-		writeScannerStatus("disabled");
-	} else if (contentScanner?.getStatus) {
-		writeScannerStatus(formatScannerStatusLine(contentScanner.getStatus()));
-	} else if (contentScanner) {
-		writeScannerStatus(`ready:${contentScanner.runtime}`);
-	} else {
-		// Config flipped from disabled→enabled at runtime, but the scanner
-		// was not constructed at startup. Requires a harness restart to pick up.
-		writeScannerStatus("down:needs_restart");
-	}
-	// Recompile the allowlist whenever rules reload — users adding entries
-	// to .interlinked/guard-rules.local.json shouldn't have to restart the
-	// harness for them to take effect on the next scan.
-	compiledAllowlist = compileAllowlist(rules.content_scanner?.allowlist);
-	serverRuntime.compiledAllowlist = compiledAllowlist;
-	// Update auto-coordination config
-	Object.assign(autoCoordConfig, DEFAULT_AUTO_COORDINATION_CONFIG, rules.auto_coordination || {});
-	log(`Rules reloaded: ${rules.rules.length} rules active`);
-	refreshStatuslineSnapshot();
-});
-
-// Live filesystem watcher on .claude/settings*.json (project + user
-// scope). Claude Code's "Always allow" UI writes those files directly
-// without firing a tool hook, so PreToolUse content guards in
-// `evaluator/write-content-guards.ts` can't intercept it. The
-// SessionStart strip above only runs after Claude Code has already
-// printed its "Invalid permission rule" warning to the terminal —
-// closing that gap is what this watcher is for. On change, the
-// debounced strip runs `autoStripAllScopes` so a malformed rule lives
-// on disk for at most ~poll + debounce before being removed.
-const unwatchSettings = watchSettingsFiles({
-	cwd: CWD,
-	onStrip: (stripResult) => {
-		resetProjectSetupWarningsCache();
-		const previews = stripResult.entries.slice(0, 5).map((e) => {
-			const file = e.file.replace(/^.+?(\.claude\/.+)$/, "$1");
-			return `  - ${file} permissions.${e.bucket}[${e.index}] = ${JSON.stringify(e.rule)} (${describeMalformedReason(e.reason)})`;
-		});
-		const more =
-			stripResult.entries.length > previews.length
-				? `\n  ...and ${stripResult.entries.length - previews.length} more`
-				: "";
-		logAlways(
-			`[interlinked] Live-stripped ${stripResult.totalStripped} malformed permission rule(s) from .claude/settings*.json:\n${previews.join("\n")}${more}`,
-		);
+await activateDaemon({
+	cli: cliConfig,
+	state: daemonState,
+	runtime: serverRuntime,
+	socketLifecycle,
+	startupGuard,
+	earlyShutdown,
+	moduleUrl: import.meta.url,
+	getRules: () => rules,
+	setRules: (nextRules) => {
+		rules = nextRules;
 	},
-});
-
-// Hand the watcher disposers to the lifecycle cluster so `shutdownAsync` can
-// stop the rules + settings watchers on teardown. Done immediately after both
-// watchers exist and before the real `shutdown()` is wired to process signals
-// below — matching the prior ordering where `shutdownAsync` closed over these
-// as module `const`s declared above the signal handlers.
-setUnwatchers(unwatchRules, unwatchSettings);
-
-installDaemonTimers({
+	setCompiledAllowlist: (nextAllowlist) => {
+		compiledAllowlist = nextAllowlist;
+	},
+	getLastHookEventAtMs: () => lastHookEventAtMs,
+	getTrigramIndex: () => trigramIndex,
+	getGraphForFile,
+	resetIdleTimer,
 	refreshStatuslineSnapshot,
-	shutdown: () => shutdownWith("rss-ceiling"),
-	// Hand over instead of exiting into a void: a bare exit waits for a
-	// self-heal that never comes between turns. Row lets the exit explain itself.
-	requestHandOver: () => {
-		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "handover", reason: "rss-ceiling" });
-		return spawnRestartViaCli(import.meta.url, CWD);
-	},
-	// Spike attribution: ledger row per >150MB/tick RSS jump (activity-joinable; SIGUSR2 = heap snapshot).
-	onSpike: (rssMb, deltaMb) =>
-		recordDaemonEvent(CWD, { at: Date.now(), pid: process.pid, event: "spike", rss_mb: rssMb, detail: `+${deltaMb}MB in one tick [${heapSpaceSummary()}]` }),
-	onHeapPressure: makeHeapPressureLedger(CWD, logAlways),
-	snapshotDir: INTERLINKED_DIR,
-	// Idle shrink (~5min no events): drop manifest + force GC — not a jetsam target.
-	lastEventAtMs: () => lastHookEventAtMs,
-	// Body lives in server/idle-shrink.ts (this file is over the line cap and
-	// may not grow); also clears the trigram dirty layer (2026-08-22 root cause).
-	shrinkIdleMemory: makeShrinkIdleMemory(() => trigramIndex),
-	log: logAlways,
+	shutdownWith,
+	evaluateEventLine,
+	evaluateUnifiedViaRuntime,
+	writeProtocolStatus,
+	log,
+	logAlways,
 });
-
-// --- Sponsor slot runtime (opt-in; docs/design/sponsor-slots.md) ---
-// Re-reads sponsor settings from config.local.json each tick (hot toggle),
-// fetches + verifies the signed feed OFF the hook path, and writes
-// `.interlinked/sponsor.status` for the bash statusline's row 3. Disabled
-// installs only ever get the one-line disabled marker. Impressions gate on
-// real hook traffic via the activity stamp above.
-const SPONSOR_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
-const sponsorRuntime = startSponsorRuntime({
-	interlinkedDir: INTERLINKED_DIR,
-	readSettings: () => readSponsorSettingsFromConfig(INTERLINKED_DIR),
-	hasRecentActivity: () => Date.now() - lastHookEventAtMs < SPONSOR_ACTIVITY_WINDOW_MS,
-	log: (msg) => log(msg),
-});
-void sponsorRuntime.tick();
-
-// Start idle timer
-resetIdleTimer();
-
-// Periodically check for lost agents (every 2 minutes)
-setInterval(
-	() => {
-		const lost = cohort.detectLostAgents();
-		for (const agent of lost) {
-			log(`Agent lost (no events for 5min): ${agent.name}`);
-			reservations.releaseAllForAgent(agent.name, cohort);
-		}
-	},
-	2 * 60 * 1000,
-);
-
-// Upgrade the early signal handlers to the graceful, reason-recording
-// shutdown. Re-bind FIRST so a signal arriving during this turn lands on the
-// real handler, then honor a flag the early handler may have set.
-process.removeListener("SIGTERM", _earlyShutdown);
-process.removeListener("SIGINT", _earlyShutdown);
-process.on("SIGINT", () => shutdownWith("signal"));
-process.on("SIGTERM", () => shutdownWith("signal"));
-_shutdownReady = true;
-if (_shutdownPending) {
-	logAlways("Shutdown was requested during startup — running graceful path now");
-	shutdown();
-}
-process.on("SIGHUP", () => {
-	// Reload rules on SIGHUP
-	rules = loadRules(CWD);
-	serverRuntime.rules = rules;
-	logAlways(`Rules reloaded via SIGHUP: ${rules.rules.length} rules active`);
-});
-
-const tsgoRunner = createTsgoRunner();
-
-if (RUN_FRAMED_SOCKET) {
-	// Both failure modes (ownership conflict → anti-stomp exit 0; anything
-	// else → loud exit 78 + ledger row) resolve inside the helper. Nothing
-	// rethrows: a throw out of this top-level await is what used to reach
-	// installCrashResilience()'s survive handler and leave a deaf daemon.
-	setFramedDaemon(
-		await startFramedDaemonOrExit(
-			{
-				paths: FRAMED_PATHS,
-				session_id: FRAMED_SESSION_ID,
-				idle_shutdown_ms: IDLE_TIMEOUT_MS,
-				state: {
-					tsgo: tsgoRunner,
-					getEvaluatorContext: () => ({
-						rules,
-						session: sessions.get(FRAMED_SESSION_ID),
-						reservations,
-						cohort,
-						graph: getGraphForFile(CWD),
-						sessions,
-						routeMap,
-						errorHistory,
-					}),
-					evaluateHook: evaluateUnifiedViaRuntime,
-				},
-			},
-			{ cwd: CWD, antiStomp: antiStompDeps, startup: startupGuard },
-		),
-	);
-}
-
-if (RUN_RAW_SOCKET) {
-	startRawServer(startupGuard);
-}
-
-writeProtocolStatus();
-await runStartupSelfCheck({ cwd: CWD, evaluate: evaluateEventLine, log: logAlways, recordEvent: (e) => recordDaemonEvent(CWD, e) });
-logAlways(
-	buildStartupMessage({
-		protocol: PROTOCOL_MODE,
-		rawSocketPath: RUN_RAW_SOCKET ? SOCKET_PATH : null,
-		framedSocketPath: RUN_FRAMED_SOCKET ? FRAMED_PATHS.socket : null,
-		pid: process.pid,
-		ruleCount: rules.rules.length,
-		idleTimeoutMs: IDLE_TIMEOUT_MS,
-		msPerMinute: MS_PER_MINUTE,
-	}),
-);
-
-startBuildRefreshWatcher({ moduleUrl: import.meta.url, cwd: CWD, lastActivityMs: () => lastHookEventAtMs, log: logAlways });
-
-// Write initial classifier status for statusline
-writeClassifierStatus(computeClassifierStatusLine(rules));
-if (rules.policy_classifier?.enabled) {
-	const { provider, model } = rules.policy_classifier;
-	const hasKey =
-		provider === "claude_code" || !!resolveApiKey(rules.policy_classifier.api_key_env);
-	log(`Policy classifier: ${provider}/${model} (${hasKey ? "ready" : "no API key"})`);
-}
 
 // server.ts is a process entry point (shebang above) — it has no public
 // API. Every consumer either spawns `dist/harness/server.js` as a daemon

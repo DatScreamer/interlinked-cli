@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildFeeds, defaultFeedPaths, type FeedPaths, seedMutants } from "./feeds.js";
 import { appendTestEvent, type TestEvent } from "./test-events.js";
@@ -53,7 +54,14 @@ describe("seedMutants", () => {
 describe("buildFeeds", () => {
 	it("exposes one feed per lens on distinct routes", () => {
 		const routes = buildFeeds(paths, 1000).map((f) => f.route);
-		expect(routes).toEqual(["/api/stream", "/api/checks", "/api/tests", "/api/agents", "/api/mutants"]);
+		expect(routes).toEqual([
+			"/api/stream",
+			"/api/checks",
+			"/api/tests",
+			"/api/agents",
+			"/api/mutants",
+			"/api/mutation-runs",
+		]);
 		expect(new Set(routes).size).toBe(routes.length);
 	});
 
@@ -122,5 +130,124 @@ describe("buildFeeds", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+// Review 2026-08-28 item 2: the dashboard must never render a first-sighting
+// adoption as clean. The row-class rule lives inline in mutation-runs.html, so
+// this pin extracts and evaluates the ACTUAL shipped function — a drifted or
+// deleted rowSurvClass fails here, not silently in a browser.
+describe("mutation-runs.html — adoption is never the clean class", () => {
+	interface ShippedRunRow {
+		ts?: string;
+		file: string;
+		source?: unknown;
+		mutants?: unknown;
+		killed?: unknown;
+		survived?: unknown;
+		shards?: unknown;
+		partial?: unknown;
+		outcome?: unknown;
+	}
+
+	interface NormalizedRunRow {
+		ts: string;
+		file: string;
+		source: string;
+		mutants: number;
+		killed: number;
+		survived: number;
+		shards: number | "";
+		partial: boolean;
+		outcome: string | null;
+	}
+
+	function shippedRowFunctions(): {
+		rowSurvClass: (r: { survived?: number; outcome?: string }) => string;
+		normalizeRow: (r: ShippedRunRow) => NormalizedRunRow | null;
+		renderRowHtml: (r: NormalizedRunRow) => string;
+	} {
+		const html = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "web", "mutation-runs.html"),
+			"utf-8",
+		);
+		const start = html.indexOf("const RUN_SOURCES");
+		const end = html.indexOf("function add(", start);
+		if (start < 0 || end < 0) throw new Error("row renderer not found in mutation-runs.html");
+		const source = html.slice(start, end);
+		// SAFETY: the evaluated source is this repo's own shipped page code,
+		// bounded before the DOM/EventSource wiring; the cast names its API.
+		return new Function(
+			`${source}; return { rowSurvClass, normalizeRow, renderRowHtml };`,
+		)() as {
+			rowSurvClass: (r: { survived?: number; outcome?: string }) => string;
+			normalizeRow: (r: ShippedRunRow) => NormalizedRunRow | null;
+			renderRowHtml: (r: NormalizedRunRow) => string;
+		};
+	}
+
+	function shippedRowSurvClass(): (r: { survived?: number; outcome?: string }) => string {
+		return shippedRowFunctions().rowSurvClass;
+	}
+
+	it("P: adoption with ZERO survivors renders the neutral baseline class, never clean", () => {
+		const rowSurvClass = shippedRowSurvClass();
+		expect(rowSurvClass({ survived: 0, outcome: "baseline_adopted" })).toBe("baseline");
+	});
+
+	it("P: only an attested measured_clean row earns the clean class", () => {
+		const rowSurvClass = shippedRowSurvClass();
+		expect(rowSurvClass({ survived: 0, outcome: "measured_clean" })).toBe("clean");
+	});
+
+	it("N: a legacy row with NO outcome is not promoted to clean", () => {
+		const rowSurvClass = shippedRowSurvClass();
+		expect(rowSurvClass({ survived: 0 })).toBe("baseline");
+	});
+
+	it("N: survivors always win, whatever the outcome claims", () => {
+		const rowSurvClass = shippedRowSurvClass();
+		expect(rowSurvClass({ survived: 3, outcome: "measured_clean" })).toBe("surv");
+	});
+
+	it("N: hostile non-numeric fields cannot inject markup through the shipped renderer", () => {
+		const { normalizeRow, renderRowHtml } = shippedRowFunctions();
+		const attack = "</td><img src=x onerror=alert(1)>";
+		const normalized = normalizeRow({
+			ts: attack,
+			file: "src/safe.ts",
+			source: attack,
+			mutants: attack,
+			killed: attack,
+			survived: attack,
+			shards: attack,
+			partial: attack,
+			outcome: attack,
+		});
+		expect(normalized).toEqual({
+			ts: attack,
+			file: "src/safe.ts",
+			source: "unknown",
+			mutants: 0,
+			killed: 0,
+			survived: 0,
+			shards: 0,
+			partial: false,
+			outcome: null,
+		});
+		expect(normalized).not.toBeNull();
+		const rendered = renderRowHtml(normalized!);
+		expect(rendered).not.toContain("<img");
+		expect(rendered).not.toContain("onerror");
+		expect(rendered).not.toContain("alert(1)");
+	});
+
+	it("N: hostile file text is escaped rather than interpreted as a tag", () => {
+		const { normalizeRow, renderRowHtml } = shippedRowFunctions();
+		const normalized = normalizeRow({ file: "<img src=x>", survived: 0 });
+		expect(normalized).not.toBeNull();
+		const rendered = renderRowHtml(normalized!);
+		expect(rendered).toContain("&lt;img src=x&gt;");
+		expect(rendered).not.toContain("<img");
 	});
 });

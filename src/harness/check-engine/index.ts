@@ -4,17 +4,29 @@
 // Single source of truth for running external checks.
 // Two modes: "project" (batch scan) and "file" (incremental).
 
-import { statSync } from "node:fs";
-import { cpus } from "node:os";
 import { extname } from "node:path";
 import { discoverSingleTool, discoverTools, formatToolReport } from "./discovery.js";
+import {
+	clearCheckEngineDiagnosticCache,
+	readDiagnosticCache,
+	writeDiagnosticCache,
+} from "./diagnostic-cache.js";
 import { type DeduplicationResult, deduplicateResults } from "./index-dedup.js";
 import { getToolsForExtension } from "./index-extension-tools.js";
-import { createLimiter } from "./pool.js";
-import { buildConfigToTool, buildToolRegistry } from "./tool-catalog.js";
+import {
+	defaultTimeoutFor,
+	resourceBusyReport,
+	runAsyncTool,
+	toolRunnerFor,
+} from "./index-runtime.js";
+import { tryAcquireProjectHeavyProcessLease } from "../project-heavy-process-lock.js";
 import { runBiomeOverlay } from "./tool-runners/biome.js";
 import { runDepAudit } from "./tool-runners/generic.js";
-import { clearTscOverlayCache, runTscOverlay } from "./tool-runners/tsc-overlay.js";
+import {
+	clearTscOverlayCache,
+	runTscOverlayTyped,
+	type TscOverlayOutcome,
+} from "./tool-runners/tsc-overlay.js";
 import type {
 	AuditResult,
 	CheckOptions,
@@ -24,8 +36,6 @@ import type {
 	ToolAvailability,
 	ToolId,
 	ToolMetrics,
-	ToolRunner,
-	ToolRunnerMeta,
 } from "./types.js";
 
 // Re-export types and utilities for consumers
@@ -40,46 +50,8 @@ export type {
 export type { DeduplicationResult };
 export { deduplicateResults };
 
-// -------------------------------------------
-// Config name mapping (harness ↔ engine)
-// -------------------------------------------
-
-// Derived from the single tool catalog (see tool-catalog.ts).
-const CONFIG_TO_TOOL: Record<string, ToolId> = buildConfigToTool();
-
-export function configNameToToolId(name: string): ToolId | undefined {
-	return CONFIG_TO_TOOL[name];
-}
-
-// -------------------------------------------
-// Tool runner registry
-// -------------------------------------------
-// concurrencySafe: true means the tool only reads files and doesn't mutate
-// project state, so it can run in parallel with other safe tools.
-// Tools that write lock files, caches, or use shared build artifacts
-// (e.g. cargo-check and cargo-clippy share the target/ dir) are unsafe.
-
-const TOOL_REGISTRY: Record<string, ToolRunnerMeta> = buildToolRegistry();
-
-/** Backward-compat lookup: get the runner function for a tool ID. */
-const TOOL_RUNNERS: Record<string, ToolRunner> = Object.fromEntries(
-	Object.entries(TOOL_REGISTRY).map(([id, meta]) => [id, meta.runner]),
-);
-
-// Default timeouts per mode
-const DEFAULT_TIMEOUT_PROJECT = 30_000;
-const DEFAULT_TIMEOUT_FILE = 5_000;
-
-// -------------------------------------------
-// Diagnostic cache (mtime-based)
-// -------------------------------------------
-
-interface DiagnosticCacheEntry {
-	mtimeMs: number;
-	results: CheckResult[];
-}
-
-const diagnosticCache = new Map<string, DiagnosticCacheEntry>();
+export { configNameToToolId } from "./index-runtime.js";
+export { clearCheckEngineDiagnosticCache } from "./diagnostic-cache.js";
 
 // -------------------------------------------
 // CheckEngine
@@ -127,6 +99,34 @@ export class CheckEngine {
 		return false;
 	}
 
+	/** Resolve only explicitly requested tools. A focused PostToolUse check must
+	 * not synchronously version-probe the entire 20+ tool catalog first. */
+	private discoverRequestedTools(ids: readonly ToolId[]): ToolAvailability[] {
+		const requested = new Set(ids);
+		if (this.toolsCache) return this.toolsCache.filter((tool) => requested.has(tool.id));
+
+		const tools: ToolAvailability[] = [];
+		for (const id of requested) {
+			const cached = this.singleToolCache.get(id);
+			if (cached) {
+				tools.push(cached);
+				continue;
+			}
+			const discovered = discoverSingleTool(id, this.projectRoot);
+			if (discovered) {
+				this.singleToolCache.set(id, discovered);
+				tools.push(discovered);
+			}
+		}
+		return tools;
+	}
+
+	private toolsForRun(options?: CheckOptions): ToolAvailability[] {
+		return options?.tools
+			? this.discoverRequestedTools(options.tools)
+			: this.discoverTools();
+	}
+
 	/** Format tool availability as a human-readable report. */
 	formatToolReport(): string {
 		return formatToolReport(this.discoverTools());
@@ -144,10 +144,8 @@ export class CheckEngine {
 	 */
 	runChecks(scope: CheckScope, options?: CheckOptions): CheckReport {
 		const start = Date.now();
-		const available = this.discoverTools();
-		const timeout =
-			options?.timeoutMs ??
-			(scope.mode === "project" ? DEFAULT_TIMEOUT_PROJECT : DEFAULT_TIMEOUT_FILE);
+		const available = this.toolsForRun(options);
+		const timeout = options?.timeoutMs ?? defaultTimeoutFor(scope);
 
 		// Determine which tools to run
 		const toolsToRun = available.filter((t) => {
@@ -162,7 +160,7 @@ export class CheckEngine {
 		const metrics: ToolMetrics[] = [];
 
 		for (const tool of toolsToRun) {
-			const runner = TOOL_RUNNERS[tool.id];
+			const runner = toolRunnerFor(tool.id);
 			if (!runner) continue;
 
 			const toolStart = Date.now();
@@ -196,24 +194,36 @@ export class CheckEngine {
 	}
 
 	/**
-	 * Async variant of runChecks that runs concurrency-safe tools in parallel.
-	 * Sequential-only tools (e.g. cargo-check/clippy that share target/) run
-	 * after the parallel batch completes.
+	 * Async variant of runChecks. Heavy tools run sequentially within one
+	 * project-wide admitted batch so concurrent hook requests — including hooks
+	 * served by other agent processes — cannot multiply compiler/test memory.
 	 *
 	 * Phase A.1 (Free CLI Phase-2): if a tool's meta has a `runnerAsync`
 	 * field, this path uses it for true non-blocking parallelism via
-	 * `child_process.spawn`. Tools that only expose the legacy sync `runner`
-	 * still work — they're wrapped in `Promise.resolve` so the call signature
-	 * is uniform — but they remain event-loop-blocking until they're
-	 * migrated. Concurrency is capped via `createLimiter(cpus - 1)` so a
-	 * 4-core machine doesn't spawn 8 subprocesses at once.
+	 * `child_process.spawn`. A tool with only a legacy sync runner is deferred
+	 * explicitly on this daemon-safe path; callers can run the synchronous CLI
+	 * command instead. One shared non-queueing cross-process project lease
+	 * bounds quality tools, affected tests, and direct audits together.
 	 */
 	async runChecksAsync(scope: CheckScope, options?: CheckOptions): Promise<CheckReport> {
+		const release = options?.admissionAlreadyHeld
+			? undefined
+			: tryAcquireProjectHeavyProcessLease(scope.projectRoot);
+		if (!options?.admissionAlreadyHeld && !release) return resourceBusyReport(options);
+		try {
+			return await this.runChecksAsyncAdmitted(scope, options);
+		} finally {
+			release?.();
+		}
+	}
+
+	private async runChecksAsyncAdmitted(
+		scope: CheckScope,
+		options?: CheckOptions,
+	): Promise<CheckReport> {
 		const start = Date.now();
-		const available = this.discoverTools();
-		const timeout =
-			options?.timeoutMs ??
-			(scope.mode === "project" ? DEFAULT_TIMEOUT_PROJECT : DEFAULT_TIMEOUT_FILE);
+		const available = this.toolsForRun(options);
+		const timeout = options?.timeoutMs ?? defaultTimeoutFor(scope);
 
 		const toolsToRun = available.filter((t) => {
 			if (!t.available) return false;
@@ -224,81 +234,11 @@ export class CheckEngine {
 
 		const toolsSkipped = available.filter((t) => !toolsToRun.some((r) => r.id === t.id));
 
-		// Partition into parallel-safe and sequential groups
-		const parallel: ToolAvailability[] = [];
-		const sequential: ToolAvailability[] = [];
-		for (const tool of toolsToRun) {
-			const meta = TOOL_REGISTRY[tool.id];
-			if (meta?.concurrencySafe) {
-				parallel.push(tool);
-			} else {
-				sequential.push(tool);
-			}
-		}
-
-		const runOne = async (
-			tool: ToolAvailability,
-		): Promise<{ results: CheckResult[]; metric: ToolMetrics }> => {
-			const meta = TOOL_REGISTRY[tool.id];
-			if (!meta) {
-				return {
-					results: [],
-					metric: {
-						tool: tool.id,
-						elapsedMs: 0,
-						findingCount: 0,
-						cacheHit: false,
-					},
-				};
-			}
-			const toolStart = Date.now();
-			let results: CheckResult[] = [];
-			try {
-				// Prefer the async runner when present (Phase A.1 migration);
-				// otherwise wrap the sync runner in Promise.resolve so the call
-				// shape is uniform. When async runners are present, the limiter
-				// caps actual concurrent subprocess count.
-				results = meta.runnerAsync
-					? await meta.runnerAsync({ scope, timeoutMs: timeout })
-					: await Promise.resolve(meta.runner({ scope, timeoutMs: timeout }));
-			} catch (e) {
-				// One runner crash must not abort the batch (Plan A.4 — error
-				// isolation). Metric records 0 findings; caller decides whether
-				// to surface the failure.
-				void e;
-				results = [];
-			}
-			return {
-				results,
-				metric: {
-					tool: tool.id,
-					elapsedMs: Date.now() - toolStart,
-					findingCount: results.length,
-					cacheHit: false,
-				},
-			};
-		};
-
-		// Run concurrency-safe tools in parallel under the limiter. Cap at
-		// `cpus - 1` so the daemon's own work + OS scheduler get one core.
-		// `Promise.allSettled` keeps a single runner crash from aborting
-		// the batch.
-		const parallelLimit = createLimiter(Math.max(1, cpus().length - 1));
-		const parallelSettled = await Promise.allSettled(
-			parallel.map((tool) => parallelLimit(() => runOne(tool))),
-		);
-		const parallelResults: Awaited<ReturnType<typeof runOne>>[] = [];
-		for (const r of parallelSettled) {
-			if (r.status === "fulfilled") parallelResults.push(r.value);
-		}
-
-		// Run sequential tools one at a time
-		const sequentialResults: Awaited<ReturnType<typeof runOne>>[] = [];
-		for (const tool of sequential) {
-			sequentialResults.push(await runOne(tool));
-		}
-
-		const allRuns = [...parallelResults, ...sequentialResults];
+		// One child at a time inside the admitted finite batch. `runOne` catches
+		// runner failures and returns an explicit no-verdict skip, so the loop can
+		// continue without either rejecting the batch or reading a crash as clean.
+		const allRuns: Awaited<ReturnType<typeof runAsyncTool>>[] = [];
+		for (const tool of toolsToRun) allRuns.push(await runAsyncTool(tool, scope, timeout));
 		const allResults = allRuns.flatMap((r) => r.results);
 		const metrics = allRuns.map((r) => r.metric);
 
@@ -309,10 +249,14 @@ export class CheckEngine {
 			reason: t.reason || (t.available ? "skipped by options" : "not installed"),
 			category: t.available ? ("config_disabled" as const) : ("tool_missing" as const),
 		}));
+		skipped.push(...allRuns.flatMap((run) => (run.skipped ? [run.skipped] : [])));
+		const completedToolIds = new Set(
+			allRuns.filter((run) => run.skipped === undefined).map((run) => run.metric.tool),
+		);
 
 		return {
 			results: deduplicated,
-			toolsRun: toolsToRun,
+			toolsRun: toolsToRun.filter((tool) => completedToolIds.has(tool.id)),
 			toolsSkipped,
 			skipped,
 			elapsedMs: Date.now() - start,
@@ -331,7 +275,7 @@ export class CheckEngine {
 
 		return runDepAudit({
 			scope: { projectRoot: this.projectRoot, mode: "project" },
-			timeoutMs: timeoutMs ?? DEFAULT_TIMEOUT_PROJECT,
+			timeoutMs: timeoutMs ?? defaultTimeoutFor({ projectRoot: this.projectRoot, mode: "project" }),
 		});
 	}
 
@@ -342,14 +286,9 @@ export class CheckEngine {
 	 */
 	getDiagnostics(filePath: string): CheckResult[] {
 		// Mtime cache: skip if file hasn't changed
-		try {
-			const mtime = statSync(filePath).mtimeMs;
-			const cached = diagnosticCache.get(filePath);
-			if (cached && cached.mtimeMs === mtime) return cached.results;
-		} catch (_err) {
-			// stat failed (file missing/unreadable) — no diagnostics available
-			return [];
-		}
+		const cached = readDiagnosticCache(filePath);
+		if (cached.status === "hit") return cached.results;
+		if (cached.status === "unavailable") return [];
 
 		const scope: CheckScope = {
 			projectRoot: this.projectRoot,
@@ -366,26 +305,31 @@ export class CheckEngine {
 		for (const toolId of toolsForFile) {
 			const availability = this.isToolAvailable(toolId);
 			if (!availability) continue;
-			const runner = TOOL_RUNNERS[toolId];
+			const runner = toolRunnerFor(toolId);
 			if (!runner) continue;
 			const toolResults = runner({ scope, timeoutMs: 5_000 });
 			results.push(...toolResults);
 		}
 
 		// Update cache
-		try {
-			const mtime = statSync(filePath).mtimeMs;
-			diagnosticCache.set(filePath, { mtimeMs: mtime, results });
-		} catch (_err) {
-			void 0; /* intentional: stat failed — don't cache */
-		}
+		writeDiagnosticCache(filePath, results);
 
 		return results;
 	}
 
+	/**
+	 * Read a still-valid diagnostic cache entry without discovering or running
+	 * any external tool. PreToolUse must stay deterministic and event-loop safe;
+	 * a cache miss is therefore "no advisory context", not permission to spawn.
+	 */
+	getCachedDiagnostics(filePath: string): CheckResult[] {
+		const cached = readDiagnosticCache(filePath);
+		return cached.status === "hit" ? cached.results : [];
+	}
+
 	/** Clear the diagnostic cache (e.g. on session start). */
 	clearCache(): void {
-		diagnosticCache.clear();
+		clearCheckEngineDiagnosticCache();
 	}
 
 	/**
@@ -432,7 +376,22 @@ export class CheckEngine {
 		content: string,
 		siblings?: ReadonlyArray<{ filePath: string; content: string }>,
 	): CheckResult[] {
-		return runTscOverlay({
+		const outcome = this.getTscDiagnosticsForOverlayTyped(filePath, content, siblings);
+		return outcome.status === "ok" ? outcome.findings : [];
+	}
+
+	/**
+	 * Typed variant of `getTscDiagnosticsForOverlay`: "unavailable" means the
+	 * checker never ran (sidecar spawn failure / timeout / cooldown), which is
+	 * NOT the same as "no diagnostics". Transactional consumers (multi-edit,
+	 * verify-changeset) branch on it; the legacy method collapses it to `[]`.
+	 */
+	getTscDiagnosticsForOverlayTyped(
+		filePath: string,
+		content: string,
+		siblings?: ReadonlyArray<{ filePath: string; content: string }>,
+	): TscOverlayOutcome {
+		return runTscOverlayTyped({
 			projectRoot: this.projectRoot,
 			filePath,
 			content,

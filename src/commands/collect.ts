@@ -28,6 +28,27 @@ function reportCollectError(json: boolean | undefined, message: string): void {
 	process.exitCode = 2;
 }
 
+function tryCollectCodexSessions(
+	opts: CollectOpts,
+	cwd: string,
+	sinceMs: number | undefined,
+): ReturnType<typeof collectCodexSessions> | null {
+	try {
+		return collectCodexSessions({
+			cwd,
+			dir: opts.dir ?? codexSessionsDir(),
+			...(sinceMs !== undefined ? { sinceMs } : {}),
+			dryRun: opts.dryRun === true,
+		});
+	} catch (error) {
+		reportCollectError(
+			opts.json,
+			error instanceof Error ? error.message : String(error),
+		);
+		return null;
+	}
+}
+
 export function registerCollectCommand(program: Command): void {
 	program
 		.command("collect")
@@ -61,12 +82,8 @@ export function registerCollectCommand(program: Command): void {
 				}
 			}
 
-			const result = collectCodexSessions({
-				cwd,
-				dir: opts.dir ?? codexSessionsDir(),
-				...(sinceMs !== undefined ? { sinceMs } : {}),
-				dryRun: opts.dryRun === true,
-			});
+			const result = tryCollectCodexSessions(opts, cwd, sinceMs);
+			if (result === null) return;
 
 			if (opts.json) {
 				console.log(JSON.stringify({ ok: true, provider, dryRun: opts.dryRun === true, ...result }));

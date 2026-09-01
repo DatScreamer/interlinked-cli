@@ -119,8 +119,10 @@ export interface MeasureRecordSummary {
 	after?: { mutants: number; survivors: number };
 }
 
-/** Attempt the record step, iff `--record` was passed AND the run actually
- *  measured cleanly. A `not_measurable`/`error`/`busy` outcome carries no
+/** Attempt the record step, iff `--record` was passed AND the run produced a
+ *  complete, conclusive report. The report may contain survivors: recording
+ *  persists comparison state and never certifies the file as clean. A
+ *  `partial`/`not_measurable`/`error`/`busy` outcome carries no
  *  `rawReport` (measure.ts never sets one for those), so this branch cannot
  *  reach the write path with anything but a real, complete report. */
 export async function maybeRecordMeasurement(args: {
@@ -139,17 +141,32 @@ export async function maybeRecordMeasurement(args: {
 			reason: `run was ${args.outcome.status}${args.outcome.reason ? ` (${args.outcome.reason})` : ""} — nothing to record`,
 		};
 	}
-	const { emptyManifest, loadManifest, saveManifest } = await import("../harness/mutation/manifest.js");
+	const { emptyManifest, loadManifestState, saveManifest } = await import(
+		"../harness/mutation/manifest.js"
+	);
 	const { recordMeasurement } = await import("../harness/mutation/measure.js");
+	// Review 2026-08-28 (second pass, finding 3): the tri-state contract binds
+	// EVERY mutation-state writer, not only the PreToolUse gate. The old
+	// `loadManifest(...) ?? emptyManifest(...)` treated a CORRUPT manifest as
+	// missing, so a manual `mutation measure --record` could replace damaged
+	// history with a fresh floor — the exact ratchet reset the gate refuses.
+	const manifestState = loadManifestState(args.configDir);
+	if (manifestState.kind === "corrupt") {
+		return {
+			recorded: false,
+			reason: `mutation manifest is corrupt (${manifestState.detail}) — refusing to record over damaged history; the file is preserved at ${args.configDir}/mutation-manifest.json for recovery`,
+		};
+	}
 	const base =
-		loadManifest(args.configDir) ??
-		emptyManifest({
-			engine: "stryker",
-			engineVersion: "unknown",
-			dependencyGraphVersion: "1",
-			environmentHash: "cli-measure",
-			authoritativeAt: new Date().toISOString(),
-		});
+		manifestState.kind === "valid"
+			? manifestState.manifest
+			: emptyManifest({
+					engine: "stryker",
+					engineVersion: "unknown",
+					dependencyGraphVersion: "1",
+					environmentHash: "cli-measure",
+					authoritativeAt: new Date().toISOString(),
+				});
 	const rec = recordMeasurement({
 		base,
 		file: args.key,
@@ -163,11 +180,13 @@ export async function maybeRecordMeasurement(args: {
 	// persister (manifest.ts); this command never touches mutation-manifest.json
 	// through any other path.
 	//
-	// The survivors-index sidecar is written in the SAME operation, immediately
-	// after, so it can never be stale relative to the manifest on disk (see
-	// harness/mutation/survivors-index.ts's freshness contract). The daemon reads
-	// only the sidecar; a persist that skipped it would silently freeze every
-	// Stop-time consumer at the previous generation.
+	// The survivors-index sidecar is written in the same CALL, immediately
+	// after — NOT the same transaction (review 2026-08-28): two sequential
+	// writes with no atomicity, so a crash between them leaves the sidecar
+	// stale relative to the manifest until the SQLite journal lands. On the
+	// happy path no persist skips it — the daemon reads only the sidecar, and
+	// skipping it would silently freeze every Stop-time consumer at the
+	// previous generation.
 	if (rec.recorded && rec.manifest) {
 		const { writeSurvivorsIndex } = await import("../harness/mutation/survivors-index.js");
 		saveManifest(args.configDir, rec.manifest);
@@ -233,7 +252,7 @@ export interface MeasureOneArgs {
  * Every way one file's measurement can end.
  *
  * `unreadable`, `no_runner` and `red_suite` are the caller's own refusals and
- * stay DISTINCT from the runner's four outcomes — a sweep that reported them as
+ * stay DISTINCT from the runner's five outcomes — a sweep that reported them as
  * `error` would blame the runner for a local misconfiguration, and a sweep that
  * reported them as `not_measurable` would claim the file has no tests.
  */
@@ -265,10 +284,65 @@ async function resolveEndpoints(
 	return configuredRunnerEndpoints(args.cwd, readDisk);
 }
 
-export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneResult> {
-	const { buildScopedMeasureOverlays, measureFile, readDiskSafe } = await import("../harness/mutation/measure.js");
-	const { normalizeManifestKey } = await import("../harness/mutation/manifest.js");
+function networkMeasure(
+	measureFile: typeof import("../harness/mutation/measure.js").measureFile,
+): MeasureFn {
+	return (args) =>
+		measureFile({
+			file: args.file,
+			content: args.content,
+			overlays: args.overlays,
+			endpoints: args.endpoints,
+			fetchImpl: (url, init) => fetch(url, { ...init, signal: init.signal }),
+			...(args.token !== undefined ? { token: args.token } : {}),
+			...(args.deadlineMs !== undefined ? { deadlineMs: args.deadlineMs } : {}),
+			...(args.testScope !== undefined ? { testScope: args.testScope } : {}),
+		});
+}
+
+type PreparedMeasurement =
+	| { kind: "refused"; result: MeasureOneResult }
+	| {
+			kind: "ready";
+			scope: MutationTestScopeResult;
+			tests: string[];
+			overlays: Array<{ path: string; content: string }>;
+			notes: string[];
+	  };
+
+async function prepareMeasurement(input: {
+	request: MeasureOneArgs;
+	key: string;
+	content: string;
+	readDisk: (path: string) => string | null;
+	runnerCount: number;
+}): Promise<PreparedMeasurement> {
+	const { request: args, key, content, readDisk, runnerCount } = input;
+	const { resolve } = await import("node:path");
+	const { buildScopedMeasureOverlays } = await import("../harness/mutation/measure.js");
+	const { configuredMaxTestScope } = await import("../harness/mutation/runner-endpoints.js");
 	const { computeMutationTestScopeForRepo } = await import("../harness/mutation/test-scope.js");
+	const maxScope = configuredMaxTestScope(args.cwd, readDisk);
+	const scope = computeMutationTestScopeForRepo({
+		editedRelPath: key,
+		projectRoot: args.cwd,
+		...(maxScope !== undefined ? { maxScope } : {}),
+	});
+	const tests = scope.tests ?? scope.companionScope ?? [];
+	const scoped = buildScopedMeasureOverlays(key, content, (path) => readDisk(resolve(args.cwd, path)), tests);
+	const notes = overlayNotes({ key, scope, scoped, runnerCount });
+	for (const note of notes) args.onNote?.(note);
+	if (args.skipPreflight !== true) {
+		const run = args.preflight ?? preflightScopedSuite;
+		const red = await run({ tests, cwd: args.cwd, quiet: args.quiet === true });
+		if (red !== null) return { kind: "refused", result: { ...refusal(key, "red_suite", red), notes } };
+	}
+	return { kind: "ready", scope, tests, overlays: scoped.overlays, notes };
+}
+
+export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneResult> {
+	const { measureFile, readDiskSafe } = await import("../harness/mutation/measure.js");
+	const { normalizeManifestKey } = await import("../harness/mutation/manifest.js");
 	const { resolve } = await import("node:path");
 
 	const key = normalizeManifestKey(args.file, args.cwd);
@@ -284,57 +358,26 @@ export async function measureOneFile(args: MeasureOneArgs): Promise<MeasureOneRe
 		);
 	}
 
-	// Reverse-import-graph test selection, not the runner's filename-glob guess:
-	// a hub file's real tests are often not named after it. Computed BEFORE the
-	// overlay set so the overlays can close over every test the runner loads.
-	const { configuredMaxTestScope } = await import("../harness/mutation/runner-endpoints.js");
-	const maxScope = configuredMaxTestScope(args.cwd, readDiskSafe);
-	const scope = computeMutationTestScopeForRepo({
-		editedRelPath: key,
-		projectRoot: args.cwd,
-		...(maxScope !== undefined ? { maxScope } : {}),
+	const prepared = await prepareMeasurement({
+		request: args,
+		key,
+		content,
+		readDisk: readDiskSafe,
+		runnerCount: endpointCfg.endpoints.length,
 	});
-	// The full graph scope when it fit; else, on an over-cap decline, the target's
-	// own companion kill tests (test-scope.ts::companionScope) — never `[]` when a
-	// companion exists, so an over-cap file still ships `<base>.mutation-kill.test.ts`
-	// in both the overlay closure below and the runner `testScope` sent later,
-	// instead of collapsing to the runner's lossy four-stem filename glob.
-	const scopeTests = scope.tests ?? scope.companionScope ?? [];
-	const scoped = buildScopedMeasureOverlays(key, content, (p) => readDiskSafe(resolve(args.cwd, p)), scopeTests);
-	const notes = overlayNotes({ key, scope, scoped, runnerCount: endpointCfg.endpoints.length });
-	// Emitted BEFORE the run, not returned after it: these lines exist to tell an
-	// operator what a multi-minute run is about to do, and a note delivered on
-	// completion answers a question nobody still has.
-	for (const note of notes) args.onNote?.(note);
-
-	if (args.skipPreflight !== true) {
-		const run = args.preflight ?? preflightScopedSuite;
-		const red = await run({ tests: scopeTests, cwd: args.cwd, quiet: args.quiet === true });
-		if (red !== null) return { ...refusal(key, "red_suite", red), notes };
-	}
+	if (prepared.kind === "refused") return prepared.result;
+	const { scope, tests: scopeTests, overlays, notes } = prepared;
 
 	// The default carries the real `fetch`; an injected `measure` is the test seam
 	// and must never be handed a live network implementation it did not ask for.
 	// Optional keys are re-spread rather than forwarded, because the repo runs
 	// `exactOptionalPropertyTypes` — an explicit `token: undefined` is a type
 	// error, not a synonym for "absent".
-	const measure: MeasureFn =
-		args.measure ??
-		((a) =>
-			measureFile({
-				file: a.file,
-				content: a.content,
-				overlays: a.overlays,
-				endpoints: a.endpoints,
-				fetchImpl: (url, init) => fetch(url, init),
-				...(a.token !== undefined ? { token: a.token } : {}),
-				...(a.deadlineMs !== undefined ? { deadlineMs: a.deadlineMs } : {}),
-				...(a.testScope !== undefined ? { testScope: a.testScope } : {}),
-			}));
+	const measure = args.measure ?? networkMeasure(measureFile);
 	const outcome = await measure({
 		file: key,
 		content,
-		overlays: scoped.overlays,
+		overlays,
 		endpoints: endpointCfg.endpoints,
 		...(endpointCfg.token !== undefined ? { token: endpointCfg.token } : {}),
 		...(args.budgetMs !== undefined && Number.isFinite(args.budgetMs) ? { deadlineMs: args.budgetMs } : {}),
@@ -412,6 +455,14 @@ function renderSurvivorLines(survivors: SurvivorEntry[]): string[] {
 }
 
 function renderMeasureOutcome(outcome: MeasureOutcome): string[] {
+	if (outcome.status === "partial") {
+		return [
+			c.yellow(`  PARTIAL — NOT RECORDED: ${outcome.reason ?? "incomplete evidence"}`),
+			kvLine("Parsed mutants", String(outcome.mutantCount)),
+			kvLine("Parsed survivors", String(outcome.survivorCount)),
+			...renderSurvivorLines(outcome.survivors),
+		];
+	}
 	if (outcome.status === "not_measurable") {
 		return [c.yellow(`  NOT MEASURABLE: ${outcome.reason ?? "unknown reason"}`)];
 	}

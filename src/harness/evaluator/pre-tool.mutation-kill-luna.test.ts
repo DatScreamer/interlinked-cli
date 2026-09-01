@@ -3,7 +3,12 @@ import { CohortManager } from "../cohort.js";
 import { ReservationManager } from "../reservations.js";
 import { getDefaultConfig } from "../rules-loader.js";
 
-const nullPhase = (): HarnessDecision | null => null;
+// vi.hoisted so the value exists before the hoisted vi.mock factories run —
+// a plain top-level const is still in its TDZ when the SUT's imports trigger
+// the factories (the collection failure this suite shipped with).
+const { nullPhase } = vi.hoisted(() => ({
+	nullPhase: (): null => null,
+}));
 
 vi.mock("../../event-dedup.js", () => ({ recordDeliveryForShadow: vi.fn() }));
 vi.mock("./edit-contract-phase.js", () => ({ evaluateEditContractPhase: vi.fn(nullPhase) }));

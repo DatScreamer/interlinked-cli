@@ -1,8 +1,19 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { backfillTimeline, collectTranscriptRecords, transcriptDir } from "./timeline-backfill.js";
+import {
+	MAX_TIMELINE_REWRITE_BYTES,
+	TimelineRewriteConflictError,
+} from "./timeline-writer.js";
 
 function line(obj: Record<string, unknown>): string {
 	return JSON.stringify(obj);
@@ -80,5 +91,18 @@ describe("timeline-backfill", () => {
 		expect(result.transcripts).toBe(0);
 		expect(result.records).toBe(0);
 		rmSync(empty, { recursive: true, force: true });
+	});
+
+	it("refuses an over-limit sparse transcript before reading it into memory", () => {
+		const dir = transcriptDir(cwd, home);
+		rmSync(dir, { recursive: true, force: true });
+		mkdirSync(dir, { recursive: true });
+		const huge = join(dir, "sess-huge.jsonl");
+		writeFileSync(huge, "{}\n");
+		truncateSync(huge, MAX_TIMELINE_REWRITE_BYTES + 1);
+
+		expect(() => collectTranscriptRecords(cwd, home)).toThrow(
+			TimelineRewriteConflictError,
+		);
 	});
 });

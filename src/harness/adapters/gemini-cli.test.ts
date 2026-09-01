@@ -95,6 +95,14 @@ describe("Gemini CLI encodeDecision", () => {
 		const out = adapter.encodeDecision({ decision: "allow" }, event);
 		expect(out.stderr).toBeUndefined();
 	});
+	it("uses the minimal valid JSON no-op for a clean AfterTool result", () => {
+		const afterTool = adapter.parseHookInput(
+			{ session_id: "g", tool_name: "read_file", tool_input: {}, tool_response: {} },
+			"AfterTool",
+		);
+		const out = adapter.encodeDecision({ decision: "allow" }, afterTool);
+		expect(out).toEqual({ stdout: "{}", stderr: undefined, exit_code: 0 });
+	});
 });
 
 describe("Gemini CLI classifyToolClass", () => {

@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://interlinked.quentincody.dev/protocol/mutation-v3/envelope.schema.json",
+  "title": "Interlinked mutation protocol v3 — terminal result envelope",
+  "description": "The six-kind discriminated terminal result envelope. Cross-field invariants enforced by the reference parser/verifier (parse.ts / verify.ts) beyond this schema: census.generated === census.executable + census.approved_excluded; mutants.length === census.executable with unique ids; excluded.length === census.approved_excluded with ids disjoint from mutants; mutation_result requires generated >= 1, engine.exit_code === 0, test_run.executed_test_count >= 1, overlay_green === true; suite_red requires overlay_green === false and census/excluded/mutants travel together or not at all; not_mutatable requires generated === 0 && executable === 0, exit 0, overlay green, executed >= 1 or a no_test_policy; execution_failed with evidence_completeness 'none' forbids evidence blocks, 'partial' requires an execution receipt and at least one block; evidence kinds require the execution arm (with attempt_id); exactly one of execution_receipt_hash/terminalization_record_hash; attempt_id present iff the execution arm; the result signer key id equals the verified execution-receipt signer on the execution arm or the verified terminalization signer on the control arm; test_files carry no duplicates; report.bytes >= 1.",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "imageDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?(Z|[+-]\\d{2}:\\d{2})$" },
+    "boundedString": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "repoPath": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*//)[^\\\\]+$" },
+    "mutantStatus": { "enum": ["killed", "survived", "timeout", "uncovered", "indeterminate"] },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant", "project", "repository", "commit", "target_file", "target_content_hash", "job_key"],
+      "properties": {
+        "tenant": { "$ref": "#/$defs/boundedString" },
+        "project": { "$ref": "#/$defs/boundedString" },
+        "repository": { "$ref": "#/$defs/boundedString" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "target_file": { "$ref": "#/$defs/repoPath" },
+        "target_content_hash": { "$ref": "#/$defs/sha256" },
+        "job_key": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "test_files", "incremental", "mutation_scope"],
+      "properties": {
+        "mode": { "enum": ["import_graph", "companion_fallback", "glob_fallback"] },
+        "test_files": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/repoPath" } },
+        "incremental": { "const": false },
+        "mutation_scope": { "const": "whole_file" }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "config_hash", "exit_code"],
+      "properties": {
+        "name": { "$ref": "#/$defs/boundedString" },
+        "version": { "$ref": "#/$defs/boundedString" },
+        "config_hash": { "$ref": "#/$defs/sha256" },
+        "exit_code": { "type": "integer" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "image_digest"],
+      "properties": {
+        "build": { "$ref": "#/$defs/boundedString" },
+        "image_digest": { "$ref": "#/$defs/imageDigest" }
+      }
+    },
+    "census": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated", "executable", "approved_excluded"],
+      "properties": {
+        "generated": { "type": "integer", "minimum": 0 },
+        "executable": { "type": "integer", "minimum": 0 },
+        "approved_excluded": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "excludedRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "site_id", "symbol_id", "qualified_name", "symbol_context", "mutator", "original_lexeme", "replacement", "start_offset", "ordinal_within_symbol", "policy_id"],
+      "properties": {
+        "mutant_id": { "$ref": "#/$defs/sha256" },
+        "site_id": { "$ref": "#/$defs/sha256" },
+        "symbol_id": { "$ref": "#/$defs/sha256" },
+        "qualified_name": { "$ref": "#/$defs/boundedString" },
+        "symbol_context": { "$ref": "#/$defs/boundedString" },
+        "mutator": { "$ref": "#/$defs/boundedString" },
+        "original_lexeme": { "type": "string", "maxLength": 512 },
+        "replacement": { "type": "string", "maxLength": 512 },
+        "start_offset": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Zero-based UTF-16 code-unit offset (JavaScript string index) in the hash-bound target content." },
+        "ordinal_within_symbol": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "policy_id": { "type": "string", "pattern": "^policy-[a-z0-9][a-z0-9-]{1,62}$" }
+      }
+    },
+    "mutantRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "site_id", "symbol_id", "qualified_name", "symbol_context", "mutator", "original_lexeme", "replacement", "start_offset", "ordinal_within_symbol", "status"],
+      "properties": {
+        "mutant_id": { "$ref": "#/$defs/sha256" },
+        "site_id": { "$ref": "#/$defs/sha256" },
+        "symbol_id": { "$ref": "#/$defs/sha256" },
+        "qualified_name": { "$ref": "#/$defs/boundedString" },
+        "symbol_context": { "$ref": "#/$defs/boundedString" },
+        "mutator": { "$ref": "#/$defs/boundedString" },
+        "original_lexeme": { "type": "string", "maxLength": 512 },
+        "replacement": { "type": "string", "maxLength": 512 },
+        "start_offset": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Zero-based UTF-16 code-unit offset (JavaScript string index) in the hash-bound target content." },
+        "ordinal_within_symbol": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "status": { "$ref": "#/$defs/mutantStatus" }
+      }
+    },
+    "testRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executed_test_count", "overlay_green", "red_witness_satisfied", "command_hash", "runner_name", "runner_version"],
+      "properties": {
+        "executed_test_count": { "type": "integer", "minimum": 0 },
+        "overlay_green": { "type": "boolean" },
+        "red_witness_satisfied": { "type": ["boolean", "null"] },
+        "command_hash": { "$ref": "#/$defs/sha256" },
+        "runner_name": { "$ref": "#/$defs/boundedString" },
+        "runner_version": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r2_sha256", "bytes", "content_hash"],
+      "properties": {
+        "r2_sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+        "content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "value"],
+      "properties": {
+        "key_id": { "$ref": "#/$defs/boundedString" },
+        "value": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "common": {
+      "type": "object",
+      "required": ["protocol_version", "kind", "job", "acceptance_receipt_hash", "result_hash", "signature", "seq", "occurred_at"],
+      "properties": {
+        "protocol_version": { "const": "interlinked-mutation/3.0" },
+        "job": { "$ref": "#/$defs/job" },
+        "acceptance_receipt_hash": { "$ref": "#/$defs/sha256" },
+        "execution_receipt_hash": { "$ref": "#/$defs/sha256" },
+        "terminalization_record_hash": { "$ref": "#/$defs/sha256" },
+        "attempt_id": { "$ref": "#/$defs/boundedString" },
+        "result_hash": { "$ref": "#/$defs/sha256" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "seq": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "occurred_at": { "$ref": "#/$defs/rfc3339" }
+      }
+    }
+  },
+  "unevaluatedProperties": false,
+  "allOf": [
+    { "$ref": "#/$defs/common" },
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "mutation_result" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "engine": { "$ref": "#/$defs/engine" },
+            "runner": { "$ref": "#/$defs/runner" },
+            "census": { "$ref": "#/$defs/census" },
+            "excluded": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/excludedRow" } },
+            "mutants": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/mutantRow" } },
+            "identity_algorithm": { "const": "interlinked-site-v2" },
+            "test_run": { "$ref": "#/$defs/testRun" },
+            "report": { "$ref": "#/$defs/report" }
+          },
+          "required": ["kind", "scope", "engine", "runner", "census", "excluded", "mutants", "identity_algorithm", "test_run", "report", "execution_receipt_hash", "attempt_id"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "suite_red" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "engine": { "$ref": "#/$defs/engine" },
+            "runner": { "$ref": "#/$defs/runner" },
+            "test_run": { "$ref": "#/$defs/testRun" },
+            "census": { "$ref": "#/$defs/census" },
+            "excluded": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/excludedRow" } },
+            "mutants": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/mutantRow" } },
+            "identity_algorithm": { "const": "interlinked-site-v2" }
+          },
+          "required": ["kind", "scope", "engine", "runner", "test_run", "execution_receipt_hash", "attempt_id"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "not_mutatable" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "engine": { "$ref": "#/$defs/engine" },
+            "runner": { "$ref": "#/$defs/runner" },
+            "census": { "$ref": "#/$defs/census" },
+            "test_run": { "$ref": "#/$defs/testRun" },
+            "report": { "$ref": "#/$defs/report" },
+            "no_test_policy": { "type": "string", "pattern": "^policy-[a-z0-9][a-z0-9-]{1,62}$" }
+          },
+          "required": ["kind", "scope", "engine", "runner", "census", "test_run", "report", "execution_receipt_hash", "attempt_id"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "execution_failed" },
+            "failure_classification": { "$ref": "#/$defs/boundedString" },
+            "evidence_completeness": { "enum": ["none", "partial"] },
+            "scope": { "$ref": "#/$defs/scope" },
+            "engine": { "$ref": "#/$defs/engine" },
+            "runner": { "$ref": "#/$defs/runner" },
+            "census": { "$ref": "#/$defs/census" },
+            "excluded": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/excludedRow" } },
+            "mutants": { "type": "array", "maxItems": 65536, "items": { "$ref": "#/$defs/mutantRow" } },
+            "identity_algorithm": { "const": "interlinked-site-v2" },
+            "test_run": { "$ref": "#/$defs/testRun" }
+          },
+          "required": ["kind", "failure_classification", "evidence_completeness"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "cancelled" },
+            "cancellation_reason": { "$ref": "#/$defs/boundedString" }
+          },
+          "required": ["kind", "cancellation_reason"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "expired" },
+            "expiry_reason": { "$ref": "#/$defs/boundedString" }
+          },
+          "required": ["kind", "expiry_reason"]
+        }
+      ]
+    }
+  ]
+}

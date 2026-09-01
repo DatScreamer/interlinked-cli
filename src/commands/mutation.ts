@@ -272,10 +272,18 @@ export async function mutationAcceptCommand(opts: MutationAcceptOptions): Promis
 		return;
 	}
 
-	const { loadManifest } = await import("../harness/mutation/manifest.js");
+	const { corruptManifestMessage, loadManifestState } = await import("../harness/mutation/manifest.js");
 	const { findMutantRecord } = await import("../harness/mutation/accept.js");
 
-	const base = loadManifest(configDir);
+	const state = loadManifestState(configDir);
+	if (state.kind === "corrupt") {
+		// Corrupt ≠ missing (Grok 2026-08-28 issue 19): steering a user with a
+		// damaged manifest toward "measure first" hits the refuse path anyway.
+		outputError(mode, corruptManifestMessage(configDir, state.detail));
+		process.exitCode = 1;
+		return;
+	}
+	const base = state.kind === "valid" ? state.manifest : null;
 	if (!base) {
 		outputError(
 			mode,

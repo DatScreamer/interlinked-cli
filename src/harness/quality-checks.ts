@@ -87,6 +87,13 @@ export interface QualityCheckOptions {
 	 *  per-tool breakdown into latency.jsonl. The caller owns the array
 	 *  (passes it pre-allocated, reads it after the await). */
 	outToolMetrics?: ToolBreakdownEntry[];
+	/** Out-parameter populated only for configured checks that completed with a
+	 *  real verdict. A skipped/deferred/thrown check remains absent. */
+	outChecksRan?: string[];
+	/** Multi-file PostToolUse runs external command/named-heavy checks through
+	 * one request-owned ChangeSet batch. Keep the cheap per-file loop active
+	 * while suppressing duplicate subprocess launches here. */
+	skipMultiFileExternalChecks?: boolean;
 	/** Mythos Phase 4 — per-file priority map populated at
 	 *  SessionStart in the daemon. When provided, advisory inline
 	 *  detectors skip files whose tier is "cold" (>180 days since
@@ -111,6 +118,62 @@ export interface QualityCheckOptions {
 	editedFileInRepo?: boolean;
 }
 
+interface QualityCheckTarget {
+	filePath: string;
+	absPath: string;
+	testBaseName: string;
+}
+
+function resolveQualityCheckTarget(event: HarnessEvent, cwd: string): QualityCheckTarget | null {
+	const input = event.tool_input;
+	const explicitFile = input?.file_path;
+	const fallbackPath = input?.path;
+	const filePath =
+		typeof explicitFile === "string" && explicitFile.length > 0
+			? explicitFile
+			: typeof fallbackPath === "string"
+				? fallbackPath
+				: "";
+	if (!filePath) return null;
+	const normalized = filePath.replace(/\\/g, "/");
+	if (["/node_modules/", "/dist/", "/vendor/", "/.next/", "/build/"].some((part) => normalized.includes(part))) {
+		return null;
+	}
+	const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+	const extension = extname(absPath);
+	return {
+		filePath,
+		absPath,
+		testBaseName: absPath.slice(absPath.lastIndexOf(sep) + 1, -extension.length || undefined),
+	};
+}
+
+function sharedContentReader(absPath: string): () => string | null {
+	let content: string | null = null;
+	let attempted = false;
+	return () => {
+		if (attempted) return content;
+		attempted = true;
+		if (!existsSync(absPath)) return content;
+		try {
+			content = readFileSync(absPath, "utf-8");
+		} catch {
+			content = null;
+		}
+		return content;
+	};
+}
+
+function afterReferenceReader(
+	filePath: string,
+): (content: string) => ReturnType<typeof collectSoftwareVersionReferences> {
+	let cached: ReturnType<typeof collectSoftwareVersionReferences> | undefined;
+	return (content) => {
+		cached ??= collectSoftwareVersionReferences(content, filePath);
+		return cached;
+	};
+}
+
 /**
  * Run quality checks for a PostToolUse event on a file.
  * Returns an array of warnings/errors found.
@@ -128,29 +191,11 @@ export async function runQualityChecks(
 	cwd: string = process.cwd(),
 	options?: QualityCheckOptions,
 ): Promise<QualityCheckResult[]> {
-	const filePath = (event.tool_input?.file_path as string) || (event.tool_input?.path as string);
-	if (!filePath) return [];
-
-	// Skip third-party code — agents can't fix issues in node_modules, dist, or vendor
-	const normalized = filePath.replace(/\\/g, "/");
-	if (
-		normalized.includes("/node_modules/") ||
-		normalized.includes("/dist/") ||
-		normalized.includes("/vendor/") ||
-		normalized.includes("/.next/") ||
-		normalized.includes("/build/")
-	)
-		return [];
+	const target = resolveQualityCheckTarget(event, cwd);
+	if (target === null) return [];
+	const { filePath, absPath: absForTestCheck, testBaseName: testCheckBaseName } = target;
 
 	const results: QualityCheckResult[] = [];
-
-	// Pre-compute for skip_test_files guard
-	const absForTestCheck = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-	const extForTestCheck = extname(absForTestCheck);
-	const testCheckBaseName = absForTestCheck.slice(
-		absForTestCheck.lastIndexOf(sep) + 1,
-		-extForTestCheck.length || undefined,
-	);
 
 	// Snapshot file content once for the whole call: every inline check that
 	// inspects on-disk content (strong_typing, software_version_regression,
@@ -158,33 +203,13 @@ export async function runQualityChecks(
 	// section below, and the ratchet block) reads the same file. Hoisting the
 	// read eliminates 5+ identical readFileSync calls per PostToolUse Edit.
 	const sharedAbsPath = absForTestCheck;
-	let sharedFileContent: string | null = null;
-	let sharedFileReadAttempted = false;
-	const getSharedContent = (): string | null => {
-		if (!sharedFileReadAttempted) {
-			sharedFileReadAttempted = true;
-			if (existsSync(sharedAbsPath)) {
-				try {
-					sharedFileContent = readFileSync(sharedAbsPath, "utf-8");
-				} catch {
-					sharedFileContent = null;
-				}
-			}
-		}
-		return sharedFileContent;
-	};
+	const getSharedContent = sharedContentReader(sharedAbsPath);
 
 	// Memoize collectSoftwareVersionReferences for the post-edit content:
 	// software_version_regression and freshness_sensitive_reference both call
 	// it on the same content, so without memoization we run the full regex
 	// sweep twice per Edit.
-	let cachedAfterRefs: ReturnType<typeof collectSoftwareVersionReferences> | undefined;
-	const getAfterRefs = (content: string) => {
-		if (cachedAfterRefs === undefined) {
-			cachedAfterRefs = collectSoftwareVersionReferences(content, filePath);
-		}
-		return cachedAfterRefs;
-	};
+	const getAfterRefs = afterReferenceReader(filePath);
 
 	// ===========================================
 	// Phase 1 — config-driven per-check loop (subprocess tools + inline content
@@ -203,6 +228,8 @@ export async function runQualityChecks(
 		tscFilterFile: options?.tscFilterFile,
 		baseline: options?.baseline,
 		outToolMetrics: options?.outToolMetrics,
+		outChecksRan: options?.outChecksRan,
+		skipMultiFileExternalChecks: options?.skipMultiFileExternalChecks,
 		editedFileInRepo: options?.editedFileInRepo,
 		onCheckBoundary: options?.onCheckBoundary,
 	});

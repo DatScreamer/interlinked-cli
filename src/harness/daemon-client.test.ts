@@ -140,3 +140,74 @@ describe("DaemonClient.call — errors", () => {
 		await expect(client.call("daemon.health", {}, { timeout_ms: 250 })).rejects.toBeDefined();
 	});
 });
+
+describe("DaemonClient.call — cancellation (review pass 16)", () => {
+	it("P: rejects with `aborted` when the signal fires after the socket connects", async () => {
+		const socketPath = join(tmp, "silent.sock");
+		const accepted: import("node:net").Socket[] = [];
+		const controller = new AbortController();
+		server = createServer((socket) => {
+			accepted.push(socket); // accept, answer nothing
+			controller.abort();
+		});
+		await new Promise<void>((resolve) => server?.listen(socketPath, resolve));
+		const pending = createDaemonClient(socketPath).call(
+			"daemon.health",
+			{},
+			{ timeout_ms: 250, signal: controller.signal },
+		);
+		await expect(pending).rejects.toThrow("aborted");
+		for (const sock of accepted) sock.destroy();
+	});
+
+	it("P: a PRE-aborted signal rejects immediately and opens no socket", async () => {
+		const socketPath = join(tmp, "never-dialed.sock");
+		let connections = 0;
+		server = createServer(() => {
+			connections += 1;
+		});
+		await new Promise<void>((resolve) => server?.listen(socketPath, resolve));
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			createDaemonClient(socketPath).call(
+				"daemon.health",
+				{},
+				{ timeout_ms: 250, signal: controller.signal },
+			),
+		).rejects.toThrow("aborted");
+		// Cross one event-loop turn so any incorrectly queued connection event
+		// becomes observable without coupling the assertion to wall-clock speed.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(connections).toBe(0);
+	});
+
+	it("N: an unaborted signal changes nothing — the call completes normally", async () => {
+		const socketPath = join(tmp, "normal.sock");
+		server = createServer((socket) => {
+			socket.on("data", () => {
+				socket.write(
+					encodeFrame({
+						id: "sig-id",
+						result: {
+							status: "ready",
+							uptime_ms: 1,
+							warm_caches: [],
+							tsgo_status: "ready",
+							rpc_inflight: 0,
+							protocol_version: "1",
+						},
+					}),
+				);
+			});
+		});
+		await new Promise<void>((resolve) => server?.listen(socketPath, resolve));
+		const controller = new AbortController();
+		const health = await createDaemonClient(socketPath).call(
+			"daemon.health",
+			{},
+			{ id: "sig-id", timeout_ms: 500, signal: controller.signal },
+		);
+		expect(health.status).toBe("ready");
+	});
+});

@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import {
 	formatGateResult,
+	GATE_SEVERITY_ERROR,
 	type GateFailure,
 	type GateInputEntry,
 	type GateResult,
@@ -68,6 +69,7 @@ async function readChangesetSource(opts: VerifyChangesetOptions): Promise<string
 		} catch (err) {
 			throw new Error(
 				`Could not read changeset file ${opts.file}: ${err instanceof Error ? err.message : String(err)}`,
+				{ cause: err },
 			);
 		}
 	}
@@ -80,6 +82,8 @@ function toChangeEntry(raw: unknown, i: number): ChangeEntry {
 	if (!raw || typeof raw !== "object") {
 		throw new Error(`changes[${i}] must be an object { path, content | old_string+new_string | edits }.`);
 	}
+	// SAFETY: callers pass values produced by JSON.parse; after the object guard,
+	// every reachable property is a JsonValue and the path is validated below.
 	const obj = raw as JsonObject;
 	if (typeof obj.path !== "string" || obj.path.length === 0) {
 		throw new Error(`changes[${i}].path must be a non-empty string.`);
@@ -93,7 +97,9 @@ function parseChangeset(raw: string): ChangeEntry[] {
 	try {
 		parsed = JSON.parse(raw);
 	} catch (err) {
-		throw new Error(`Changeset is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+		throw new Error(`Changeset is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, {
+			cause: err,
+		});
 	}
 	if (!parsed || typeof parsed !== "object") {
 		throw new Error("Changeset must be a JSON object { version: 1, changes: [...] }.");
@@ -177,6 +183,11 @@ export async function verifyChangesetCommand(opts: VerifyChangesetOptions): Prom
 		return;
 	}
 	// Same pipeline the enforced Write/Edit gate calls — never writes.
-	const result = gateProposedContent(entries, { skipPreWarn: opts.warnings !== true });
+	// tscUnavailableSeverity=error: a changeset "verified" while the type
+	// checker never ran must fail the preview — unavailable is not clean.
+	const result = gateProposedContent(entries, {
+		skipPreWarn: opts.warnings !== true,
+		tscUnavailableSeverity: GATE_SEVERITY_ERROR,
+	});
 	report(result, useJson);
 }

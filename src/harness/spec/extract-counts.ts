@@ -77,7 +77,10 @@ export function isSingularNounEndingInS(word: string): boolean {
 // read as "200"), after a decimal point ("1.5 invariants" -> not "5", sol-max
 // #13), or after a SIGN — hyphen, plus, or Unicode minus U+2212: "-5/+5/−5
 // invariants" are deltas, not census totals, and "twenty-six invariants" must
-// not read as "six" (sol-max round-5 #9, round-6 #8). The optional single
+// not read as "six" (sol-max round-5 #9, round-6 #8). A slash blocks an id
+// continuation ("NIP-29/43 events" is one id list, not a "43 events" claim)
+// and a tilde blocks an approximation ("~17 commands" is not an exact count) —
+// both produced repo-wide false bindings (stop-digest FPs 2026-08-21). The optional single
 // adjective covers "the 28 documented invariants"; the trailing guard keeps
 // hyphenated/underscored continuations out ("six widgets_case" is an
 // identifier, not a claim — round-6 #9). The adjective group is LAZY (`??`):
@@ -85,9 +88,30 @@ export function isSingularNounEndingInS(word: string): boolean {
 // bets does" -> noun "does"). The noun's penultimate char must be a letter
 // (`[a-z]s`), so "bad_s" (underscore) never matches (sol-max round-5 #8).
 const COUNT_CLAIM_RE = new RegExp(
-	`(?<![\\d,.+\\u2212-])\\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|\\d{1,3}(?:,\\d{3})*)\\s+(?:([a-z][a-z-]*)\\s+)??(?!(?:${SINGULAR_S_NOUN})(?![a-z-]))([a-z][a-z-]{0,17}[a-z]s)(?![a-z_-])`,
+	`(?<![\\d,.+\\u2212~/-])\\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|\\d{1,3}(?:,\\d{3})*)\\s+(?:([a-z][a-z-]*)\\s+)??(?!(?:${SINGULAR_S_NOUN})(?![a-z-]))([a-z][a-z-]{0,17}[a-z]s)(?![a-z_-])`,
 	"gi",
 );
+
+// Verbs and function words that end in -s. The noun pattern is purely
+// morphological, so "the tree said 25 was the 75th percentile" parsed as a
+// "25 was" count claim and bound "wa" to an unrelated registry (stop-digest
+// FP 2026-08-21). Closed list: only words that are (near-)never the registry
+// noun of a claim. Genuinely ambiguous words ("sets", "uses") stay out.
+const NON_NOUN_S_WORDS = new Set([
+	"was",
+	"has",
+	"does",
+	"goes",
+	"says",
+	"its",
+	"this",
+	"thus",
+	"plus",
+	"versus",
+	"whereas",
+	"perhaps",
+	"always",
+]);
 
 /** Nouns that read as counts but almost never bind to an ID namespace. */
 const COUNT_NOUN_STOPLIST = new Set([
@@ -123,6 +147,26 @@ const COUNT_NOUN_STOPLIST = new Set([
 	"retries",
 	"steps",
 	"sessions",
+	// Generic across every doc family in an agent-harness repo (hook events /
+	// Nostr events; CLI / shell commands) — one niche doc's co-occurrence bound
+	// them to its registry and flagged unrelated claims repo-wide (stop-digest
+	// FPs 2026-08-21).
+	"events",
+	"commands",
+	// Second FP batch, same day, same mechanism via the heading-owner path
+	// ("### Sequence detectors" over PR1.. phase ids bound detector→PR): these
+	// nouns describe the harness's own subject matter, so nearly every doc uses
+	// them and any single binding misfires repo-wide.
+	"writes",
+	"reads",
+	"edits",
+	"detectors",
+	"mutants",
+	"numbers",
+	"seams",
+	// Third batch (2026-08-23): campaign/plan files use "A1, U2, …" unit ids,
+	// which bound entry→A repo-wide and flagged every "N entries" claim.
+	"entries",
 ]);
 
 /** Spec-frequent plurals the rules below would mangle. Extend as found. */
@@ -163,7 +207,7 @@ function parseCountMatch(
 	const numRaw = (m[1] ?? "").toLowerCase();
 	const adjective = (m[2] ?? "").toLowerCase();
 	const noun = (m[3] ?? "").toLowerCase();
-	if (COUNT_NOUN_STOPLIST.has(noun)) return null;
+	if (COUNT_NOUN_STOPLIST.has(noun) || NON_NOUN_S_WORDS.has(noun)) return null;
 	// `Object.hasOwn`, not `in`: a bare `in` also matches inherited keys, so
 	// "constructor"/"toString" would be treated as number words (sol-max #24).
 	if (adjective && (NON_ADJECTIVES.has(adjective) || Object.hasOwn(WORD_NUMBERS, adjective))) {

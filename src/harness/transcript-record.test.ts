@@ -397,8 +397,7 @@ describe("parseTranscriptEntry — entry-level guards (mutation hardening)", () 
 	it("P1: a function-shaped entry is rejected by the typeof-object guard even with matching fields attached", () => {
 		// `typeof` a function is "function", not "object" — the guard must
 		// reject it before ever reading the attached fields below.
-		// biome-ignore lint/suspicious/noExplicitAny: deliberately attaching
-		// arbitrary fields to a function value to exercise the typeof guard.
+		// Deliberately attach arbitrary fields to a function value to exercise the typeof guard.
 		const fn: any = function entryFn() {};
 		fn.timestamp = "2026-01-01T00:00:00Z";
 		fn.uuid = "fn-uuid";
@@ -465,7 +464,7 @@ describe("capToolUseResult — exact-boundary mutation hardening", () => {
 
 describe("readUsage / readUsage.num — guard edge cases (mutation hardening)", () => {
 	it("P1: a function-shaped usage payload is rejected by the typeof-object guard even with a numeric field attached", () => {
-		// biome-ignore lint/suspicious/noExplicitAny: see the entry-shaped-fn note above.
+		// Use the same loose function shape as the entry-shaped boundary case above.
 		const fn: any = function usageFn() {};
 		fn.input_tokens = 42;
 		expect(readUsage({ role: "assistant", usage: fn })).toBeNull();

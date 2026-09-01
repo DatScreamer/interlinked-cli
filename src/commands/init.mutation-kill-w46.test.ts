@@ -88,22 +88,22 @@ let logSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+	// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 	(installAllHooks as any).mockReturnValue([]);
-	// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+	// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 	(isHarnessRunning as any).mockReturnValue({ running: true, pid: 1 });
-	// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+	// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 	(ensureRemoteOnboarding as any).mockResolvedValue({ status: "skipped", reason: "test" });
-	// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+	// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 	(resolveAuthToken as any).mockReturnValue("some-token");
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
 	logSpy.mockRestore();
-	// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+	// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 	(process.stdin as any).isTTY = origIsTTYIn;
-	// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+	// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 	(process.stdout as any).isTTY = origIsTTYOut;
 	process.env = { ...origEnv };
 });
@@ -122,7 +122,7 @@ describe("git-derived project name (dry-run)", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "init-w46-"));
 		mkdirSync(join(tmpDir, ".git"), { recursive: true });
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(tmpDir);
 	});
 
@@ -139,7 +139,7 @@ describe("git-derived project name (dry-run)", () => {
 			agent: "a",
 			server: "http://example.test",
 		});
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		const call = (printProjectContext as any).mock.calls[0];
 		return call?.[0];
 	}
@@ -195,7 +195,7 @@ describe("server reachability probe (dry-run)", () => {
 
 	it("kills 787b11426c3f1a31 (finally block dropping clearTimeout)", async () => {
 		delete process.env.INTERLINKED_SERVER_URL;
-		// biome-ignore lint/suspicious/noExplicitAny: fetch stub
+		// SAFETY: this test reads only Response.ok and restores global.fetch in afterEach.
 		global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
 		const clearSpy = vi.spyOn(global, "clearTimeout");
 		await initCommand({
@@ -215,11 +215,11 @@ describe("server reachability probe (dry-run)", () => {
 
 describe("isInteractiveTty && vs || (dry-run, via resolveAgentName routing)", () => {
 	it("kills 6986c29bfb7e8fe3: mixed TTY (stdin only) must NOT be interactive", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = true;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
 
 		await initCommand({
@@ -243,11 +243,11 @@ describe("isInteractiveTty && vs || (dry-run, via resolveAgentName routing)", ()
 
 describe("resolveAgentName (dry-run)", () => {
 	it("kills 0e750a4ac82da572/e1a9925fa3225b96 ('4.' literal) and 573206d729c0eebe (blank line) in non-interactive branch", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
 
 		await initCommand({
@@ -263,15 +263,15 @@ describe("resolveAgentName (dry-run)", () => {
 	});
 
 	it("kills 6651ef945538d060 (createInterface object literal) and e9a2e62a40ca7764 (rl.close dropped) in interactive branch", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = true;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = true;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
 
 		const closeSpy = vi.fn();
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(createInterface as any).mockReturnValue({
 			question: vi.fn().mockResolvedValue(""),
 			close: closeSpy,
@@ -285,7 +285,7 @@ describe("resolveAgentName (dry-run)", () => {
 		});
 
 		expect(createInterface).toHaveBeenCalled();
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		const arg = (createInterface as any).mock.calls[0][0];
 		expect(arg).toBeTruthy();
 		expect("input" in arg).toBe(true);
@@ -311,25 +311,25 @@ function baseFullRunOptions(overrides: Record<string, unknown> = {}) {
 
 describe("installConfigAndHooks (full run, symbol f0dfc89b5e601aed)", () => {
 	beforeEach(() => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(detectClients as any).mockReturnValue([
 			{ name: "claude", exists: true },
 			{ name: "gemini", exists: true },
 		]);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(installAllHooks as any).mockReturnValue([
 			{ client: "claude", installed: true, events: ["PreToolUse", "PostToolUse"] },
 			{ client: "gemini", installed: false, error: "not found" },
 		]);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(true); // skip authenticate's login branch cleanly
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(ensureRemoteOnboarding as any).mockResolvedValue({ status: "skipped", reason: "test" });
 	});
 
@@ -352,22 +352,22 @@ describe("installConfigAndHooks (full run, symbol f0dfc89b5e601aed)", () => {
 
 describe("authenticate (full run, symbol fdeb1c10b02cadbb)", () => {
 	beforeEach(() => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(detectClients as any).mockReturnValue([]);
 		delete process.env.INTERLINKED_TOKEN;
 		delete process.env.INTERLINKED_ACCESS_TOKEN;
 	});
 
 	it("prints '6. Authenticating...' and the no-TTY skip + blank line when unauthenticated on a remote server", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(resolveAuthToken as any).mockReturnValue(undefined);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(false);
 
 		await initCommand(baseFullRunOptions({ json: false }));
@@ -378,9 +378,9 @@ describe("authenticate (full run, symbol fdeb1c10b02cadbb)", () => {
 	});
 
 	it("prints '6. Auth: already authenticated' when already authenticated", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(resolveAuthToken as any).mockReturnValue("a-real-token");
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(false);
 
 		await initCommand(baseFullRunOptions({ json: false }));
@@ -390,9 +390,9 @@ describe("authenticate (full run, symbol fdeb1c10b02cadbb)", () => {
 	});
 
 	it("prints nothing when json is true, regardless of auth branch", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(resolveAuthToken as any).mockReturnValue(undefined);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(false);
 
 		await initCommand(baseFullRunOptions({ json: true }));
@@ -402,20 +402,20 @@ describe("authenticate (full run, symbol fdeb1c10b02cadbb)", () => {
 
 describe("runOnboarding (full run, symbol 47ceb28cb59bf0d2)", () => {
 	beforeEach(() => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = false;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(detectClients as any).mockReturnValue([]);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(true);
 	});
 
 	it("prints '7. Connecting...' and the registered line, calling ensureRemoteOnboarding with {serverUrl}", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(ensureRemoteOnboarding as any).mockResolvedValue({
 			status: "linked",
 			isNewAgent: true,
@@ -431,13 +431,13 @@ describe("runOnboarding (full run, symbol 47ceb28cb59bf0d2)", () => {
 			lines.some((l) => l.includes("✓") && l.includes("testagent") && l.includes("registered")),
 		).toBe(true);
 
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		const callArg = (ensureRemoteOnboarding as any).mock.calls[0][0];
 		expect(callArg).toEqual({ serverUrl: "http://example.test" });
 	});
 
 	it("prints the '!' failure line on a non-linked/skipped status", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(ensureRemoteOnboarding as any).mockResolvedValue({
 			status: "error",
 			error: "boom",
@@ -450,7 +450,7 @@ describe("runOnboarding (full run, symbol 47ceb28cb59bf0d2)", () => {
 	});
 
 	it("prints nothing when json is true", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(ensureRemoteOnboarding as any).mockResolvedValue({ status: "linked", agentName: "testagent" });
 		await initCommand(baseFullRunOptions({ json: true }));
 		expect(logSpy).not.toHaveBeenCalled();
@@ -459,29 +459,29 @@ describe("runOnboarding (full run, symbol 47ceb28cb59bf0d2)", () => {
 
 describe("shouldStartHarness / startHarness (full run, symbol f950e99585a91174)", () => {
 	it("kills 3e3206d97335510f (createInterface object literal in harness prompt)", async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdin as any).isTTY = true;
-		// biome-ignore lint/suspicious/noExplicitAny: test-only TTY override
+		// SAFETY: the test temporarily overrides the live stream property and restores it in afterEach.
 		(process.stdout as any).isTTY = true;
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(findProjectRoot as any).mockReturnValue(null);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(detectClients as any).mockReturnValue([]);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isLocalServer as any).mockReturnValue(true);
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(resolveAuthToken as any).mockReturnValue("already-have-a-token");
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(ensureRemoteOnboarding as any).mockResolvedValue({ status: "skipped", reason: "test" });
 
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(isHarnessRunning as any).mockReturnValueOnce({ running: false }).mockReturnValueOnce({
 			running: true,
 			pid: 42,
 		});
 
 		const closeSpy = vi.fn();
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		(createInterface as any).mockReturnValue({
 			question: vi.fn().mockResolvedValue(""),
 			close: closeSpy,
@@ -490,7 +490,7 @@ describe("shouldStartHarness / startHarness (full run, symbol f950e99585a91174)"
 		await initCommand(baseFullRunOptions({ json: false, agent: "testagent", yes: false }));
 
 		expect(createInterface).toHaveBeenCalled();
-		// biome-ignore lint/suspicious/noExplicitAny: mocked module fn
+		// SAFETY: vi.mock replaces this import, so Vitest supplies its mock methods at runtime.
 		const calledWithInputOutput = (createInterface as any).mock.calls.some(
 			(call: unknown[]) => call[0] && "input" in (call[0] as object) && "output" in (call[0] as object),
 		);

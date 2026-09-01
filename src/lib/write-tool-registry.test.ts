@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isReadOnlyToolName } from "./hook-read-only-tools.js";
 import {
 	CLAUDE_CODE_WRITE_TOOLS,
+	CODEX_WRITE_TOOLS,
 	DIRECT_FILE_EDIT_TOOLS,
 	isDirectFileEditTool,
 	WRITE_TOOLS,
@@ -18,6 +19,13 @@ describe("write-tool-registry — positive (must classify as a writer)", () => {
 			"Bash",
 		]);
 		expect(writeToolEntry("Bash")?.channel).toBe("shell");
+	});
+
+	it("P1b: Codex PostToolUse includes only its native writers", () => {
+		expect(CODEX_WRITE_TOOLS).toEqual(["Bash", "apply_patch"]);
+		for (const name of CODEX_WRITE_TOOLS) {
+			expect(isReadOnlyToolName(name)).toBe(false);
+		}
 	});
 
 	it("P2: MultiEdit is a DIRECT file edit", () => {

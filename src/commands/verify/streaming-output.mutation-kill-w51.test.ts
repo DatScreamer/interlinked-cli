@@ -14,7 +14,7 @@ function issue(file: string, message: string, line = 1): CodeQualityIssue {
 }
 
 function stripAnsi(s: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI codes for test assertions
+	// Strip ANSI codes before comparing rendered output.
 	return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

@@ -68,6 +68,52 @@ describe("installHooks — project scope", () => {
 		expect(after.hooks.PreToolUse.length).toBe(2);
 	});
 
+	it("purges canonical adapter and legacy hooks without claiming same-basename user scripts", () => {
+		const settingsPath = join(tmp, ".gemini", "settings.json");
+		mkdirSync(join(tmp, ".gemini"), { recursive: true });
+		const userHooks = [
+			{ command: "node /home/user/hook-entry.js" },
+			{
+				command:
+					"node /home/user/hook-entry.js --runner user-runner --event BeforeTool",
+			},
+			{ command: "node /home/user/interlinked-activity.mjs" },
+		];
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				hooks: {
+					BeforeTool: [
+						...userHooks,
+						{
+							command:
+								"node '/old/dist/hook-entry.js' --runner 'gemini-cli' --event 'BeforeTool'",
+						},
+						{ command: "node .interlinked/hooks/interlinked-activity.mjs" },
+					],
+				},
+			}),
+		);
+
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: join(tmp, "dist", "hook-entry.js"),
+			runners: ["gemini-cli"],
+		});
+
+		expect(result.purged).toBe(2);
+		const after = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			hooks: { BeforeTool: Array<{ command?: string }> };
+		};
+		expect(after.hooks.BeforeTool.slice(0, userHooks.length)).toEqual(userHooks);
+		const commands = after.hooks.BeforeTool.map((entry) => entry.command ?? "");
+		expect(commands.some((command) => command.includes("/old/dist/hook-entry.js"))).toBe(false);
+		expect(
+			commands.some((command) => command === "node .interlinked/hooks/interlinked-activity.mjs"),
+		).toBe(false);
+		expect(commands.filter((command) => command.includes("/dist/hook-entry.js"))).toHaveLength(1);
+	});
+
 	it("supports dry-run (does not write files)", () => {
 		installHooks({
 			cwd: tmp,
@@ -91,6 +137,20 @@ describe("installHooks — multi-runner", () => {
 		expect(result.entries.length).toBe(2);
 		const runners = result.entries.map((e) => e.runner).sort();
 		expect(runners).toEqual(["claude-code", "copilot-cli"]);
+	});
+
+	it("deduplicates an explicit runner selection before writing the manifest", () => {
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/hook",
+			runners: ["claude-code", "claude-code"],
+		});
+		expect(result.entries.map((entry) => entry.runner)).toEqual(["claude-code"]);
+		expect(readManifestState(manifestPath(tmp))).toMatchObject({
+			kind: "valid",
+			entries: [{ runner: "claude-code" }],
+		});
+		expect(() => uninstallHooks({ cwd: tmp, runners: ["claude-code"] })).not.toThrow();
 	});
 
 	it("codex install runs the postInstall feature-flag writer", () => {
@@ -188,6 +248,16 @@ describe("uninstallHooks — round-trip", () => {
 			{ command: "echo node /repo/dist/hook-entry.js" },
 			{ command: "echo ok # node /repo/dist/hook-entry.js" },
 			{ command: "printf '%s\\n' 'node /repo/dist/hook-entry.js'" },
+			{ command: "node --require /tmp/hook-entry.js app.js" },
+			{ command: "node --loader /tmp/hook-entry.js app.js" },
+			{ command: "node -r /tmp/hook-entry.js app.js" },
+			{ command: "node /home/user/hook-entry.js" },
+			{
+				command:
+					"node /home/user/hook-entry.js --runner user-runner --event BeforeTool",
+			},
+			{ command: "node /home/user/hook-entry.js --runner gemini-cli" },
+			{ command: "node /home/user/interlinked-activity.mjs" },
 			{ command: `echo ${binary}` }, // the exact recorded binary, echoed
 		];
 		// A stale REAL Interlinked hook (old binary, invocation position).
@@ -203,6 +273,12 @@ describe("uninstallHooks — round-trip", () => {
 		expect(after).toContain("echo node /repo/dist/hook-entry.js");
 		expect(after).toContain("echo ok # node /repo/dist/hook-entry.js");
 		expect(after).toContain("printf");
+		expect(after).toContain("node --require /tmp/hook-entry.js app.js");
+		expect(after).toContain("node --loader /tmp/hook-entry.js app.js");
+		expect(after).toContain("node -r /tmp/hook-entry.js app.js");
+		expect(after).toContain("node /home/user/hook-entry.js");
+		expect(after).toContain("--runner user-runner --event BeforeTool");
+		expect(after).toContain("node /home/user/interlinked-activity.mjs");
 		expect(after).toContain(`echo ${binary}`);
 		// The current install and the stale invocation are both gone.
 		expect(after).not.toContain(`'${binary}'`);
@@ -323,6 +399,22 @@ describe("installHooks — skips a runner whose settings file is malformed JSON"
 		expect(nonNull(result.skipped[0]).reason).toContain("malformed JSON");
 		// The unreadable file is left untouched, not overwritten.
 		expect(readFileSync(settingsPath, "utf-8")).toBe("{ not valid json");
+	});
+
+	it("refuses an array-root settings document instead of claiming a successful install", () => {
+		const settingsPath = join(tmp, ".claude", "settings.json");
+		mkdirSync(join(tmp, ".claude"), { recursive: true });
+		writeFileSync(settingsPath, "[]\n");
+
+		const result = installHooks({
+			cwd: tmp,
+			binaryPath: "/usr/bin/interlinked-hook",
+			runners: ["claude-code"],
+		});
+
+		expect(result.entries).toEqual([]);
+		expect(result.skipped[0]?.reason).toContain("malformed JSON");
+		expect(readFileSync(settingsPath, "utf-8")).toBe("[]\n");
 	});
 });
 

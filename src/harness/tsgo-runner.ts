@@ -157,6 +157,61 @@ interface CacheEntry {
 	diagnostics: TsgoDiagnostic[];
 }
 
+interface WarmWatcherContext {
+	watchEnabled: boolean;
+	isAvailable: boolean;
+	isDisposed(): boolean;
+	executable: string | null;
+	watchIdleMs: number;
+	watchers: Map<string, WatchProcess>;
+}
+
+/** Obtain a usable watcher, awaiting complete teardown before a replacement. */
+async function acquireWarmWatcher(
+	path: string,
+	ctx: WarmWatcherContext,
+): Promise<WatchProcess | null> {
+	if (!ctx.watchEnabled || !ctx.isAvailable || ctx.isDisposed() || ctx.executable === null) {
+		return null;
+	}
+	const root = findTsconfigDir(path);
+	if (root === null) return null;
+	let watcher = ctx.watchers.get(root);
+	if (watcher?.isUsable()) {
+		watcher.touchIdle();
+		return watcher;
+	}
+	// Idle eviction publishes its state immediately but deliberately retains
+	// the per-project compiler lease until the old OS process group is fully
+	// reaped. Await that acknowledgement before registering the replacement.
+	if (watcher) await watcher.kill();
+	watcher = new WatchProcess(ctx.executable, root, ctx.watchIdleMs);
+	ctx.watchers.set(root, watcher);
+	watcher.start();
+	return watcher;
+}
+
+function summarizeWatchers(
+	isAvailable: boolean,
+	watchEnabled: boolean,
+	watchers: ReadonlyMap<string, WatchProcess>,
+): WatchProcessState {
+	if (!isAvailable) return "unavailable";
+	if (!watchEnabled) return "disabled";
+	if (watchers.size === 0) return "not-started";
+	let sawCrashed = false;
+	let sawEvicted = false;
+	for (const watcher of watchers.values()) {
+		const state = watcher.state();
+		if (state === WATCH_RUNNING) return WATCH_RUNNING;
+		if (state === WATCH_CRASHED) sawCrashed = true;
+		if (state === WATCH_IDLE_EVICTED) sawEvicted = true;
+	}
+	if (sawCrashed) return WATCH_CRASHED;
+	if (sawEvicted) return WATCH_IDLE_EVICTED;
+	return "not-started";
+}
+
 export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 	const executable = opts.executable ?? locateTsgo();
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_COLD_TIMEOUT_MS;
@@ -172,6 +227,14 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 	// never triggers a TS check, so it never pays any tsgo cost.
 	const watchers = new Map<string, WatchProcess>();
 	const lifecycle = { disposed: false };
+	const watcherContext: WarmWatcherContext = {
+		watchEnabled,
+		isAvailable,
+		isDisposed: () => lifecycle.disposed,
+		executable,
+		watchIdleMs,
+		watchers,
+	};
 
 	function cachePut(path: string, entry: CacheEntry): void {
 		if (cache.size >= maxEntries) {
@@ -181,28 +244,6 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		// In-memory result cache; bounded by maxEntries with FIFO eviction
 		// above, so no unbounded growth (this is not a Redis key).
 		cache.set(path, entry);
-	}
-
-	/**
-	 * Lazily obtain (or respawn) the warm watch child that owns `path`'s
-	 * project. Returns null when the warm path is unavailable for any reason —
-	 * callers then use the cold one-shot. Never throws.
-	 */
-	function watcherFor(path: string): WatchProcess | null {
-		if (!watchEnabled || !isAvailable || lifecycle.disposed) return null;
-		const root = findTsconfigDir(path);
-		if (root === null) return null; // standalone file — cold path handles it
-		let w = watchers.get(root);
-		if (w && w.isUsable()) {
-			w.touchIdle();
-			return w;
-		}
-		// No watcher yet, or the previous one crashed / was idle-evicted.
-		if (w) w.kill();
-		w = new WatchProcess(executable as string, root, watchIdleMs);
-		watchers.set(root, w);
-		w.start();
-		return w;
 	}
 
 	async function check(path: string): Promise<{
@@ -231,7 +272,7 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 	/** Warm-then-cold dispatch for a single file's diagnostics. */
 	async function checkViaWarmOrCold(path: string): Promise<TsgoDiagnostic[]> {
 		if (isTsFile(path)) {
-			const watcher = watcherFor(path);
+			const watcher = await acquireWarmWatcher(path, watcherContext);
 			if (watcher) {
 				const warm = await watcher.diagnosticsForFile(path);
 				if (warm !== null) return warm;
@@ -246,8 +287,7 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		oldString: string,
 		newString: string,
 	): Promise<{ new_diagnostics: TsgoDiagnostic[]; elapsed_ms: number }> {
-		if (!isAvailable) return { new_diagnostics: [], elapsed_ms: 0 };
-		if (!existsSync(path)) return { new_diagnostics: [], elapsed_ms: 0 };
+		if (!isAvailable || !existsSync(path)) return { new_diagnostics: [], elapsed_ms: 0 };
 
 		const started = nowMs();
 		const original = readFileSyncSafe(path);
@@ -258,25 +298,26 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		}
 		const patched = oldString
 			? applyLiteralReplacement(original, oldString, newString, false)
-			: original + (newString ?? "");
+			: original + newString;
 
 		// simulate_edit type-checks a transient copy of the patched file. We do
 		// NOT route this through the warm `tsgo --watch` child: the watch graph
 		// only sees files on disk, and writing the patch into the live tree
 		// would corrupt the agent's working copy. A one-shot on the temp file
-		// is correct here. It still benefits from --incremental warming (see
-		// runTsgoOneShot). Touching the warm watcher keeps its idle timer fresh
-		// so an in-flight simulate doesn't let the child get evicted.
-		if (isTsFile(path)) {
-			const w = watcherFor(path);
-			if (w) w.touchIdle();
-		}
+		// is correct here. Pass the live project's root as the admission key so
+		// runTsgoOneShot evicts its warm watcher before the temp-file child starts.
 
 		const dir = mkdtempSync(join(tmpdir(), "interlinked-simedit-"));
 		const suffix = path.match(/\.[A-Za-z0-9]+$/)?.[0] ?? ".ts";
 		const tmpFile = join(dir, `sim${suffix}`);
 		writeFileSync(tmpFile, patched);
-		const diagnostics = await runTsgoOneShot(executable as string, tmpFile, extraArgs, timeoutMs);
+		const diagnostics = await runTsgoOneShot(
+			executable as string,
+			tmpFile,
+			extraArgs,
+			timeoutMs,
+			findTsconfigDir(path) ?? join(path, ".."),
+		);
 		const elapsed_ms = nowMs() - started;
 		// We do not diff against baseline here because the baseline check is a
 		// separate `tsgo.check_file` call; the callers in the daemon do the
@@ -289,25 +330,6 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		cache.delete(path);
 	}
 
-	function watchProcessState(): WatchProcessState {
-		if (!isAvailable) return "unavailable";
-		if (!watchEnabled) return "disabled";
-		if (watchers.size === 0) return "not-started";
-		// Report the most "interesting" state across all project watchers:
-		// running wins (something is warm); else crashed; else idle-evicted.
-		let sawCrashed = false;
-		let sawEvicted = false;
-		for (const w of watchers.values()) {
-			const s = w.state();
-			if (s === WATCH_RUNNING) return WATCH_RUNNING;
-			if (s === WATCH_CRASHED) sawCrashed = true;
-			if (s === WATCH_IDLE_EVICTED) sawEvicted = true;
-		}
-		if (sawCrashed) return WATCH_CRASHED;
-		if (sawEvicted) return WATCH_IDLE_EVICTED;
-		return "not-started";
-	}
-
 	function stats(): {
 		cache_size: number;
 		available: boolean;
@@ -316,7 +338,7 @@ export function createTsgoRunner(opts: TsgoRunnerOptions = {}): TsgoRunner {
 		return {
 			cache_size: cache.size,
 			available: isAvailable,
-			watch_process: watchProcessState(),
+			watch_process: summarizeWatchers(isAvailable, watchEnabled, watchers),
 		};
 	}
 

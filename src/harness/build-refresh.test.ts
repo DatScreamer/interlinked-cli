@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	resolveOwnArtifact,
 	shouldHandOver,
-	spawnRestartViaCli,
 	startBuildRefreshWatcher,
 } from "./build-refresh.js";
 import type { DaemonLedgerEvent } from "./daemon-ledger.js";
@@ -535,104 +534,6 @@ describe("startBuildRefreshWatcher", () => {
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}
-		});
-	});
-});
-
-describe("spawnRestartViaCli", () => {
-	it("returns false for a src-run module URL (nothing to spawn)", () => {
-		const spawn = vi.fn();
-		expect(
-			spawnRestartViaCli("file:///repo/src/harness/server.ts", "/repo", spawn as never),
-		).toBe(false);
-		expect(spawn).not.toHaveBeenCalled();
-	});
-
-	it("spawns the detached restart via the CLI entry and returns true", () => {
-		const unref = vi.fn();
-		const spawn = vi.fn(() => ({ unref }));
-		const result = spawnRestartViaCli(
-			"file:///repo/dist/harness/server.js",
-			"/repo",
-			spawn as never,
-		);
-		expect(result).toBe(true);
-		expect(spawn).toHaveBeenCalledTimes(1);
-		const [cmd, argv, opts] = spawn.mock.calls[0] as unknown as [
-			string,
-			string[],
-			{ cwd: string; detached: boolean; stdio: string },
-		];
-		expect(cmd).toBe(process.execPath);
-		expect(argv).toEqual(["/repo/dist/index.js", "harness", "restart"]);
-		expect(opts.cwd).toBe("/repo");
-		expect(opts.detached).toBe(true);
-		expect(opts.stdio).toBe("ignore");
-		expect(unref).toHaveBeenCalledTimes(1);
-	});
-
-	it("returns false when spawn throws", () => {
-		const spawn = vi.fn(() => {
-			throw new Error("spawn failed");
-		});
-		const result = spawnRestartViaCli(
-			"file:///repo/dist/harness/server.js",
-			"/repo",
-			spawn as never,
-		);
-		expect(result).toBe(false);
-	});
-
-	describe("handover churn backstop", () => {
-		it("refuses to spawn once unresolved handovers reach the max", () => {
-			const spawn = vi.fn(() => ({ unref: vi.fn() }));
-			const readEvents = vi.fn(() => churnedEvents(Date.now()));
-			const result = spawnRestartViaCli(
-				"file:///repo/dist/harness/server.js",
-				"/repo",
-				spawn as never,
-				readEvents,
-			);
-			expect(result).toBe(false);
-			expect(spawn).not.toHaveBeenCalled();
-		});
-
-		it("records a churn-backstop ledger row instead of spawning", () => {
-			const dir = mkdtempSync(join(tmpdir(), "il-build-refresh-churn-"));
-			try {
-				mkdirSync(join(dir, ".interlinked"), { recursive: true });
-				const spawn = vi.fn(() => ({ unref: vi.fn() }));
-				spawnRestartViaCli(
-					"file:///repo/dist/harness/server.js",
-					dir,
-					spawn as never,
-					() => churnedEvents(Date.now()),
-				);
-				const ledger = readFileSync(join(dir, ".interlinked", "daemon-events.jsonl"), "utf-8");
-				const rows = ledger
-					.trim()
-					.split("\n")
-					.map((line) => JSON.parse(line) as DaemonLedgerEvent);
-				expect(rows).toContainEqual(
-					expect.objectContaining({ event: "handover", reason: "churn-backstop" }),
-				);
-			} finally {
-				rmSync(dir, { recursive: true, force: true });
-			}
-		});
-
-		it("still spawns when unresolved handovers stay under the max", () => {
-			const spawn = vi.fn(() => ({ unref: vi.fn() }));
-			const nowMs = Date.now();
-			const readEvents = () => churnedEvents(nowMs).slice(0, HANDOVER_CHURN_MAX_ATTEMPTS - 1);
-			const result = spawnRestartViaCli(
-				"file:///repo/dist/harness/server.js",
-				"/repo",
-				spawn as never,
-				readEvents,
-			);
-			expect(result).toBe(true);
-			expect(spawn).toHaveBeenCalledTimes(1);
 		});
 	});
 });

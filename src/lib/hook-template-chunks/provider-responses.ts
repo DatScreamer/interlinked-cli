@@ -9,6 +9,29 @@
 // functions so the dispatcher stays at depth 1 and adding a new provider
 // is a one-line registry change rather than another nested switch.
 
+/**
+ * Canonical Claude/Codex gate-deny shapes. This chunk is emitted once at the
+ * generated script's module scope so both ordinary decision formatting and
+ * the terminal main() rejection handler use the same contract.
+ */
+export const NATIVE_GATE_DENY_RESPONSE_CHUNK = `function nativeGateDenyResponse(provider, eventName, reason) {
+    if (provider !== "claude" && provider !== "codex") return null;
+    if (eventName === "PermissionRequest") {
+        return { hookSpecificOutput: {
+            hookEventName: "PermissionRequest",
+            decision: { behavior: "deny", message: reason },
+        }};
+    }
+    if (eventName === "PreToolUse") {
+        return { hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: reason,
+        }};
+    }
+    return null;
+}`;
+
 /** Public API — consumed by buildHookScript in hooks-template.ts. */
 export const PROVIDER_RESPONSES_CHUNK = `    // ═══════════════════════════════════════════
     // Provider-specific response formatting
@@ -19,16 +42,21 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
     // (PostToolUse vs PostToolUseFailure, PreToolUse vs PermissionRequest)
     // or Claude Code rejects them with "Hook returned incorrect event name".
     //
-    // Codex CLI uses Claude Code's event vocabulary but has its own current
-    // response contract. PreToolUse denies use permissionDecision; advisory
-    // feedback travels as
+    // Claude Code and Codex use phase-specific permission contracts.
+    // PreToolUse denies use permissionDecision; PermissionRequest denies use
+    // hookSpecificOutput.decision.behavior. Advisory feedback travels as
     // hookSpecificOutput.additionalContext so the tool result stands and the
-    // agent gets follow-up guidance. Codex's PermissionRequest uses a distinct
-    // hookSpecificOutput.decision.behavior shape — handled in formatCodexResponse.
+    // agent gets follow-up guidance on events that support that field.
 
     function formatClaudeResponse(responseType, data, preEventEcho, postEventEcho) {
 		const isPermissionRequest = preEventEcho === "PermissionRequest";
+		if (responseType === "pre_allow" && isPermissionRequest) {
+			const feedback = [data.systemMessage, data.additionalContext].filter(Boolean).join("\\n");
+			if (feedback) process.stderr.write(feedback + "\\n");
+			return {};
+		}
         if (responseType === "pre_block_grep") {
+            if (isPermissionRequest) return nativeGateDenyResponse("claude", preEventEcho, data.reason);
             return { hookSpecificOutput: {
                 hookEventName: preEventEcho,
                 permissionDecision: "deny",
@@ -36,11 +64,12 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
             }};
         }
         if (responseType === "pre_block") {
+            if (isPermissionRequest) return nativeGateDenyResponse("claude", preEventEcho, data.reason);
             // PreToolUse deny lives in hookSpecificOutput.permissionDecision —
             // root {decision:"block"} is rejected for PreToolUse ("(root):
             // Invalid input"), silently failing to block. (post_block below
             // keeps root {decision:"block"}, which IS valid for PostToolUse.)
-            return { hookSpecificOutput: {
+            return nativeGateDenyResponse("claude", preEventEcho, data.reason) || { hookSpecificOutput: {
                 hookEventName: preEventEcho,
                 permissionDecision: "deny",
                 permissionDecisionReason: data.reason,
@@ -49,7 +78,11 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
         if (responseType === "pre_ask") {
 			if (isPermissionRequest) {
 				// Claude is already inside its native approval flow. Abstain so
-				// configured policy and the user's prompt retain authority.
+				// configured policy and the user's prompt retain authority. This
+				// event has no generic additionalContext response; keep the
+				// explanation debug-only on stderr.
+				const message = data.systemMessage || data.reason;
+				if (message) process.stderr.write(message + "\\n");
 				return {};
 			}
             // Surface Claude Code's permission prompt so the user confirms
@@ -182,15 +215,13 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
         return {};
     }
 
-    function codexPermissionDeny(reason) {
-        return { hookSpecificOutput: {
-            hookEventName: "PermissionRequest",
-            decision: { behavior: "deny", message: reason },
-        }};
-    }
-
     function formatCodexResponse(responseType, data, postEventEcho, incomingEvent) {
         const isPermissionRequest = incomingEvent === "PermissionRequest";
+		if (responseType === "pre_allow" && isPermissionRequest) {
+			const feedback = [data.systemMessage, data.additionalContext].filter(Boolean).join("\\n");
+			if (feedback) process.stderr.write(feedback + "\\n");
+			return {};
+		}
         if (responseType === "pre_ask" && isPermissionRequest) {
             // Abstain so Codex displays its own permission prompt. Emitting
             // an allow decision here would bypass the user's normal policy.
@@ -199,12 +230,7 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
         if (responseType === "pre_block_grep" || responseType === "pre_block" || responseType === "pre_ask") {
             // Codex has no ask primitive on PreToolUse, so unresolved asks
             // collapse to a deny. PermissionRequest has a distinct shape.
-            if (isPermissionRequest) return codexPermissionDeny(data.reason);
-            return { hookSpecificOutput: {
-                hookEventName: "PreToolUse",
-                permissionDecision: "deny",
-                permissionDecisionReason: data.reason,
-            }};
+            return nativeGateDenyResponse("codex", incomingEvent, data.reason);
         }
         if (responseType === "post_block") {
             // Codex PostToolUse: legacy block shape replaces the tool result
@@ -262,5 +288,5 @@ export const PROVIDER_RESPONSES_CHUNK = `    // ══════════�
     function writeProviderResponse(responseType, data) {
         const response = formatProviderResponse(responseType, data);
         if (!response || Object.keys(response).length === 0) return;
-        console.log(JSON.stringify(response));
+        stageProviderStdout(response);
     }`;

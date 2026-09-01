@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getAdapter } from "../harness/adapters/index.js";
 import { TrigramIndex } from "../harness/trigram-index.js";
+import { type StructureMode, VALID_MODES } from "../harness/structure/types.js";
 import { c } from "../lib/formatter.js";
 import { clearGuardDisable } from "../lib/guard-state.js";
 import {
@@ -104,8 +105,21 @@ function clientSummary(client: ClientName): ClientSummary | null {
 }
 
 export async function enableCommand(options: EnableOptions): Promise<void> {
+	const clientSelection = parseRequestedClients(options.clients);
+	if (clientSelection.unknown.length > 0) {
+		reportUnknownClients(clientSelection.unknown);
+		return;
+	}
+	if (options.syncMode !== undefined && !isSyncMode(options.syncMode)) {
+		reportInvalidExplicitValue("sync", options.syncMode, VALID_SYNC_MODES);
+		return;
+	}
+	if (options.structure !== undefined && !isStructureMode(options.structure)) {
+		reportInvalidExplicitValue("structure", options.structure, VALID_MODES);
+		return;
+	}
 	const cwd = process.cwd();
-	const requestedClients = parseRequestedClients(options.clients);
+	const requestedClients = clientSelection.requested;
 
 	if (options.dryRun) {
 		printDryRun(cwd, options, requestedClients);
@@ -182,9 +196,57 @@ function printSkillInstallResults(results: ReturnType<typeof installSkills>): vo
 	});
 }
 
-function parseRequestedClients(raw: string | undefined): ClientName[] | null {
-	if (!raw) return null;
-	return raw.split(",").map((s) => s.trim().toLowerCase() as ClientName);
+interface ClientSelection {
+	requested: ClientName[] | null;
+	unknown: string[];
+}
+
+function isClientName(value: string): value is ClientName {
+	return Object.hasOwn(CLIENT_TO_RUNNER, value);
+}
+
+function displayClientId(value: string): string {
+	return value.length > 0 ? value : "<empty>";
+}
+
+/** Parse the explicit client list before enable performs its first write.
+ * Invalid ids must not degrade into a successful-looking partial setup: the
+ * old cast accepted arbitrary strings, then created config, installed only the
+ * canonical skill cache, started a daemon, and exited 0 with no hooks active. */
+function parseRequestedClients(raw: string | undefined): ClientSelection {
+	if (raw === undefined) return { requested: null, unknown: [] };
+	const normalized = raw.split(",").map((part) => part.trim().toLowerCase());
+	return {
+		requested: [...new Set(normalized.filter(isClientName))],
+		unknown: normalized.filter((value) => !isClientName(value)).map(displayClientId),
+	};
+}
+
+function reportUnknownClients(unknown: string[]): void {
+	const noun = unknown.length === 1 ? "client" : "clients";
+	console.error(
+		`${c.red("Error:")} Unknown ${noun}: ${unknown.join(", ")}. No files or processes were changed. Supported clients: ${ALL_CLIENTS.join(",")}.`,
+	);
+	process.exitCode = 1;
+}
+
+function isSyncMode(value: string): value is SyncMode {
+	return VALID_SYNC_MODES.some((mode) => mode === value);
+}
+
+function reportInvalidExplicitValue(
+	kind: "sync" | "structure",
+	value: string,
+	allowed: readonly string[],
+): void {
+	console.error(
+		`${c.red("Error:")} Invalid ${kind} mode ${JSON.stringify(value)}. No files or processes were changed. Must be one of: ${allowed.join(", ")}.`,
+	);
+	process.exitCode = 1;
+}
+
+function isStructureMode(value: string): value is StructureMode {
+	return VALID_MODES.some((mode) => mode === value);
 }
 
 function announceConfigState(cwd: string): void {
@@ -222,14 +284,8 @@ function applyOptionFlags(cwd: string, options: EnableOptions): void {
 		updateLocalConfig({ agent_name: options.agent }, cwd);
 		console.log(`  ${c.green("Set")} agent name: ${c.cyan(options.agent)}`);
 	}
-	if (options.syncMode) {
-		if (!VALID_SYNC_MODES.includes(options.syncMode as SyncMode)) {
-			console.log(
-				`\n${c.red("Error:")} Invalid sync mode "${options.syncMode}". Must be one of: ${VALID_SYNC_MODES.join(", ")}`,
-			);
-			process.exit(1);
-		}
-		updateLocalConfig({ sync_mode: options.syncMode as SyncMode }, cwd);
+	if (options.syncMode && isSyncMode(options.syncMode)) {
+		updateLocalConfig({ sync_mode: options.syncMode }, cwd);
 		console.log(`  ${c.green("Set")} sync mode: ${c.cyan(options.syncMode)}`);
 	}
 	if (options.dataDir) {
@@ -356,7 +412,7 @@ function noteUndetectedClients(
 }
 
 async function maybeScaffoldStructure(mode: string | undefined): Promise<void> {
-	if (!mode) return;
+	if (!mode || !isStructureMode(mode)) return;
 	const structureOpts = { mode, write: true };
 	try {
 		const { structureInitCommand } = await import("./structure.js");

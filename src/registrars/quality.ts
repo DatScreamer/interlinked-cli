@@ -7,8 +7,14 @@
 
 import { type Command, type OptionValues } from "commander";
 import { registerMetricsCommands } from "./metrics.js";
+import { registerMutationCloudCommands } from "./mutation-cloud.js";
 
-export function registerQualityCommands(program: Command): void {
+const VERIFY_DESCRIPTION =
+	"Run the default high-signal external catalog plus diff-safe inline checks. Target can be a local path, GitHub URL, or any git remote URL.";
+const VERIFY_ONLY_DESCRIPTION =
+	"Run one named external check (for example: tsc, biome, oxlint, eslint, semgrep, gitleaks, knip, docs-check, sca)";
+
+function registerCheckAndSearchCommands(program: Command): void {
 	program
 		.command("check")
 		.description(
@@ -46,7 +52,9 @@ export function registerQualityCommands(program: Command): void {
 			const { searchCommand } = await import("../commands/search.js");
 			await searchCommand(query, opts);
 		});
+}
 
+function registerMultiEditCommand(program: Command): void {
 	program
 		.command("multi-edit [path]")
 		.description(
@@ -65,13 +73,13 @@ export function registerQualityCommands(program: Command): void {
 			const { multiEditCommand } = await import("../commands/multi-edit.js");
 			await multiEditCommand(path, opts);
 		});
+}
 
+function registerVerifyCommand(program: Command): void {
 	program
 		.command("verify [target]")
-		.description(
-			"Run tsc + biome on a project and report errors. Target can be a local path, GitHub URL, or any git remote URL.",
-		)
-		.option("--only <tool>", "Run only tsc or biome (e.g., --only tsc)")
+		.description(VERIFY_DESCRIPTION)
+		.option("--only <tool>", VERIFY_ONLY_DESCRIPTION)
 		.option("--suggestions", "Also run scored regex heuristics (sql-injection, perf, quality)")
 		.option("--json", "Machine-readable output")
 		.option("--details", "Show per-file details for all findings")
@@ -99,7 +107,9 @@ export function registerQualityCommands(program: Command): void {
 			const { verifyCommand } = await import("../commands/verify.js");
 			await verifyCommand({ ...opts, ...(target !== undefined ? { target } : {}) });
 		});
+}
 
+function registerWriteCommands(program: Command): void {
 	// `interlinked write` routes Bash-mediated file writes through the full
 	// content-quality pipeline (pre_block registry, biome diff-overlay, tsc
 	// diff-overlay). The Bash pre_block rule BLOCKS naive `node -e
@@ -143,7 +153,9 @@ export function registerQualityCommands(program: Command): void {
 			const { verifyChangesetCommand } = await import("../commands/verify-changeset.js");
 			await verifyChangesetCommand(opts);
 		});
+}
 
+function registerStructureCommands(program: Command): void {
 	// Structure: generic artifact structure management
 	const structCmd = program
 		.command("structure")
@@ -207,7 +219,9 @@ export function registerQualityCommands(program: Command): void {
 			const { structureBaselineCommand } = await import("../commands/structure.js");
 			await structureBaselineCommand(action, opts);
 		});
+}
 
+function registerCoverageCommands(program: Command): void {
 	// ===========================================
 	// Coverage ratchet — per-file coverage-delta gate
 	// ===========================================
@@ -238,7 +252,9 @@ export function registerQualityCommands(program: Command): void {
 			const { coverageBaselineCommand } = await import("../commands/coverage.js");
 			coverageBaselineCommand(opts);
 		});
+}
 
+function registerDeadcodeCommand(program: Command): void {
 	// ===========================================
 	// Deadcode — whole-repo reachability scan (the SCAN half of the two
 	// dead-code controls; per-edit detection is `structural_checks.enabled`)
@@ -258,16 +274,21 @@ export function registerQualityCommands(program: Command): void {
 			const { deadcodeCommand } = await import("../commands/deadcode.js");
 			process.exitCode = await deadcodeCommand(opts);
 		});
+}
 
-	registerMetricsCommands(program);
-
+function createMutationCommand(program: Command): Command {
 	// ===========================================
 	// Mutation ratchet — per-file mutation-score gate
 	// ===========================================
 	const mutationCmd = program
 		.command("mutation")
-		.description("Per-file mutation-score ratchet — fails on any file whose mutation score drops");
+		.description("Mutation testing: report-score ratchet, local runner measurement, and experimental durable cloud jobs");
 
+	registerMutationCloudCommands(mutationCmd);
+	return mutationCmd;
+}
+
+function registerMutationMeasurementCommands(mutationCmd: Command): void {
 	mutationCmd
 		.command("check", { isDefault: true })
 		.description("Compare the Stryker report against baseline and exit non-zero on any drop")
@@ -295,9 +316,9 @@ export function registerQualityCommands(program: Command): void {
 	mutationCmd
 		.command("measure <file>")
 		.description(
-			"Measure one file against the mutation runner. Read-only by default; --record folds a CLEAN report into the SAME manifest the per-edit gate enforces against, via seedFileBaseline — closes the gap where out-of-band re-measurement (e.g. scratch/measure-file.mts) never reached the ratchet.",
+			"Measure one file with a local mutation runner. Read-only by default; --record persists only a complete, conclusive result as local manifest baseline state. Recording never certifies the file as clean.",
 		)
-		.option("--record", "Persist the measured result into .interlinked/mutation-manifest.json")
+		.option("--record", "Persist a complete, conclusive result as local manifest baseline state (never a clean certification)")
 		.option("--runner-url <url>", "Override the configured runner endpoint(s)")
 		.option("--budget-ms <ms>", "Total time to keep retrying busy/unreachable endpoints (default: 900000)")
 		.option(
@@ -310,7 +331,9 @@ export function registerQualityCommands(program: Command): void {
 			const { mutationMeasureCommand } = await import("../commands/mutation.js");
 			await mutationMeasureCommand(file, opts);
 		});
+}
 
+function registerMutationWorklistCommands(mutationCmd: Command): void {
 	mutationCmd
 		.command("survivors")
 		.description(
@@ -333,7 +356,7 @@ export function registerQualityCommands(program: Command): void {
 	mutationCmd
 		.command("sweep")
 		.description(
-			"Re-measure mutation targets and record each clean result into the manifest. Defaults to the ranked survivor work-list; --all-eligible performs a full source census. Repeat --runner-url to fan out across runner boxes.",
+			"Re-measure local mutation targets and persist each complete, conclusive result as baseline state, never as a clean certification. Defaults to the ranked survivor work-list; --all-eligible performs a full source census. Repeat --runner-url to fan out across runner boxes.",
 		)
 		.option("--file <substr>", "Only files whose path contains this (case-insensitive)")
 		.option("--limit <n>", "Measure at most n files (applied AFTER --shard)")
@@ -368,7 +391,9 @@ export function registerQualityCommands(program: Command): void {
 			const { mutationSweepCommand } = await import("../commands/mutation-sweep.js");
 			await mutationSweepCommand(opts);
 		});
+}
 
+function registerMutationDispositionCommands(mutationCmd: Command): void {
 	mutationCmd
 		.command("accept")
 		.description(
@@ -405,7 +430,9 @@ export function registerQualityCommands(program: Command): void {
 			const { mutationDispositionCommand } = await import("../commands/mutation-disposition.js");
 			await mutationDispositionCommand(opts);
 		});
+}
 
+function registerDesignCommand(program: Command): void {
 	// ===========================================
 	// Design — wrap Impeccable's deterministic design-slop detector
 	// ===========================================
@@ -423,4 +450,20 @@ export function registerQualityCommands(program: Command): void {
 			const { designCommand } = await import("../commands/design.js");
 			designCommand(path, opts);
 		});
+}
+
+export function registerQualityCommands(program: Command): void {
+	registerCheckAndSearchCommands(program);
+	registerMultiEditCommand(program);
+	registerVerifyCommand(program);
+	registerWriteCommands(program);
+	registerStructureCommands(program);
+	registerCoverageCommands(program);
+	registerDeadcodeCommand(program);
+	registerMetricsCommands(program);
+	const mutationCommand = createMutationCommand(program);
+	registerMutationMeasurementCommands(mutationCommand);
+	registerMutationWorklistCommands(mutationCommand);
+	registerMutationDispositionCommands(mutationCommand);
+	registerDesignCommand(program);
 }

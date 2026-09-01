@@ -61,6 +61,18 @@ describe("collect command", () => {
 		expect(typeof parsed.error).toBe("string");
 	});
 
+	it("reports a destination-timeline refusal instead of claiming collection succeeded", async () => {
+		collectCodexSessionsMock.mockImplementation(() => {
+			throw new Error("timeline contains a malformed row");
+		});
+
+		await runCollect(["--json"]);
+
+		const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+		expect(parsed).toEqual({ ok: false, error: "timeline contains a malformed row" });
+		expect(process.exitCode).toBe(2);
+	});
+
 	// StringLiteral mutants on the command/description/option metadata
 	it("registers the exact description and option help text", () => {
 		const { cmd } = buildProgram();

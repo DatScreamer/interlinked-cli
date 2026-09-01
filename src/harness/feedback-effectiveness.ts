@@ -5,6 +5,7 @@
 // statistics. Used to measure how effective harness feedback is
 // at driving agent behavior toward fixes (vs. ignoring or suppressing).
 
+import { isOperationalCheckDeferral } from "./operational-check-deferrals.js";
 import type { FeedbackEffectivenessSummary, SessionTrajectory, WarningRecord } from "./types.js";
 
 /**
@@ -34,6 +35,9 @@ export function recordWarningsIssued(
 	const linesByCheck = new Map<string, number[]>();
 	for (const item of evidence) {
 		const name = typeof item === "string" ? item : item.name;
+		// A capacity/backpressure notice is operational telemetry, not feedback
+		// the agent can resolve by changing this source file.
+		if (isOperationalCheckDeferral(name)) continue;
 		const line = typeof item === "string" ? undefined : item.line;
 		if (!linesByCheck.has(name)) linesByCheck.set(name, []);
 		if (typeof line === "number" && Number.isFinite(line)) {
@@ -76,6 +80,10 @@ export function recordWarningResolutions(
 	filePath: string,
 	currentCheckNames: Set<string>,
 ): void {
+	// A no-verdict result cannot prove any earlier source warning was fixed.
+	// Conservatively defer resolution for this file until every attempted check
+	// represented by the call has a real verdict.
+	if ([...currentCheckNames].some(isOperationalCheckDeferral)) return;
 	const prefix = `${filePath}::`;
 
 	for (const [key, record] of session.warnings_issued) {

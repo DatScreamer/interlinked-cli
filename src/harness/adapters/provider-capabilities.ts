@@ -73,7 +73,6 @@ export const CLAUDE_CODE_CAPABILITIES = defineCapabilities({
 		}),
 		event("PermissionRequest", "permission-request", {
 			control: "permission",
-			modelContext: true,
 			missingRuntime: "fail_closed",
 		}),
 		event("WorktreeCreate", "worktree-create", {

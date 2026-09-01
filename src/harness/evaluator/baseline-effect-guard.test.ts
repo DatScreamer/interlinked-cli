@@ -401,7 +401,10 @@ describe("call pairing and snapshot consumption", () => {
 	it("evicts the oldest snapshot once the bounded map is exceeded", () => {
 		writeCaps(TIGHT);
 		rememberBaselineSnapshot("oldest", root);
-		for (let i = 0; i < 64; i += 1) rememberBaselineSnapshot(`bounded-${i}`, root);
+		// The map retains the first snapshot plus 64 following calls, then
+		// clears before accepting the next one. The sixty-fifth follower is
+		// therefore the insertion that proves the oldest snapshot was evicted.
+		for (let i = 0; i < 65; i += 1) rememberBaselineSnapshot(`bounded-${i}`, root);
 		writeCaps(LOOSE);
 
 		// test-contract: boundary — a dropped pre-call snapshot cannot produce a false effect warning after the memory ceiling

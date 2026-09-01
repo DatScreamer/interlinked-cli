@@ -27,11 +27,26 @@
 // the harness inert in non-TS projects AND avoids the `npx tsc` "this
 // is not the tsc command" trap on fresh clones without `npm install`.
 
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
+import { runProcessAsync } from "./check-engine/spawn-async.js";
+import {
+	ProjectCompilerUnavailableError,
+	runWithProjectCompilerLease,
+	tryAcquireProjectCompilerLease,
+} from "./project-compiler-gate.js";
+import { describeDeath, diedBySignal } from "./project-gate-process.js";
 import type { CheckResultEntry } from "./types.js";
+
+export {
+	checkProjectTestsClean,
+	checkProjectTestsCleanAsync,
+	parseTestFailures,
+	resolveTestCommand,
+} from "./project-test-gate.js";
+export type { ResolvedTestCommand } from "./project-test-gate.js";
 
 const TYPECHECK_TIMEOUT_MS = 60_000;
 const MAX_DIAGS_REPORTED = 50;
@@ -113,57 +128,6 @@ export function parseTscDiagnostics(stdout: string): TscDiagnostic[] {
  * (or worse). Caught live: CI-only failures on run 31517477152 where Linux
  * classified a SIGTERM'd child by its 143 exit code.
  */
-const SIGNAL_EXIT_BASE = 128;
-function diedBySignal(result: { status: number | null; signal: NodeJS.Signals | null }): boolean {
-	return result.signal !== null || result.status === null || result.status >= SIGNAL_EXIT_BASE;
-}
-
-/** Name for the common signals a typecheck/test child realistically dies
- *  from (explicit kill, timeout, OOM), keyed by the POSIX `128 + signum`
- *  exit code. Not exhaustive — an unmapped code falls back to the raw
- *  exit code in `describeDeath`. */
-const SIGNAL_NAME_BY_EXIT_CODE: Partial<Record<number, string>> = {
-	129: "SIGHUP",
-	130: "SIGINT",
-	131: "SIGQUIT",
-	132: "SIGILL",
-	133: "SIGTRAP",
-	134: "SIGABRT",
-	135: "SIGBUS",
-	136: "SIGFPE",
-	137: "SIGKILL",
-	138: "SIGUSR1",
-	139: "SIGSEGV",
-	140: "SIGUSR2",
-	141: "SIGPIPE",
-	142: "SIGALRM",
-	143: "SIGTERM",
-};
-
-/** Signal name for a POSIX 128+n exit code, when recognized. Returns null
- *  for anything outside that map (including the bare base code 128, which
- *  has no valid signum) so the caller falls back to a plain exit-code
- *  message. */
-function describeSignalFromExitCode(status: number): string | null {
-	if (status <= SIGNAL_EXIT_BASE) return null;
-	const name = SIGNAL_NAME_BY_EXIT_CODE[status];
-	if (!name) return null;
-	return `signal ${name} (exit ${status})`;
-}
-
-/** Human-readable cause for the timed-out/terminated finding message.
- *  Prefers the direct `signal` field (set on macOS/most POSIX spawnSync
- *  deaths); on Linux npm often re-encodes a grandchild's signal death as
- *  `status = 128 + signum` with `signal: null` (see diedBySignal's doc
- *  above), so this falls back to deriving the name from the exit code —
- *  the message names the same cause on both platforms. */
-function describeDeath(result: { status: number | null; signal: NodeJS.Signals | null }): string {
-	if (result.signal) return `signal ${result.signal}`;
-	if (result.status === null) return "no exit status";
-	const bySignalCode = describeSignalFromExitCode(result.status);
-	if (bySignalCode) return bySignalCode;
-	return `exit ${result.status}`;
-}
 
 /** Run the project's typecheck and return one CheckResultEntry per
  *  diagnostic (capped at 50). Empty array on success. Returns a single
@@ -186,11 +150,30 @@ export function checkProjectTypecheckClean(cwd: string): CheckResultEntry[] {
 	const cmd = resolveTypecheckCommand(cwd);
 	if (!cmd) return [];
 
-	const result = spawnSync(cmd.bin, cmd.args, {
-		cwd,
-		encoding: "utf-8",
-		timeout: TYPECHECK_TIMEOUT_MS,
-	});
+	const releaseCompiler = tryAcquireProjectCompilerLease(cwd);
+	if (!releaseCompiler) {
+		return [
+			{
+				source: "structural",
+				name: "project_typecheck_deferred",
+				severity: "warning",
+				message:
+					"Project typecheck was NOT CHECKED because another compiler owns this project. Retry before committing or pushing.",
+				determinism: "fully_deterministic",
+			},
+		];
+	}
+
+	let result: SpawnSyncReturns<string>;
+	try {
+		result = spawnSync(cmd.bin, cmd.args, {
+			cwd,
+			encoding: "utf-8",
+			timeout: TYPECHECK_TIMEOUT_MS,
+		});
+	} finally {
+		releaseCompiler();
+	}
 
 	if (result.error) {
 		return [
@@ -242,136 +225,96 @@ export function checkProjectTypecheckClean(cwd: string): CheckResultEntry[] {
 	}));
 }
 
-// ============================================================
-// Push-time gate: project test suite must pass
-// ============================================================
-// Typecheck-only is necessary but not sufficient. CI also runs the
-// test suite — so we run it on `git push` (not commit; tests take
-// long enough that running on every commit would be punishing).
-//
-// Discovery: prefers `npm test --silent --run` (vitest's no-watch
-// shorthand); falls back to `npm run test --silent --run`. Returns
-// null (silent no-op) if neither is available.
-//
-// Bypass: env var `INTERLINKED_SKIP_PROJECT_TESTS=1` (audited).
-
-const TESTS_TIMEOUT_MS = 300_000; // 5 min ceiling — vitest can be slow on cold cache.
-const MAX_TEST_FAILURES_REPORTED = 10;
-
-export interface ResolvedTestCommand {
-	bin: string;
-	args: string[];
-	source: "npm-test" | "npm-run-test";
-}
-
-/** Resolve the project's test command. Returns null when no `test`
- *  script is declared — keeps the gate inert in projects that don't
- *  ship a test suite. */
-export function resolveTestCommand(cwd: string): ResolvedTestCommand | null {
-	const pkgPath = join(cwd, "package.json");
-	if (!existsSync(pkgPath)) return null;
-	let pkg: { scripts?: Record<string, string> } | null = null;
-	try {
-		pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-	} catch {
-		return null;
-	}
-	if (!pkg?.scripts?.test) return null;
-	// `npm test` is the canonical entry — same command CI runs by default.
-	// `--silent` strips npm preamble; `--` passes remaining args to the script.
-	return { bin: "npm", args: ["test", "--silent"], source: "npm-test" };
-}
-
-/** Parse vitest's failure summary to extract per-test failure messages.
- *  Vitest's output varies by reporter; we look for the standard
- *  `× <suite> > <test> ...` lines plus the `FAIL <path>` headers. */
-export function parseTestFailures(stdout: string): string[] {
-	const failures: string[] = [];
-	for (const line of stdout.split("\n")) {
-		// Strip ANSI color codes (vitest emits them even with --silent).
-		const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
-		// Vitest red-cross prefix on failed tests
-		const m = stripped.match(/^\s*(?:×|✗|FAIL)\s+(.+)$/);
-		if (m) {
-			const msg = nonNull(m[1]).trim();
-			// Skip retry-noise duplicates ("(retry x2)")
-			if (!failures.includes(msg)) failures.push(msg);
-		}
-	}
-	return failures;
-}
-
-/** Run the project's test suite and return one CheckResultEntry per
- *  failing test (capped). Empty array on success. Returns a single
- *  "skipped" warning entry when bypassed via env var. */
-export function checkProjectTestsClean(cwd: string): CheckResultEntry[] {
-	if (process.env.INTERLINKED_SKIP_PROJECT_TESTS === "1") {
+/**
+ * Daemon-safe project typecheck. Unlike the legacy synchronous API above,
+ * this path yields the event loop and keeps project admission until the
+ * compiler wrapper and its detached descendants are reaped after a timeout.
+ * Admission failure is an explicit no-verdict warning, never a clean result.
+ */
+export async function checkProjectTypecheckCleanAsync(cwd: string): Promise<CheckResultEntry[]> {
+	if (process.env.INTERLINKED_SKIP_PROJECT_TYPECHECK === "1") {
 		return [
 			{
 				source: "structural",
-				name: "project_tests_skipped",
+				name: "project_typecheck_skipped",
 				severity: "warning",
 				message:
-					"Project test gate bypassed via INTERLINKED_SKIP_PROJECT_TESTS=1. Verify CI manually before merging.",
+					"Project typecheck gate bypassed via INTERLINKED_SKIP_PROJECT_TYPECHECK=1. Verify CI manually before merging.",
 				determinism: "fully_deterministic",
 			},
 		];
 	}
 
-	const cmd = resolveTestCommand(cwd);
+	const cmd = resolveTypecheckCommand(cwd);
 	if (!cmd) return [];
 
-	const result = spawnSync(cmd.bin, cmd.args, {
-		cwd,
-		encoding: "utf-8",
-		timeout: TESTS_TIMEOUT_MS,
-	});
+	try {
+		return await runWithProjectCompilerLease(cwd, async () => {
+			const result = await runProcessAsync(cmd.bin, cmd.args, {
+				cwd,
+				timeout: TYPECHECK_TIMEOUT_MS,
+			});
+			if (result.timedOut || result.killed) {
+				return [
+					{
+						source: "structural",
+						name: "project_typecheck_timed_out",
+						severity: "warning",
+						message: `Project typecheck (${cmd.source}) exceeded ${TYPECHECK_TIMEOUT_MS / 1000}s timeout or was terminated. Verify CI manually.`,
+						determinism: "fully_deterministic",
+					},
+				];
+			}
+			if (result.code === null) {
+				return [
+					{
+						source: "structural",
+						name: "project_typecheck_failed_to_run",
+						severity: "warning",
+						message: `Project typecheck (${cmd.source}) could not run to completion. Verify CI manually.`,
+						determinism: "fully_deterministic",
+					},
+				];
+			}
+			if (result.code === 0) return [];
 
-	if (result.error) {
+			const output = `${result.stdout}\n${result.stderr}`;
+			const diags = parseTscDiagnostics(output);
+			if (diags.length === 0) {
+				return [
+					{
+						source: "structural",
+						name: "project_typecheck_clean",
+						severity: "error",
+						message: `Project typecheck (${cmd.source}) failed (exit ${result.code}) but no TS diagnostics parsed. Raw output: ${output.trim().slice(0, 500)}`,
+						determinism: "fully_deterministic",
+					},
+				];
+			}
+			return diags.slice(0, MAX_DIAGS_REPORTED).map((diagnostic) => ({
+				source: "structural" as const,
+				name: "project_typecheck_clean",
+				severity: "error" as const,
+				message: `${diagnostic.file}:${diagnostic.line}:${diagnostic.col} — ${diagnostic.code}: ${diagnostic.message}`,
+				file: diagnostic.file,
+				determinism: "fully_deterministic" as const,
+			}));
+		});
+	} catch (error) {
+		const detail =
+			error instanceof ProjectCompilerUnavailableError
+				? error.message
+				: error instanceof Error
+					? error.message
+					: String(error);
 		return [
 			{
 				source: "structural",
-				name: "project_tests_failed_to_run",
+				name: "project_typecheck_deferred",
 				severity: "warning",
-				message: `Project tests (${cmd.source}) could not run: ${result.error.message}. Verify CI manually.`,
+				message: `Project typecheck was NOT CHECKED: ${detail}. Retry before committing or pushing.`,
 				determinism: "fully_deterministic",
 			},
 		];
 	}
-
-	if (diedBySignal(result)) {
-		return [
-			{
-				source: "structural",
-				name: "project_tests_timed_out",
-				severity: "warning",
-				message: `Project tests (${cmd.source}) exceeded ${TESTS_TIMEOUT_MS / 1000}s timeout or was terminated (${describeDeath(result)}). Verify CI manually.`,
-				determinism: "fully_deterministic",
-			},
-		];
-	}
-
-	if (result.status === 0) return [];
-
-	const failures = parseTestFailures(`${result.stdout || ""}\n${result.stderr || ""}`);
-	if (failures.length === 0) {
-		const raw = (result.stdout || result.stderr || "").trim().slice(0, 500);
-		return [
-			{
-				source: "structural",
-				name: "project_tests_clean",
-				severity: "error",
-				message: `Project tests (${cmd.source}) failed (exit ${result.status}) but no failure list parsed. Raw tail: ${raw}`,
-				determinism: "fully_deterministic",
-			},
-		];
-	}
-
-	return failures.slice(0, MAX_TEST_FAILURES_REPORTED).map((f) => ({
-		source: "structural",
-		name: "project_tests_clean",
-		severity: "error" as const,
-		message: f,
-		determinism: "fully_deterministic",
-	}));
 }

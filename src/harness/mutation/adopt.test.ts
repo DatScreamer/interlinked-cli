@@ -178,3 +178,144 @@ describe("seedFileBaseline — brownfield adoption", () => {
 		expect(Object.keys(must(seeded).files)).toEqual([FILE]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Target selection — the report must describe THIS file, or nothing is written
+// ---------------------------------------------------------------------------
+// Review 2026-08-27: selection was `adapted.find((f) => f.file === args.file) ??
+// adapted[0]`, and `forFile.content` was never compared against `args.content`.
+// Two consequences, both live: a report that did not name the target seeded the
+// target's baseline from a FOREIGN file's mutants, and a report measured against
+// different source text seeded it from a stale measurement. `deriveIdentities`
+// anchors those mutants' offsets in `args.content`, so the recorded identities
+// describe spans the engine never measured — and this is the write path most of
+// this repo's baselines were created through.
+//
+// The refusals now match `selectTargetEntry` in cloud-runner.ts: exact canonical
+// path equality, no ambiguity, exact source equality.
+
+const FOREIGN = "src/other.ts";
+const FOREIGN_CONTENT = "export const z = 1;\n";
+
+/** A well-formed report for a file that is NOT the adoption target. */
+function foreignReport() {
+	return {
+		files: {
+			[FOREIGN]: {
+				source: FOREIGN_CONTENT,
+				mutants: [
+					{
+						mutatorName: "EqualityOperator",
+						replacement: ">=",
+						status: "Survived",
+						location: { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } },
+					},
+				],
+			},
+		},
+	};
+}
+
+describe("seedFileBaseline — target selection (must refuse)", () => {
+	it("N: refuses when the target is absent and only a FOREIGN entry is present", () => {
+		// The removed `?? adapted[0]` fallback: src/other.ts's survivor became
+		// src/a.ts's accepted floor, keyed under src/a.ts, anchored at offsets
+		// resolved in src/a.ts's text.
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: FILE,
+				content: CONTENT,
+				report: foreignReport(),
+				at: "t",
+			}),
+		).toBeNull();
+	});
+
+	it("N: refuses even when the foreign entry is the only one and carries the target's own source", () => {
+		// Content equality alone is not enough — the path must match too, or a
+		// report for a file that merely happens to be a byte-for-byte twin seeds
+		// the target.
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: FILE,
+				content: CONTENT,
+				report: { files: { [FOREIGN]: report("Survived").files[FILE] } },
+				at: "t",
+			}),
+		).toBeNull();
+	});
+
+	it("N: refuses when the entry's source differs from the content being adopted", () => {
+		// A stale measurement. The mutants' offsets index the report's source, the
+		// identities index `content`; recording the pair asserts a measurement that
+		// never happened.
+		const stale = report("Survived");
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: FILE,
+				content: `${CONTENT}// one line later\n`,
+				report: stale,
+				at: "t",
+			}),
+		).toBeNull();
+	});
+
+	it("N: refuses an AMBIGUOUS target — two report entries collapsing onto one canonical key", () => {
+		// `./src/a.ts` and `src/a.ts` normalize to the same manifest key, so there
+		// is no single entry to trust. Same refusal cloud-runner.ts makes.
+		const one = report("Survived").files[FILE];
+		expect(
+			seedFileBaseline({
+				base: emptyManifest(META),
+				file: FILE,
+				content: CONTENT,
+				report: { files: { [FILE]: one, [`./${FILE}`]: one } },
+				at: "t",
+			}),
+		).toBeNull();
+	});
+
+	it("N: writes NOTHING to the manifest when it refuses a foreign report", () => {
+		// The consequence that matters: a refusal must leave the caller's manifest
+		// untouched, not extend it with an empty or foreign-seeded record.
+		const base = emptyManifest(META);
+		const seeded = seedFileBaseline({
+			base,
+			file: FILE,
+			content: CONTENT,
+			report: foreignReport(),
+			at: "t",
+		});
+		expect(seeded).toBeNull();
+		expect(Object.keys(base.files)).toEqual([]);
+	});
+
+	it("P: seeds when path and content both match exactly", () => {
+		const seeded = seedFileBaseline({
+			base: emptyManifest(META),
+			file: FILE,
+			content: CONTENT,
+			report: report("Survived"),
+			at: "t",
+		});
+		expect(Object.keys(must(seeded).files)).toEqual([FILE]);
+		expect(acceptedSurvivors(must(seeded), FILE).size).toBe(1);
+	});
+
+	it("P: seeds from the target's OWN entry when a foreign entry sits ahead of it", () => {
+		// The positive half of the fallback fix: an unrelated entry earlier in the
+		// report must neither be selected nor contribute mutants.
+		const seeded = seedFileBaseline({
+			base: emptyManifest(META),
+			file: FILE,
+			content: CONTENT,
+			report: { files: { ...foreignReport().files, [FILE]: report("Survived").files[FILE] } },
+			at: "t",
+		});
+		expect(Object.keys(must(seeded).files)).toEqual([FILE]);
+		expect(acceptedSurvivors(must(seeded), FILE).size).toBe(1);
+	});
+});

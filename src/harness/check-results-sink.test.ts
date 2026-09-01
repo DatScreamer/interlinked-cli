@@ -61,13 +61,32 @@ describe("buildCheckRow", () => {
 		expect(row?.file).toBe("src/clean.ts");
 	});
 
+	it("retains a no-verdict row in structured telemetry without claiming the check ran", () => {
+		const deferred: CheckResultEntry = {
+			source: "quality",
+			name: "external_check_deferred",
+			severity: "warning",
+			message: "External check deferred for src/x.ts (typescript)",
+			file: "src/x.ts",
+			determinism: "fully_deterministic",
+		};
+		const row = buildCheckRow(
+			postEvent({ tool_use_id: "t-deferred", tool_input: { file_path: "src/x.ts" } }),
+			decisionWith({ check_results: [deferred] }),
+		);
+		expect(row?.checks).toEqual([
+			{ id: "external_check_deferred", severity: "warning", determinism: "proven" },
+		]);
+		expect(row?.ran).toBeUndefined();
+	});
+
 	it("records per-subagent identity and model while retaining the parent session", () => {
 		const ev = postEvent({
 			tool_use_id: "t-sub",
 			agent_name: "/root/kill_a_survivors",
 			subagent_id: "sub-thread",
 			parent_agent: "parent-thread",
-			model: "gpt-5.6-luna",
+			model: "vendor-model-luna",
 		});
 		const row = buildCheckRow(ev, decisionWith({ checks_ran: ["typescript"] }));
 		expect(row).toMatchObject({
@@ -75,7 +94,7 @@ describe("buildCheckRow", () => {
 			agent_name: "/root/kill_a_survivors",
 			subagent_id: "sub-thread",
 			parent_agent: "parent-thread",
-			model: "gpt-5.6-luna",
+			model: "vendor-model-luna",
 		});
 	});
 

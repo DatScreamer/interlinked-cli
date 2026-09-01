@@ -56,7 +56,7 @@ describe("Codex adapter survivor contracts", () => {
         expect(fragment.mergeStrategy).toBe("array-append");
     });
 
-    // test-contract: PostToolUse and non-PostToolUse entries are independently rendered with empty matchers.
+    // test-contract: PostToolUse is write-scoped; lifecycle and pre-tool events stay unscoped.
     it("renders one matcher entry for every native event", () => {
         const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
         const hooks = (fragment.fragment as { hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string }> }> | undefined> }).hooks;
@@ -68,7 +68,7 @@ describe("Codex adapter survivor contracts", () => {
         for (const name of names) {
             const entry = hooks[name]?.[0];
             expect(entry).toBeDefined();
-            expect(entry?.matcher).toBe("");
+			expect(entry?.matcher).toBe(name === "PostToolUse" ? "Bash|apply_patch" : "");
             expect(entry?.hooks[0]?.type).toBe("command");
         }
     });

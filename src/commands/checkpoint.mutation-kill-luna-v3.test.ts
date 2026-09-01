@@ -84,7 +84,9 @@ describe("checkpoint show rendering", () => {
 
         checkpointShowCommand("cp-1", {});
 
-        const output = String(log.mock.calls[0]?.[0]);
+        // Strip ANSI: c.bold("Files changed") emits a reset code between the
+        // label and the count when color is enabled, splitting the plain text.
+        const output = String(log.mock.calls[0]?.[0]).replace(/\x1b\[[0-9;]*m/g, "");
         expect(output).toContain("Files changed (30)");
         expect(output).toContain("file-29.ts");
         expect(output).not.toContain("more");

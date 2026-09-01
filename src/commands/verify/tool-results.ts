@@ -29,6 +29,12 @@ import { readSharedConfig } from "../../lib/config.js";
 import { nonNull } from "../../lib/non-null.js";
 import { JS_TS_EXTS } from "./advisory.js";
 import { runPerFileChecks } from "./file-checks.js";
+import type { PiiOpts } from "./file-checks-shared.js";
+import {
+	type ScanProgress,
+	YIELD_EVERY_FILES,
+	yieldToEventLoop,
+} from "./scan-progress.js";
 import {
 	type CodeQualityIssue,
 	type CodeQualityResults,
@@ -51,6 +57,33 @@ export function filterCodeQualityResults(
 		filtered[key] = results[key].filter((issue) => !skipChecks.has(issue.check));
 	}
 	return filtered;
+}
+
+/**
+ * Memory-bounded variant for the verify orchestrator, which owns its freshly
+ * collected result. Compacts each bucket in place so filtering never holds a
+ * second project-wide copy of every finding at the scan/output boundary.
+ */
+export function filterCodeQualityResultsInPlace(
+	results: CodeQualityResults,
+	skipChecks: Set<string>,
+): CodeQualityResults {
+	for (const key of CQ_RESULT_KEYS) {
+		const rows = results[key];
+		let retained = 0;
+		for (const issue of rows) {
+			if (skipChecks.has(issue.check)) continue;
+			rows[retained] = issue;
+			retained += 1;
+		}
+		rows.length = retained;
+	}
+	return results;
+}
+
+/** Drop finding references once human-readable output has consumed them. */
+export function clearCodeQualityResults(results: CodeQualityResults): void {
+	for (const key of CQ_RESULT_KEYS) results[key].length = 0;
 }
 
 function buildUndocumentedEnvIssues(
@@ -76,22 +109,111 @@ function buildUndocumentedEnvIssues(
 	return issues;
 }
 
-function collectModuleExports(files: string[], moduleExportsCache: Map<string, string[]>): void {
+/**
+ * Pass 1, one file: record the module's exported names (used by mock-drift).
+ * A file that cannot be read contributes nothing, exactly as before.
+ */
+function collectOneModuleExport(file: string, moduleExportsCache: Map<string, string[]>): void {
+	let content: string;
+	try {
+		content = readFileSync(file, "utf-8");
+	} catch {
+		return;
+	}
+	const ext = extname(file).toLowerCase();
+	if (!JS_TS_EXTS.has(ext) || file.endsWith(".d.ts")) return;
+	const exports = parseExports(content);
+	moduleExportsCache.set(
+		file,
+		exports.map((e) => e.name),
+	);
+}
+
+/**
+ * Mutable state threaded through both scan passes. Extracted so the
+ * synchronous and the progress-reporting entry points share one
+ * implementation of every pass and cannot drift apart.
+ */
+interface CqRunContext {
+	r: CodeQualityResults;
+	piiOpts: PiiOpts;
+	documentedEnvVars: Set<string>;
+	allEnvRefs: Map<string, Array<{ file: string; line: number }>>;
+	moduleExportsCache: Map<string, string[]>;
+}
+
+function prepareRun(cwd: string): CqRunContext {
+	// Load PII config from shared config (if available). Build with conditional
+	// spreads so absent keys stay absent rather than being set to `undefined`
+	// — `PiiOpts` (derived from checkPiiInSource) is exact-optional.
+	const sharedConfig = readSharedConfig(cwd);
+	const piiOpts = {
+		...(sharedConfig?.pii_opt_in ? { optIn: sharedConfig.pii_opt_in } : {}),
+		...(sharedConfig?.pii_patterns ? { customPatterns: sharedConfig.pii_patterns } : {}),
+	};
+	return {
+		r: emptyResults(),
+		piiOpts,
+		documentedEnvVars: parseEnvDocumentation(cwd, { existsSync, readFileSync, readdirSync }, join),
+		allEnvRefs: new Map(),
+		moduleExportsCache: new Map(),
+	};
+}
+
+/** Pass 2, one file: the ~200-detector battery. Unreadable files are skipped. */
+function runOneFileChecks(file: string, cwd: string, ctx: CqRunContext): void {
+	let content: string;
+	try {
+		content = readFileSync(file, "utf-8");
+	} catch {
+		return;
+	}
+	runPerFileChecks({
+		file,
+		content,
+		cwd,
+		r: ctx.r,
+		moduleExportsCache: ctx.moduleExportsCache,
+		allEnvRefs: ctx.allEnvRefs,
+		piiOpts: ctx.piiOpts,
+	});
+}
+
+/** Pass 3 + post-loop aggregation + suppression filtering. */
+function finalizeRun(ctx: CqRunContext, files: string[], cwd: string): CodeQualityResults {
+	// Pass 2 is the last consumer of the project-wide export census. Release it
+	// before parity/suppression aggregation allocates its own cross-file rows.
+	ctx.moduleExportsCache.clear();
+	applyParityFindings(ctx.r, files, cwd);
+	// Emit one issue per undocumented env var instead of one per reference.
+	ctx.r.undocumentedEnvVars.push(
+		...buildUndocumentedEnvIssues(ctx.allEnvRefs, ctx.documentedEnvVars),
+	);
+	ctx.allEnvRefs.clear();
+	ctx.documentedEnvVars.clear();
+	applyPersistedSuppressions(ctx.r, join(cwd, ".interlinked"));
+	return ctx.r;
+}
+
+/**
+ * Drive one pass over every file, reporting progress and yielding to the
+ * event loop every `YIELD_EVERY_FILES` files so the process stays
+ * interruptible (Ctrl-C) instead of being one opaque synchronous span.
+ */
+async function forEachFileWithProgress(
+	files: string[],
+	progress: ScanProgress,
+	phase: string,
+	visit: (file: string) => void,
+): Promise<void> {
+	progress.start(phase);
+	let seen = 0;
 	for (const file of files) {
-		let content: string;
-		try {
-			content = readFileSync(file, "utf-8");
-		} catch {
-			continue;
-		}
-		const ext = extname(file).toLowerCase();
-		if (JS_TS_EXTS.has(ext) && !file.endsWith(".d.ts")) {
-			const exports = parseExports(content);
-			moduleExportsCache.set(
-				file,
-				exports.map((e) => e.name),
-			);
-		}
+		const startedAt = Date.now();
+		visit(file);
+		progress.advance(file, Date.now() - startedAt);
+		seen += 1;
+		if (seen % YIELD_EVERY_FILES === 0) await yieldToEventLoop();
 	}
 }
 
@@ -172,58 +294,43 @@ function applyPersistedSuppressions(r: CodeQualityResults, interlinkedDir: strin
  * uses, ensuring verify and PostToolUse always agree.
  */
 export function runCodeQualityChecks(files: string[], cwd: string): CodeQualityResults {
-	const r = emptyResults();
-
-	// Load PII config from shared config (if available). Build with conditional
-	// spreads so absent keys stay absent rather than being set to `undefined`
-	// — `PiiOpts` (derived from checkPiiInSource) is exact-optional.
-	const sharedConfig = readSharedConfig(cwd);
-	const piiOpts = {
-		...(sharedConfig?.pii_opt_in ? { optIn: sharedConfig.pii_opt_in } : {}),
-		...(sharedConfig?.pii_patterns ? { customPatterns: sharedConfig.pii_patterns } : {}),
-	};
-
-	// Project-level data needed for cross-file checks
-	const documentedEnvVars = parseEnvDocumentation(
-		cwd,
-		{ existsSync, readFileSync, readdirSync },
-		join,
-	);
-	const allEnvRefs = new Map<string, Array<{ file: string; line: number }>>();
-	const moduleExportsCache = new Map<string, string[]>();
+	const ctx = prepareRun(cwd);
 
 	// Pass 1: collect all project exports (used by mock-drift check)
-	collectModuleExports(files, moduleExportsCache);
+	for (const file of files) collectOneModuleExport(file, ctx.moduleExportsCache);
 
 	// Pass 2: per-file checks (delegated to file-checks.ts)
-	for (const file of files) {
-		let content: string;
-		try {
-			content = readFileSync(file, "utf-8");
-		} catch {
-			continue;
-		}
-		runPerFileChecks({
-			file,
-			content,
-			cwd,
-			r,
-			moduleExportsCache,
-			allEnvRefs,
-			piiOpts,
-		});
-	}
+	for (const file of files) runOneFileChecks(file, cwd, ctx);
 
-	// Pass 3: verify-parity project-wide scans
-	applyParityFindings(r, files, cwd);
+	// Pass 3 + aggregation + suppressions
+	return finalizeRun(ctx, files, cwd);
+}
 
-	// Post-loop: emit one issue per undocumented env var instead of one per reference.
-	r.undocumentedEnvVars.push(...buildUndocumentedEnvIssues(allEnvRefs, documentedEnvVars));
+/**
+ * Public API — consumed by `verify.ts` (both the streaming and the JSON path).
+ *
+ * Same passes, same order, same result as `runCodeQualityChecks`, but the two
+ * per-file passes report progress to `progress` and yield to the event loop as
+ * they go. This is the entry point every interactive run should use: the
+ * synchronous variant produces no output for minutes on a large tree and
+ * cannot be interrupted.
+ */
+export async function runCodeQualityChecksProgressive(
+	files: string[],
+	cwd: string,
+	progress: ScanProgress,
+): Promise<CodeQualityResults> {
+	const ctx = prepareRun(cwd);
 
-	// Apply suppressions + hygiene findings
-	applyPersistedSuppressions(r, join(cwd, ".interlinked"));
+	await forEachFileWithProgress(files, progress, "exports", (file) => {
+		collectOneModuleExport(file, ctx.moduleExportsCache);
+	});
+	await forEachFileWithProgress(files, progress, "checks", (file) => {
+		runOneFileChecks(file, cwd, ctx);
+	});
+	progress.finish();
 
-	return r;
+	return finalizeRun(ctx, files, cwd);
 }
 
 /** Public API — consumed by `verify.ts` and tests. Re-exports helper. */

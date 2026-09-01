@@ -1,7 +1,16 @@
-import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { tryAcquireProjectCompilerLease } from "./project-compiler-gate.js";
 import {
 	DEFAULT_WATCH_IDLE_MS,
 	WATCH_CRASHED,
@@ -25,8 +34,8 @@ beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "interlinked-watch-"));
 });
 
-afterEach(() => {
-	for (const wp of spawned.splice(0)) wp.kill();
+afterEach(async () => {
+	await Promise.all(spawned.splice(0).map((wp) => wp.kill()));
 	rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -459,4 +468,95 @@ describe("WatchProcess — kill()", () => {
 		expect(() => wp.kill()).not.toThrow();
 		expect(wp.isUsable()).toBe(false);
 	});
+
+	it("holds its compiler registration until a SIGTERM-resistant child is reaped", async () => {
+		const script = fakeTsgo(
+			"ignore-term.js",
+			[
+				"process.on('SIGTERM', () => {});",
+				"console.log('build starting at 12:00:00 AM');",
+				"console.log('build finished in 0.01s');",
+				"setInterval(() => {}, 1000);",
+			].join("\n"),
+		);
+		writeFileSync(script, `#!/usr/bin/env node\n${readFileSync(script, "utf-8").split("\n").slice(1).join("\n")}`);
+		chmodSync(script, 0o755);
+		const wp = makeWatchWithScript(DEFAULT_WATCH_IDLE_MS, script);
+		wp.start();
+		await wp.diagnosticsForFile(join(tmp, "a.ts"));
+		// SAFETY: the test observes the real child PID only to prove the public
+		// kill promise does not settle before that OS process exits.
+		const pid = (wp as unknown as { child: { pid?: number } | null }).child?.pid;
+		expect(pid).toBeTypeOf("number");
+
+		let settled = false;
+		const stopped = wp.kill().then(() => {
+			settled = true;
+		});
+		expect(settled).toBe(false);
+		expect(tryAcquireProjectCompilerLease(tmp)).toBeNull();
+		expect(() => process.kill(pid ?? 0, 0)).not.toThrow();
+		await stopped;
+		expect(settled).toBe(true);
+		expect(() => process.kill(pid ?? 0, 0)).toThrow();
+		const release = tryAcquireProjectCompilerLease(tmp);
+		expect(release).not.toBeNull();
+		release?.();
+	}, 5_000);
+
+	it("holds its compiler registration until a wrapper's TERM-resistant descendant is reaped", async () => {
+		const descendantPidPath = join(tmp, "descendant.pid");
+		const descendantProgram = [
+			'const fs = require("node:fs");',
+			"const pidPath = process.argv[1];",
+			"process.on('SIGTERM', () => {});",
+			"fs.writeFileSync(pidPath, String(process.pid));",
+			"setInterval(() => {}, 1000);",
+		].join(" ");
+		const wrapperProgram = [
+			'const { spawn } = require("node:child_process");',
+			`const pidPath = ${JSON.stringify(descendantPidPath)};`,
+			`const childProgram = ${JSON.stringify(descendantProgram)};`,
+			"process.on('SIGTERM', () => process.exit(0));",
+			"spawn(process.execPath, ['-e', childProgram, pidPath], { stdio: 'ignore' });",
+			"console.log('build starting at 12:00:00 AM');",
+			"console.log('build finished in 0.01s');",
+			"setInterval(() => {}, 1000);",
+		].join("\n");
+		const script = join(tmp, "wrapper-with-descendant.js");
+		writeFileSync(script, `#!/usr/bin/env node\n${wrapperProgram}`);
+		chmodSync(script, 0o755);
+		const wp = makeWatchWithScript(DEFAULT_WATCH_IDLE_MS, script);
+		let descendantPid = 0;
+		try {
+			wp.start();
+			await wp.diagnosticsForFile(join(tmp, "a.ts"));
+			await waitFor(() => existsSync(descendantPidPath), 2_000);
+			descendantPid = Number.parseInt(readFileSync(descendantPidPath, "utf-8"), 10);
+			expect(Number.isSafeInteger(descendantPid)).toBe(true);
+
+			let settled = false;
+			const stopped = wp.kill().then(() => {
+				settled = true;
+			});
+			await sleep(50);
+			expect(settled).toBe(false);
+			expect(tryAcquireProjectCompilerLease(tmp)).toBeNull();
+			expect(() => process.kill(descendantPid, 0)).not.toThrow();
+			await stopped;
+			expect(() => process.kill(descendantPid, 0)).toThrow();
+			const release = tryAcquireProjectCompilerLease(tmp);
+			expect(release).not.toBeNull();
+			release?.();
+		} finally {
+			if (descendantPid > 0) {
+				try {
+					process.kill(descendantPid, "SIGKILL");
+				} catch {
+					// Expected after the process-group reap under test.
+					void 0;
+				}
+			}
+		}
+	}, 5_000);
 });

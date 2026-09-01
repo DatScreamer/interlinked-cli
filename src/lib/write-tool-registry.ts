@@ -55,6 +55,10 @@ export interface WriteToolEntry {
 	 *  Claude Code would never emit them, and padding its matcher regex with
 	 *  names that cannot occur only makes the settings file harder to check. */
 	readonly claudeCodeNative: boolean;
+	/** True when Codex emits this name for a write-capable tool. This drives
+	 * Codex's PostToolUse matcher so read-only and coordination calls never
+	 * pay the hook/daemon cost. */
+	readonly codexNative?: boolean;
 }
 
 /**
@@ -72,7 +76,7 @@ export const WRITE_TOOLS: readonly WriteToolEntry[] = [
 	{ name: "NotebookEdit", channel: "direct", claudeCodeNative: true },
 	// Bash is the shell channel: not a direct edit, but very much a writer, so
 	// it stays in the matcher and keeps its observed ChangeSet.
-	{ name: "Bash", channel: "shell", claudeCodeNative: true },
+	{ name: "Bash", channel: "shell", claudeCodeNative: true, codexNative: true },
 	// --- Other runners / generic spellings ---
 	{ name: "Update", channel: "direct", claudeCodeNative: false },
 	{ name: "WriteFile", channel: "direct", claudeCodeNative: false },
@@ -80,7 +84,7 @@ export const WRITE_TOOLS: readonly WriteToolEntry[] = [
 	{ name: "write_file", channel: "direct", claudeCodeNative: false },
 	{ name: "edit_file", channel: "direct", claudeCodeNative: false },
 	// Copilot CLI / Codex patch verbs.
-	{ name: "apply_patch", channel: "direct", claudeCodeNative: false },
+	{ name: "apply_patch", channel: "direct", claudeCodeNative: false, codexNative: true },
 	{ name: "str_replace", channel: "direct", claudeCodeNative: false },
 	{ name: "create", channel: "direct", claudeCodeNative: false },
 ];
@@ -100,6 +104,11 @@ export const DIRECT_FILE_EDIT_TOOLS: readonly string[] = WRITE_TOOLS.filter(
  */
 export const CLAUDE_CODE_WRITE_TOOLS: readonly string[] = WRITE_TOOLS.filter(
 	(tool) => tool.claudeCodeNative,
+).map((tool) => tool.name);
+
+/** Codex-native write tools admitted to its PostToolUse hook. */
+export const CODEX_WRITE_TOOLS: readonly string[] = WRITE_TOOLS.filter(
+	(tool) => tool.codexNative === true,
 ).map((tool) => tool.name);
 
 const WRITE_TOOLS_BY_NAME: ReadonlyMap<string, WriteToolEntry> = new Map(

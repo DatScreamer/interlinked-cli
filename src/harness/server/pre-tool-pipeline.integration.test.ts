@@ -113,6 +113,7 @@ vi.mock("./pre-tool-pipeline-stages.js", () => ({
 	captureDiffAwareBaseline: vi.fn(),
 	injectStructureContext: vi.fn(),
 	runProjectWideGitGate: vi.fn(),
+	runProjectWideGitGateAsync: vi.fn(async () => {}),
 	runTddCommitGate: vi.fn(),
 }));
 
@@ -152,7 +153,7 @@ import { runCommitGate, runCoverageWriteGate } from "./pre-tool-coverage-gates.j
 import {
 	captureDiffAwareBaseline,
 	injectStructureContext,
-	runProjectWideGitGate,
+	runProjectWideGitGateAsync,
 	runTddCommitGate,
 } from "./pre-tool-pipeline-stages.js";
 import { getAutoCoordState } from "./runtime-context.js";
@@ -180,7 +181,7 @@ const mIsBashTsc = isBashTsc as unknown as Mock;
 const mTryTsgo = tryTsgoRewrite as unknown as Mock;
 const mCaptureBaseline = captureDiffAwareBaseline as unknown as Mock;
 const mInjectStructure = injectStructureContext as unknown as Mock;
-const mProjectWide = runProjectWideGitGate as unknown as Mock;
+const mProjectWide = runProjectWideGitGateAsync as unknown as Mock;
 const mTddGate = runTddCommitGate as unknown as Mock;
 const mGetAutoCoord = getAutoCoordState as unknown as Mock;
 

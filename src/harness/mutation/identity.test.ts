@@ -1,5 +1,15 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { computeSymbolHashes, deriveIdentities, mutationIdentityAvailable } from "./identity.js";
+import {
+	computeSymbolHashes,
+	deriveIdentities,
+	derivePortableIdentities,
+	mutationIdentityAvailable,
+	PORTABLE_IDENTITY_ALGORITHM,
+} from "./identity.js";
+import { PROTOCOL_V3_VERSION } from "./protocol-v3/types.js";
 import type { MutantIdentity, RawMutant } from "./types.js";
 
 const FILE = "src/example.ts";
@@ -97,6 +107,129 @@ describe("deriveIdentities", () => {
 		const shifted = derive(SHIFTED, [first, second]);
 		expect(nth(shifted, 0).siteId).toBe(f.siteId);
 		expect(nth(shifted, 1).siteId).toBe(s.siteId);
+	});
+});
+
+describe("derivePortableIdentities", () => {
+	const SOURCE = "function compare(x: number): boolean { return x > 0 && x > -1; }";
+	const raws = [
+		rawAt(SOURCE, { needle: "> 0", lexeme: ">", replacement: ">=" }),
+		rawAt(SOURCE, { needle: "> -1", lexeme: ">", replacement: "<=" }),
+	];
+
+	it("uses a versioned full-SHA256 identity at every wire level", () => {
+		expect(PORTABLE_IDENTITY_ALGORITHM).toBe("interlinked-site-v2");
+		const ids = derivePortableIdentities(FILE, SOURCE, raws);
+		expect(ids).not.toBeNull();
+		for (const identity of ids ?? []) {
+			expect(identity.symbolId).toMatch(/^[0-9a-f]{64}$/);
+			expect(identity.siteId).toMatch(/^[0-9a-f]{64}$/);
+			expect(identity.mutantId).toMatch(/^[0-9a-f]{64}$/);
+		}
+	});
+
+	it("matches the pinned cross-runtime v2 identity vector", () => {
+		const vectorPath = join(
+			dirname(fileURLToPath(import.meta.url)),
+			"../../../protocol/mutation-v3/fixtures/identity-vectors.json",
+		);
+		// SAFETY: repo-committed cross-runtime contract fixture; every consumed
+		// field is asserted by the exact derivation comparison below.
+		const fixture = JSON.parse(readFileSync(vectorPath, "utf8")) as {
+			protocol_version: string;
+			identity_algorithm: string;
+			vectors: Array<{
+				file: string;
+				content: string;
+				mutants: Array<{
+					mutator: string;
+					original_lexeme: string;
+					replacement: string;
+					start_offset: number;
+					expected: {
+						symbol_id: string;
+						site_id: string;
+						mutant_id: string;
+						qualified_name: string;
+						symbol_context: string;
+						ordinal_within_symbol: number;
+					};
+				}>;
+			}>;
+		};
+		expect(fixture.protocol_version).toBe(PROTOCOL_V3_VERSION);
+		expect(fixture.identity_algorithm).toBe(PORTABLE_IDENTITY_ALGORITHM);
+		for (const vector of fixture.vectors) {
+			const identities = derivePortableIdentities(
+				vector.file,
+				vector.content,
+				vector.mutants.map((row) => ({
+					file: vector.file,
+					mutator: row.mutator,
+					originalLexeme: row.original_lexeme,
+					replacement: row.replacement,
+					startOffset: row.start_offset,
+				})),
+			);
+			expect(identities).toHaveLength(vector.mutants.length);
+			for (let index = 0; index < vector.mutants.length; index++) {
+				const actual = nth(identities ?? [], index);
+				const expected = nth(vector.mutants, index).expected;
+				expect({
+					symbol_id: actual.symbolId,
+					site_id: actual.siteId,
+					mutant_id: actual.mutantId,
+					qualified_name: actual.qualifiedName,
+					symbol_context: actual.symbolContext,
+					ordinal_within_symbol: actual.ordinalWithinSymbol,
+				}).toEqual(expected);
+			}
+		}
+	});
+
+	it("keeps line-shift-invariant semantic identity without changing legacy v1 ids", () => {
+		const shifted = `function unrelated(): void {}\n${SOURCE}`;
+		const shiftedRaws = [
+			rawAt(shifted, { needle: "> 0", lexeme: ">", replacement: ">=" }),
+			rawAt(shifted, { needle: "> -1", lexeme: ">", replacement: "<=" }),
+		];
+		const base = derivePortableIdentities(FILE, SOURCE, raws);
+		const after = derivePortableIdentities(FILE, shifted, shiftedRaws);
+		expect(after).toEqual(base);
+		const legacy = deriveIdentities(FILE, SOURCE, raws);
+		expect(legacy?.every((identity) => identity.mutantId.length === 16)).toBe(true);
+	});
+
+	it("uses full intermediate identities rather than padding or trusting an engine id", () => {
+		const ids = derivePortableIdentities(FILE, SOURCE, raws);
+		expect(ids?.[0]?.mutantId).not.toBe(`${derive(SOURCE, [{ needle: "> 0", lexeme: ">", replacement: ">=" }])[0]?.mutantId}${"0".repeat(48)}`);
+		expect(ids?.[0]?.ordinalWithinSymbol).toBe(0);
+		expect(ids?.[1]?.ordinalWithinSymbol).toBe(1);
+	});
+
+	it("disambiguates anonymous sibling symbols with a stable structural context", () => {
+		const source = "[1].map((x) => x > 0); [2].filter((x) => x > 0);";
+		const firstOffset = source.indexOf("> 0");
+		const secondOffset = source.indexOf("> 0", firstOffset + 1);
+		const ids = derivePortableIdentities(FILE, source, [
+			{ file: FILE, mutator: "EqualityOperator", originalLexeme: ">", replacement: ">=", startOffset: firstOffset },
+			{ file: FILE, mutator: "EqualityOperator", originalLexeme: ">", replacement: ">=", startOffset: secondOffset },
+		]);
+		expect(ids?.[0]?.qualifiedName).toBe("(anonymous)");
+		expect(ids?.[1]?.qualifiedName).toBe("(anonymous)");
+		expect(ids?.[0]?.symbolContext).toBe("(anonymous)#anonymous-0");
+		expect(ids?.[1]?.symbolContext).toBe("(anonymous)#anonymous-1");
+		expect(ids?.[0]?.symbolId).not.toBe(ids?.[1]?.symbolId);
+	});
+
+	it("uses an unambiguous tuple encoding even when provenance contains NUL", () => {
+		const content = "const value = 1;";
+		const ids = derivePortableIdentities(FILE, content, [
+			{ file: FILE, mutator: "A\0B", originalLexeme: "C", replacement: "R", startOffset: 0 },
+			{ file: FILE, mutator: "A", originalLexeme: "B\0C", replacement: "R", startOffset: 0 },
+		]);
+		expect(ids?.[0]?.siteId).not.toBe(ids?.[1]?.siteId);
+		expect(ids?.[0]?.mutantId).not.toBe(ids?.[1]?.mutantId);
 	});
 });
 

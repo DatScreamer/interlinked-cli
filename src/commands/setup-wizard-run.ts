@@ -8,8 +8,8 @@
 //
 // Every question is one line + a recommended default; Enter accepts. The
 // whole flow is the ~90-second budget the onboarding directive set — a user
-// who holds Enter five times gets the recommended install (all detected
-// runners, balanced mode, diff scope, shipped caps, adopt now, local-only).
+// who accepts all six decisions gets the recommended install (all detected
+// runners, strict mode, diff scope, shipped caps, adopt now, local-only).
 
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";

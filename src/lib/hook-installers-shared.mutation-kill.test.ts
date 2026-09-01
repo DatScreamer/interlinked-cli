@@ -503,7 +503,7 @@ describe("findParentWithHooks", () => {
 		mkdirSync(outerSettingsDir, { recursive: true });
 		writeFileSync(
 			join(outerSettingsDir, "settings.json"),
-			JSON.stringify({ hooks: { PreToolUse: [{ command: "node interlinked-activity.mjs" }] } }),
+			JSON.stringify({ hooks: { PreToolUse: [{ command: "node \".interlinked/hooks/interlinked-activity.mjs\"" }] } }),
 		);
 		expect(findParentWithHooks(nested, ".claude/settings.json")).toBeNull();
 	});
@@ -532,7 +532,7 @@ describe("findParentWithHooks", () => {
 		mkdirSync(settingsDir, { recursive: true });
 		writeFileSync(
 			join(settingsDir, "settings.json"),
-			JSON.stringify({ hooks: { PreToolUse: [{ command: "node interlinked-activity.mjs" }] } }),
+			JSON.stringify({ hooks: { PreToolUse: [{ command: "node \".interlinked/hooks/interlinked-activity.mjs\"" }] } }),
 		);
 		expect(findParentWithHooks(sub, ".claude/settings.json")).toBe(gitRoot);
 		// The returned value proves the content was usable; this call assertion
@@ -553,7 +553,7 @@ describe("findParentWithHooks", () => {
 		mkdirSync(settingsDir, { recursive: true });
 		writeFileSync(
 			join(settingsDir, "settings.json"),
-			JSON.stringify({ hooks: { PreToolUse: [{ command: "node interlinked-activity.mjs" }] } }),
+			JSON.stringify({ hooks: { PreToolUse: [{ command: "node \".interlinked/hooks/interlinked-activity.mjs\"" }] } }),
 		);
 		expect(findParentWithHooks(cwd, ".claude/settings.json")).toBe(join(gitRoot, "a"));
 	});
@@ -587,7 +587,7 @@ describe("findParentWithHooks", () => {
 		const settingsPath = join(settingsDir, "settings.json");
 		writeFileSync(
 			settingsPath,
-			JSON.stringify({ hooks: { PreToolUse: [{ command: "node interlinked-activity.mjs" }] } }),
+			JSON.stringify({ hooks: { PreToolUse: [{ command: "node \".interlinked/hooks/interlinked-activity.mjs\"" }] } }),
 		);
 		findParentWithHooks(sub, ".claude/settings.json");
 		expect(fs.readFileSync).toHaveBeenCalledWith(settingsPath, "utf-8");

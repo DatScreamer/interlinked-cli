@@ -31,42 +31,40 @@
 // healthy framed/session daemon looks GONE on a connect timeout and gets blocked
 // + needlessly self-healed (the regression this fixes).
 
-import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	describeLastExit,
 	describeLastLedgerEvent,
 	readRecentDaemonEvents,
 } from "./harness/daemon-ledger.js";
-import { DEFAULT_DAEMON_HEAP_MB } from "./harness/memory-ceiling.js";
-import { acquireStartupLock } from "./harness/startup-lock.js";
-import {
-	recordSupervisorSpawn,
-	supervisorSpawnAllowed,
-} from "./harness/supervisor-backoff.js";
 import type { UnifiedHookEvent } from "./harness/unified-event.js";
+import {
+	attemptDaemonSelfHeal,
+	attemptDaemonSelfHealDetailed,
+	type SelfHealAttempt,
+	type SelfHealDeps,
+	type SelfHealDisposition,
+	type SelfHealResult,
+} from "./hook-entry-daemon-self-heal.js";
+import { findRepoRoot } from "./hook-entry-project.js";
 import { readGuardDisable } from "./lib/guard-state.js";
+
+// Deliberate compatibility surface: hook-entry, stop recovery, and the
+// established gate tests import these names from this historical module.
+export {
+	attemptDaemonSelfHeal,
+	attemptDaemonSelfHealDetailed,
+	type SelfHealAttempt,
+	type SelfHealDeps,
+	type SelfHealDisposition,
+	type SelfHealResult,
+};
+export { findRepoRoot };
 
 /** Local copy of the pre-tool phase tag (avoids importing from hook-entry.ts,
  *  which would create a cycle — this module is a leaf). */
 const PHASE_PRE_TOOL = "pre-tool";
-
-/** Walk up from `cwd` to the nearest ancestor holding a `.interlinked/` dir
- *  (the project root the daemon serves), or null within 20 hops. */
-export function findRepoRoot(cwd: string): string | null {
-	let dir = cwd;
-	let depth = 0;
-	while (depth < 20) {
-		if (existsSync(join(dir, ".interlinked"))) return dir;
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
-		depth++;
-	}
-	return null;
-}
 
 /** List the immediate entries of `.interlinked/`, failing OPEN to an empty array
  *  when the dir is missing/unreadable (or is a file, not a dir). One guarded
@@ -243,7 +241,20 @@ function daemonDownBlockMessage(pidPresent: boolean, root: string): string {
 // catastrophically on a long near-miss like `… start --aaaa…aaaa!`. A real
 // invocation has a handful of short flags, so a bound costs nothing.
 const HARNESS_RECOVERY_COMMAND =
-	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|interlinked)\s{1,4}(?:harness\s{1,4}(?:start|restart)|disable)(?:\s{1,4}--[\w-]{1,40}){0,8}$/;
+	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|node\s{1,4}(?:\S{1,160}\/)?dist\/index\.js|interlinked)\s{1,4}(?:harness\s{1,4}(?:start|restart|status)|doctor)(?:\s{1,4}--[\w-]{1,40}){0,8}$/;
+
+/** Recorded stand-down, including the bounded value-bearing options operators
+ * actually use during an incident. Kept separate from the flag-only lifecycle
+ * grammar so a value cannot accidentally widen every recovery command. */
+const GUARD_DISABLE_COMMAND =
+	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|node\s{1,4}(?:\S{1,160}\/)?dist\/index\.js|interlinked)\s{1,4}disable(?:\s{1,4}(?:--(?:team|uninstall|keep-config|force)|--(?:reason|until)\s{1,4}[\w./:@-]{1,80})){0,6}$/;
+
+/** The hooks-only repair command must stay executable during an outage. Keep
+ * this exact: it is the one repair that preserves enforcement mode, and
+ * accepting arbitrary install-hooks arguments here would turn a diagnostic
+ * escape into a configuration-write bypass. Either flag order is supported. */
+const HOOK_REFRESH_COMMAND =
+	/^(?:npx\s{1,4})?(?:tsx\s{1,4}\S{0,80}index\.ts|node\s{1,4}(?:\S{1,160}\/)?dist\/index\.js|interlinked)\s{1,4}install-hooks\s{1,4}(?:--refresh\s{1,4}--preserve-mode|--preserve-mode\s{1,4}--refresh)$/;
 
 /**
  * `INTERLINKED_ALLOW_NO_DAEMON=1 <cmd>` as a same-command assignment.
@@ -299,7 +310,11 @@ export function isHarnessRecoveryCommand(action: UnifiedHookEvent["action"]): bo
 	if (action.kind !== "shell_command") return false;
 	const cmd = action.command.trim();
 	if (SHELL_CHAINING.test(cmd)) return false;
-	return HARNESS_RECOVERY_COMMAND.test(cmd);
+	return (
+		HARNESS_RECOVERY_COMMAND.test(cmd) ||
+		GUARD_DISABLE_COMMAND.test(cmd) ||
+		HOOK_REFRESH_COMMAND.test(cmd)
+	);
 }
 
 /** The project root this gate should evaluate: the explicit cwd, the event's
@@ -308,6 +323,31 @@ export function isHarnessRecoveryCommand(action: UnifiedHookEvent["action"]): bo
  *  decision branches (e.g. the disable check) are added. */
 export function resolveGateRoot(event: UnifiedHookEvent, cwd: string | undefined): string | null {
 	return findRepoRoot(cwd ?? event.context?.cwd ?? process.cwd());
+}
+
+/** Return the project that needs a daemon recovery attempt, for ANY hook
+ * phase. This is intentionally separate from the historical pre-tool block
+ * predicate: recovery is useful on ordinary/post/lifecycle events too, while
+ * only deterministic inline checks should decide whether a tool is refused.
+ * Exact status/repair commands are excluded so the hook never races the
+ * operator's own recovery process. */
+export function daemonRecoveryRoot(
+	event: UnifiedHookEvent,
+	cwd: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): string | null {
+	if (env.INTERLINKED_ALLOW_NO_DAEMON === "1") return null;
+	if (isHarnessRecoveryCommand(event.action)) return null;
+	const root = resolveGateRoot(event, cwd);
+	if (!root) return null;
+	const dir = join(root, ".interlinked");
+	if (readGuardDisable(dir)) return null;
+	// This helper is called only after the primary RPC failed. A live pid plus
+	// a socket FILE is therefore not proof of health — that is precisely the
+	// zombie shape. Let the async freshness probe prove a serving socket; here
+	// we need only establish that this repo expects a daemon.
+	const pid = discoverDaemonPid(dir);
+	return pid !== null || harnessConfigured(dir) ? root : null;
 }
 
 /**
@@ -326,6 +366,9 @@ export function resolveGateRoot(event: UnifiedHookEvent, cwd: string | undefined
  * The caller pairs a block with {@link attemptDaemonSelfHeal} so the daemon
  * comes back automatically — this gate stays a pure decision (no side effects).
  */
+/** @deprecated Compatibility/test surface for the retired blanket outage
+ * block. Production recovery uses `daemonRecoveryRootFresh` and lets only the
+ * deterministic inline gates decide whether a tool is refused. */
 export function coldDaemonUnreachableBlockReason(
 	event: UnifiedHookEvent,
 	cwd: string | undefined,
@@ -363,127 +406,4 @@ export function coldDaemonUnreachableBlockReason(
 		return null;
 	}
 	return daemonDownBlockMessage(pid !== null, root);
-}
-
-// ── Self-heal ───────────────────────────────────────────────────────────────
-
-/** Outcome of a self-heal attempt (also the unit-test surface). */
-export type SelfHealResult = "spawned" | "locked" | "skipped" | "backoff";
-
-// The self-heal throttle IS the daemon startup mutex (harness/startup-lock.ts)
-// — deliberately the SAME lock the `interlinked harness start` command takes.
-// Two separate throttles meant a hook self-heal and a CLI start could both
-// spawn a daemon in the same second, which is one half of the 2026-08-15
-// restart storm. The old mtime-based check was also check-then-act: N hooks
-// firing together all read "no recent lock" and all spawned. O_EXCL cannot do
-// that. The lock is NOT released here — the winner's boot is protected until
-// the TTL lapses.
-
-/** Injectable dependencies so the spawn path is unit-testable without actually
- *  launching a daemon. Defaults wire the real fs/child_process. */
-export interface SelfHealDeps {
-	resolveServerPath?: () => string | null;
-	spawnDaemon?: (serverPath: string, root: string) => void;
-	/** Test seam for the backoff clock. */
-	now?: () => number;
-	/** A simulated event must not move the real supervisor's spawn ladder — the
-	 *  `harness test --write` lesson (a read-only probe that mutated a ledger). */
-	dryRun?: boolean;
-}
-
-/** Resolve the daemon entry (`dist/harness/server.js`) relative to this bundled
- *  module. Returns null when it can't be found (caller stays fail-closed).
- *  fileURLToPath + existsSync do not throw for a valid module URL, so no guard. */
-function selfHealServerPath(): string | null {
-	const here = dirname(fileURLToPath(import.meta.url));
-	const candidates = [
-		join(here, "harness", "server.js"),
-		join(here, "..", "harness", "server.js"),
-		join(here, "dist", "harness", "server.js"),
-	];
-	return candidates.find((p) => existsSync(p)) ?? null;
-}
-
-/** Detached spawn of the daemon from the EXISTING dist — never rebuilds (a
- *  rebuild on the hook path is what destabilizes sibling daemons). */
-function spawnDaemonDetached(serverPath: string, root: string): void {
-	const child = spawn(
-		process.execPath,
-		[
-			// Same V8 heap regulator every spawn path applies (memory-ceiling.ts:
-			// DEFAULT_DAEMON_HEAP_MB) — a self-healed daemon must not come back
-			// with the unbounded default and resume the no-GC balloon.
-			`--max-old-space-size=${DEFAULT_DAEMON_HEAP_MB}`,
-			"--expose-gc",
-			serverPath,
-			"--cwd",
-			root,
-			"--protocol",
-			"dual",
-			"--session-id",
-			"default",
-		],
-		{ detached: true, stdio: "ignore" },
-	);
-	child.unref();
-}
-
-/**
- * Best-effort respawn of the daemon for `cwd`'s repo so the guard returns
- * automatically after a cut-out. Lock-guarded (one attempt per
- * {@link SELF_HEAL_LOCK_MS}); never rebuilds; never throws. Returns what it
- * did, for the caller's logging + tests. `INTERLINKED_NO_SELF_HEAL=1` disables.
- */
-/** Spawn the daemon detached, under an already-held startup lock. Split out of
- *  {@link attemptDaemonSelfHeal} so its try/catch + dep-resolution branches
- *  don't push the caller past the complexity ratchet. Never throws. */
-function spawnGuardedDaemon(serverPath: string, root: string, deps: SelfHealDeps): SelfHealResult {
-	try {
-		(deps.spawnDaemon ?? spawnDaemonDetached)(serverPath, root);
-		return "spawned";
-	} catch {
-		return "skipped"; // spawn failed → stay fail-closed (no unguarded proceed)
-	}
-}
-
-/** Take the startup mutex, spawn, and count the attempt against the backoff
- *  ladder. Split out of {@link attemptDaemonSelfHeal} so that function stays
- *  under the complexity ratchet. Only a spawn we actually performed counts —
- *  losing the mutex means someone else is booting, which is not our attempt. */
-function spawnUnderMutexWithBackoff(
-	serverPath: string,
-	root: string,
-	deps: SelfHealDeps,
-	nowMs: number,
-): SelfHealResult {
-	const lock = acquireStartupLock(root);
-	if (!lock.acquired) return "locked";
-	const result = spawnGuardedDaemon(serverPath, root, deps);
-	if (result === "spawned") {
-		recordSupervisorSpawn(root, nowMs, deps.dryRun === true ? { dryRun: true } : {});
-	}
-	return result;
-}
-
-export function attemptDaemonSelfHeal(
-	cwd: string | undefined,
-	env: NodeJS.ProcessEnv = process.env,
-	deps: SelfHealDeps = {},
-): SelfHealResult {
-	if (env.INTERLINKED_NO_SELF_HEAL === "1") return "skipped";
-	const root = findRepoRoot(cwd ?? process.cwd());
-	if (!root) return "skipped";
-	// Never resurrect the daemon on a project the operator intentionally stood
-	// down with `interlinked disable` — respawning it would fight their choice.
-	if (readGuardDisable(join(root, ".interlinked"))) return "skipped";
-	const serverPath = (deps.resolveServerPath ?? selfHealServerPath)();
-	if (!serverPath) return "skipped";
-	// EXPONENTIAL BACKOFF (2026-08-16). The mutex stops N spawns in the same
-	// second; this stops N spawns in a ROW. Without it, a daemon that cannot stay
-	// up — broken dist, OOM loop — was respawned once per blocked call, each
-	// spawn costing a node boot plus an index load on an already-starved machine.
-	// Checked before the mutex so a throttled hook does not even contend for it.
-	const now = (deps.now ?? Date.now)();
-	if (!supervisorSpawnAllowed(root, now)) return "backoff";
-	return spawnUnderMutexWithBackoff(serverPath, root, deps, now);
 }

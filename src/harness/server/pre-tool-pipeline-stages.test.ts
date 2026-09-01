@@ -62,7 +62,13 @@ vi.mock("../generic-checks.js", () => ({
 }));
 vi.mock("../project-typecheck-gate.js", () => ({
 	checkProjectTypecheckClean: vi.fn(() => [] as CheckResultEntry[]),
+	checkProjectTypecheckCleanAsync: vi.fn(async () => [] as CheckResultEntry[]),
 	checkProjectTestsClean: vi.fn(() => [] as CheckResultEntry[]),
+	checkProjectTestsCleanAsync: vi.fn(async () => [] as CheckResultEntry[]),
+}));
+const releaseHeavyProcess = vi.fn<() => void>();
+vi.mock("../project-heavy-process-lock.js", () => ({
+	tryAcquireProjectHeavyProcessLease: vi.fn(() => releaseHeavyProcess),
 }));
 vi.mock("../structure/structure-loader.js", () => ({
 	loadStructureConfig: vi.fn(() => ({ config: null, errors: [], implicit: true })),
@@ -110,7 +116,13 @@ import { snapshotDryShingles } from "../checks/dry-baseline.js";
 import { coverageForFile, loadCoverageFinal } from "../coverage-final-reader.js";
 import { capturePrimitiveViolations } from "../discovered-primitives.js";
 import { checkFunctionComplexity, checkMissingReturnTypes } from "../generic-checks.js";
-import { checkProjectTestsClean, checkProjectTypecheckClean } from "../project-typecheck-gate.js";
+import {
+	checkProjectTestsClean,
+	checkProjectTestsCleanAsync,
+	checkProjectTypecheckClean,
+	checkProjectTypecheckCleanAsync,
+} from "../project-typecheck-gate.js";
+import { tryAcquireProjectHeavyProcessLease } from "../project-heavy-process-lock.js";
 import { collectSoftwareVersionReferences, countTodoMarkers } from "../quality-checks.js";
 import { loadStructureConfig } from "../structure/structure-loader.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
@@ -118,6 +130,7 @@ import {
 	captureDiffAwareBaseline,
 	injectStructureContext,
 	runProjectWideGitGate,
+	runProjectWideGitGateAsync,
 	runTddCommitGate,
 } from "./pre-tool-pipeline-stages.js";
 import type { ServerRuntime } from "./runtime-context.js";
@@ -192,7 +205,10 @@ beforeEach(() => {
 	vi.mocked(parseCommitMessageFromBash).mockReturnValue(null);
 	vi.mocked(checkConventionalCommitCoherence).mockReturnValue([]);
 	vi.mocked(checkProjectTypecheckClean).mockReturnValue([]);
+	vi.mocked(checkProjectTypecheckCleanAsync).mockResolvedValue([]);
 	vi.mocked(checkProjectTestsClean).mockReturnValue([]);
+	vi.mocked(checkProjectTestsCleanAsync).mockResolvedValue([]);
+	vi.mocked(tryAcquireProjectHeavyProcessLease).mockReturnValue(releaseHeavyProcess);
 	vi.mocked(loadCoverageFinal).mockReturnValue(null);
 	vi.mocked(snapshotCrap).mockReturnValue(new Map());
 	vi.mocked(snapshotDryShingles).mockReturnValue(new Map());
@@ -807,6 +823,60 @@ describe("runProjectWideGitGate", () => {
 			agent_name: "",
 			reason: "project_tests_clean: 1 failure",
 		});
+	});
+
+	it("uses only bounded async gates on the daemon push path", async () => {
+		const pre = allow();
+		await runProjectWideGitGateAsync(makeCtx(), push(), makeSession(), pre);
+		expect(checkProjectTypecheckCleanAsync).toHaveBeenCalledWith("/repo");
+		expect(checkProjectTestsCleanAsync).toHaveBeenCalledWith("/repo", {
+			admissionAlreadyHeld: true,
+		});
+		expect(checkProjectTypecheckClean).not.toHaveBeenCalled();
+		expect(checkProjectTestsClean).not.toHaveBeenCalled();
+		expect(pre.decision).toBe("allow");
+		expect(releaseHeavyProcess).toHaveBeenCalledTimes(1);
+	});
+
+	it("defers the whole git gate before spawning work when the project lane is busy", async () => {
+		vi.mocked(tryAcquireProjectHeavyProcessLease).mockReturnValueOnce(null);
+		const pre = allow();
+
+		await runProjectWideGitGateAsync(makeCtx(), push(), makeSession(), pre);
+
+		expect(checkProjectTypecheckCleanAsync).not.toHaveBeenCalled();
+		expect(checkProjectTestsCleanAsync).not.toHaveBeenCalled();
+		expect(pre.decision).toBe("allow");
+		expect(pre.warnings).toEqual([
+			"[interlinked:project_git_gate_deferred] Project-wide typecheck/tests were NOT CHECKED because another heavyweight project check is active. Retry before committing or pushing.",
+		]);
+	});
+
+	it("surfaces an async test-capacity deferral without claiming clean or blocking", async () => {
+		vi.mocked(checkProjectTestsCleanAsync).mockResolvedValue([
+			check({
+				name: "project_tests_deferred",
+				message: "Project tests were NOT CHECKED (busy). Retry before pushing.",
+				severity: "warning",
+			}),
+		]);
+		const pre = allow();
+		await runProjectWideGitGateAsync(makeCtx(), push(), makeSession(), pre);
+		expect(pre.decision).toBe("allow");
+		expect(pre.warnings).toEqual([
+			"[interlinked:project_tests_deferred] Project tests were NOT CHECKED (busy). Retry before pushing.",
+		]);
+	});
+
+	it("blocks a push on failures returned by the bounded async test gate", async () => {
+		vi.mocked(checkProjectTestsCleanAsync).mockResolvedValue([
+			check({ name: "project_tests_clean", message: "suite > failure", severity: "error" }),
+		]);
+		const pre = allow();
+		await runProjectWideGitGateAsync(makeCtx(), push(), makeSession(), pre);
+		expect(pre.decision).toBe("block");
+		expect(pre.rule_id).toBe("push-test-gate");
+		expect(pre.reason).toContain("suite > failure");
 	});
 });
 

@@ -33,7 +33,7 @@ const { filterFindingsByScore, decideFromFindings } = await import("./policy.js"
 const { applyAllowlist } = await import("./allowlist.js");
 const { ratchetSensitivity } = await import("../taint-tracker.js");
 
-// biome-ignore lint/suspicious/noExplicitAny: test fixtures deliberately loose-typed
+// These mutation fixtures stay deliberately loose-typed so each case can vary one field.
 function makeCfg(overrides: Record<string, any> = {}): any {
 	return {
 		enabled: true,
@@ -61,7 +61,7 @@ function makeCfg(overrides: Record<string, any> = {}): any {
 	};
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: test fixtures deliberately loose-typed
+// These mutation fixtures stay deliberately loose-typed so each case can vary one field.
 function makeRules(overrides: Record<string, any> = {}): any {
 	return {
 		content_scanner: makeCfg(overrides.content_scanner ?? {}),
@@ -70,7 +70,7 @@ function makeRules(overrides: Record<string, any> = {}): any {
 	};
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: test fixtures deliberately loose-typed
+// These mutation fixtures stay deliberately loose-typed so each case can vary one field.
 function makeEvent(overrides: Record<string, any> = {}): any {
 	return {
 		hook_event: "PostToolUse",
@@ -84,7 +84,7 @@ function makeEvent(overrides: Record<string, any> = {}): any {
 	};
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: test fixtures deliberately loose-typed
+// These mutation fixtures stay deliberately loose-typed so each case can vary one field.
 function makeSession(overrides: Record<string, any> = {}): any {
 	return {
 		pii_detected_steps: [],
@@ -98,7 +98,7 @@ function makeScanner(findings: unknown[] = []) {
 		name: "fake",
 		runtime: "local",
 		ready: async () => true,
-		// biome-ignore lint/suspicious/noExplicitAny: test double, request shape asserted per-test
+		// The request stays loose because each case asserts the relevant request shape.
 		scan: vi.fn(async (_req: any) => findings),
 		shutdown: async () => {},
 	};

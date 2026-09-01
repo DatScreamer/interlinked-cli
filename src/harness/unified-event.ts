@@ -137,6 +137,12 @@ export interface UnifiedHookEvent {
 	 *  the key for de-duplicating redundant deliveries. Absent on non-tool
 	 *  events and for runners that don't supply one. */
 	tool_use_id?: string | undefined;
+	/** Request-owned PostTool warning-spool token minted by the hook entry.
+	 * Forwarded unchanged to the daemon and never used as an identity claim. */
+	post_delivery_token?: string | undefined;
+	/** PID of the hook process entitled to synchronous first delivery. The
+	 * spool reader uses liveness only to defer, never to authorize content. */
+	post_delivery_pid?: number | undefined;
 	/** ISO 8601, ms precision. */
 	ts: string;
 

@@ -108,9 +108,18 @@ describe("pre-context mutation contracts", () => {
 
 	// test-contract: invariant — test-first evidence must distinguish a discovered test from one actually run this session.
 	it("reports a known test file as not run and suppresses the warning after a pass", () => {
-		const source = "/Users/quentincody/interlinked-cli/src/harness/structural-checks.ts";
-		const testFile = "/Users/quentincody/interlinked-cli/src/harness/structural-checks.test.ts";
-		const base = ctx({ config: { ...baseConfig(), test_first: true }, filePath: source, relPath: "src/harness/structural-checks.ts", ext: ".ts" });
+		// Portability (review pass 18): derive the repo root from cwd — the test
+		// must pass from a clone at ANY filesystem path, never a hardcoded one.
+		const repoRoot = `${process.cwd()}/`;
+		const source = `${process.cwd()}/src/harness/structural-checks.ts`;
+		const testFile = `${process.cwd()}/src/harness/structural-checks.test.ts`;
+		const base = ctx({
+			config: { ...baseConfig(), test_first: true },
+			filePath: source,
+			relPath: "src/harness/structural-checks.ts",
+			ext: ".ts",
+			graph: graph({ toRelative: (p: string) => p.replace(repoRoot, "") }),
+		});
 		const g = base.graph as unknown as { toRelative: (p: string) => string };
 		const notRun = preCheckTestFirst(base, session());
 		expect(notRun[0]).toContain("Tests at src/harness/structural-checks.test.ts haven't been run");

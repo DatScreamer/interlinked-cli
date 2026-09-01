@@ -46,6 +46,16 @@ export const READ_ONLY_TOOL_NAMES = [
 	"TodoRead",
 	"NotebookRead",
 	"ListFiles",
+	// Codex collaboration-control calls can start or observe another agent, but
+	// the call itself does not write this workspace. Any filesystem delta in its
+	// hook window belongs to that other agent and must not be charged to the
+	// coordinator (observed live on wait_agent during concurrent edits).
+	"collaborationspawn_agent",
+	"collaborationsend_message",
+	"collaborationfollowup_task",
+	"collaborationinterrupt_agent",
+	"collaborationlist_agents",
+	"collaborationwait_agent",
 ] as const;
 
 /** Case- and separator-insensitive key: `WebFetch`, `web_fetch` and `webfetch`

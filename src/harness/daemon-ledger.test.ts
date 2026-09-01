@@ -109,6 +109,12 @@ describe("recordDaemonEvent / readRecentDaemonEvents", () => {
 		expect(events.length).toBeLessThan(2000);
 		expect(events.at(-1)?.pid).toBe(1999); // the newest survives the bound
 	});
+
+	it("reads the byte-bounded tail directly instead of full-reading then slicing", () => {
+		const source = readFileSync(new URL("./daemon-ledger.ts", import.meta.url), "utf-8");
+		expect(source).toContain("readRecentLines(path, 10_000, READ_TAIL_BYTES)");
+		expect(source).not.toMatch(/readFileSync\(path[^)]*\)[\s\S]{0,120}slice/);
+	});
 });
 
 describe("describeLastExit — the sentence the block message shows", () => {

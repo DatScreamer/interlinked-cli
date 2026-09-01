@@ -8,18 +8,21 @@
 // activity.jsonl. Mirrors the dual-write the old self-contained .mjs hook did
 // before the thin hook-entry.js + daemon path took over.
 //
-// Best-effort and tool-events-only (parity with the collection writer): a
-// failure here never breaks the pipeline, and non-tool lifecycle events map to
-// null (they are recorded by other daemon branches).
+// Best-effort: a failure here never breaks the pipeline. Tool events are
+// mirrored alongside collection.jsonl; lifecycle events use a separate writer
+// because collection.jsonl intentionally accepts tool events only.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveConfig } from "../../lib/config.js";
+import { appendChainedAuditRecord } from "../../lib/audit-chain.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import { appendActivityRecordOnly, type LocalActivityEvent } from "../../lib/local-activity.js";
 import { eventAttributionFields } from "../event-attribution-fields.js";
 import { extractNewThinking, latestTranscriptModel, resolveTranscriptPath } from "../thinking-capture.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
+
+const ACTIVITY_SUMMARY_MAX_CHARS = 200;
 
 /** Partition the hook event into a v5 activity `type`, or null for non-tool
  *  events. Same partition the collection writer uses for `event_type`. */
@@ -28,6 +31,124 @@ function activityType(hookEvent: string): string | null {
 	if (hookEvent === "PostToolUseFailure") return "tool_use_error";
 	if (hookEvent === "PostToolUse" || hookEvent === "AfterTool") return "tool_use";
 	return null;
+}
+
+/** Canonical full-fidelity activity types for hook events that do not enter the
+ *  Pre/Post tool pipelines. Aliases from supported clients collapse onto the
+ *  same stable type (for example PreCompact and Gemini's PreCompress).
+ *  SubagentStart/SubagentStop/TaskCompleted are absent by design: the lifecycle
+ *  handler already writes richer, scrubbed collection.v1 agent_event records,
+ *  which the activity reader projects without needing a second mirror row. */
+const LIFECYCLE_ACTIVITY_TYPES: Readonly<Record<string, string>> = {
+	SessionStart: "session_start",
+	SessionEnd: "session_end",
+	Interrupt: "interrupt",
+	Stop: "agent_stop",
+	UserPromptSubmit: "user_prompt",
+	Notification: "notification",
+	PreCompact: "context_compact",
+	PreCompress: "context_compact",
+	PostCompact: "context_compacted",
+	AfterModel: "model_response",
+	TeammateIdle: "teammate_idle",
+	PermissionRequest: "permission_request",
+	WorktreeCreate: "worktree_create",
+	SkillEnter: "skill_enter",
+	SkillLeave: "skill_leave",
+	SkillList: "skill_list",
+};
+
+/** Event fields copied onto lifecycle records when the normalized wire event
+ *  carries them either top-level or in its compact lifecycle `tool_input`. The
+ *  prompt is deliberately absent: it has a dedicated redaction-aware path. */
+const LIFECYCLE_STRING_FIELDS = [
+	"permission_mode",
+	"transcript_path",
+	"source",
+	"agent_type",
+	"last_assistant_message",
+	"agent_transcript_path",
+	"notification_type",
+	"notification_title",
+	"notification_message",
+	"task_id",
+	"task_subject",
+	"task_description",
+	"teammate_name",
+	"team_name",
+	"trigger",
+	"custom_instructions",
+	"reason",
+] as const satisfies ReadonlyArray<keyof LocalActivityEvent>;
+
+const SUMMARY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+	session_end: ["reason"],
+	agent_stop: ["stop_reason", "reason"],
+	notification: ["notification_message", "message"],
+	task_completed: ["task_subject", "task_id"],
+	teammate_idle: ["teammate_name"],
+	worktree_create: ["path", "worktree_path"],
+};
+
+const TOOL_FIELD_BY_LIFECYCLE_TYPE: Readonly<Record<string, string>> = {
+	subagent_start: "agent_type",
+	subagent_stop: "agent_type",
+	teammate_idle: "teammate_name",
+	model_response: "model",
+};
+
+/** Read a lifecycle payload field from the normalized event first, then from
+ *  the compact `tool_input` fallback used by the legacy bridge. */
+function lifecycleField(event: HarnessEvent, key: string): unknown {
+	// SAFETY: hook payloads are parsed JSON objects and HarnessEvent deliberately
+	// models only the decision-path subset; lifecycle metadata remains keyed data.
+	const direct = (event as HarnessEvent & Record<string, unknown>)[key];
+	return direct !== undefined ? direct : event.tool_input?.[key];
+}
+
+function lifecycleString(event: HarnessEvent, keys: readonly string[]): string | null {
+	for (const key of keys) {
+		const value = lifecycleField(event, key);
+		if (typeof value === "string" && value.length > 0) return value;
+	}
+	return null;
+}
+
+function lifecycleSummary(
+	event: HarnessEvent,
+	type: string,
+	persistedPrompt: string | null,
+): string | null {
+	if (type === "user_prompt") {
+		return persistedPrompt ? persistedPrompt.slice(0, ACTIVITY_SUMMARY_MAX_CHARS) : null;
+	}
+	if (type === "permission_request") return summarize(event.tool_name, event.tool_input);
+	const fields = SUMMARY_FIELDS[type];
+	const value = fields ? lifecycleString(event, fields) : null;
+	return value ? value.slice(0, ACTIVITY_SUMMARY_MAX_CHARS) : null;
+}
+
+function lifecycleTool(event: HarnessEvent, type: string): string | null {
+	if (type === "permission_request") return event.tool_name ?? null;
+	const field = TOOL_FIELD_BY_LIFECYCLE_TYPE[type];
+	return field ? lifecycleString(event, [field]) : null;
+}
+
+/** Copy optional lifecycle payload fields without ever copying the raw prompt.
+ *  `redacted_prompt` is the only prompt value allowed into the record when the
+ *  content-scanner decision supplied one. */
+function copyLifecyclePayloadFields(
+	record: LocalActivityEvent,
+	event: HarnessEvent,
+): void {
+	for (const key of LIFECYCLE_STRING_FIELDS) {
+		const value = lifecycleField(event, key);
+		if (typeof value === "string" && value.length > 0) Object.assign(record, { [key]: value });
+	}
+	const stopHookActive = lifecycleField(event, "stop_hook_active");
+	if (typeof stopHookActive === "boolean") record.stop_hook_active = stopHookActive;
+	const permissionSuggestions = lifecycleField(event, "permission_suggestions");
+	if (permissionSuggestions !== undefined) record.permission_suggestions = permissionSuggestions;
 }
 
 /** A short human label for the activity feed: the command for shell tools, the
@@ -95,6 +216,47 @@ export function mapEventToActivityRecord(
 	return rec;
 }
 
+/** Map a non-tool lifecycle event to the full-fidelity activity stream. Prompt
+ *  persistence is decision-aware: once the lifecycle scanner supplies a
+ *  redacted copy, neither the raw prompt nor its raw summary is written. */
+export function mapLifecycleEventToActivityRecord(
+	event: HarnessEvent,
+	fallbackCwd: string,
+	decision?: HarnessDecision,
+): LocalActivityEvent | null {
+	const type = LIFECYCLE_ACTIVITY_TYPES[event.hook_event];
+	if (!type) return null;
+	const cwd = event.cwd ?? fallbackCwd;
+	const keys = projectKeys(cwd);
+	const persistedPrompt =
+		type === "user_prompt" ? (decision?.redacted_prompt ?? event.prompt ?? "") : null;
+	const rec: LocalActivityEvent = {
+		schema_version: 5,
+		ts: event.timestamp,
+		agent: event.agent_name ?? event.agent_source ?? "unknown",
+		workspace_key: keys.workspace,
+		project_key: keys.project,
+		type,
+		tool: lifecycleTool(event, type),
+		summary: lifecycleSummary(event, type, persistedPrompt),
+		session: event.session_id,
+		hook: event.hook_event,
+		cwd,
+	};
+	Object.assign(rec, eventAttributionFields(event));
+	copyLifecyclePayloadFields(rec, event);
+	if (type === "user_prompt") {
+		rec.prompt = persistedPrompt ?? "";
+		if (decision?.redacted_prompt !== undefined) rec.scrubbed = true;
+	}
+	if (type === "interrupt") rec.is_interrupt = true;
+	if (event.prompt_id) rec.prompt_id = event.prompt_id;
+	if (event.effort) rec.effort = event.effort;
+	if (event.seq !== undefined) rec.seq = event.seq;
+	if (event.event_id) rec.event_id = event.event_id;
+	return rec;
+}
+
 /** Append the legacy activity.jsonl mirror for a tool event. Best-effort: any
  *  failure is swallowed so the daemon pipeline never breaks on the mirror. */
 export function writeActivityRecord(event: HarnessEvent, fallbackCwd: string): void {
@@ -119,6 +281,25 @@ export function writeActivityRecord(event: HarnessEvent, fallbackCwd: string): v
 	} catch {
 		// Best-effort legacy mirror — a failed activity.jsonl write must never
 		// break the daemon pipeline; collection.jsonl is the canonical record.
+		return;
+	}
+}
+
+/** Append one non-tool lifecycle event to activity.jsonl. This intentionally
+ *  does not call the tool collection writer, whose schema excludes lifecycle
+ *  records. Best-effort so observability I/O cannot break hook evaluation. */
+export function writeLifecycleActivityRecord(
+	event: HarnessEvent,
+	fallbackCwd: string,
+	decision?: HarnessDecision,
+): void {
+	try {
+		const rec = mapLifecycleEventToActivityRecord(event, fallbackCwd, decision);
+		if (!rec) return;
+		const cwd = event.cwd ?? fallbackCwd;
+		if (rec.type === "session_end") appendChainedAuditRecord(rec, cwd);
+		else appendActivityRecordOnly(rec, cwd);
+	} catch {
 		return;
 	}
 }
@@ -179,7 +360,7 @@ export function writeGuardDecisionRecord(
 	try {
 		const rec = mapDecisionToGuardRecord(event, decision, fallbackCwd);
 		if (!rec) return;
-		appendActivityRecordOnly(rec, event.cwd ?? fallbackCwd);
+		appendChainedAuditRecord(rec, event.cwd ?? fallbackCwd);
 	} catch {
 		// Best-effort -- a failed guard-telemetry write must never break the
 		// daemon pipeline (feedback_safety_continuity).

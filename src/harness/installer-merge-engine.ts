@@ -2,8 +2,8 @@
 // -----------------------------------------------------------------------------
 // Merge engine + JSON-pointer path helpers + low-level fs helpers
 // -----------------------------------------------------------------------------
-// Leaf utilities extracted verbatim from installer.ts to keep that file under
-// the per-file line cap. No module-private state from installer.ts is read here.
+// Leaf utilities extracted from installer.ts to keep that file under the
+// per-file line cap. No module-private state from installer.ts is read here.
 
 import {
 	chmodSync,
@@ -12,6 +12,7 @@ import {
 	readFileSync,
 	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -179,6 +180,11 @@ export function readJson(path: string): JsonObject | null {
 	} catch {
 		return null;
 	}
+	// Runner settings must be a JSON object. Arrays are objects to JavaScript,
+	// but adding `hooks` as a named property to an array is discarded by
+	// JSON.stringify(array), so accepting one records a successful install whose
+	// hook never reached disk. Treat that shape like malformed JSON instead.
+	if (Array.isArray(parsed)) return null;
 	if (parsed == null || typeof parsed !== "object") return {};
 	return parsed as JsonObject;
 }
@@ -215,6 +221,37 @@ export function writeTextAtomic(path: string, content: string): void {
 		}
 	}
 	renameSync(tmp, path);
+}
+
+/** Exact pre-write bytes for a settings artifact. `null` means the path
+ * existed but could not be snapshotted safely; callers must refuse any
+ * rollback that would need it. */
+export interface TextFileSnapshot {
+	existed: boolean;
+	content?: string;
+	mode?: number;
+}
+
+export function snapshotTextFile(path: string): TextFileSnapshot | null {
+	if (!existsSync(path)) return { existed: false };
+	try {
+		const stat = statSync(path);
+		if (!stat.isFile()) return null;
+		return { existed: true, content: readFileSync(path, "utf-8"), mode: stat.mode };
+	} catch (_error) {
+		return null;
+	}
+}
+
+/** Restore a settings artifact after a semantically failed replacement. */
+export function restoreTextFile(path: string, snapshot: TextFileSnapshot): void {
+	if (!snapshot.existed) {
+		if (existsSync(path)) unlinkSync(path);
+		return;
+	}
+	if (snapshot.content === undefined) throw new Error(`missing rollback bytes for ${path}`);
+	writeTextAtomic(path, snapshot.content);
+	if (snapshot.mode !== undefined) chmodSync(path, snapshot.mode);
 }
 
 export function ensureDir(dir: string): void {

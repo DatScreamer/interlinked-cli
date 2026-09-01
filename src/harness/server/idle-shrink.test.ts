@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { clearManifestCacheMock, clearTscOverlayCacheMock } = vi.hoisted(() => ({
-	clearManifestCacheMock: vi.fn(),
-	clearTscOverlayCacheMock: vi.fn(),
-}));
+const { clearDiagnosticCacheMock, clearManifestCacheMock, clearTscOverlayCacheMock } = vi.hoisted(
+	() => ({
+		clearDiagnosticCacheMock: vi.fn(),
+		clearManifestCacheMock: vi.fn(),
+		clearTscOverlayCacheMock: vi.fn(),
+	}),
+);
 
 vi.mock("../mutation/manifest.js", () => ({
 	clearManifestCache: clearManifestCacheMock,
@@ -11,19 +14,22 @@ vi.mock("../mutation/manifest.js", () => ({
 vi.mock("../check-engine/tool-runners/tsc-overlay.js", () => ({
 	clearTscOverlayCache: clearTscOverlayCacheMock,
 }));
+vi.mock("../check-engine/index.js", () => ({
+	clearCheckEngineDiagnosticCache: clearDiagnosticCacheMock,
+}));
 
 import { makeShrinkIdleMemory } from "./idle-shrink.js";
 
 describe("makeShrinkIdleMemory", () => {
 	afterEach(() => {
 		vi.clearAllMocks();
-		// biome-ignore lint/performance/noDelete: test cleanup of a global test-only stub
+		// Remove the global test-only stub so it cannot leak into the next case.
 		delete (globalThis as { gc?: () => void }).gc;
 	});
 
-	// P1 (must fire): clears the manifest cache, the tsc overlay cache, and the
-	// trigram index's dirty layer — the three retainers root-caused 2026-08-22.
-	it("P1: clears manifest cache, tsc overlay cache, and trigram dirty layer", () => {
+	// P1 (must fire): clears every reconstructible PostTool cache, including the
+	// file-diagnostic map that otherwise grows with every visited file.
+	it("P1: clears diagnostic, manifest, tsc, and trigram caches", () => {
 		const clearDirty = vi.fn();
 		const trigramIndex = { clearDirty } as unknown as { clearDirty: () => void };
 		const shrink = makeShrinkIdleMemory(() => trigramIndex as never);
@@ -31,6 +37,7 @@ describe("makeShrinkIdleMemory", () => {
 		shrink();
 
 		expect(clearManifestCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearDiagnosticCacheMock).toHaveBeenCalledTimes(1);
 		expect(clearTscOverlayCacheMock).toHaveBeenCalledTimes(1);
 		expect(clearDirty).toHaveBeenCalledTimes(1);
 	});

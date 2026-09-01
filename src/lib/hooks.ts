@@ -13,7 +13,6 @@ import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
-	readFileSync,
 	realpathSync,
 	rmSync,
 	unlinkSync,
@@ -54,14 +53,17 @@ import {
 	uninstallCursorHooks,
 	uninstallGeminiHooks,
 } from "./hook-installers.js";
+import { fileURLToPath } from "node:url";
+import { detectHookManagers, type HookManagerInfo } from "./hook-manager-detection.js";
 import { CLIENT_CLAUDE } from "./hook-types.js";
+import { HOOK_SCRIPT_VERSION } from "./hook-version.js";
 import { buildHookScript } from "./hooks-template.js";
-import type { JsonObject } from "./json-types.js";
 import { nonNull } from "./non-null.js";
 import { type ClientName, CLIENT_TO_RUNNER } from "./settings.js";
 
 export { findProjectRoot } from "./hook-types.js";
 export { ensureGitignore } from "./hooks-gitignore.js";
+export { detectHookManagers, type HookManagerInfo };
 
 /**
  * Public API — consumed by `src/commands/enable.ts`.
@@ -77,19 +79,22 @@ export function installStatusLine(clients: ClientName[]): string | null {
 	return installStatusLineImpl(clients);
 }
 
-// Hook script version — derived from package.json so there's one source of truth.
-// Embedded in the generated .mjs script for staleness detection by `doctor`.
-export const HOOK_SCRIPT_VERSION: string = ((): string => {
-	try {
-		const pkgPath = new URL("../../package.json", import.meta.url);
-		const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
-		const version = readPackageVersion(parsed);
-		return version || "0.0.0";
-	} catch (_err) {
-		/* intentional: package.json missing or unreadable — fallback version */
-		return "0.0.0";
-	}
-})();
+// Hook script version — ONE source of truth, resolved by `hook-version.ts`,
+// which walks ancestors looking for the package.json whose `name` is actually
+// `interlinked-cli`.
+//
+// The duplicate implementation that lived here read
+// `new URL("../../package.json", import.meta.url)` directly. In the dev tree
+// that happens to hit the repo's own package.json, which is why it looked
+// correct — but after bundling, `dist/index.js` makes `../../package.json`
+// resolve to the parent of the REPO (a user's home directory, or a containing
+// monorepo). On this machine that file exists and declares version 1.0.0, so
+// the BUILT CLI told every user their 0.1.0 hook was stale against an
+// "expected" 1.0.0 that came from an unrelated package — and `enable` stamped
+// that foreign version into the generated hook. `hook-version.ts` was written
+// to fix exactly this and even documents it; this module simply never adopted
+// it. Re-exported so existing importers are unaffected.
+export { HOOK_SCRIPT_VERSION };
 
 // ===========================================
 // Path Helpers
@@ -207,11 +212,16 @@ export function deleteConfigDir(cwd: string): boolean {
  */
 export function resolveHookBinaryPath(
 	cwd: string,
-	opts: { writeFallback?: boolean } = {},
+	opts: { writeFallback?: boolean; packagedPath?: () => string | null } = {},
 ): string {
 	const compiled = join(cwd, ".interlinked", "hooks", "interlinked-hook");
 	if (existsSync(compiled)) return compiled;
-	const packaged = packagedHookEntryPath();
+	// `packagedPath` is a seam for the UNBUILT-checkout case. Since the probe
+	// became module-relative (correctly — see `packagedHookEntryPath`), a test
+	// running inside this repo can no longer make `dist/` absent by
+	// manipulating argv, and "what happens with no build" is a real branch that
+	// must stay covered.
+	const packaged = (opts.packagedPath ?? packagedHookEntryPath)();
 	if (packaged && existsSync(packaged)) return packaged;
 	const legacy = getHookScriptPath(cwd);
 	if (existsSync(legacy)) return legacy;
@@ -220,21 +230,43 @@ export function resolveHookBinaryPath(
 }
 
 /**
- * Locate the packaged `hook-entry.js` bundled next to `dist/index.js`. Resolves
- * from `process.argv[1]` (the invoked CLI entry) so a globally-installed CLI
- * still finds its own bundled hook. Returns null when not found — e.g. a source
- * checkout running via `tsx`, where there is no `dist/`.
+ * Locate the packaged `hook-entry.js`.
+ *
+ * TWO probes, because `process.argv[1]` answers "how was the CLI invoked",
+ * not "is a packaged hook available" — and only the second question matters.
+ * Running a BUILT checkout through tsx (`npx tsx src/index.ts enable`) made
+ * the argv probe look for `src/hook-entry.js`, miss, and fall through to the
+ * generated `.mjs` — the branch documented above as "the fallback for unbuilt
+ * source checkouts" — even though `dist/hook-entry.js` existed. That silently
+ * installed the legacy runtime, which is directly observable afterwards: the
+ * `.mjs` connects to `harness.sock` while `hook-entry.ts` prefers
+ * `harness-default.sock`, so every install done this way produced raw events
+ * and a framed event count stuck at zero.
+ *
+ * The module-relative probe is the reliable one (this file ships beside the
+ * bundle), and it keeps a genuinely unbuilt checkout on the `.mjs` fallback
+ * because there is no `dist/` to find.
  */
 function packagedHookEntryPath(): string | null {
 	const invoked = process.argv[1];
-	if (!invoked) return null;
-	try {
-		const real = realpathSync(invoked);
-		const candidate = join(dirname(real), "hook-entry.js");
-		if (existsSync(candidate)) return candidate;
-	} catch {
-		/* intentional: argv[1] unreadable / not a real path — no packaged hook */
-		return null;
+	if (invoked) {
+		try {
+			const candidate = join(dirname(realpathSync(invoked)), "hook-entry.js");
+			if (existsSync(candidate)) return candidate;
+		} catch {
+			/* intentional: argv[1] unreadable — fall through to the module probe */
+		}
+	}
+	// Module-relative: `src/lib/hooks.ts` → `<repo>/dist/hook-entry.js`, and
+	// bundled `dist/chunk-*.js` → `<pkg>/dist/hook-entry.js`. Both layouts are
+	// covered by trying one and two levels up.
+	for (const rel of ["../../dist/hook-entry.js", "../dist/hook-entry.js", "./hook-entry.js"]) {
+		try {
+			const candidate = fileURLToPath(new URL(rel, import.meta.url));
+			if (existsSync(candidate)) return candidate;
+		} catch {
+			/* intentional: unresolvable URL — try the next layout */
+		}
 	}
 	return null;
 }
@@ -394,112 +426,4 @@ export function uninstallAllHooks(cwd: string, clients: ClientName[]): InstallRe
 			};
 		}
 	});
-}
-
-// ===========================================
-// Hook Manager Detection
-// ===========================================
-
-interface HookManagerInfo {
-	name: string;
-	detected_at: string;
-}
-
-interface PackageJsonShape {
-	devDependencies: JsonObject;
-	dependencies: JsonObject;
-	scripts: JsonObject;
-}
-
-const EMPTY_PACKAGE_JSON: PackageJsonShape = {
-	devDependencies: {},
-	dependencies: {},
-	scripts: {},
-};
-
-// Helpers for narrowing untrusted JSON. Kept off the bare `typeof x === "string"`
-// pattern that the harness flags as `magic_literal_in_conditional` — these
-// idioms match the project-wide style in `hook-installers.ts`.
-function isPlainObject(v: unknown): v is JsonObject {
-	return v instanceof Object && !Array.isArray(v);
-}
-
-function isStringValue(v: unknown): v is string {
-	return v === String(v);
-}
-
-function readPackageVersion(parsed: unknown): string | null {
-	if (!isPlainObject(parsed)) return null;
-	const version = parsed.version;
-	return isStringValue(version) ? version : null;
-}
-
-/**
- * Read package.json and project the fields detectHookManagers cares about.
- * Returns an empty shape on any read/parse failure so callers can stay in
- * a single happy-path branch (`pkg.devDependencies?.husky`).
- */
-function readPackageJsonShape(cwd: string): PackageJsonShape {
-	const pkgPath = join(cwd, "package.json");
-	if (!existsSync(pkgPath)) return EMPTY_PACKAGE_JSON;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(readFileSync(pkgPath, "utf-8"));
-	} catch (_err) {
-		/* intentional: malformed package.json — treat as empty */
-		return EMPTY_PACKAGE_JSON;
-	}
-	if (!isPlainObject(parsed)) return EMPTY_PACKAGE_JSON;
-	return {
-		devDependencies: isPlainObject(parsed.devDependencies) ? parsed.devDependencies : {},
-		dependencies: isPlainObject(parsed.dependencies) ? parsed.dependencies : {},
-		scripts: isPlainObject(parsed.scripts) ? parsed.scripts : {},
-	};
-}
-
-function detectHusky(cwd: string, pkg: PackageJsonShape): HookManagerInfo | null {
-	if (existsSync(join(cwd, ".husky"))) {
-		return { name: "husky", detected_at: ".husky/" };
-	}
-	const prepareScript = pkg.scripts.prepare;
-	const hasHuskyScript = isStringValue(prepareScript) && prepareScript.includes("husky");
-	if (pkg.devDependencies.husky || pkg.dependencies.husky || hasHuskyScript) {
-		return { name: "husky", detected_at: "package.json" };
-	}
-	return null;
-}
-
-function detectLefthook(cwd: string, pkg: PackageJsonShape): HookManagerInfo | null {
-	const lefthookFiles = ["lefthook.yml", ".lefthook.yml", "lefthook.yaml", ".lefthook.yaml"];
-	for (const file of lefthookFiles) {
-		if (existsSync(join(cwd, file))) {
-			return { name: "lefthook", detected_at: file };
-		}
-	}
-	if (pkg.devDependencies.lefthook || pkg.dependencies.lefthook) {
-		return { name: "lefthook", detected_at: "package.json" };
-	}
-	return null;
-}
-
-function detectOvercommit(cwd: string): HookManagerInfo | null {
-	if (existsSync(join(cwd, ".overcommit.yml"))) {
-		return { name: "overcommit", detected_at: ".overcommit.yml" };
-	}
-	return null;
-}
-
-/**
- * Detect common git hook managers in the project.
- */
-export function detectHookManagers(cwd: string): HookManagerInfo[] {
-	const pkg = readPackageJsonShape(cwd);
-	const managers: HookManagerInfo[] = [];
-	const husky = detectHusky(cwd, pkg);
-	if (husky) managers.push(husky);
-	const lefthook = detectLefthook(cwd, pkg);
-	if (lefthook) managers.push(lefthook);
-	const overcommit = detectOvercommit(cwd);
-	if (overcommit) managers.push(overcommit);
-	return managers;
 }

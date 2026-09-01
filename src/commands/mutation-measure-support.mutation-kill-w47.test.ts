@@ -20,12 +20,13 @@ vi.mock("../harness/mutation/baseline-suite.js", () => ({
 }));
 
 const normalizeManifestKeyMock = vi.fn((..._args: any[]): any => _args[0]);
-const loadManifestMock = vi.fn((..._args: any[]): any => null);
+// Tri-state loader (review 2026-08-28): missing may bootstrap, corrupt refuses.
+const loadManifestStateMock = vi.fn((..._args: any[]): any => ({ kind: "missing" }));
 const emptyManifestMock = vi.fn((..._args: any[]): any => ({ ...(_args[0] as object) }));
 const saveManifestMock = vi.fn((..._args: any[]): any => undefined);
 vi.mock("../harness/mutation/manifest.js", () => ({
 	normalizeManifestKey: (...args: any[]) => normalizeManifestKeyMock(...args),
-	loadManifest: (...args: any[]) => loadManifestMock(...args),
+	loadManifestState: (...args: any[]) => loadManifestStateMock(...args),
 	emptyManifest: (...args: any[]) => emptyManifestMock(...args),
 	saveManifest: (...args: any[]) => saveManifestMock(...args),
 }));
@@ -71,7 +72,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	normalizeManifestKeyMock.mockImplementation((..._args: any[]): any => _args[0]);
 	configuredMaxTestScopeMock.mockReturnValue(undefined);
-	loadManifestMock.mockReturnValue(null);
+	loadManifestStateMock.mockReturnValue({ kind: "missing" });
 	emptyManifestMock.mockImplementation((..._args: any[]): any => ({ ...(_args[0] as object) }));
 });
 

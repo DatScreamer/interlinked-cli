@@ -11,6 +11,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { findTailStartForLines } from "../lib/bounded-file-io.js";
+import { fileIdentity, replaceFileWithSuffix } from "../lib/file-suffix-replacement.js";
+import { assertNoPendingFileRotation } from "../lib/file-rotation-fence.js";
 import { c, divider, header } from "../lib/formatter.js";
 import { nonNull } from "../lib/non-null.js";
 import { getOutputMode, output } from "../lib/output.js";
@@ -20,6 +23,7 @@ interface StaleItem {
 	path: string;
 	detail: string;
 	age?: string;
+	cleanup_outcome?: "truncated" | "refused";
 }
 
 interface ClientSettingsEntry {
@@ -32,6 +36,33 @@ interface ClientSettingsEntry {
 interface StaleScanResult {
 	staleItems: StaleItem[];
 	removed: string[];
+}
+
+const ACTIVITY_TAIL_LINES = 10000;
+
+/** Retain the configured activity tail under the shared append/rotation lock. */
+function truncateActivityTail(activityPath: string, beforeReplace: () => void): void {
+	const source = fileIdentity(activityPath);
+	const tailStart = findTailStartForLines(activityPath, ACTIVITY_TAIL_LINES);
+	replaceFileWithSuffix(activityPath, tailStart, {
+		expectedSource: source,
+		beforeReplace: () => {
+			assertNoPendingFileRotation(activityPath, "activity");
+			beforeReplace();
+		},
+	});
+}
+
+function resetActivitySyncState(syncStatePath: string): void {
+	writeFileSync(
+		syncStatePath,
+		`${JSON.stringify({
+			synced_through_bytes: 0,
+			last_sync_at: null,
+			reset_at: new Date().toISOString(),
+			reason: "activity_log_truncated",
+		})}\n`,
+	);
 }
 
 function formatAge(ms: number): string {
@@ -120,30 +151,22 @@ function checkAndTruncateActivityLog(
 		const stat = statSync(activityPath);
 		const sizeMB = stat.size / (1024 * 1024);
 		if (sizeMB > 50) {
-			staleItems.push({
+			const staleItem: StaleItem = {
 				type: "large_activity_log",
 				path: activityPath,
 				detail: `Activity log is ${sizeMB.toFixed(1)} MB (>50 MB threshold)`,
-			});
+			};
+			staleItems.push(staleItem);
 
 			if (!isDryRun) {
-				// Keep last 10K lines
-				const content = readFileSync(activityPath, "utf-8");
-				const lines = content.split("\n").filter(Boolean);
-				const kept = lines.slice(-10000);
-				writeFileSync(activityPath, `${kept.join("\n")}\n`);
+				staleItem.cleanup_outcome = "refused";
+				// The suffix stays byte-for-byte intact, avoiding decode/re-encode
+				// drift in the retained audit records.
+				// Lower the cursor before the atomic live-file rename. A crash can then
+				// only replay retained rows; it cannot leave a high cursor that skips them.
+				truncateActivityTail(activityPath, () => resetActivitySyncState(syncStatePath));
+				staleItem.cleanup_outcome = "truncated";
 				removed.push(`${activityPath} (truncated to 10K lines)`);
-
-				// Truncation invalidates byte offsets for sync state.
-				writeFileSync(
-					syncStatePath,
-					`${JSON.stringify({
-						synced_through_bytes: 0,
-						last_sync_at: null,
-						reset_at: new Date().toISOString(),
-						reason: "activity_log_truncated",
-					})}\n`,
-				);
 				removed.push(`${syncStatePath} (sync cursor reset)`);
 			}
 		}
@@ -197,7 +220,11 @@ function formatLargeLogLines(items: StaleItem[], isDryRun: boolean): string[] {
 	if (items.length === 0) return [];
 	const lines: string[] = [`\n  ${c.bold("Large activity log")}:`];
 	for (const item of items) {
-		const action = isDryRun ? c.yellow("would truncate") : c.green("truncated");
+		const action = isDryRun
+			? c.yellow("would truncate")
+			: item.cleanup_outcome === "truncated"
+				? c.green("truncated")
+				: c.yellow("not truncated");
 		lines.push(`    ${action} ${item.detail}`);
 	}
 	return lines;

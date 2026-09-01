@@ -12,8 +12,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CollectionLiveness } from "../lib/collection/liveness.js";
 import { writeGuardDisable } from "../lib/guard-state.js";
-import { installAllClaudeHooks } from "../lib/hook-installers.js";
 import { HOOK_SCRIPT_VERSION } from "../lib/hooks.js";
+import { installHooks } from "../harness/installer.js";
 import {
 	authTokenCheck,
 	clientHookChecks,
@@ -408,16 +408,22 @@ describe("clientHookChecks", () => {
 	// REAL installer is the only way to keep the two from drifting again.
 	// -----------------------------------------------------------------------
 
-	// P: settings written by the actual installer are detected.
+	// P: settings written by the canonical adapter installer are detected.
 	it("detects hooks in a settings file written by the real Claude installer", () => {
 		const hookScript = join(dir, "dist", "hook-entry.js");
 		mkdirSync(join(dir, "dist"), { recursive: true });
 		writeFileSync(hookScript, "// hook entry\n");
-		installAllClaudeHooks(dir, hookScript);
+		const installed = installHooks({
+			cwd: dir,
+			binaryPath: hookScript,
+			runners: ["claude-code"],
+			scope: "project",
+		});
+		expect(installed.ok).toBe(true);
 
 		const settings = readFileSync(join(dir, ".claude", "settings.json"), "utf-8");
-		// The literal the old check looked for is genuinely absent — this is
-		// what made the false-negative invisible in review.
+		// The literal the old check looked for is genuinely absent; ownership
+		// comes from the adapter's runner/event arguments instead.
 		expect(settings).not.toContain("interlinked-activity");
 		expect(settings).toContain("hook-entry.js");
 		expect(clientHookChecks(dir)).toEqual([

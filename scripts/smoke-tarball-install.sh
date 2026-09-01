@@ -14,6 +14,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+CONTRACT_DIGEST="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync("protocol/mutation-v3/contract-digest.json","utf8")).digest)')"
 
 PACK_DIR="$(mktemp -d)"
 SMOKE_DIR="$(mktemp -d)"
@@ -28,6 +29,11 @@ echo "Installing: $TARBALL"
 cd "$SMOKE_DIR"
 npm init -y >/dev/null
 npm install --no-save "$TARBALL" >/dev/null
+
+# The cloud compatibility fence must survive bundling. The source contract
+# directory is intentionally not published; its digest is compiled into the
+# installed runtime and checked before any admission or evaluation.
+grep -R -q -- "$CONTRACT_DIGEST" node_modules/interlinked-cli/dist
 
 INTERLINKED=./node_modules/.bin/interlinked
 HOOK=./node_modules/.bin/interlinked-hook

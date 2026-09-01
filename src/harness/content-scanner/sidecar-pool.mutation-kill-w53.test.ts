@@ -22,7 +22,7 @@ function makePool(pool_size: number, onStatusChange?: (s: SidecarStatus) => void
 // SAFETY: `onChildStatus`/`computeAggregate` are private status-aggregation
 // internals with no other reachable entry point; casting to reach them for
 // direct unit coverage does not widen any externally-observed type.
-// biome-ignore lint/suspicious/noExplicitAny: reaching private members for direct unit coverage
+// This loose alias reaches the private members described above for direct unit coverage.
 type Peek = any;
 
 describe("SidecarPool — computeAggregate / onChildStatus (mutation-kill w53)", () => {

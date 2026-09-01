@@ -95,8 +95,9 @@ export interface InstallerManifestEntry {
 	 *  `[features] hooks = true` is in `.codex/config.toml`. So a failure here
 	 *  is not cosmetic, and it used to be swallowed: the installer wrote one
 	 *  stderr line and still recorded `ok: true`, producing a successful
-	 *  manifest for an installation that fires no hooks. Recorded per entry so
-	 *  the failure survives into the manifest a later run reads.
+	 *  manifest for an installation that fires no hooks. A first-time failure
+	 *  is recorded so uninstall can remove its partial fragment; a failed
+	 *  replacement restores and retains the prior working manifest entry.
 	 *
 	 *  Manifests written before this field existed have no value; the reader
 	 *  coerces those to `"ok"`. */

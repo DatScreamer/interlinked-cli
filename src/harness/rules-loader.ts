@@ -35,7 +35,7 @@ import {
 } from "./rules/file-io.js";
 import { getFindingRulesWatchPaths, loadFindingRules } from "./rules/finding-rules.js";
 import { autoTuneQualityChecks, detectProjectLanguages } from "./rules/language-detection.js";
-import { mergeLocalOverrides, mergeTeamRules } from "./rules/merge.js";
+import { mergeLocalOverrides, mergeTeamRules, sanitizePostureEnums } from "./rules/merge.js";
 import {
 	getModePreset,
 	type HarnessModePreset,
@@ -167,6 +167,12 @@ export function loadRules(cwd: string = process.cwd()): GuardRulesConfig {
 			/* intentional: invalid JSON — best-effort skip overrides */
 		}
 	}
+
+	// FINAL enum boundary (review 2026-08-30): after BOTH tiers merged, an
+	// invalid posture enum value (e.g. test_first_mode: "typo" in the trusted
+	// local file) is dropped so the built-in default applies — it never enters
+	// the runtime config as a different posture. Doctor reports the details.
+	sanitizePostureEnums(config);
 
 	// Combine built-in rules with custom rules + rules distilled from .md
 	// guidance by the `enforce` skill. Distilled rules are layered AFTER

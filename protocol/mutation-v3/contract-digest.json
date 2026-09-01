@@ -1,0 +1,23 @@
+{
+  "algorithm": "sha256 over `label\\0sha256(content)\\n` lines in sorted label order: contract files are labeled relative to protocol/mutation-v3 (except this file); normative_sources are labeled by their listed repo-relative paths",
+  "normative_sources": [
+    "src/harness/mutation/authenticated-zero-census.ts",
+    "src/harness/mutation/identity.ts",
+    "src/harness/mutation/protocol-v3/canonical.ts",
+    "src/harness/mutation/protocol-v3/evaluator-bridge.ts",
+    "src/harness/mutation/protocol-v3/evidence.ts",
+    "src/harness/mutation/protocol-v3/field-checks.ts",
+    "src/harness/mutation/protocol-v3/parse-census.ts",
+    "src/harness/mutation/protocol-v3/parse.ts",
+    "src/harness/mutation/protocol-v3/receipts.ts",
+    "src/harness/mutation/protocol-v3/report.ts",
+    "src/harness/mutation/protocol-v3/request.ts",
+    "src/harness/mutation/protocol-v3/types.ts",
+    "src/harness/mutation/protocol-v3/verified-evaluator.ts",
+    "src/harness/mutation/protocol-v3/verify-attestation.ts",
+    "src/harness/mutation/protocol-v3/verify-bindings.ts",
+    "src/harness/mutation/protocol-v3/verify.ts"
+  ],
+  "files": 26,
+  "digest": "cfa90530c734df5c0fe6e3b00494bf259c48d786954e0a561e53e8cb9a6cd420"
+}

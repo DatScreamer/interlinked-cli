@@ -12,6 +12,7 @@
 //      osv-scanner.
 
 import { spawnSync } from "node:child_process";
+import { runProcessAsync } from "../check-engine/spawn-async.js";
 
 export type AuditParser = "osv-scanner" | "npm-audit" | "pip-audit" | "cargo-audit" | "govulncheck";
 
@@ -43,6 +44,16 @@ export function hasOsvScanner(): boolean {
 	return osvScannerAvailable;
 }
 
+/** Event-loop-safe availability probe for daemon/PostToolUse callers. Shares
+ * the same memoized answer as the legacy synchronous CLI resolver. */
+export async function hasOsvScannerAsync(): Promise<boolean> {
+	if (osvScannerAvailable !== null) return osvScannerAvailable;
+	const result = await runProcessAsync("osv-scanner", ["--version"], { timeout: 2_000 });
+	osvScannerAvailable =
+		!result.timedOut && !result.killed && result.code !== null && result.code === 0;
+	return osvScannerAvailable;
+}
+
 /** Test hook — reset the memoized availability flag. */
 export function _resetOsvScannerCache(): void {
 	osvScannerAvailable = null;
@@ -71,8 +82,26 @@ export function resolveDependencyAuditCommand(
 	opts: ResolveOptions = {},
 ): ResolvedAuditCommand | null {
 	if (!LOCKFILES.has(fileName)) return null;
+	return resolveKnownAuditCommand(fileName, opts, opts.useOsvScanner !== false && hasOsvScanner());
+}
 
-	const useOsv = opts.useOsvScanner !== false && hasOsvScanner();
+/** Async resolver for daemon paths. The optional osv-scanner version probe
+ * never blocks the socket event loop. Callers must hold heavyweight-process
+ * admission while awaiting it. */
+export async function resolveDependencyAuditCommandAsync(
+	fileName: string,
+	opts: ResolveOptions = {},
+): Promise<ResolvedAuditCommand | null> {
+	if (!LOCKFILES.has(fileName)) return null;
+	const useOsv = opts.useOsvScanner !== false && (await hasOsvScannerAsync());
+	return resolveKnownAuditCommand(fileName, opts, useOsv);
+}
+
+function resolveKnownAuditCommand(
+	fileName: string,
+	opts: ResolveOptions,
+	useOsv: boolean,
+): ResolvedAuditCommand | null {
 	if (useOsv) {
 		const cmd = ["osv-scanner", "scan", "source", "--format=json", `--lockfile=${fileName}`];
 		if (opts.offline) cmd.push("--offline");

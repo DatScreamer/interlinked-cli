@@ -47,9 +47,13 @@ describe("unsafe-span public mutation contracts", () => {
 		expect(found[0]?.text).toContain("spans 6 nonblank lines");
 	});
 
-	// test-contract: security — an identifier-adjacent `r#` is not a raw-string opener and must leave its brace live.
+	// test-contract: security — an identifier-adjacent `r#` is not a raw-string opener: its braces stay live,
+	// pair on their own line, and the outer block's 6 nonblank interior lines fire. A mutant that opens a raw
+	// string here blanks to EOF, leaves the block unbalanced, and reports nothing.
 	it("does not recognize identifier-adjacent raw-string syntax", () => {
-		expect(rust(["unsafe {", "    let s = ptr##{ }", ...code(5), "}"])).toHaveLength(0);
+		const found = rust(["unsafe {", "    let s = ptr##{ }", ...code(5), "}"]);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.text).toContain("spans 6 nonblank lines");
 	});
 
 	// test-contract: boundary — only six nonblank interior lines exceed the five-line Rust threshold.
@@ -65,10 +69,12 @@ describe("unsafe-span public mutation contracts", () => {
 	});
 
 	// test-contract: invariant — nested braces must match the outer unsafe block, not its first inner close.
+	// Interior = nested open + body + nested close + four ops = 7 nonblank lines; matching the first inner
+	// close instead would leave a 2-line interior and no finding.
 	it("counts the full balanced nested unsafe span", () => {
 		const found = rust(["unsafe {", "    if ready {", "        inner();", "    }", ...code(4), "}"]);
 		expect(found).toHaveLength(1);
-		expect(found[0]?.text).toContain("spans 6 nonblank lines");
+		expect(found[0]?.text).toContain("spans 7 nonblank lines");
 	});
 
 	// test-contract: public-api — no directives means no bounded suppression finding.
@@ -97,9 +103,14 @@ describe("unsafe-span public mutation contracts", () => {
 		expect(js(["/* eslint-disable no-console */", ...code(5), "/* eslint-enable no-undef */"])).toHaveLength(0);
 	});
 
-	// test-contract: public-api — a matching scoped enable closes the rule-specific region and prevents a finding.
+	// test-contract: public-api — a matching scoped enable closes the rule-specific region, so this bounded
+	// 11-line span fires; a mutant that fails to match the rule leaves the disable unbounded (file-level
+	// suppression, another check's job) and reports nothing.
 	it("closes a scoped disable with its matching rule", () => {
-		expect(js(["/* eslint-disable no-console */", ...code(9), "/* eslint-enable no-console */"])).toHaveLength(0);
+		const found = js(["/* eslint-disable no-console */", ...code(9), "/* eslint-enable no-console */"]);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.line).toBe(1);
+		expect(found[0]?.text).toContain("spans 11 lines");
 	});
 
 	// test-contract: boundary — a ten-line inclusive disable-to-enable region is allowed.

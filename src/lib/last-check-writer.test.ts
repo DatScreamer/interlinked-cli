@@ -193,6 +193,20 @@ describe("deriveLastCheckFields", () => {
 		).toEqual({ result: "clean", tool: "edit", file: "src/a.ts", ms: 88 });
 	});
 
+	// test-contract: invariant — Grok 2026-08-28 issue 11: a post-tool BLOCK with
+	// an EMPTY warning list must never render clean; the model sees the block
+	// (the .mjs and claude-code adapter branch on decision first) and the
+	// statusline must agree.
+	it("P: post-tool block with warnings: [] writes result=block, never clean", () => {
+		expect(
+			deriveLastCheckFields(
+				makeEvent({ phase: "post-tool" }),
+				{ decision: "block", warnings: [], rule_id: "per-edit-mutation" },
+				42,
+			),
+		).toEqual({ result: "block", tool: "edit", file: "src/a.ts", ms: 42, rule: "per-edit-mutation" });
+	});
+
 	it("maps post-tool warnings to warn (with count) and no warnings to clean (with ms)", () => {
 		const warn = deriveLastCheckFields(
 			makeEvent({ phase: "post-tool" }),

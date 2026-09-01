@@ -19,6 +19,7 @@
 
 import { ensureCodexFeatureFlag } from "../../lib/codex-feature-flag.js";
 import { hookTimeoutSecondsFor } from "../../lib/hook-timeouts.js";
+import { CODEX_WRITE_TOOLS } from "../../lib/write-tool-registry.js";
 import { formatAskReasonWithTargets } from "../evaluator/rule-matching.js";
 import {
 	type ClassifierOverrides,
@@ -52,10 +53,12 @@ const EVT_INTERRUPT = "Interrupt" as const;
 
 const NATIVE_EVENTS = installedEventNames(CODEX_CAPABILITIES);
 
-// PostToolUse matcher — empty string matches all tools. The hook script
-// itself fast-paths non-mutation tools internally, so the provider-level
-// matcher must be empty to let all events through to the collection layer.
-const POST_TOOL_USE_MATCHER = "";
+// PostToolUse is an edit-quality path, not a general telemetry tap. Restrict
+// registration to Codex's write-capable tools so reads, coordination calls,
+// and other no-effect tools never start a hook process or contact the daemon.
+// Bash stays because only its post-call ChangeSet can prove whether a command
+// wrote; the daemon's deterministic command/effect resolver handles that arm.
+export const CODEX_POST_TOOL_USE_MATCHER = CODEX_WRITE_TOOLS.join("|");
 
 // Decision verbs as named constants — used both to choose the encoder
 // branch in encodeDecision and to populate the JSON shape on stdout.
@@ -187,7 +190,7 @@ function codexRegistration(binaryPath: string, event: string): Record<string, un
 		handler.additionalContextLimit = 2_500;
 	}
 	return {
-		matcher: event === EVT_POST_TOOL ? POST_TOOL_USE_MATCHER : "",
+		matcher: event === EVT_POST_TOOL ? CODEX_POST_TOOL_USE_MATCHER : "",
 		hooks: [handler],
 	};
 }

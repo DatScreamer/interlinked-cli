@@ -45,7 +45,8 @@ const MISSING_RUNTIME_READ_ONLY_NAMES_BY_GATE: Readonly<Record<string, readonly 
 // prefix, suffix, flag reordering, pipe, or compound command remains blocked.
 const MISSING_RUNTIME_FALLBACK_SOURCE = String.raw`
 const fs = require("node:fs");
-const [message, exitCodeText, runner, event, repair, mode] = process.argv.slice(1);
+const path = require("node:path");
+const [message, exitCodeText, runner, event, repair, binaryPath, mode] = process.argv.slice(1);
 const exitCode = Number(exitCodeText);
 const readOnlyNamesByGate = ${JSON.stringify(MISSING_RUNTIME_READ_ONLY_NAMES_BY_GATE)};
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -79,6 +80,27 @@ const nativeInput = (raw) => {
   if (runner === "gemini-cli") return asObject(raw.tool_input) || asObject(raw.arguments);
   return null;
 };
+const isCanonicalBuildCheckout = () => {
+  try {
+    const cwd = process.cwd();
+    const packagePath = path.join(cwd, "package.json");
+    const buildPath = path.join(cwd, "scripts", "build-atomic-cli.mjs");
+    if (!fs.statSync(packagePath).isFile() || !fs.statSync(buildPath).isFile()) return false;
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    const resolvedBinary = typeof binaryPath === "string" ? path.resolve(binaryPath) : "";
+    const binaryDir = path.dirname(resolvedBinary);
+    const binaryRoot = path.dirname(binaryDir);
+    return isObject(packageJson) &&
+      packageJson.name === "interlinked-cli" &&
+      isObject(packageJson.scripts) &&
+      packageJson.scripts.build === "node scripts/build-atomic-cli.mjs" &&
+      path.basename(resolvedBinary) === "hook-entry.js" &&
+      path.basename(binaryDir) === "dist" &&
+      fs.realpathSync(binaryRoot) === fs.realpathSync(cwd);
+  } catch {
+    return false;
+  }
+};
 const recoveryRequested = (raw) => {
   if (!isObject(raw)) return false;
   const input = nativeInput(raw);
@@ -88,7 +110,8 @@ const recoveryRequested = (raw) => {
   if (typeof command !== "string" || /[;&|><\x60$(){}\n]/.test(command)) return false;
   const trimmed = command.trim();
   const cli = "(?:interlinked|npx tsx src/index[.]ts|node dist/index[.]js)";
-  const exactBuild = trimmed === "npm run build" || trimmed === "node scripts/build-atomic-cli.mjs";
+  const exactBuild = (trimmed === "npm run build" || trimmed === "node scripts/build-atomic-cli.mjs") &&
+    isCanonicalBuildCheckout();
   const exactRefresh = trimmed === repair ||
     trimmed === "interlinked install-hooks --preserve-mode --refresh" ||
     trimmed === "npx tsx src/index.ts install-hooks --refresh --preserve-mode" ||
@@ -121,7 +144,7 @@ const readOnlyRequested = (raw) => {
 };
 const blockNatively = () => {
   fs.writeSync(2, message + "\n");
-  if (runner === "codex" && event === "PermissionRequest") {
+  if ((runner === "claude-code" || runner === "codex") && event === "PermissionRequest") {
     fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: event, decision: { behavior: "deny", message } } }));
     process.exit(0);
   }
@@ -189,6 +212,7 @@ export function buildHookCommand(
 		`[interlinked] hook runtime failed before returning a valid decision: ${binaryPath} — ${verb}. ${repairSteer}`;
 	const runtime = runtimeInvocation(binaryPath, runner, event);
 	const missingFallback = fallbackInvocation({
+		binaryPath,
 		message: missingMessage,
 		exitCode: fallbackExit,
 		runner,
@@ -225,8 +249,9 @@ interface FailClosedRuntimeCommandParts extends RuntimeCommandParts {
 }
 
 function failClosedRuntimeCommand(parts: FailClosedRuntimeCommandParts): string {
-	const recoveryProbe = recoveryProbeInvocation(parts.runner, parts.event);
+	const recoveryProbe = recoveryProbeInvocation(parts.binaryPath, parts.runner, parts.event);
 	const failureFallback = fallbackInvocation({
+		binaryPath: parts.binaryPath,
 		message: parts.runtimeFailureMessage,
 		exitCode: MISSING_RUNTIME_BLOCK_EXIT,
 		runner: parts.runner,
@@ -235,7 +260,7 @@ function failClosedRuntimeCommand(parts: FailClosedRuntimeCommandParts): string 
 	return [
 		'_il_payload="$(cat)" ;',
 		'case "$_il_payload" in',
-		"*harness*|*doctor*|*disable*|*install-hooks*)",
+		"*harness*|*doctor*|*disable*|*install-hooks*|*npm*run*build*|*build-atomic-cli.mjs*)",
 		'printf %s "$_il_payload" |',
 		recoveryProbe,
 		'; _il_recovery="$?" ;',
@@ -246,10 +271,11 @@ function failClosedRuntimeCommand(parts: FailClosedRuntimeCommandParts): string 
 		"&& test -s",
 		shellQuote(parts.binaryPath),
 		"; then",
+		"_il_output=$(",
 		'printf %s "$_il_payload" |',
 		parts.runtime,
-		'; _il_status="$?" ;',
-		'if test "$_il_status" -eq 0 || test "$_il_status" -eq 2 ; then exit "$_il_status" ; fi ;',
+		') ; _il_status="$?" ;',
+		'if test "$_il_status" -eq 0 || test "$_il_status" -eq 2 ; then printf %s "$_il_output" ; exit "$_il_status" ; fi ;',
 		'printf %s "$_il_payload" |',
 		failureFallback,
 		"; else",
@@ -259,7 +285,7 @@ function failClosedRuntimeCommand(parts: FailClosedRuntimeCommandParts): string 
 	].join(" ");
 }
 
-function recoveryProbeInvocation(runner: string, event: string): string {
+function recoveryProbeInvocation(binaryPath: string, runner: string, event: string): string {
 	return [
 		"node -e",
 		shellQuote(MISSING_RUNTIME_FALLBACK_SOURCE),
@@ -268,6 +294,7 @@ function recoveryProbeInvocation(runner: string, event: string): string {
 		shellQuote(runner),
 		shellQuote(event),
 		shellQuote(HOOK_REFRESH_COMMAND),
+		shellQuote(binaryPath),
 		shellQuote("probe"),
 	].join(" ");
 }
@@ -302,6 +329,7 @@ function runtimeInvocation(binaryPath: string, runner: string, event: string): s
 }
 
 function fallbackInvocation(opts: {
+	binaryPath: string;
 	message: string;
 	exitCode: number;
 	runner: string;
@@ -315,6 +343,7 @@ function fallbackInvocation(opts: {
 		shellQuote(opts.runner),
 		shellQuote(opts.event),
 		shellQuote(HOOK_REFRESH_COMMAND),
+		shellQuote(opts.binaryPath),
 	].join(" ");
 	// If Node itself is unavailable, normalize the shell's 127 instead of
 	// letting a gate event fail open. The embedded program already printed the

@@ -37,8 +37,8 @@ import {
 import {
 	cleanupSocket as cleanupSocketAt,
 	ensureDirectory,
-	removeFileIfExists,
 } from "./server/socket-lifecycle.js";
+import { pidFileNames, removePidFileIfOwned } from "./daemon-pid-ownership.js";
 import {
 	createSocketLifecycle,
 	type SocketLifecycleDeps,
@@ -49,6 +49,10 @@ vi.mock("./server/socket-lifecycle.js", () => ({
 	cleanupSocket: vi.fn(),
 	ensureDirectory: vi.fn(),
 	removeFileIfExists: vi.fn(),
+}));
+vi.mock("./daemon-pid-ownership.js", () => ({
+	pidFileNames: vi.fn(() => true),
+	removePidFileIfOwned: vi.fn(() => true),
 }));
 
 // --- node:net fake server -------------------------------------------------
@@ -429,7 +433,7 @@ describe("shutdown — graceful path (shutdownAsync)", () => {
 		expect(lastServer?.close).toHaveBeenCalledTimes(1);
 		// runRawSocket=true → cleanupSocket fired; pid removed; unwatchers called.
 		expect(cleanupSocketAt).toHaveBeenCalledWith(deps.socketPath);
-		expect(removeFileIfExists).toHaveBeenCalledWith(deps.pidPath);
+		expect(removePidFileIfOwned).toHaveBeenCalledWith(deps.pidPath, process.pid);
 		expect(unwatchRules).toHaveBeenCalledTimes(1);
 		expect(unwatchSettings).toHaveBeenCalledTimes(1);
 		expect(lastExitCode()).toBe(0);
@@ -641,7 +645,7 @@ describe("shutdown — force-exit umbrella (forceExit timer)", () => {
 			"Graceful shutdown stalled after 3000ms — forcing exit",
 		);
 		// Force-exit path also best-effort cleans pid + socket.
-		expect(removeFileIfExists).toHaveBeenCalledWith(deps.pidPath);
+		expect(removePidFileIfOwned).toHaveBeenCalledWith(deps.pidPath, process.pid);
 		expect(cleanupSocketAt).toHaveBeenCalledWith(deps.socketPath);
 	});
 
@@ -684,10 +688,10 @@ describe("shutdown — force-exit umbrella (forceExit timer)", () => {
 		expect(lastExitCode()).toBe(1);
 	});
 
-	it("force-exit swallows a throwing removeFileIfExists and still exits 1", async () => {
+	it("force-exit swallows a throwing ownership cleanup and still exits 1", async () => {
 		vi.useFakeTimers();
 		const { deps } = makeDeps();
-		(removeFileIfExists as unknown as MockInstance).mockImplementationOnce(() => {
+		(removePidFileIfOwned as unknown as MockInstance).mockImplementationOnce(() => {
 			throw new Error("rm failed");
 		});
 		const lc = createSocketLifecycle(deps);

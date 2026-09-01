@@ -6,19 +6,16 @@
 // line cap. Pure leaf cluster: depends only on node:fs/path, collection
 // types/path, and the LocalActivityEvent type — never imports back from main.
 
-import {
-	closeSync,
-	existsSync,
-	openSync,
-	readFileSync,
-	readSync,
-	statSync,
-} from "node:fs";
+import { existsSync } from "node:fs";
+import { countNonEmptyFileLines } from "./bounded-file-io.js";
 import type { AgentEventName } from "./collection/types.js";
 import { getCollectionPath } from "./collection/writer.js";
 import { isJsonObject, type JsonObject } from "./json-types.js";
 import type { EventAttribution, LocalActivityEvent, TokenUsage } from "./local-activity-types.js";
 import { nonNull } from "./non-null.js";
+import { readRecentLines } from "./reverse-line-reader.js";
+
+export { readRecentLines };
 
 /** Best human label for a collection action: command / path / pattern / url.
  *  Takes the validated-but-unvalidated-shape `action` field straight from
@@ -295,69 +292,12 @@ export function readCollectionActivity(opts?: {
 	return events;
 }
 
-export function readRecentLines(
-	path: string,
-	maxLines: number,
-	maxBytes: number = Number.POSITIVE_INFINITY,
-): string[] {
-	if (maxLines <= 0 || maxBytes <= 0) {
-		return [];
-	}
-
-	const fileSize = statSync(path).size;
-	if (fileSize <= 0) {
-		return [];
-	}
-
-	const fd = openSync(path, "r");
-	const chunkSize = 64 * 1024;
-	let position = fileSize;
-	let bytesRemaining = Math.min(fileSize, Math.floor(maxBytes));
-	let carry = "";
-	const lines: string[] = [];
-
-	try {
-		while (position > 0 && bytesRemaining > 0 && lines.length < maxLines) {
-			const readSize = Math.min(chunkSize, position, bytesRemaining);
-			position -= readSize;
-			bytesRemaining -= readSize;
-
-			const buffer = Buffer.alloc(readSize);
-			readSync(fd, buffer, 0, readSize, position);
-
-			const chunk = buffer.toString("utf-8") + carry;
-			const parts = chunk.split("\n");
-			carry = parts.shift() || "";
-
-			for (let i = parts.length - 1; i >= 0 && lines.length < maxLines; i--) {
-				const line = nonNull(parts[i]).trim();
-				if (line) {
-					lines.push(line);
-				}
-			}
-		}
-
-		// Only the file's actual first line is complete without a preceding
-		// newline. When a byte budget stopped the scan mid-file, `carry` is an
-		// incomplete prefix of the oldest retained line and must be discarded.
-		if (position === 0 && carry.trim() && lines.length < maxLines) {
-			lines.push(carry.trim());
-		}
-
-		return lines;
-	} finally {
-		closeSync(fd);
-	}
-}
-
 export function countJsonlLines(path: string): number {
 	if (!existsSync(path)) {
 		return 0;
 	}
 	try {
-		return readFileSync(path, "utf-8")
-			.split("\n")
-			.filter((line) => line.trim().length > 0).length;
+		return countNonEmptyFileLines(path);
 	} catch (_err) {
 		/* intentional: unreadable jsonl — report 0 lines rather than surface the error */
 		return 0;

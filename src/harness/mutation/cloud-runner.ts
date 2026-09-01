@@ -11,13 +11,18 @@
 
 import { isJsonObject } from "../../lib/json-types.js";
 import type { MutationRunner } from "./gate.js";
-import { strykerToAdapted } from "./stryker-adapter.js";
+import { normalizeManifestKey } from "./manifest-key.js";
+import { type AdaptedFile, strykerToAdapted } from "./stryker-adapter.js";
 import type { TestRunResult } from "./types.js";
 
 export interface CloudRunnerConfig {
 	url: string;
 	token?: string | undefined;
 	timeoutMs: number;
+	/** Repo root for canonicalizing the requested path against report entries
+	 *  (the daemon threads its ctx.cwd). Absent ⇒ process.cwd(), same as every
+	 *  other manifest-key call site. */
+	cwd?: string | undefined;
 }
 
 /**
@@ -69,8 +74,8 @@ export class MutationRunPendingError extends Error {
 	readonly jobId: string;
 	readonly runnerUrl: string;
 
-	constructor(jobId: string, runnerUrl: string) {
-		super(`mutation run still pending (job ${jobId})`);
+	constructor(jobId: string, runnerUrl: string, cause?: unknown) {
+		super(`mutation run still pending (job ${jobId})`, cause === undefined ? undefined : { cause });
 		this.name = "MutationRunPendingError";
 		this.jobId = jobId;
 		this.runnerUrl = runnerUrl;
@@ -114,7 +119,7 @@ export interface FetchResponse {
 
 /** How much of a runner's error body to carry into the harness message. Long
  *  enough for a stack's first frames, short enough not to flood a hook warning. */
-export const ERROR_BODY_CHARS = 400;
+const ERROR_BODY_CHARS = 400;
 
 /**
  * Turn a non-ok response into a message that says what actually went wrong.
@@ -164,6 +169,48 @@ function extractMessage(raw: string): string {
 	return raw;
 }
 
+/**
+ * Select the requested target's OWN report entry — the trust boundary of the
+ * whole runner (review 2026-08-25, pass 6).
+ *
+ * Three reviewer-reproduced defects live here, each refused explicitly:
+ * - suffix matching accepted `packages/x/src/a.ts` for `src/a.ts` — canonical
+ *   EXACT equality only, through the same `normalizeManifestKey` choke point
+ *   the manifest uses;
+ * - `flatMap` pulled every report file's mutants into the target's verdict —
+ *   only the target entry's mutants are returned;
+ * - a report describing OLDER source text certified the new edit — the entry's
+ *   source must equal the proposed overlay content byte-for-byte (a content
+ *   hash echoed by the Worker is the eventual protocol; strict equality is the
+ *   conservative first implementation).
+ */
+export function selectTargetEntry(
+	adapted: AdaptedFile[],
+	file: string,
+	overlayContent: string,
+	cwd: string | undefined,
+): AdaptedFile {
+	const canonical = normalizeManifestKey(file, cwd);
+	const targets = adapted.filter((f) => normalizeManifestKey(f.file, cwd) === canonical);
+	const target = targets[0];
+	if (target === undefined) {
+		throw new Error(
+			`the mutation report has no entry for ${canonical} — a missing target is not a clean measurement`,
+		);
+	}
+	if (targets.length > 1) {
+		throw new Error(
+			`the mutation report carries ${targets.length} entries resolving to ${canonical} — an ambiguous target is not a measurement`,
+		);
+	}
+	if (target.content !== overlayContent) {
+		throw new Error(
+			`the mutation report describes different source than the proposed overlay for ${canonical} — a stale result never certifies a new edit`,
+		);
+	}
+	return target;
+}
+
 /** One line, so a multi-line stack cannot wreck a terminal warning's shape. */
 function collapse(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
@@ -180,10 +227,38 @@ function headersFor(config: CloudRunnerConfig): Record<string, string> {
 	return headers;
 }
 
-/** Parse the optional overlay test-run signal from the Worker response (spec §7).
- *  Absent / malformed ⇒ undefined — a mutants-only response gates neither red/green
- *  nor RED-witness, exactly as before the Worker started reporting it. */
-function parseTestRun(body: unknown): TestRunResult | undefined {
+/** Recover the mutation engine's process exit status from the Worker response.
+ *
+ *  Three outcomes, deliberately distinct, because collapsing any pair of them
+ *  reopens a false clean (goal 28 §8):
+ *   - a number  — the engine reported that status; only `0` certifies.
+ *   - `null`    — the Worker ran the engine but could not recover its status.
+ *                 Not success. The Worker itself refuses to collapse this to 0,
+ *                 and so must we.
+ *   - `undefined` — the response carries no `engine` field at all, i.e. the
+ *                 runner said nothing on the subject. Also not success.
+ *
+ *  A malformed `engine` field (present but not an object, or an `exitCode` that
+ *  is neither a finite number nor null) reads as `null` rather than `undefined`:
+ *  the runner CLAIMED to report a status and produced garbage, which is a
+ *  stronger failure than staying silent, and must not be softened into "the
+ *  runner never mentioned it". */
+export function readEngineExitCode(body: unknown): number | null | undefined {
+	if (typeof body !== "object" || body === null) return undefined;
+	if (!("engine" in body)) return undefined;
+	const engine = (body as { engine?: unknown }).engine;
+	if (typeof engine !== "object" || engine === null) return null;
+	const code = (engine as { exitCode?: unknown }).exitCode;
+	if (code === null) return null;
+	if (typeof code === "number" && Number.isFinite(code)) return code;
+	return null;
+}
+
+/** Parse the overlay test-run signal from the Worker response (spec §7).
+ *  Absent / malformed ⇒ undefined — which, under the strict evidence rules
+ *  (2026-08-28), the EVALUATOR refuses as not-measured rather than treating as
+ *  "not red": a response with no test-run evidence can never certify clean. */
+export function parseTestRun(body: unknown): TestRunResult | undefined {
 	if (!isJsonObject(body) || !isJsonObject(body.testRun)) return undefined;
 	const overlayGreen = body.testRun.overlayGreen;
 	if (typeof overlayGreen !== "boolean") return undefined;
@@ -191,11 +266,27 @@ function parseTestRun(body: unknown): TestRunResult | undefined {
 	return { overlayGreen, redWitnessSatisfied: typeof witness === "boolean" ? witness : null };
 }
 
+/**
+ * Read the runner-minted executed-test count.
+ *
+ * Stryker's JSON report cannot supply this evidence after the fact:
+ * `testFiles[*].tests` includes skipped tests, then discards their status while
+ * rendering the report. Counting those rows would let an all-skipped suite
+ * claim that test oracles ran. Absence and malformed values therefore remain
+ * `null`; only an explicit non-negative safe integer can cross this boundary.
+ */
+export function readExecutedTestCount(body: unknown): number | null {
+	if (!isJsonObject(body)) return null;
+	if (!isJsonObject(body.testRun) || !("executedTestCount" in body.testRun)) return null;
+	const count = body.testRun.executedTestCount;
+	return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
 /** Daemon-side MutationRunner forwarding to the cloud Sandbox Worker (spec §8). */
 export function createCloudMutationRunner(config: CloudRunnerConfig, fetchImpl: FetchLike): MutationRunner {
 	return {
 		available: () => config.url.length > 0,
-		run: async (file, overlayContent, overlays, range) => {
+		run: async (file, overlayContent, overlays, options) => {
 			const controller = new AbortController();
 			const jobId = mintJobId();
 			let timedOut = false;
@@ -209,11 +300,22 @@ export function createCloudMutationRunner(config: CloudRunnerConfig, fetchImpl: 
 					headers: headersFor(config),
 					// `overlays` (full proposed state incl. the companion test) is
 					// omitted when absent — an older Worker just ignores it.
-					// `range` restricts the run to one line span. Forgetting to forward
-					// it (as this did until 2026-07-27) is silent and expensive: every
-					// shard measures the WHOLE file, so N runners do N times the work
-					// for 1x the coverage and every mutant is reported N times.
-					body: JSON.stringify({ file, overlayContent, overlays, range, job_id: jobId }),
+					// Explicit scope + cache fields (review pass 19): the per-edit path
+					// is ALWAYS whole-file with the incremental cache OFF, stated on
+					// the wire — never inferred from a missing `range`. `range` and
+					// `shard` no longer exist in the client (v1 line-range/shard
+					// execution retired, passes 11-19); a runner that keys cache
+					// behavior off range-absence must read these explicit fields.
+					body: JSON.stringify({
+						file,
+						overlayContent,
+						overlays,
+						testScope: options?.testFiles,
+						test_scope_mode: options?.scopeMode,
+						scope: "whole_file",
+						incremental: false,
+						job_id: jobId,
+					}),
 					signal: controller.signal,
 				});
 				// 503 is the single-worktree runner's "busy" lock, which is neither a
@@ -226,17 +328,39 @@ export function createCloudMutationRunner(config: CloudRunnerConfig, fetchImpl: 
 				// leaving the gate to report a generic failure.
 				const notMeasurable = readNotMeasurable(body);
 				if (notMeasurable) throw new MutationNotMeasurableError(notMeasurable.reason, notMeasurable.detail);
+				// Review 2026-08-25, pass 7: the Worker reports a RED overlay suite as
+				// `{files:{}, testRun:{overlayGreen:false}}` — Stryker never ran, so
+				// there legitimately is no target entry. Selecting the target first
+				// threw "no entry", the gate read that as unavailable, and a KNOWN red
+				// suite failed to block. Red evidence short-circuits target selection.
+				const testRun = parseTestRun(body);
+				if (testRun?.overlayGreen === false) return { mutants: [], testRun };
 				const adapted = strykerToAdapted(body);
 				if (adapted === null) throw new Error("unrecognized mutation report");
-				const mutants = adapted.flatMap((f) => f.mutants);
-				const testRun = parseTestRun(body);
-				return testRun ? { mutants, testRun } : { mutants };
+				// The target's OWN entry, exact-path-matched and bound to the proposed
+				// overlay content — see selectTargetEntry for the three refusals.
+				const entry = selectTargetEntry(adapted, file, overlayContent, config.cwd);
+				const mutants = entry.mutants;
+				// Carry the parse loss to the evaluator rather than absorbing it here:
+				// the runner's job is to report what arrived, the evaluator's is to
+				// decide whether that is enough to certify.
+				const dropped = entry.dropped > 0 ? { droppedMutants: entry.dropped } : {};
+				// Same division of labour as `dropped`: carry the engine's status up
+				// rather than judging it here. Absent stays absent, so the evaluator
+				// can tell "the runner said nothing about the engine" apart from
+				// "the engine reported a status".
+				const engine = readEngineExitCode(body);
+				const engineEvidence = engine === undefined ? {} : { engineExitCode: engine };
+				const executedTestCount = readExecutedTestCount(body);
+				return testRun
+					? { mutants, testRun, executedTestCount, ...dropped, ...engineEvidence }
+					: { mutants, executedTestCount, ...dropped, ...engineEvidence };
 			} catch (err) {
 				// Budget expiry is NOT the same failure as a broken runner. The engine
 				// is still working and the result is retained under our job id, so
 				// surface a handle the caller can harvest in its next window instead
 				// of throwing away work that is already paid for.
-				if (timedOut) throw new MutationRunPendingError(jobId, config.url);
+					if (timedOut) throw new MutationRunPendingError(jobId, config.url, err);
 				throw err;
 			} finally {
 				clearTimeout(timer);

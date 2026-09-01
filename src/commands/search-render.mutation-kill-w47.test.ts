@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderFull, renderNormal } from "./search-render.js";
 import type { FileRanking, SearchResult } from "./search-query.js";
 
-// biome-ignore lint: control-char regex is intentional (ANSI escape stripping)
+// Strip ANSI escape codes so terminal styling does not affect assertions.
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 function stripAnsi(s: string): string {
 	return s.replace(ANSI_RE, "");

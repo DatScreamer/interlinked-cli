@@ -31,8 +31,46 @@ import {
 	MutationManifestTestTargetError,
 	normalizeManifestKey,
 } from "./manifest.js";
-import { strykerToAdapted } from "./stryker-adapter.js";
+import { type AdaptedFile, strykerToAdapted } from "./stryker-adapter.js";
 import type { MutationManifest } from "./types.js";
+
+/**
+ * The report entry for the requested target, or null when the report cannot be
+ * trusted to describe that target.
+ *
+ * The SAME trust boundary, with the same three refusals, as `selectTargetEntry`
+ * in cloud-runner.ts (review 2026-08-25, pass 6). Restated here rather than
+ * imported: measure.ts already depends on this module, and adoption must not
+ * acquire a dependency on the per-edit gate's HTTP client to decide whether a
+ * report describes its own file.
+ *
+ * - EXACT canonical path equality, through the same `normalizeManifestKey`
+ *   choke point the manifest keys by. The removed `?? adapted[0]` fallback let
+ *   a FOREIGN file's mutants seed this file's baseline whenever the report did
+ *   not name the target — and this is the path most of this repo's baselines
+ *   were created through, so the fallback was not hypothetical.
+ * - An AMBIGUOUS target (two entries collapsing onto one canonical key) is not
+ *   a measurement of anything.
+ * - The entry's source must equal `content` byte-for-byte. `deriveIdentities`
+ *   anchors the mutants against `content`, so a report measured against
+ *   different text yields identities that do not describe the mutants being
+ *   recorded — a stale or foreign measurement written in as this file's floor.
+ *
+ * Refuses with null rather than throwing: every other rejection in this module
+ * folds into the same "cannot be trusted to establish a baseline" contract.
+ */
+function selectTargetEntry(
+	adapted: AdaptedFile[],
+	args: Pick<SeedArgs, "file" | "content" | "cwd">,
+): AdaptedFile | null {
+	const { file, content, cwd } = args;
+	const canonical = normalizeManifestKey(file, cwd);
+	const targets = adapted.filter((f) => normalizeManifestKey(f.file, cwd) === canonical);
+	if (targets.length !== 1) return null;
+	const target = targets[0];
+	if (target === undefined || target.content !== content) return null;
+	return target;
+}
 
 export interface SeedArgs {
 	/** Manifest to extend — pass the previous result to seed many files. */
@@ -70,8 +108,8 @@ export function seedFileBaseline(args: SeedArgs): MutationManifest | null {
 	const adapted = strykerToAdapted(args.report);
 	if (adapted === null) return null;
 
-	const forFile = adapted.find((f) => f.file === args.file) ?? adapted[0];
-	if (forFile === undefined || forFile.mutants.length === 0) return null;
+	const forFile = selectTargetEntry(adapted, args);
+	if (forFile === null || forFile.mutants.length === 0) return null;
 
 	const identities = deriveIdentities(
 		args.file,

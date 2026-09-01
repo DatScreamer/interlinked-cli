@@ -92,6 +92,13 @@ describe("uninstallHooksCommand — runner parsing (kills parseRunners mutants)"
 		const callArg = lastCallArg();
 		expect(callArg.runners).toEqual(["gemini-cli"]);
 	});
+
+	it("recognizes OpenCode and Pi runner ids", async () => {
+		setResult([], []);
+		await uninstallHooksCommand({ runner: "opencode,pi" });
+		const callArg = lastCallArg();
+		expect(callArg.runners).toEqual(["opencode", "pi"]);
+	});
 });
 
 describe("uninstallHooksCommand — dryRun flag plumbing", () => {

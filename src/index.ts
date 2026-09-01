@@ -71,11 +71,12 @@ Interface boundaries:
   Web UI (/chat, /map)   optional human oversight and coordination
 
 Zero-arg behavior:
-  interlinked            setup wizard (if unconfigured) or status dashboard
+  interlinked            human quick start: setup wizard (if unconfigured) or status dashboard
 
 Quick start:
-  interlinked enable                                install hooks + skills
-  interlinked harness start                         start local guard server
+  interlinked                                       guided human setup/status
+  interlinked enable                                explicit/automation setup; installs hooks + skills and starts the daemon
+  interlinked harness start                         manual daemon recovery (enable starts it automatically)
   interlinked status                                dashboard
   interlinked login --server <url>                  optional server auth
 `,

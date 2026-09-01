@@ -24,11 +24,15 @@ describe("checkIntrovertedTest mutation contracts", () => {
         expect(findings(content, "cart.test.txt")).toHaveLength(0);
     });
 
-    // test-contract: invariant — only vi.mock and jest.mock calls mark modules as mocked
+    // test-contract: invariant — only vi.mock and jest.mock calls mark modules as mocked. The `dep.mock("./cart.js")`
+    // member call must NOT mark the companion as mocked, so the literal-only test still fires; a mutant that
+    // accepts any `.mock(...)` callee empties the reachable SUT set and bails with zero findings.
+    // (Asserting on `dep.mock()` itself would rank UNCERTAIN — an unresolved callee — and deliberately stay silent.)
     it("keeps ordinary member calls from being mistaken for mock declarations", () => {
         const content = `${cartImport}
-const dep = { mock: () => 3 };
-it("x", () => { expect(dep.mock()).toBe(3); });`;
+const dep = { mock: (path: string) => path };
+dep.mock("./cart.js");
+it("x", () => { expect(3).toBe(3); });`;
 
         expect(findings(content)).toHaveLength(1);
     });

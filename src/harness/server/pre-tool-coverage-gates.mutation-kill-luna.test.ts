@@ -5,7 +5,7 @@ vi.mock("../evaluator/coverage-write-guard.js", () => ({ checkCoverageWrite: vi.
 vi.mock("../evaluator/commit-gate.js", () => ({ checkCommitGate: vi.fn() }));
 vi.mock("../mutation/gate.js", () => ({ runPerEditMutationGate: vi.fn() }));
 vi.mock("../mutation/manifest.js", () => ({
-	loadManifest: vi.fn(() => null),
+	loadManifestState: vi.fn(() => ({ kind: "missing" })),
 	emptyManifest: vi.fn((meta) => ({ meta, mutants: [] })),
 	makeManifestPersister: vi.fn(() => vi.fn()),
 }));
@@ -13,6 +13,8 @@ vi.mock("../mutation/survivors-index.js", () => ({ makeManifestPersisterWithInde
 vi.mock("../mutation/pending-registry.js", () => ({
 	overlayHash: vi.fn(() => "overlay-hash"),
 	pendingRegistry: vi.fn(() => ({ pending: [] })),
+	initPendingRegistryStore: vi.fn(),
+	commitPendingRegistry: vi.fn(),
 }));
 vi.mock("../mutation/pending-runs.js", () => ({ recordPending: vi.fn() }));
 vi.mock("../dependency-view.js", () => ({ resolveDependencyView: vi.fn() }));
@@ -126,7 +128,7 @@ it("extracts patch paths from patch and raw-patch input keys", async () => {
 		view.mockReturnValue({ answerScope: "repo" });
 		await runCoverageWriteGate(
 			coverageContext(),
-			event({ [key]: "*** Begin Patch\n*** Add File: src/${key}.ts\n+x\n*** End Patch" }),
+			event({ [key]: `*** Begin Patch\n*** Add File: src/${key}.ts\n+x\n*** End Patch` }),
 			allow(),
 		);
 		expect(graph).toHaveBeenCalledWith(expect.anything(), `/repo/src/${key}.ts`);

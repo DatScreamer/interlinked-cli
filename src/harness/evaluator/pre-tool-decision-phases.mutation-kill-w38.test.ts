@@ -85,7 +85,10 @@ vi.mock("./pre-tool-phases.js", async (importOriginal) => {
 });
 
 import { CohortManager } from "../cohort.js";
-import { ReservationManager } from "../reservations.js";
+import {
+	type ReservationBatchOptions,
+	ReservationManager,
+} from "../reservations.js";
 import type {
 	GuardRulesConfig,
 	HarnessDecision,
@@ -280,7 +283,12 @@ describe("evaluateAutoReservation — blockForRemoteReservation reservation obje
 			cohort: "remote",
 			expires_at: "2026-08-22T00:05:00Z",
 		};
-		const reservations = { checkAndReserve: () => conflict } as unknown as ReservationManager;
+		const reservations = {
+			checkAndReserveBatch: ({ filePaths, shouldBlock }: ReservationBatchOptions) => {
+				const filePath = filePaths[0] ?? "";
+				return shouldBlock(filePath, conflict) ? { filePath, conflict } : null;
+			},
+		} as unknown as ReservationManager;
 		const cohort = new CohortManager();
 		const event = makeEvent({
 			tool_name: "Write",
@@ -550,6 +558,9 @@ describe("evaluateWriteContent — guard-invocation gate", () => {
 			ctx,
 		);
 		expect(decision).toBeNull();
+		expect(vi.mocked(evaluateWriteContentGuards)).toHaveBeenCalledWith(
+			expect.objectContaining({ externalOverlays: false }),
+		);
 	});
 });
 

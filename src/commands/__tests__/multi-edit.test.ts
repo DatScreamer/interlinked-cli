@@ -28,6 +28,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sweepStaleFixtureDirs } from "../../harness/__tests__/fixture-hygiene.js";
+import { _setTscOverlayModeOverrideForTest } from "../../harness/check-engine/tool-runners/tsc-overlay.js";
 import { nonNull } from "../../lib/non-null.js";
 import {
 	applyEditsToBuffer,
@@ -83,14 +84,14 @@ function normalizeAndExpectFail(raw: unknown, singleFilePath?: string): string {
 }
 
 function runAndExpectOk(batches: EditBatch[]): MultiEditResult {
-	const result = runMultiEdit(batches);
+	const result = runMultiEdit(batches, { projectRoot: FIXTURE_DIR });
 	expect(result.ok).toBe(true);
 	expect(result.error_code).toBeUndefined();
 	return result;
 }
 
 function runAndExpectFail(batches: EditBatch[], code: string): MultiEditResult {
-	const result = runMultiEdit(batches);
+	const result = runMultiEdit(batches, { projectRoot: FIXTURE_DIR });
 	expect(result.ok).toBe(false);
 	expect(result.error_code).toBe(code);
 	return result;
@@ -353,8 +354,9 @@ describe("isTscFindingBlocking (re-exported)", () => {
 //   4. Module-level `beforeAll` sweep — wipes stale fixtures from a
 //      prior crashed run before the current run starts writing.
 
-// NB: for this file CLI_ROOT IS the repo root (three levels up from
-// `src/commands/__tests__`), which is the `projectRoot` the gate is called with.
+// NB: CLI_ROOT is the repo root (three levels up from
+// `src/commands/__tests__`). Fixtures stay under it so the real Biome gate can
+// discover the repository configuration.
 const CLI_ROOT = resolve(import.meta.dirname, "../..", "..");
 // Integration fixtures live in a UNIQUE per-process `mkdtempSync` dir, so no two
 // test files (or parallel runs) ever write the same path — the parallel-safety
@@ -372,6 +374,17 @@ const CLI_ROOT = resolve(import.meta.dirname, "../..", "..");
 // corpus walk (which only descends `src/`).
 sweepStaleFixtureDirs(CLI_ROOT);
 const FIXTURE_DIR = mkdtempSync(resolve(CLI_ROOT, "_multi_edit_fixtures-"));
+// Give this worker its own compiler project and therefore its own project
+// compiler lease. Sharing CLI_ROOT made these content-gate assertions race any
+// concurrently running repo typecheck: the fail-closed gate correctly returned
+// tsc-overlay-unavailable before it could report TS2322 or approve clean edits.
+// A minimal strict project still exercises the real LanguageService while
+// keeping the test independent of unrelated compiler admission.
+writeFileSync(
+	resolve(FIXTURE_DIR, "tsconfig.json"),
+	JSON.stringify({ compilerOptions: { noEmit: true, strict: true }, include: ["*.ts"] }),
+	"utf-8",
+);
 
 // Module-level registry. `writeFixture` adds, `rmFixture` removes on
 // successful (or ENOENT) cleanup. The process-exit handler iterates
@@ -436,40 +449,29 @@ afterAll(() => {
 });
 
 // ───────────────────────────────────────────────
-// Parallel-safety: warm the shared CLI_ROOT toolchain ONCE, up front.
+// Parallel-safety: warm this worker's private fixture project ONCE, up front.
 // ───────────────────────────────────────────────
-// The integration tests below run the REAL tsc LanguageService + `npx biome`
-// against `CLI_ROOT` (the repo root — its tsconfig `include: ["src"]` makes the
-// LS program span the whole multi-thousand-file `src/` tree). Building that
-// program cold is the expensive step (~1-3s warm, but UNBOUNDED under load):
-// when the full `npm run test:coverage` run saturates every core (702 files in
-// parallel, v8 instrumentation amplifying GC pauses), a cold warmup can balloon
-// past a single test's 20s budget. That is the race this file hit — not a
-// fixture-path collision (those are already isolated to a per-process mkdtemp
-// dir) but the cold LS build landing INSIDE a tight per-test timeout under
-// host-CPU contention. Symptom in the wild: Case A timed out at 20s, then on
-// retry a still-warming LS returned spurious `Cannot find`-class diagnostics
-// and the gate falsely rejected.
-//
-// Fix: pay the warmup exactly once here, in a module-level beforeAll covered by
-// the 30s hookTimeout (headroom the per-test 20s budget lacks), via the SAME
-// gate entry point the tests use. After this, the `CLI_ROOT` LanguageService
-// (and biome discovery) is cached on the module-level registries in
-// check-engine / tsc-overlay, so every integration `it()` does only fast
-// incremental analysis (~50-200ms) — stable well under 20s even at load avg 20+.
-// This mirrors `tsc-overlay.test.ts`, which warms once and never re-clears
-// between cases. Correspondingly, the per-describe `beforeAll` no longer calls
-// `clearTscOverlayCache(CLI_ROOT)` (that forced a redundant cold rebuild before
-// each describe — 4 full warmups per file run); the LS picks up each freshly
-// written fixture via its mtime-bump versioning, so no clear is needed for
-// correctness.
+// The integration tests below run the real TypeScript LanguageService and
+// Biome against the private project. Warming through the same gate entry point
+// populates the module-level service cache once; fixtures added later are still
+// picked up as explicit overlays and by their mtime versions.
+// Pin the tsc overlay to IN-PROCESS mode for this whole file. The default
+// "sidecar" transport spawns a disposable child per overlay call, so it cannot
+// benefit from this module-level warmup. These integration tests exercise the
+// reusable real LanguageService verdicts; the sidecar-unavailable rejection
+// path is pinned separately in multi-edit-sidecar-unavailable.test.ts.
+beforeAll(() => {
+	_setTscOverlayModeOverrideForTest("in-process");
+});
+afterAll(() => {
+	_setTscOverlayModeOverrideForTest(null);
+});
+
 const WARMUP_FIXTURE = "_multi_edit_warmup.ts";
-// Explicit 60s budget (vs. the global 30s hookTimeout): this one-time cold
-// build of the whole-`src/` TS program + biome discovery is exactly the
-// variable-cost operation we're lifting OUT of the per-test budgets, so it must
-// have the headroom the per-test 20s budget lacks. 60s matches the heavy-spawn
-// override the vitest config already documents for write.test.ts. Cost is paid
-// once and amortized across all 36 tests in this file.
+// Explicit 60s budget (vs. the global 30s hookTimeout): the one-time cold
+// LanguageService + Biome discovery is the variable-cost operation being
+// lifted out of the individual test budgets. The cost is paid once and
+// amortized across all 36 tests in this file.
 beforeAll(() => {
 	const p = writeFixture(WARMUP_FIXTURE, "export const _warm: number = 1;\n");
 	// Same path the integration tests exercise (tsc + biome diff-overlay),
@@ -478,7 +480,7 @@ beforeAll(() => {
 	// effect. A diff requires a content change vs. disk, so overlay slightly
 	// different content than what we wrote.
 	gateProposedContentInline([{ path: p, content: "export const _warm = 2;\n" }], {
-		projectRoot: CLI_ROOT,
+		projectRoot: FIXTURE_DIR,
 	});
 	rmFixture(p);
 }, 60_000);
@@ -747,14 +749,20 @@ describe("gateProposedContentInline", () => {
 
 	it("returns empty when proposed content is identical to disk", () => {
 		const onDisk = readFileSync(fixturePathAbs, "utf-8");
-		const failures = gateProposedContentInline([{ path: fixturePathAbs, content: onDisk }]);
+		const failures = gateProposedContentInline(
+			[{ path: fixturePathAbs, content: onDisk }],
+			{ projectRoot: FIXTURE_DIR },
+		);
 		expect(failures).toEqual([]);
 	});
 
 	it("returns failures when proposed content introduces a new type error", () => {
 		const onDisk = readFileSync(fixturePathAbs, "utf-8");
 		const proposed = `${onDisk}\nconst _bad: number = "x";\n`;
-		const failures = gateProposedContentInline([{ path: fixturePathAbs, content: proposed }]);
+		const failures = gateProposedContentInline(
+			[{ path: fixturePathAbs, content: proposed }],
+			{ projectRoot: FIXTURE_DIR },
+		);
 		expect(failures.length).toBeGreaterThan(0);
 		const ts2322 = failures.find((f) => f.code === "TS2322");
 		expect(ts2322).toBeDefined();
@@ -851,7 +859,10 @@ describe("runMultiEdit plumbing", () => {
 		expect(result.file_changes_applied).toEqual([pathA, pathB]);
 		expect(readFileSync(pathA, "utf-8")).toContain('"alpha-2"');
 		expect(readFileSync(pathB, "utf-8")).toContain('"beta-2"');
-	}, 20_000);
+		// 60s (repo convention for real-toolchain cases, cf. write.test.ts):
+		// two files → two pre-edit + two overlay LS runs; under full-suite CPU
+		// contention the incremental runs can still stack past a 20s budget.
+	}, 60_000);
 
 	it("no-op composition leaves files untouched and reports success with empty applied list", () => {
 		const priorA = readFileSync(pathA, "utf-8");

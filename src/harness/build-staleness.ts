@@ -27,6 +27,23 @@ const WALK_BUDGET_MS = 500;
  */
 const EPHEMERAL_FIXTURE_DIR_RE = /^_.+_fixtures-/;
 
+/** Test sources are NOT bundled into dist — a fresh test file must not read
+ *  as "the running daemon is stale" (review 2026-08-26: writing one new
+ *  .test.ts flipped `build_stale: true` seconds after a rebuild+restart). */
+const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const TEST_DIRS = new Set(["__tests__", "__fixtures__"]);
+
+/** Directories the staleness walk never descends into: build/vendor output,
+ *  dotdirs, leaked test-fixture dirs, and test-only trees (not bundled). */
+function skipDirectory(name: string): boolean {
+	return (
+		SKIP_DIRS.has(name) ||
+		TEST_DIRS.has(name) ||
+		name.startsWith(".") ||
+		EPHEMERAL_FIXTURE_DIR_RE.test(name)
+	);
+}
+
 export interface DistStaleness {
 	/** A src/ file is newer than the dist/ build artifact. */
 	stale: boolean;
@@ -55,15 +72,9 @@ function newestMtimeUnder(dir: string): number {
 		}
 		for (const entry of entries) {
 			if (entry.isDirectory()) {
-				if (
-					SKIP_DIRS.has(entry.name) ||
-					entry.name.startsWith(".") ||
-					EPHEMERAL_FIXTURE_DIR_RE.test(entry.name)
-				) {
-					continue;
-				}
-				stack.push(join(current, entry.name));
+				if (!skipDirectory(entry.name)) stack.push(join(current, entry.name));
 			} else if (entry.isFile()) {
+				if (TEST_FILE_RE.test(entry.name)) continue;
 				try {
 					const m = statSync(join(current, entry.name)).mtimeMs;
 					if (m > newest) newest = m;

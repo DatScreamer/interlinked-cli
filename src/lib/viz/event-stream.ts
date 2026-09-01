@@ -25,6 +25,8 @@ export interface VizEvent {
 	session?: string;
 	/** Set when the actor was a SUBAGENT spawned by that session, not the session itself. */
 	subagent_id?: string;
+	/** Parent actor/thread identity for a spawned agent, when the runner reports it. */
+	parent_agent?: string;
 	/** Model behind the actor, when the runner reports it. */
 	model?: string;
 }
@@ -103,6 +105,8 @@ function copyActorFields(ev: VizEvent, r: JsonObject): void {
 	if (session) ev.session = session;
 	const subagent = str(r, "subagent_id");
 	if (subagent) ev.subagent_id = subagent;
+	const parent = str(r, "parent_agent");
+	if (parent) ev.parent_agent = parent;
 	const model = str(r, "model");
 	if (model) ev.model = model;
 }
@@ -132,8 +136,17 @@ export function readAppendedLines(path: string, fromOffset: number): { lines: st
 		const len = size - fromOffset;
 		const buf = Buffer.alloc(len);
 		readSync(fd, buf, 0, len, fromOffset);
-		const lines = buf.toString("utf-8").split("\n").filter((l) => l.trim().length > 0);
-		return { lines, offset: size };
+		// Advance only past the last COMPLETE line. A row mid-append (no trailing
+		// newline yet) stays unread until its newline lands — advancing past it
+		// would permanently drop the row (external review 2026-08-23, finding 7).
+		const lastNewline = buf.lastIndexOf(0x0a);
+		if (lastNewline < 0) return { lines: [], offset: fromOffset };
+		const lines = buf
+			.subarray(0, lastNewline + 1)
+			.toString("utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0);
+		return { lines, offset: fromOffset + lastNewline + 1 };
 	} finally {
 		closeSync(fd);
 	}

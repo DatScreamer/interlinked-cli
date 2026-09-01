@@ -12,15 +12,12 @@
 //
 // This module is importable (for tests) and also runnable as a CLI script.
 
-import { existsSync, readdirSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildAllAdapters, detectAdapter, getAdapter } from "./harness/adapters/index.js";
 import type { RunnerAdapter } from "./harness/adapters/types.js";
-import { createDaemonClient } from "./harness/daemon-client.js";
-import { methodForPhase, type RpcMethod } from "./harness/daemon-protocol.js";
-import { callLegacyHarness, isLegacyHarnessSocket } from "./harness/legacy-client.js";
-import { recordPayloadKeys } from "./harness/payload-key-census.js";
+import { methodForPhase } from "./harness/daemon-protocol.js";
 import type { HarnessDecision } from "./harness/types.js";
 import { resetSupervisorBackoff } from "./harness/supervisor-backoff.js";
 import type { RunnerId, UnifiedHookEvent } from "./harness/unified-event.js";
@@ -32,25 +29,27 @@ import {
 	coldPackageInstallBlockReason,
 } from "./hook-entry-cold-gates.js";
 import {
-	attemptDaemonSelfHeal,
-	coldDaemonUnreachableBlockReason,
+	attemptDaemonSelfHealDetailed,
 	findRepoRoot,
+	type SelfHealAttempt,
 } from "./hook-entry-daemon-gate.js";
-import { coldDaemonUnreachableBlockReasonFresh } from "./hook-entry-daemon-probe.js";
+import { daemonRecoveryRootFresh } from "./hook-entry-daemon-probe.js";
 import { defaultTimeoutForPhase, isCodeEditEvent } from "./hook-entry-deadlines.js";
-import { attemptSelfHealOnStop } from "./hook-entry-stop-self-heal.js";
+import {
+	buildUnifiedHookEvent,
+	recordAdapterExecution,
+	resolveHookAdapter,
+	resolveHookDataDir,
+} from "./hook-entry-event.js";
+import { callHookDaemon, discoverSocket } from "./hook-entry-transport.js";
 import { writeLastCheckArtifact, writeNoHarnessArtifact } from "./lib/last-check-writer.js";
-import { recordHookRuntime } from "./lib/hook-runtime-receipt.js";
-import { nonNull } from "./lib/non-null.js";
+import {
+	acknowledgeSynchronousPostToolResult,
+	drainLatePostToolWarnings,
+} from "./lib/post-tool-warning-spool-client.js";
 
 // Re-export for back-compat: tests import these from "./hook-entry.js".
-export { coldDaemonUnreachableBlockReason, isCodeEditEvent };
-
-// Hook-socket transport variants. The legacy server uses newline-delimited
-// JSON over a raw stream; the new server uses length-prefixed framing.
-const HOOK_PROTOCOL_RAW = "raw";
-const HOOK_PROTOCOL_FRAMED = "framed";
-type HookProtocol = typeof HOOK_PROTOCOL_RAW | typeof HOOK_PROTOCOL_FRAMED;
+export { isCodeEditEvent, discoverSocket };
 
 export interface HookEntryOptions {
 	/** The native hook event name the runner emitted. */
@@ -81,7 +80,7 @@ export interface HookEntryResult {
  *  Does not read from process.stdin or write to process.stdout — that is the
  *  CLI wrapper's job. Keeps the core logic easily testable. */
 export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryResult> {
-	const adapter = resolveAdapter(opts);
+	const adapter = resolveHookAdapter(opts);
 	if (!adapter) {
 		const detail = opts.runner
 			? `unknown runner id: ${opts.runner}`
@@ -89,8 +88,11 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 		return { stderr: `[interlinked] ${detail}\n`, exit_code: 0, fell_back: true };
 	}
 
-	let event: UnifiedHookEvent;
-	event = tryBuildEvent(adapter, opts.nativeJson, opts.nativeEventName);
+	let event = buildUnifiedHookEvent(adapter, opts.nativeJson, opts.nativeEventName);
+	const postDeliveryToken = event.phase === "post-tool" ? randomUUID() : null;
+	if (postDeliveryToken) {
+		event = { ...event, post_delivery_token: postDeliveryToken, post_delivery_pid: process.pid };
+	}
 
 	const resolvedCwd = opts.cwd ?? process.cwd();
 	// The daemon-liveness gate keys on the TOOL CALL's project (the event's
@@ -105,22 +107,31 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	// event project and fall through to the fail-closed cold path on every call
 	// (finding 2026-06).
 	const socketPath = opts.socketPath ?? discoverSocket(gateCwd, event.session_id);
+	const dataDir = resolveHookDataDir(gateCwd, socketPath);
+	const lateWarnings =
+		event.phase === "pre-tool" && dataDir
+			? drainLatePostToolWarnings(dataDir, event.session_id)
+			: [];
 	if (!socketPath) {
 		// No daemon available at all — cold fallback (which itself fails closed
 		// when a daemon was running here and crashed; see encodeColdFallback).
-		return await encodeColdFallback(adapter, event, "daemon socket not found", gateCwd, opts.env);
+		const cold = await encodeColdFallback(
+			adapter,
+			event,
+			"daemon socket not found",
+			gateCwd,
+			opts.env,
+			lateWarnings,
+		);
+		return cold;
 	}
 
 	const method = methodForPhase(event.phase);
 	const timeoutMs = opts.timeout_ms ?? defaultTimeoutForPhase(event);
 	let decision: HarnessDecision;
 	const fellBack = false;
-	const protocol = resolveHookProtocol(socketPath, opts.env);
 	const callStartMs = Date.now();
-	const result =
-		protocol === HOOK_PROTOCOL_RAW
-			? await safeCallLegacy(socketPath, event, timeoutMs)
-			: await safeCallDaemon({ socketPath, method, event, timeoutMs });
+	const result = await callHookDaemon({ socketPath, method, event, timeoutMs, env: opts.env });
 	if (result.ok) {
 		decision = result.decision;
 		// A served RPC proves the daemon is healthy, so every earlier failed
@@ -130,8 +141,31 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 		resetSupervisorBackoff(dirname(dirname(socketPath)));
 	} else {
 		writeNoHarnessArtifact(dirname(socketPath), event, Date.now() - callStartMs);
-		const cold = await encodeColdFallback(adapter, event, result.reason, gateCwd, opts.env);
-		return cold;
+		return encodeColdFallback(
+			adapter,
+			event,
+			result.reason,
+			gateCwd,
+			opts.env,
+			lateWarnings,
+		);
+	}
+
+	if (postDeliveryToken && dataDir) {
+		decision = {
+			...decision,
+			warnings: acknowledgeSynchronousPostToolResult(
+				dataDir,
+				postDeliveryToken,
+				decision.warnings ?? [],
+			),
+		};
+	}
+	if (lateWarnings.length > 0) {
+		decision = {
+			...decision,
+			warnings: [...new Set([...(decision.warnings ?? []), ...lateWarnings])],
+		};
 	}
 
 	// Feed the statusline's kinetic row (`.interlinked/last-check.txt`) —
@@ -148,20 +182,6 @@ export async function runHookEntry(opts: HookEntryOptions): Promise<HookEntryRes
 	};
 }
 
-function recordAdapterExecution(
-	adapter: RunnerAdapter,
-	event: UnifiedHookEvent,
-	gateCwd: string,
-): void {
-	const root = findRepoRoot(gateCwd);
-	if (!root) return;
-	recordHookRuntime({
-		dataDir: join(root, ".interlinked"),
-		provider: adapter.id,
-		nativeEvent: event.runner_native_event,
-		definitionPath: join(root, adapter.capabilities.project_hook_path),
-	});
-}
 
 /** Entry point for CLI invocation — reads stdin, detects runner + event,
  *  writes stdout/stderr, exits with the adapter-decided code. Invoked by
@@ -215,124 +235,6 @@ async function mainFromStdin(): Promise<void> {
 // Helpers
 // -----------------------------------------------------------------------------
 
-function resolveAdapter(opts: HookEntryOptions): RunnerAdapter | null {
-	const all = buildAllAdapters();
-	if (opts.runner) return getAdapter(opts.runner, all);
-	return detectAdapter(opts.env, all);
-}
-
-function tryBuildEvent(
-	adapter: RunnerAdapter,
-	nativeJson: unknown,
-	nativeEventName: string,
-): UnifiedHookEvent {
-	// Adapters are tolerant of unknown fields and never throw; the wrapper
-	// exists only as a single seam where a future caller can add fallback
-	// behavior if adapter contracts change.
-	const event: UnifiedHookEvent = adapter.parseHookInput(nativeJson, nativeEventName);
-	// Census the payload keys the pipeline does NOT consume. This is the only
-	// point that still holds the untruncated runner payload — everything
-	// downstream sees the whitelisted subset — so a field a runner starts
-	// sending is either noticed here or nowhere. Fail-open by contract.
-	recordPayloadKeys({
-		runner: adapter.id,
-		nativeEvent: nativeEventName,
-		raw: event.raw,
-		cwd: event.context?.cwd ?? process.cwd(),
-	});
-	return event;
-}
-
-interface SafeCallDaemonArgs {
-	socketPath: string;
-	method: RpcMethod;
-	event: UnifiedHookEvent;
-	timeoutMs: number;
-}
-
-async function safeCallDaemon(
-	args: SafeCallDaemonArgs,
-): Promise<{ ok: true; decision: HarnessDecision } | { ok: false; reason: string }> {
-	const client = createDaemonClient(args.socketPath);
-	let decision: HarnessDecision | null = null;
-	let reason = "";
-	const done = await client
-		.call(args.method, args.event, { timeout_ms: args.timeoutMs })
-		.then((d) => {
-			decision = d as HarnessDecision;
-			return true;
-		})
-		.catch((err: Error) => {
-			reason = err.message;
-			return false;
-		});
-	if (done && decision) return { ok: true, decision };
-	return { ok: false, reason };
-}
-
-async function safeCallLegacy(
-	socketPath: string,
-	event: UnifiedHookEvent,
-	timeoutMs: number,
-): Promise<{ ok: true; decision: HarnessDecision } | { ok: false; reason: string }> {
-	try {
-		return {
-			ok: true,
-			decision: await callLegacyHarness(socketPath, event, { timeout_ms: timeoutMs }),
-		};
-	} catch (err) {
-		return {
-			ok: false,
-			reason: err instanceof Error ? err.message : String(err),
-		};
-	}
-}
-
-function resolveHookProtocol(socketPath: string, env: NodeJS.ProcessEnv): HookProtocol {
-	const requested = env.INTERLINKED_HOOK_PROTOCOL;
-	if (requested === HOOK_PROTOCOL_RAW) return HOOK_PROTOCOL_RAW;
-	if (requested === HOOK_PROTOCOL_FRAMED) return HOOK_PROTOCOL_FRAMED;
-	return isLegacyHarnessSocket(socketPath) ? HOOK_PROTOCOL_RAW : HOOK_PROTOCOL_FRAMED;
-}
-
-/** Discover the daemon socket. Priority:
- *    1. `--socket` flag / INTERLINKED_SOCKET env var (handled by caller)
- *    2. Per-session `.interlinked/harness-<sanitized>.sock`
- *    3. Default framed `.interlinked/harness-default.sock`
- *    4. Legacy `.interlinked/harness.sock`
- *    5. Any other `harness-*.sock` in the dir (first hit, alphabetical) */
-export function discoverSocket(cwd: string, sessionId: string): string | null {
-	const root = findRepoRoot(cwd);
-	if (!root) return null;
-	const dir = join(root, ".interlinked");
-	if (!existsSync(dir)) return null;
-
-	const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
-	const perSession = join(dir, `harness-${safe}.sock`);
-	if (existsSync(perSession)) return perSession;
-
-	const defaultFramed = join(dir, "harness-default.sock");
-	if (existsSync(defaultFramed)) return defaultFramed;
-
-	const legacy = join(dir, "harness.sock");
-	if (existsSync(legacy)) return legacy;
-
-	const entries = safeReaddir(dir);
-	const socketFiles = entries.filter((n) => n.endsWith(".sock")).sort();
-	if (socketFiles.length > 0) return join(dir, nonNull(socketFiles[0]));
-	return null;
-}
-
-function safeReaddir(dir: string): string[] {
-	let out: string[] = [];
-	try {
-		out = readdirSync(dir);
-	} catch {
-		out = [];
-	}
-	return out;
-}
-
 /** Build a cold fail-closed BLOCK result for a named gate, appending the
  *  "<gate> fail-closed gate engaged" notice to stderr. Shared by every cold gate
  *  so the encode + notice shape is defined once. */
@@ -342,8 +244,12 @@ function coldBlockResult(
 	fallbackReason: string,
 	gateLabel: string,
 	blockReason: string,
+	warnings: readonly string[] = [],
 ): HookEntryResult {
-	const blockOutput = adapter.encodeDecision({ decision: "block", reason: blockReason }, event);
+	const blockOutput = adapter.encodeDecision(
+		{ decision: "block", reason: blockReason, warnings: [...warnings] },
+		event,
+	);
 	const notice = `[interlinked] ${fallbackReason}; ${gateLabel} fail-closed gate engaged\n`;
 	return {
 		stdout: blockOutput.stdout,
@@ -372,6 +278,7 @@ async function encodeColdFallback(
 	reason: string,
 	cwd?: string,
 	env: NodeJS.ProcessEnv = process.env,
+	lateWarnings: readonly string[] = [],
 ): Promise<HookEntryResult> {
 	// Cold fallback: allow the action and report the skipped evaluator only
 	// on stderr. Do not put timeout/socket failures in decision warnings:
@@ -381,34 +288,21 @@ async function encodeColdFallback(
 	// every runner — the correct place to add cold checks is here as this
 	// module grows, but never at the cost of the per-tool-class budget.
 	//
-	// FIRST gate — daemon-crashed-mid-session. If a harness daemon was started
-	// for this project (a `harness.pid` exists) but we've reached the cold
-	// path, the daemon died or hung while the agent is mid-session. Block the
-	// tool call rather than let the agent proceed UNGUARDED — a silently-dead
-	// guard layer is a security failure, not a degraded-mode convenience.
-	// Pre-tool only, with an explicit env escape hatch. (Distinct from "no
-	// daemon ever ran here", which preserves the allow path below.)
-	// One fresh socket connect before the outage stands: the file evidence
-	// (pid, socket, ledger tail) went stale under us on 2026-08-15 and refused
-	// a Write while a live daemon was answering. See hook-entry-daemon-probe.ts.
-	const daemonDownReason = await coldDaemonUnreachableBlockReasonFresh(event, cwd, env);
-	if (daemonDownReason) {
-		// Self-heal: respawn the daemon (lock-guarded, backoff-throttled, no
-		// rebuild) so the NEXT call is guarded again; block THIS one.
-		// attemptDaemonSelfHeal never throws. A dry-run event must not advance the
-		// supervisor's spawn ladder — a simulated write is a probe, not a caller.
-		attemptDaemonSelfHeal(
-			cwd ?? event.context?.cwd,
-			env,
-			isDryRunEvent(event) ? { dryRun: true } : {},
-		);
-		return coldBlockResult(adapter, event, reason, "harness-offline", daemonDownReason);
-	}
-	// PROACTIVE self-heal on Stop/SubagentStop: the reactive gate above only
-	// runs on a blocked pre-tool call, so a turn with zero tool calls left a
-	// dead daemon unrevived for 22 minutes (root-caused 2026-08-22). Never
-	// blocks; no-ops on every other phase and every healthy/recent case.
-	attemptSelfHealOnStop(event, cwd, env, isDryRunEvent(event) ? { dryRun: true } : {});
+	// Recovery is phase-independent: any ordinary hook invocation can revive a
+	// missing daemon. The decision to launch is cross-process single-flight and
+	// backoff-bounded. Crucially, daemon absence itself is NOT a blanket block:
+	// the deterministic inline gates below still refuse dangerous operations,
+	// while reads, diagnostics, and repair commands remain executable. This
+	// prevents a stale pid/ledger or a missing server artifact from deadlocking
+	// every agent in the repository.
+	const recoveryRoot = await daemonRecoveryRootFresh(event, cwd, env);
+	const recoveryAttempt = recoveryRoot
+		? attemptDaemonSelfHealDetailed(
+				recoveryRoot,
+				env,
+				isDryRunEvent(event) ? { dryRun: true } : {},
+			)
+		: null;
 
 	// Exception: fail-closed graph-prediction gate. If the agent is about to
 	// edit a file with a fresh `.graph.*` shard and we can't reach the
@@ -417,30 +311,56 @@ async function encodeColdFallback(
 	// error. Checked before the graph-shard gate — broken content is a more
 	// immediate signal than the protocol-restart mechanics.
 	const mergeBlockReason = coldMergeConflictBlockReason(event);
-	if (mergeBlockReason) return coldBlockResult(adapter, event, reason, "merge-conflict", mergeBlockReason);
+	if (mergeBlockReason) {
+		return coldBlockResult(adapter, event, reason, "merge-conflict", mergeBlockReason, lateWarnings);
+	}
 
 	const shardBlockReason = coldGraphShardBlockReason(event);
-	if (shardBlockReason) return coldBlockResult(adapter, event, reason, "graph-shard", shardBlockReason);
+	if (shardBlockReason) {
+		return coldBlockResult(adapter, event, reason, "graph-shard", shardBlockReason, lateWarnings);
+	}
 
 	const destructiveReason = coldDestructiveCommandBlockReason(event);
 	if (destructiveReason)
-		return coldBlockResult(adapter, event, reason, "destructive-command", destructiveReason);
+		return coldBlockResult(
+			adapter,
+			event,
+			reason,
+			"destructive-command",
+			destructiveReason,
+			lateWarnings,
+		);
 
 	const packageInstallReason = coldPackageInstallBlockReason(event);
 	if (packageInstallReason)
-		return coldBlockResult(adapter, event, reason, "supply-chain", packageInstallReason);
+		return coldBlockResult(
+			adapter,
+			event,
+			reason,
+			"supply-chain",
+			packageInstallReason,
+			lateWarnings,
+		);
 
 	// Quality gate, daemon-independent: enforce the per-file line cap inline so an
 	// over-cap write does not slip through while the daemon is unreachable (the gap
 	// that let a 797→802 edit cross the cap unblocked on a socket blip).
 	const largeFileReason = coldLargeFileBlockReason(event);
 	if (largeFileReason)
-		return coldBlockResult(adapter, event, reason, "large-file cap", largeFileReason);
-	const decision: HarnessDecision = {
-		decision: "allow",
-	};
+		return coldBlockResult(
+			adapter,
+			event,
+			reason,
+			"large-file cap",
+			largeFileReason,
+			lateWarnings,
+		);
+	const decision: HarnessDecision =
+		lateWarnings.length > 0
+			? { decision: "allow", warnings: [...lateWarnings] }
+			: { decision: "allow" };
 	const output = adapter.encodeDecision(decision, event);
-	const fallbackNotice = `[interlinked] ${reason}; evaluator skipped\n`;
+	const fallbackNotice = `[interlinked] ${reason}; evaluator skipped${recoveryAttemptNotice(recoveryAttempt)}\n`;
 	const functionTokenNotice = isCodeEditEvent(event)
 		? "[interlinked:function-tokens:not-measured] function-token enforcement requires the running harness daemon and an exact language adapter; this cold-fallback edit was not measured\n"
 		: "";
@@ -452,6 +372,29 @@ async function encodeColdFallback(
 		exit_code: output.exit_code,
 		fell_back: true,
 	};
+}
+
+/** One truthful clause for the recovery action this invocation observed. */
+function recoveryAttemptNotice(attempt: SelfHealAttempt | null): string {
+	if (!attempt) return "";
+	switch (attempt.disposition) {
+		case "launch-attempted":
+			return "; daemon launch attempted but not yet verified";
+		case "spawn-failed":
+			return "; daemon launch was attempted but the spawn failed";
+		case "startup-lock-held":
+			return "; no launch by this hook (startup lock held)";
+		case "retry-backoff":
+			return "; no launch attempted (supervisor retry backoff active)";
+		case "server-artifact-missing":
+			return "; no launch attempted (daemon server artifact missing — rebuild or reinstall Interlinked)";
+		case "self-heal-disabled":
+			return "; no launch attempted (self-heal disabled)";
+		case "guard-disabled":
+			return "; no launch attempted (guard intentionally disabled)";
+		case "no-project":
+			return "; no launch attempted (no Interlinked project found)";
+	}
 }
 
 async function readStdinJson(): Promise<unknown> {
@@ -496,7 +439,7 @@ function isDirectRun(): boolean {
 if (isDirectRun()) {
 	void mainFromStdin().catch((err: unknown) => {
 		const message = err instanceof Error ? err.message : String(err);
-		process.stderr.write(`[interlinked] hook failed open: ${message}\n`);
-		process.exit(0);
+		process.stderr.write(`[interlinked] hook runtime failed: ${message}\n`);
+		process.exit(1);
 	});
 }

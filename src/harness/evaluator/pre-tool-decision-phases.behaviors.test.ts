@@ -292,6 +292,22 @@ describe("evaluateWriteContent", () => {
 		expect(decision?.reason).toContain("Merge conflict markers");
 		expect(decision?.warnings).toEqual(["[interlinked] earlier warning"]);
 	});
+
+	it("never runs external overlays on the daemon PreTool path and says NOT CHECKED", () => {
+		const warnings: string[] = [];
+		const decision = evaluateWriteContent(
+			makeEvent({ tool_name: "Write" }),
+			undefined,
+			makeRules(),
+			"Write",
+			{ file_path: "/repo/src/plain.ts", content: "export const x = 1;\n" },
+			warnings,
+			makeCtx(),
+		);
+		expect(decision).toBeNull();
+		expect(warnings.join("\n")).toContain("biome-overlay] NOT CHECKED");
+		expect(warnings.join("\n")).toContain("tsc-overlay] NOT CHECKED");
+	});
 });
 
 // ============================================================

@@ -11,13 +11,7 @@
 // holder (also defined here). Moved verbatim; the orchestrator in pre-tool.ts
 // imports them.
 
-import { resolve } from "node:path";
 import type { SharedConfig } from "../../lib/config.js";
-import {
-	extractApplyPatchRaw,
-	looksLikeApplyPatch,
-	parseApplyPatchSections,
-} from "../apply-patch-content.js";
 import { type CohortManager, isLineage } from "../cohort.js";
 import { extractScannableContent } from "../content-scanner/extractor.js";
 import type { ContentScanRequest } from "../content-scanner/types.js";
@@ -29,6 +23,7 @@ import {
 } from "../lockdown-policy.js";
 import type { ProjectGraph } from "../project-graph.js";
 import type { ReservationManager } from "../reservations.js";
+import { reservationTargetPaths } from "../reservation-target-paths.js";
 import {
 	formatSequenceFinding,
 	runSequenceDetectorsForPhase,
@@ -143,29 +138,6 @@ export function evaluateSequenceAndLockdown(
 	return null;
 }
 
-/**
- * Every path a write-class tool call will mutate. Write/Edit-shaped tools name
- * their target in `file_path`/`path`; `apply_patch` (Codex's edit primitive)
- * carries a patch envelope with NO named path, so the section paths — and the
- * `*** Move to:` source paths, which are also mutated — must be parsed out.
- * Before this fallback existed, apply_patch writes took no lease at all
- * (defect 0, docs/design/cohort-git-discipline.md): a Claude and a Codex
- * session in one tree were unprotected by construction.
- */
-function writeTargetPaths(event: HarnessEvent, toolInput: ToolInput): string[] {
-	const named = (toolInput.file_path as string) || (toolInput.path as string) || "";
-	if (named) return [named];
-	const raw = extractApplyPatchRaw(toolInput as Record<string, unknown>);
-	if (!raw || !looksLikeApplyPatch(raw)) return [];
-	const cwd = event.cwd || process.cwd();
-	const targets = new Set<string>();
-	for (const section of parseApplyPatchSections(raw)) {
-		targets.add(resolve(cwd, section.path));
-		if (section.fromPath) targets.add(resolve(cwd, section.fromPath));
-	}
-	return [...targets];
-}
-
 /** Block decision for a write into a remote agent's live reservation. */
 function blockForRemoteReservation(
 	filePath: string,
@@ -238,22 +210,37 @@ export function evaluateAutoReservation(
 	warnings: string[],
 ): HarnessDecision | null {
 	if (!isFileWrite(toolName)) return null;
-	const paths = writeTargetPaths(event, toolInput);
+	const paths = reservationTargetPaths(event, toolInput);
 	if (paths.length === 0) return null;
 	const agentName = event.agent_name || session?.agent_name || "unknown";
-	for (const filePath of paths) {
-		const conflict = reservations.checkAndReserve(filePath, agentName, cohort);
-		if (!conflict) continue;
-		if (conflict.cohort === "remote") {
-			return blockForRemoteReservation(filePath, conflict, warnings);
-		}
-		const siblingBlock = decideLocalLeaseConflict(filePath, agentName, conflict, cohort, warnings);
-		if (siblingBlock) return siblingBlock;
-		warnings.push(
-			`[interlinked] Note: sibling agent "${conflict.agent_name}" holds a live reservation on ${filePath} (auto-releases ~30s after that agent goes idle).`,
-		);
-	}
-	return null;
+	let blockingDecision: HarnessDecision | null = null;
+	reservations.checkAndReserveBatch({
+		filePaths: paths,
+		agentName,
+		cohort,
+		shouldBlock: (filePath, conflict) => {
+			if (conflict.cohort === "remote") {
+				blockingDecision = blockForRemoteReservation(filePath, conflict, warnings);
+				return true;
+			}
+			const siblingBlock = decideLocalLeaseConflict(
+				filePath,
+				agentName,
+				conflict,
+				cohort,
+				warnings,
+			);
+			if (siblingBlock) {
+				blockingDecision = siblingBlock;
+				return true;
+			}
+			warnings.push(
+				`[interlinked] Note: sibling agent "${conflict.agent_name}" holds a live reservation on ${filePath} (auto-releases ~30s after that agent goes idle).`,
+			);
+			return false;
+		},
+	});
+	return blockingDecision;
 }
 
 /**
@@ -334,6 +321,7 @@ export function evaluateWriteContent(
 		rules,
 		session,
 		pendingEscalation: ctx.escalation,
+		externalOverlays: false,
 	});
 	if (result.kind === "block") {
 		return {

@@ -10,7 +10,7 @@
 // than growth on a file that may only shrink.
 
 import { join } from "node:path";
-import { getHeapStatistics, writeHeapSnapshot } from "node:v8";
+import { getHeapSpaceStatistics, getHeapStatistics, writeHeapSnapshot } from "node:v8";
 import { configuredCeilingBytes, shouldRecycle } from "../memory-ceiling.js";
 
 const STATUSLINE_REFRESH_INTERVAL_MS = 10_000;
@@ -20,17 +20,16 @@ const BYTES_PER_MB = 1024 * 1024;
 export interface DaemonTimerHooks {
 	/** Recompute the statusline snapshot (reservations, index, bridge state). */
 	refreshStatuslineSnapshot: () => void;
+	/**
+	 * Hold the daemon-start mutex under this process's PID for the duration of
+	 * RSS teardown. The lease is deliberately not released: contenders see a
+	 * live owner while shutdown drains, then stale-owner recovery reclaims it
+	 * immediately after this PID exits. This prevents a cold hook from spawning
+	 * a replacement beside the still-resident old heap.
+	 */
+	acquireRecycleLease?: () => boolean;
 	/** Clean shutdown — releases the socket and pid file. */
 	shutdown: () => void;
-	/**
-	 * Spawn a successor (`harness restart`) and return true, or false when
-	 * nothing can be spawned. Preferred over bare `shutdown` on a ceiling
-	 * breach: a bare exit waits for the NEXT tool call's self-heal, which never
-	 * comes between turns — measured 2026-07-28, one rss-ceiling exit left an
-	 * eleven-minute hole with no daemon until the user typed. A planned exit
-	 * during activity must bring its own successor.
-	 */
-	requestHandOver?: () => boolean;
 	/** Always-on log line (not gated behind --verbose). */
 	log: (message: string) => void;
 	/** Injected for tests; defaults to this process's RSS. */
@@ -77,19 +76,32 @@ const IDLE_SHRINK_AFTER_MS = 5 * 60_000;
 /**
  * Start the daemon's background timers. Returns a stop function for tests.
  *
- * The memory timer is the interesting one. The daemon grows under sustained
- * edit traffic and, past roughly 750MB on a swap-bound machine, stops answering
- * the socket within the hook's timeout — alive but too slow, which the agent
- * sees as a dead guard, and which leaves the old process orphaned still holding
- * its memory. Leaving cleanly at a lower ceiling turns that hang into a
- * sub-second restart: `shutdown()` releases the socket and the hook's existing
- * self-heal starts a fresh daemon. The state lost is caches and per-session
- * trajectory, both rebuildable.
- *
- * The ROOT CAUSE of the growth is not isolated — that needs heap profiling on a
- * machine that is not thrashing. This bounds the symptom, which is the standard
- * shape for a long-lived process with growth you have not yet found.
+ * The memory timer is the hard backstop after removing compiler/test fanout
+ * from the daemon. When RSS crosses the ceiling it stops this process first:
+ * `shutdown()` releases the socket, pid file, and memory before any replacement
+ * can start. The next cold hook keeps deterministic guards available and uses
+ * the existing single-flight self-heal. This ordering is deliberate — spawning
+ * a successor beside a multi-gigabyte daemon caused the system-wide OOM class
+ * this timer must prevent. The state lost is caches and per-session trajectory,
+ * both rebuildable.
  */
+/** Compact per-space heap breakdown for spike attribution: which V8 space
+ *  grew names the allocation class (old_space = retained objects,
+ *  large_object_space = giant strings/arrays, plus external/arrayBuffers from
+ *  process.memoryUsage for Buffer-backed reads). Sub-16MB spaces are elided —
+ *  the spike rows exist to explain ~1GB jumps, not to catalog every space. */
+export function heapSpaceSummary(): string {
+	// BYTES_PER_MB is a module constant (1024*1024) — divisor non-zero by construction.
+	const mb = (n: number): number => Math.round(n / BYTES_PER_MB);
+	const spaces = getHeapSpaceStatistics()
+		.filter((s) => s.space_used_size > 16 * BYTES_PER_MB)
+		.map((s) => `${s.space_name.replace(/_space$/, "")}=${mb(s.space_used_size)}MB`);
+	const usage = process.memoryUsage();
+	if (usage.external > 16 * BYTES_PER_MB) spaces.push(`external=${mb(usage.external)}MB`);
+	if (usage.arrayBuffers > 16 * BYTES_PER_MB) spaces.push(`arrayBuffers=${mb(usage.arrayBuffers)}MB`);
+	return spaces.join(" ");
+}
+
 export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 	const ceiling = hooks.ceilingBytes ?? configuredCeilingBytes();
 	const readRss = hooks.rssBytes ?? (() => process.memoryUsage().rss);
@@ -102,13 +114,9 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 	let lastEmergencyShrinkAt = 0;
 
 	const statusline = setInterval(hooks.refreshStatuslineSnapshot, STATUSLINE_REFRESH_INTERVAL_MS);
-	// Ticks to wait for a spawned successor's SIGTERM before concluding the
-	// hand-over failed and retrying. Two ticks ≈ a minute — far beyond a normal
-	// restart, tight enough that a lost successor doesn't strand a bloated daemon.
-	const HANDOVER_PATIENCE_TICKS = 2;
 	/** One tick's RSS growth that counts as a spike worth attributing. */
 	const SPIKE_DELTA_BYTES = 150 * BYTES_PER_MB;
-	let ticksSinceHandOver = -1;
+	let recycleStarted = false;
 	let prevRss = readRss();
 	// SIGUSR2 → heap snapshot on demand, for root-causing the spikes offline.
 	// SIGUSR1 is reserved by Node for the debugger; USR2 is conventionally free.
@@ -157,24 +165,22 @@ export function installDaemonTimers(hooks: DaemonTimerHooks): () => void {
 				);
 			}
 		}
-		if (!shouldRecycle(rss, ceiling)) return;
-		// A successor was already spawned — give its `harness restart` time to
-		// SIGTERM us instead of spawning a second one every tick (the restarts
-		// would race each other through anti-stomp for no benefit).
-		if (ticksSinceHandOver >= 0 && ticksSinceHandOver < HANDOVER_PATIENCE_TICKS) {
-			ticksSinceHandOver++;
+		if (!shouldRecycle(rss, ceiling)) {
 			return;
 		}
-		// Prefer a HANDOVER: spawn the successor, let its `harness restart`
-		// SIGTERM this process through the normal graceful path. Only when
-		// nothing can be spawned (src-run daemon) fall back to a bare exit and
-		// the next call's self-heal.
-		const handedOver = hooks.requestHandOver?.() ?? false;
-		if (handedOver) ticksSinceHandOver = 0;
+		if (recycleStarted) return;
+		recycleStarted = true;
+		// Hold the startup mutex BEFORE the socket starts draining. A cold hook can
+		// arrive after the socket stops answering but while shutdownAsync still
+		// retains this heap for a few seconds; the live-PID lock makes that caller
+		// defer rather than spawning an overlapping replacement. We leave the lease
+		// behind intentionally so dead-owner recovery, not this process, opens the
+		// next start window after memory is actually gone.
+		const recycleLeaseHeld = hooks.acquireRecycleLease?.() ?? false;
 		hooks.log(
-			`Recycling: RSS ${Math.round(rss / BYTES_PER_MB)}MB over ${Math.round(ceiling / BYTES_PER_MB)}MB ceiling — ${handedOver ? "successor spawned; awaiting its restart" : "restarting clean rather than degrading into a hang"}`,
+			`Recycling: RSS ${Math.round(rss / BYTES_PER_MB)}MB over ${Math.round(ceiling / BYTES_PER_MB)}MB ceiling — ${recycleLeaseHeld ? "startup lease held; stopping before replacement" : "startup already locked; stopping without spawning"} to release memory`,
 		);
-		if (!handedOver) hooks.shutdown();
+		hooks.shutdown();
 	}, MEMORY_CHECK_INTERVAL_MS);
 
 	// Neither timer should hold the process open on its own.

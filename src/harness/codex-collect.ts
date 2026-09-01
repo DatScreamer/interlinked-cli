@@ -8,12 +8,27 @@
 // means re-running only appends genuinely new records, so it is safe to call on
 // a timer or after every `codex exec` review.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readFileRange } from "../lib/bounded-file-io.js";
 import { parseCodexRolloutText } from "./codex-rollout.js";
-import { appendTimelineRecords, existingTimelineKeys, recordKey, sortTimeline } from "./timeline-writer.js";
+import {
+	appendTimelineRecordsAtBasis,
+	MAX_EXISTING_TIMELINE_KEYS,
+	recordKey,
+	removeExistingTimelineCandidates,
+	serializeRecord,
+	sortTimeline,
+	TimelineScanError,
+	type TimelineScanReceipt,
+} from "./timeline-writer.js";
 import type { TimelineRecord } from "./transcript-record.js";
+
+/** A collection run is intentionally finite: the existing history is streamed,
+ * while only this bounded set of new candidates is retained. */
+export const MAX_CODEX_COLLECTION_BYTES = 64 * 1024 * 1024;
+export const MAX_CODEX_ROLLOUT_BYTES = 64 * 1024 * 1024;
 
 /** Default Codex session root (`~/.codex/sessions`). */
 export function codexSessionsDir(): string {
@@ -63,11 +78,65 @@ export interface CollectResult {
 	sessions: number;
 }
 
+interface CandidateBatch {
+	records: Map<string, TimelineRecord>;
+	bytes: number;
+	parsed: number;
+}
+
+function readCodexRollout(path: string): TimelineRecord[] | null {
+	try {
+		const size = statSync(path).size;
+		if (size > MAX_CODEX_ROLLOUT_BYTES) return null;
+		return parseCodexRolloutText(
+			readFileRange(path, 0, size, MAX_CODEX_ROLLOUT_BYTES).toString("utf8"),
+		);
+	} catch {
+		return null;
+	}
+}
+
+function addCandidateRecords(batch: CandidateBatch, records: TimelineRecord[]): void {
+	batch.parsed += records.length;
+	for (const record of records) {
+		const key = recordKey(record);
+		if (batch.records.has(key)) continue;
+		const bytes = Buffer.byteLength(serializeRecord(record)) + 1;
+		const overRecordLimit = batch.records.size >= MAX_EXISTING_TIMELINE_KEYS;
+		const overByteLimit = batch.bytes + bytes > MAX_CODEX_COLLECTION_BYTES;
+		if (overRecordLimit || overByteLimit) {
+			throw new TimelineScanError(
+				`Codex collection exceeds the bounded candidate limit (${MAX_EXISTING_TIMELINE_KEYS} records or ${MAX_CODEX_COLLECTION_BYTES} bytes)`,
+			);
+		}
+		batch.records.set(key, record);
+		batch.bytes += bytes;
+	}
+}
+
+function finishCollection(
+	options: {
+		records: TimelineRecord[];
+		cwd: string;
+		basis: TimelineScanReceipt;
+		dryRun: boolean;
+	},
+): void {
+	const { records, cwd, basis, dryRun } = options;
+	if (!appendTimelineRecordsAtBasis({ records: sortTimeline(records), cwd, basis, dryRun })) {
+		throw new TimelineScanError(
+			"timeline changed after collection scanned it; no Codex records were appended",
+		);
+	}
+}
+
 /**
  * Sync Codex rollouts into `<cwd>/.interlinked/timeline.jsonl`. Only records
  * whose `${uuid}#${seq}` key is not already present are appended (dedup against
- * both the existing file and within this batch). `dryRun` reports counts
- * without writing. Never throws — a bad file is skipped.
+ * both the existing file and within this batch). Historical keys are streamed
+ * against the bounded candidate map rather than retained. `dryRun` reports
+ * counts without writing. Bad rollout files are skipped; an unreadable or
+ * corrupt destination timeline throws so history can never be duplicated.
  */
 export function collectCodexSessions(opts: {
 	cwd: string;
@@ -77,28 +146,24 @@ export function collectCodexSessions(opts: {
 }): CollectResult {
 	const dir = opts.dir ?? codexSessionsDir();
 	const files = findCodexRollouts(dir, opts.sinceMs);
-	const existing = existingTimelineKeys(opts.cwd);
-	const toAppend: TimelineRecord[] = [];
-	const sessions = new Set<string>();
-	let parsed = 0;
+	const batch: CandidateBatch = { records: new Map(), bytes: 0, parsed: 0 };
 	for (const f of files) {
-		let recs: TimelineRecord[];
-		try {
-			recs = parseCodexRolloutText(readFileSync(f, "utf8"));
-		} catch {
-			continue; // unreadable/corrupt rollout — skip
-		}
-		parsed += recs.length;
-		for (const r of recs) {
-			const k = recordKey(r);
-			if (existing.has(k)) continue;
-			existing.add(k); // dedup within this batch too
-			toAppend.push(r);
-			sessions.add(r.session);
-		}
+		const records = readCodexRollout(f);
+		if (records !== null) addCandidateRecords(batch, records);
 	}
-	if (!opts.dryRun && toAppend.length > 0) {
-		appendTimelineRecords(sortTimeline(toAppend), opts.cwd);
-	}
-	return { files: files.length, parsed, added: toAppend.length, sessions: sessions.size };
+	const basis = removeExistingTimelineCandidates(opts.cwd, batch.records);
+	const toAppend = [...batch.records.values()];
+	const sessions = new Set(toAppend.map((record) => record.session));
+	finishCollection({
+		records: toAppend,
+		cwd: opts.cwd,
+		basis,
+		dryRun: opts.dryRun === true,
+	});
+	return {
+		files: files.length,
+		parsed: batch.parsed,
+		added: toAppend.length,
+		sessions: sessions.size,
+	};
 }

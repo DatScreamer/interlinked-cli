@@ -12,8 +12,10 @@
 
 import { isAbsolute, resolve } from "node:path";
 
-import { loadRecentWorkspaceEvents } from "../cross-session.js";
-import type { HarnessEvent } from "../types.js";
+import {
+	loadRecentWorkspaceEvents,
+	type WorkspaceActivityEvent,
+} from "../cross-session.js";
 import type { SequenceDetector, SequenceMatch } from "./types.js";
 
 /** Canonicalize a file path against `cwd` so the trajectory's
@@ -64,10 +66,10 @@ function fileMatches(eventFile: string, targetFile: string): boolean {
 	return false;
 }
 
-/** Extract the file_path from a HarnessEvent's tool_input, returning ""
+/** Extract the file_path from a workspace activity event's tool_input, returning ""
  *  when the event has no path (Bash, etc.). */
-function eventFilePath(ev: HarnessEvent): string {
-	return getFilePath(ev.tool_input as { file_path?: unknown } | undefined);
+function eventFilePath(ev: WorkspaceActivityEvent): string {
+	return getFilePath(ev.tool_input);
 }
 
 /** Compare ISO timestamps lexicographically — safe because they're
@@ -110,7 +112,7 @@ export const staleReadThenWrite: SequenceDetector = {
 		const cwd = candidate.cwd;
 		if (!cwd) return [];
 		const events = loadRecentWorkspaceEvents(cwd, trajectory.started_at);
-		const offending: HarnessEvent[] = [];
+		const offending: WorkspaceActivityEvent[] = [];
 		for (const ev of events) {
 			if (!ev.tool_name || !WRITE_TOOLS.has(ev.tool_name)) continue;
 			if (!ev.agent_name || ev.agent_name === trajectory.agent_name) continue;
@@ -127,7 +129,8 @@ export const staleReadThenWrite: SequenceDetector = {
 		// not the offending-agent-write timestamp. Treat presence in
 		// files_read AND an other-agent write after started_at as the
 		// stale shape, per the spec's simplification.
-		const last = offending[offending.length - 1] as HarnessEvent;
+		const last = offending.at(-1);
+		if (!last) return [];
 		const otherAgent = last.agent_name ?? "another agent";
 		const match: SequenceMatch = {
 			prior_event_count: offending.length,

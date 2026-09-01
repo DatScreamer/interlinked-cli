@@ -24,9 +24,9 @@ vi.mock("../lib/formatter.js", () => ({
 }));
 
 // Mockable verifier. Each test sets `verifyResult`; the spy returns it.
-const verifyAuditChain = vi.fn<(cwd: string) => AuditVerifyResult>();
+const verifyAuditChainStreaming = vi.fn<(cwd: string) => Promise<AuditVerifyResult>>();
 vi.mock("../lib/audit-chain.js", () => ({
-	verifyAuditChain: (cwd: string) => verifyAuditChain(cwd),
+	verifyAuditChainStreaming: (cwd: string) => verifyAuditChainStreaming(cwd),
 }));
 
 // A fully-valid, fully-chained baseline result. Tests clone + override.
@@ -54,7 +54,7 @@ beforeEach(() => {
 	logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
 		logged.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
 	});
-	verifyAuditChain.mockReset();
+	verifyAuditChainStreaming.mockReset();
 	// Default exitCode is reset per-test so the `!valid` assertions are clean.
 	process.exitCode = undefined;
 });
@@ -70,22 +70,22 @@ afterEach(() => {
 
 describe("auditVerifyCommand — cwd resolution", () => {
 	it("passes opts.cwd straight through to the verifier when it is a string", async () => {
-		verifyAuditChain.mockReturnValue(baseResult());
+		verifyAuditChainStreaming.mockResolvedValue(baseResult());
 		await auditVerifyCommand({ cwd: "/some/explicit/dir" });
-		expect(verifyAuditChain).toHaveBeenCalledWith("/some/explicit/dir");
+		expect(verifyAuditChainStreaming).toHaveBeenCalledWith("/some/explicit/dir");
 	});
 
 	it("falls back to process.cwd() when opts.cwd is not a string", async () => {
-		verifyAuditChain.mockReturnValue(baseResult());
+		verifyAuditChainStreaming.mockResolvedValue(baseResult());
 		// opts.cwd is a number — not a string — so the ternary takes the else.
 		await auditVerifyCommand({ cwd: 123 });
-		expect(verifyAuditChain).toHaveBeenCalledWith(process.cwd());
+		expect(verifyAuditChainStreaming).toHaveBeenCalledWith(process.cwd());
 	});
 
 	it("falls back to process.cwd() when opts.cwd is absent", async () => {
-		verifyAuditChain.mockReturnValue(baseResult());
+		verifyAuditChainStreaming.mockResolvedValue(baseResult());
 		await auditVerifyCommand({});
-		expect(verifyAuditChain).toHaveBeenCalledWith(process.cwd());
+		expect(verifyAuditChainStreaming).toHaveBeenCalledWith(process.cwd());
 	});
 });
 
@@ -103,7 +103,7 @@ describe("auditVerifyCommand — JSON output", () => {
 			unchained_guard_events: 5,
 			last_hash: "f".repeat(64),
 		});
-		verifyAuditChain.mockReturnValue(result);
+		verifyAuditChainStreaming.mockResolvedValue(result);
 
 		await auditVerifyCommand({ json: true });
 
@@ -128,7 +128,7 @@ describe("auditVerifyCommand — JSON output", () => {
 
 	it("rounds coverage_pct from the chained/guard ratio", async () => {
 		// 1/3 -> 33.33 -> rounds to 33.
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({ guard_events: 3, chained_events: 1 }),
 		);
 		await auditVerifyCommand({ json: true });
@@ -137,7 +137,7 @@ describe("auditVerifyCommand — JSON output", () => {
 	});
 
 	it("sets coverage_pct to null when there are zero guard events", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({ guard_events: 0, chained_events: 0, last_hash: undefined }),
 		);
 		await auditVerifyCommand({ json: true });
@@ -146,13 +146,13 @@ describe("auditVerifyCommand — JSON output", () => {
 	});
 
 	it("does not touch process.exitCode when the chain is valid", async () => {
-		verifyAuditChain.mockReturnValue(baseResult());
+		verifyAuditChainStreaming.mockResolvedValue(baseResult());
 		await auditVerifyCommand({ json: true });
 		expect(process.exitCode).toBeUndefined();
 	});
 
 	it("sets process.exitCode to 1 when the chain is invalid (JSON mode still exits non-zero)", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({ valid: false, first_bad_reason: "hash mismatch" }),
 		);
 		await auditVerifyCommand({ json: true });
@@ -169,7 +169,7 @@ describe("auditVerifyCommand — JSON output", () => {
 
 describe("auditVerifyCommand — human output, valid chain", () => {
 	it("prints VALID status with localized counts and a truncated last hash", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				valid: true,
 				total_events: 1234,
@@ -197,7 +197,7 @@ describe("auditVerifyCommand — human output, valid chain", () => {
 	});
 
 	it("omits the Last hash line when last_hash is absent", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({ last_hash: undefined, guard_events: 10, chained_events: 10 }),
 		);
 		await auditVerifyCommand({});
@@ -205,7 +205,7 @@ describe("auditVerifyCommand — human output, valid chain", () => {
 	});
 
 	it("shows the legacy/unchained line only when unchained_guard_events > 0", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				guard_events: 30,
 				chained_events: 20,
@@ -219,7 +219,7 @@ describe("auditVerifyCommand — human output, valid chain", () => {
 	});
 
 	it("hides the legacy/unchained line when there are none", async () => {
-		verifyAuditChain.mockReturnValue(baseResult({ unchained_guard_events: 0 }));
+		verifyAuditChainStreaming.mockResolvedValue(baseResult({ unchained_guard_events: 0 }));
 		await auditVerifyCommand({});
 		expect(out()).not.toContain("Legacy / unchained:");
 	});
@@ -231,7 +231,7 @@ describe("auditVerifyCommand — human output, valid chain", () => {
 
 describe("auditVerifyCommand — human output, empty chain", () => {
 	it("renders 0% coverage and the 'no guard decision events yet' footer", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				valid: true,
 				total_events: 12,
@@ -260,7 +260,7 @@ describe("auditVerifyCommand — human output, empty chain", () => {
 
 describe("auditVerifyCommand — human output, tampered chain", () => {
 	it("prints the full tamper block with index, line number, and reason", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				valid: false,
 				total_events: 80,
@@ -290,7 +290,7 @@ describe("auditVerifyCommand — human output, tampered chain", () => {
 	});
 
 	it("omits the activity.jsonl line when first_bad_line_number is absent", async () => {
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				valid: false,
 				first_bad_index: 3,
@@ -312,7 +312,7 @@ describe("auditVerifyCommand — human output, tampered chain", () => {
 		// `else if (valid && ...)` is false; guard_events>0 so the final
 		// `else if (guard_events === 0)` is false. No footer block is printed,
 		// but exitCode is still 1.
-		verifyAuditChain.mockReturnValue(
+		verifyAuditChainStreaming.mockResolvedValue(
 			baseResult({
 				valid: false,
 				guard_events: 40,

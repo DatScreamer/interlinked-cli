@@ -94,7 +94,11 @@ describe("coverage debt mutation boundaries", () => {
         const empty = run({ baseDecision: red([]), openDebts: [debt(source, "red_suite")] });
         expect(absent.decision?.warnings?.[0]).toContain("keep editing src/luna.ts or its test freely");
         expect(empty.decision?.warnings?.[0]).toContain("keep editing src/luna.ts or its test freely");
-        expect(absent.txns[0]).toMatchObject({ op: "open", kind: "red_suite" });
+        // A related red debt is already open and the run carried no evidence:
+        // "no evidence is not new evidence" (refreshRedEvidence keeps the
+        // recorded set), so the episode continues without a re-open txn.
+        expect(absent.txns).toHaveLength(0);
+        expect(empty.txns).toHaveLength(0);
     });
 
     // test-contract: invariant — direct failing paths, affected-test cones, and adjacent debt files widen relatedness independently.

@@ -638,20 +638,25 @@ describe("writeMode — mkdirSync is skipped when the directory already exists",
 });
 
 describe("writeMode — applyModeGuardOverrides stderr reporting", () => {
-	// test-contract: behavior — the `!r.ok` guard must fire ONLY on a failed
-	// merge, in both directions (never-fires and always-fires are both wrong).
-	it("P: warns to stderr when the guard-rules merge fails", () => {
+	// test-contract: bug — review 2026-08-30: the old order wrote
+	// check-policy.json FIRST, so a refused guard merge left a SPLIT posture
+	// while the command reported success. The write is now transactional:
+	// a refused merge reports to stderr, returns false, and leaves the
+	// check-policy file unwritten (both-or-neither).
+	it("P: a failed guard-rules merge refuses transactionally — no check-policy write", () => {
 		writeFileSync(join(tmp, ".interlinked", "guard-rules.json"), "{ not valid json");
 		const spy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		try {
-			writeMode(tmp, "strict", false);
+			const ok = writeMode(tmp, "strict", false);
+			expect(ok).toBe(false);
 			expect(spy).toHaveBeenCalled();
 			const text = spy.mock.calls.map((c) => String(c[0])).join("");
-			expect(text).toContain(
-				"[interlinked] mode strict: gate overrides NOT applied",
-			);
+			expect(text).toContain("[interlinked] mode strict: NOT applied");
+			expect(text).toContain("Neither file was changed");
+			expect(existsSync(join(tmp, ".interlinked", "check-policy.json"))).toBe(false);
 		} finally {
 			spy.mockRestore();
+			process.exitCode = 0;
 		}
 	});
 

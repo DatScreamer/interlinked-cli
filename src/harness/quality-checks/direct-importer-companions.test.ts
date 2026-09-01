@@ -18,6 +18,32 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+vi.mock("./test-process-gate.js", async () => {
+	const { spawnSync } = await import("node:child_process");
+	return {
+		runBoundedTestProcess: async (spec: {
+			command: string;
+			args: string[];
+			cwd: string;
+			timeoutMs: number;
+		}) => {
+			const result = spawnSync(spec.command, spec.args, {
+				shell: false,
+				timeout: spec.timeoutMs,
+				cwd: spec.cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			return {
+				kind: "completed" as const,
+				code: result.status,
+				stdout: result.stdout || "",
+				stderr: result.stderr || "",
+				timedOut: false,
+			};
+		},
+	};
+});
 
 import { spawnSync as mockedSpawnSync } from "node:child_process";
 import { getProfileForFile } from "../language-profiles.js";
@@ -69,7 +95,7 @@ describe("runDirectImporterCompanions — positive (must fire)", () => {
 	// test-contract: public-api — the forensics scenario this feature exists
 	// for: editing modes.ts must select install-hooks.ts's companion test
 	// (a DIRECT importer), the exact gap buildTestCandidates alone left open.
-	it("P1: modes.ts-style edit runs its direct importer's companion test", () => {
+	it("P1: modes.ts-style edit runs its direct importer's companion test", async () => {
 		const target = write("src/modes.ts", "export const ALL_PRESETS = [];\n");
 		write("src/install-hooks.ts", "import { ALL_PRESETS } from './modes.js';\n");
 		write("src/install-hooks.test.ts", "it('x', () => {});\n");
@@ -77,7 +103,7 @@ describe("runDirectImporterCompanions — positive (must fire)", () => {
 			mkResult({ status: 1, stdout: "FAIL src/install-hooks.test.ts\n  AssertionError: boom" }),
 		);
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -95,13 +121,13 @@ describe("runDirectImporterCompanions — positive (must fire)", () => {
 		expect(args).toContain("src/install-hooks.test.ts");
 	});
 
-	it("P2: a clean pass across all companion tests yields no finding", () => {
+	it("P2: a clean pass across all companion tests yields no finding", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		write("src/user.ts", "import { X } from './modes.js';\n");
 		write("src/user.test.ts", "it('x', () => {});\n");
 		spawnSyncMock.mockReturnValue(mkResult({ status: 0, stdout: "PASS" }));
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -113,7 +139,7 @@ describe("runDirectImporterCompanions — positive (must fire)", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("P3: two direct importers each with a companion test both run in ONE invocation", () => {
+	it("P3: two direct importers each with a companion test both run in ONE invocation", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		write("src/a.ts", "import { X } from './modes.js';\n");
 		write("src/a.test.ts", "it('a', () => {});\n");
@@ -121,7 +147,7 @@ describe("runDirectImporterCompanions — positive (must fire)", () => {
 		write("src/b.test.ts", "it('b', () => {});\n");
 		spawnSyncMock.mockReturnValue(mkResult({ status: 0 }));
 
-		runDirectImporterCompanions({
+		await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -145,7 +171,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 	// belonging to an importer-of-an-importer must never run here, or this
 	// phase silently grows into the unbounded transitive walk the task
 	// explicitly scoped this feature to avoid.
-	it("N1: a transitive (2-hop) importer's companion test does NOT run", () => {
+	it("N1: a transitive (2-hop) importer's companion test does NOT run", async () => {
 		// modes.ts <- install-hooks.ts (direct, no companion) <- uses-install-hooks.ts
 		// (2 hops, HAS a companion). Only a direct importer's companion may run.
 		const target = write("src/modes.ts", "export const ALL_PRESETS = [];\n");
@@ -153,7 +179,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		write("src/uses-install-hooks.ts", "import { install } from './install-hooks.js';\n");
 		write("src/uses-install-hooks.test.ts", "it('x', () => {});\n");
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -166,9 +192,9 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("N2: returns [] when the edited file has no direct importers", () => {
+	it("N2: returns [] when the edited file has no direct importers", async () => {
 		const target = write("src/lonely.ts", "export const X = 1;\n");
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/lonely.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -181,10 +207,10 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("N3: returns [] when a direct importer exists but has no companion test", () => {
+	it("N3: returns [] when a direct importer exists but has no companion test", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		write("src/no-test-user.ts", "import { X } from './modes.js';\n");
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -200,14 +226,14 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 	// test-contract: boundary — the cap must decline the WHOLE set (never a
 	// silently truncated subset) and must never invoke the test runner at
 	// all once it declines, or "at most 8" becomes "run some unknown N".
-	it("N4: over cap (default 8) skips ALL companion tests and does not spawn vitest", () => {
+	it("N4: over cap (default 8) skips ALL companion tests and does not spawn vitest", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		for (let i = 0; i < 9; i++) {
 			write(`src/u${i}.ts`, "import { X } from './modes.js';\n");
 			write(`src/u${i}.test.ts`, "it('x', () => {});\n");
 		}
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -223,7 +249,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("N5: exactly at the cap (8) still runs — cap is inclusive", () => {
+	it("N5: exactly at the cap (8) still runs — cap is inclusive", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		for (let i = 0; i < 8; i++) {
 			write(`src/u${i}.ts`, "import { X } from './modes.js';\n");
@@ -231,7 +257,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		}
 		spawnSyncMock.mockReturnValue(mkResult({ status: 0 }));
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -247,14 +273,14 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		expect(args.filter((a) => a.endsWith(".test.ts"))).toHaveLength(8);
 	});
 
-	it("N6: a custom maxDependentTests overrides the default cap", () => {
+	it("N6: a custom maxDependentTests overrides the default cap", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		for (let i = 0; i < 3; i++) {
 			write(`src/u${i}.ts`, "import { X } from './modes.js';\n");
 			write(`src/u${i}.test.ts`, "it('x', () => {});\n");
 		}
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),
@@ -269,7 +295,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("N7: a pre-existing (module-resolution) failure is suppressed", () => {
+	it("N7: a pre-existing (module-resolution) failure is suppressed", async () => {
 		const target = write("src/modes.ts", "export const X = 1;\n");
 		write("src/user.ts", "import { X } from './modes.js';\n");
 		write("src/user.test.ts", "it('x', () => {});\n");
@@ -277,7 +303,7 @@ describe("runDirectImporterCompanions — negative (must not fire)", () => {
 			mkResult({ status: 1, stdout: "Error: Cannot find module '@/preexisting'" }),
 		);
 
-		const out = runDirectImporterCompanions({
+		const out = await runDirectImporterCompanions({
 			filePath: "src/modes.ts",
 			absPath: target,
 			profile: tsProfile(),

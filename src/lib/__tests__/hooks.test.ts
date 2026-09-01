@@ -203,15 +203,18 @@ describe("resolveHookBinaryPath — packagedHookEntryPath catch branch", () => {
 		process.argv[1] = ORIGINAL_ARGV1;
 	});
 
-	it("falls through to the generated .mjs when process.argv[1] does not resolve to a real path", () => {
-		// No `.interlinked/hooks/interlinked-hook` compiled override exists in a
-		// fresh tmp dir, so resolution proceeds to `packagedHookEntryPath()`.
-		// Pointing argv[1] at a nonexistent path makes `realpathSync` throw,
-		// exercising the catch branch (returns null), which then falls through
-		// to the generated `.mjs` fallback.
+	it("P: an unresolvable argv[1] still finds the PACKAGED hook when a build exists", () => {
+		// This case previously asserted the opposite — that a bad argv[1] means
+		// the generated `.mjs`. argv[1] answers "how was the CLI invoked", not
+		// "is a packaged hook available", and conflating them installed the
+		// LEGACY runtime whenever a built checkout was driven through tsx
+		// (observable afterwards as a framed event count stuck at zero, since
+		// the .mjs talks to the raw socket). The module-relative probe answers
+		// the question that matters, so with `dist/` present the packaged
+		// binary wins regardless of argv[1].
 		process.argv[1] = join(tmp, "does-not-exist", "cli.js");
 		const result = resolveHookBinaryPath(tmp);
-		expect(result).toBe(getHookScriptPath(tmp));
+		expect(result.endsWith("dist/hook-entry.js")).toBe(true);
 		expect(existsSync(result)).toBe(true);
 	});
 });
@@ -249,15 +252,18 @@ describe("resolveHookBinaryPath — resolution order", () => {
 		expect(resolveHookBinaryPath(tmp)).toBe(hookEntry);
 	});
 
+	// "No packaged binary" is now stated explicitly rather than simulated by
+	// blanking argv[1]: the probe is module-relative, so a test running inside
+	// this repo cannot make `dist/` disappear. Blanking argv used to stand in
+	// for an unbuilt checkout, which is exactly the conflation that installed
+	// the legacy runtime into built ones.
 	it("falls back to an already-written legacy .mjs when no compiled/packaged binary exists", () => {
 		const legacy = writeHookScript(tmp);
-		process.argv[1] = "";
-		expect(resolveHookBinaryPath(tmp)).toBe(legacy);
+		expect(resolveHookBinaryPath(tmp, { packagedPath: () => null })).toBe(legacy);
 	});
 
 	it("returns the unwritten legacy path without writing it when writeFallback is false", () => {
-		process.argv[1] = "";
-		const result = resolveHookBinaryPath(tmp, { writeFallback: false });
+		const result = resolveHookBinaryPath(tmp, { writeFallback: false, packagedPath: () => null });
 		expect(result).toBe(getHookScriptPath(tmp));
 		expect(existsSync(result)).toBe(false);
 	});

@@ -242,7 +242,7 @@ describe("ledger persistence + durability regression", () => {
 	it("N1: loadLedger drops a malformed record rather than crashing", () => {
 		const ledger: DispositionLedger = {
 			...emptyLedger(),
-			// biome-ignore lint/suspicious/noExplicitAny: deliberately malformed on-disk row.
+			// This deliberately malformed row exercises on-disk validation.
 			records: [deadCodeRecord(), { file: "x" } as any],
 		};
 		saveLedger(configDir, ledger);

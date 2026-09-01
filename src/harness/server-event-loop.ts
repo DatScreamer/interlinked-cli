@@ -28,7 +28,10 @@ import { maybeRecordReplaySnapshots, phaseForHookEvent } from "./replay/tree-sna
 import { recordGuardDecision } from "./guard-tally.js";
 import { buildLatencyRecord } from "./server/latency-record.js";
 import { handleLifecycleEvent } from "./server/lifecycle-events.js";
-import { runPostToolPipeline } from "./server/post-tool-pipeline.js";
+import {
+	POST_TOOL_PIPELINE_FAILURE_WARNING,
+	runPostToolPipeline,
+} from "./server/post-tool-pipeline.js";
 import { runPreToolPipeline } from "./server/pre-tool-pipeline.js";
 import {
 	recordProtocolEvent as bumpProtocolEvent,
@@ -52,6 +55,18 @@ function reconcileBlockedPreTool(event: HarnessEvent, decision: HarnessDecision)
 	});
 }
 
+/** Persist only events outside the tool pipelines. Keeping this partition in a
+ *  helper prevents the lifecycle mirror from becoming a second Pre/Post tool
+ *  writer while leaving the already-dense event dispatcher branch-neutral. */
+function persistNonToolLifecycleActivity(
+	writeRecord: (event: HarnessEvent, decision?: HarnessDecision) => void,
+	event: HarnessEvent,
+	decision: HarnessDecision | null,
+): void {
+	if (isPreToolUse(event) || isPostToolUse(event)) return;
+	writeRecord(event, decision ?? undefined);
+}
+
 /** Dependencies the event loop closes over. The `ServerRuntime` carries the
  *  bulk of daemon state; the rest are module-scoped callbacks / objects that
  *  live in `server.ts` (the idle timer, the runtime in/out sync, the
@@ -64,6 +79,10 @@ export interface EventLoopDeps {
 	readonly syncRuntimeIn: () => void;
 	readonly syncRuntimeOut: () => void;
 	readonly writeCollectionRecord: (event: HarnessEvent, decision?: HarnessDecision) => void;
+	readonly writeLifecycleActivityRecord: (
+		event: HarnessEvent,
+		decision?: HarnessDecision,
+	) => void;
 }
 
 /** The two entry points the socket servers invoke, plus the protocol-status
@@ -97,6 +116,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 		syncRuntimeIn,
 		syncRuntimeOut,
 		writeCollectionRecord,
+		writeLifecycleActivityRecord,
 	} = deps;
 	const { log, sessions } = ctx;
 	const CWD = ctx.cwd;
@@ -182,6 +202,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 			// Skill* / UserPromptSubmit): a non-null decision is an early return,
 			// null means fall through to the Pre/Post evaluation path.
 			const lifecycleDecision = await handleLifecycleEvent(ctx, event, session);
+			persistNonToolLifecycleActivity(writeLifecycleActivityRecord, event, lifecycleDecision);
 			// Shadow-eval lifecycle events too (Stop carries the obligation-ledger
 			// inventory). Metric-only: appends warnings, never alters the decision.
 			if (lifecycleDecision) { mergeTrajectoryShadow(event, lifecycleDecision, ctx.rules); return lifecycleDecision; }
@@ -227,7 +248,7 @@ export function createEventLoop(deps: EventLoopDeps): EventLoop {
 					);
 					return {
 						decision: "allow",
-						warnings: ["[interlinked] a PostToolUse check errored and was skipped (fail-open)."],
+						warnings: [POST_TOOL_PIPELINE_FAILURE_WARNING],
 					};
 				}
 			}

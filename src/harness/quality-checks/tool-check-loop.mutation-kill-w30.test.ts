@@ -12,11 +12,17 @@ import { runToolCheckLoop, type ToolCheckLoopContext } from "./tool-check-loop.j
 
 // --- module-boundary mocks ------------------------------------------------
 
-vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
-
 vi.mock("../check-engine/index.js", () => ({
 	configNameToToolId: vi.fn(),
 	getOrCreateEngine: vi.fn(),
+}));
+
+vi.mock("../check-engine/spawn-async.js", () => ({
+	runProcessAsync: vi.fn(),
+}));
+
+vi.mock("../project-heavy-process-lock.js", () => ({
+	tryAcquireProjectHeavyProcessLease: vi.fn(),
 }));
 
 vi.mock("../check-engine/output-parsers.js", () => ({
@@ -34,7 +40,7 @@ vi.mock("../language-profiles.js", () => ({
 }));
 
 vi.mock("./dependency-audit.js", () => ({
-	resolveDependencyAuditCommand: vi.fn(),
+	resolveDependencyAuditCommandAsync: vi.fn(),
 }));
 
 vi.mock("./inline-language-checks.js", () => ({
@@ -85,24 +91,27 @@ vi.mock("./test-dispatchers.js", () => ({
 
 // --- typed handles to the mocks -------------------------------------------
 
-import { spawnSync } from "node:child_process";
 import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
+import { runProcessAsync } from "../check-engine/spawn-async.js";
 import { isTestFile } from "../checks/shared.js";
 import { getProfileForFile } from "../language-profiles.js";
-import { resolveDependencyAuditCommand } from "./dependency-audit.js";
+import { tryAcquireProjectHeavyProcessLease } from "../project-heavy-process-lock.js";
+import { resolveDependencyAuditCommandAsync } from "./dependency-audit.js";
 import { findAnyTypes } from "./strong-typing.js";
 import { isLikelyTestFile } from "./test-classifier.js";
 import { TEST_DISPATCHERS } from "./test-dispatchers.js";
 
-const mockSpawnSync = vi.mocked(spawnSync);
+const mockRunProcessAsync = vi.mocked(runProcessAsync);
+const mockTryHeavyProcess = vi.mocked(tryAcquireProjectHeavyProcessLease);
+const mockReleaseHeavyProcess = vi.fn();
 const mockConfigNameToToolId = vi.mocked(configNameToToolId);
 const mockGetOrCreateEngine = vi.mocked(getOrCreateEngine);
 const mockParseNpmAuditJson = vi.mocked(parseNpmAuditJson);
 const mockParseOsvScannerJson = vi.mocked(parseOsvScannerJson);
 const mockIsTestFile = vi.mocked(isTestFile);
 const mockGetProfileForFile = vi.mocked(getProfileForFile);
-const mockResolveDependencyAuditCommand = vi.mocked(resolveDependencyAuditCommand);
+const mockResolveDependencyAuditCommand = vi.mocked(resolveDependencyAuditCommandAsync);
 const mockFindAnyTypes = vi.mocked(findAnyTypes);
 const mockIsLikelyTestFile = vi.mocked(isLikelyTestFile);
 
@@ -159,16 +168,15 @@ function engineReturning(report: {
 	return runChecksAsync;
 }
 
-function spawnResult(over: Partial<ReturnType<typeof spawnSync>> = {}) {
+function processResult(over: Partial<Awaited<ReturnType<typeof runProcessAsync>>> = {}) {
 	return {
-		pid: 1,
-		output: [],
 		stdout: "",
 		stderr: "",
-		status: 0,
-		signal: null,
+		code: 0,
+		timedOut: false,
+		killed: false,
 		...over,
-	} as unknown as ReturnType<typeof spawnSync>;
+	};
 }
 
 const auditCtx = (over: Partial<ToolCheckLoopContext> = {}) =>
@@ -181,7 +189,9 @@ const auditCtx = (over: Partial<ToolCheckLoopContext> = {}) =>
 	});
 
 beforeEach(() => {
-	mockSpawnSync.mockReset();
+	mockRunProcessAsync.mockReset().mockResolvedValue(processResult());
+	mockReleaseHeavyProcess.mockReset();
+	mockTryHeavyProcess.mockReset().mockReturnValue(mockReleaseHeavyProcess);
 	mockConfigNameToToolId.mockReset();
 	mockGetOrCreateEngine.mockReset();
 	mockParseNpmAuditJson.mockReset();
@@ -213,71 +223,56 @@ describe("tool-check-loop — mutation-kill wave 30", () => {
 	// test-contract: kill 38d43550a7e3fcf4 (`!resolved` → false) — real skip is a true
 	// loop `continue`, so the trailing inline_<name> boundary must NOT fire.
 	it("dependency_audit: resolver-null skip is a true continue (boundary not fired)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue(null);
+		mockResolveDependencyAuditCommand.mockResolvedValue(null);
 		const boundaries: string[] = [];
 		const out = await runToolCheckLoop(
 			auditCtx({ onCheckBoundary: (n) => boundaries.push(n) }),
 		);
 		expect(out).toEqual([]);
 		expect(boundaries).not.toContain("inline_dependency_audit");
+		expect(mockReleaseHeavyProcess).toHaveBeenCalledTimes(1);
 	});
 
-	// test-contract: kill 1c0e9748af19f2dc ("utf-8"→""), 8307bd2fba0cff50
-	// (stdio array→[]), 5a6d0c2d698dbcf2 / 1d28918f67c45cd5 / 372b21cf1060c098
-	// ("pipe"→"" at each of the 3 array slots)
-	it("dependency_audit: spawnSync gets the exact utf-8/pipe subprocess options", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	// test-contract: invariant — dependency audits run asynchronously with project-root isolation and the configured timeout
+	// The async path has no stdio-buffering child_process call on the daemon
+	// event loop. It resolves and runs against the project root while holding
+	// the cross-process project lease.
+	it("dependency_audit: async runner gets the exact command, cwd, and timeout", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 0 }));
 		await runToolCheckLoop(auditCtx());
-		expect(mockSpawnSync).toHaveBeenCalledWith(
+		expect(mockTryHeavyProcess).toHaveBeenCalledWith("/proj");
+		expect(mockRunProcessAsync).toHaveBeenCalledWith(
 			"npm",
 			["audit", "--json"],
-			expect.objectContaining({
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			}),
+			expect.objectContaining({ cwd: "/proj", timeout: 1000 }),
 		);
+		expect(mockReleaseHeavyProcess).toHaveBeenCalledTimes(1);
 	});
 
-	// test-contract: kill ac38e45617518124 (`error && code===ENOENT` → false),
-	// 4d5923d2dfbed209 (===→!==), a0d5b65483d68606 ("ENOENT"→""), and
-	// 4a353f54fa84e3a7 (the `return null` block → {}) — all four make the
-	// ENOENT skip fail to fire, so a real skip case would wrongly produce a
-	// finding instead of [].
-	it("dependency_audit: ENOENT with a nonzero status still skips (no finding)", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	// test-contract: boundary — an unavailable audit runner yields an explicit no-verdict result instead of appearing clean
+	// An unavailable runner is UNKNOWN. It must surface a no-verdict finding,
+	// never the old empty-array shape that consumers could read as clean.
+	it("dependency_audit: unavailable runner is deferred, not clean", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(
-			spawnResult({
-				status: 1,
-				stdout: "{}",
-				error: Object.assign(new Error("nope"), { code: "ENOENT" }),
-			}),
-		);
-		mockParseNpmAuditJson.mockReturnValue(null);
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: null }));
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out).toEqual([]);
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("unavailable");
 	});
 
-	// test-contract: kill f693629f3ba68948 (`code === "ENOENT"` → true) — a
-	// non-ENOENT error with a real vulnerability result must NOT be skipped.
-	it("dependency_audit: non-ENOENT error with nonzero status still produces a finding", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	// test-contract: public-api — a parseable nonzero npm-audit report exposes its vulnerability detail to callers
+	it("dependency_audit: nonzero result with a parseable report produces a finding", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(
-			spawnResult({
-				status: 1,
-				stdout: "{}",
-				error: Object.assign(new Error("denied"), { code: "EACCES" }),
-			}),
-		);
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "{}" }));
 		mockParseNpmAuditJson.mockReturnValue({ detail: "3 high" } as never);
 		const out = await runToolCheckLoop(auditCtx());
 		expect(out).toHaveLength(1);
@@ -287,42 +282,43 @@ describe("tool-check-loop — mutation-kill wave 30", () => {
 	// test-contract: kill 8afe3ca919d16b9f (`.trim()` dropped) and
 	// 6d1c07f8bf0f47b5 (`||` → `&&`) — both change what gets handed to the parser.
 	it("dependency_audit: stdout is trimmed before parsing", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "  hello  " }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "  hello  " }));
 		mockParseNpmAuditJson.mockReturnValue({ detail: "d" } as never);
 		await runToolCheckLoop(auditCtx());
 		expect(mockParseNpmAuditJson).toHaveBeenCalledWith("hello");
 	});
 
-	// test-contract: kill 257877b237b7ee7f (`summary?.detail ?? ""` → "Stryker was here!")
-	it("dependency_audit: npm-audit null summary falls back exactly to the run-command hint", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	// test-contract: boundary — unparseable npm-audit output cannot be represented as a vulnerability verdict
+	it("dependency_audit: npm-audit null summary is explicit no-verdict", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["npm", "audit", "--json"],
 			parser: "npm-audit",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "{}" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "{}" }));
 		mockParseNpmAuditJson.mockReturnValue(null);
 		const out = await runToolCheckLoop(auditCtx());
-		expect(out[0]?.detail).toBe("Run `npm` for details (parser: npm-audit)");
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(out[0]?.detail).toContain("without a parseable report");
 	});
 
-	// test-contract: kill 0cf72450ae5d3b0e (`!summary` → false) — real osv-scanner
-	// null-summary skip is a true continue (boundary not fired).
-	it("dependency_audit: osv-scanner null-summary skip is a true continue", async () => {
-		mockResolveDependencyAuditCommand.mockReturnValue({
+	// test-contract: boundary — unparseable osv-scanner output cannot be represented as a vulnerability verdict
+	it("dependency_audit: osv-scanner null summary is explicit no-verdict", async () => {
+		mockResolveDependencyAuditCommand.mockResolvedValue({
 			cmd: ["osv-scanner", "scan"],
 			parser: "osv-scanner",
 		});
-		mockSpawnSync.mockReturnValue(spawnResult({ status: 1, stdout: "garbage" }));
+		mockRunProcessAsync.mockResolvedValue(processResult({ code: 1, stdout: "garbage" }));
 		mockParseOsvScannerJson.mockReturnValue(null);
 		const boundaries: string[] = [];
 		const out = await runToolCheckLoop(
 			auditCtx({ onCheckBoundary: (n) => boundaries.push(n) }),
 		);
-		expect(out).toEqual([]);
+		expect(out[0]?.name).toBe("external_check_deferred");
+		expect(boundaries).toContain("deferred_dependency_audit");
 		expect(boundaries).not.toContain("inline_dependency_audit");
 	});
 
@@ -465,6 +461,26 @@ describe("tool-check-loop — mutation-kill wave 30", () => {
 		);
 		expect(out).toEqual([]);
 		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("a ChangeSet batch skips subprocess branches but keeps cheap per-file checks", async () => {
+		mockConfigNameToToolId.mockReturnValue("tsc" as never);
+		const run = engineReturning({ results: [] });
+		const checksRan: string[] = [];
+		const out = await runToolCheckLoop(
+			makeCtx({
+				checks: {
+					typescript: cfg({ command: "tsc" }),
+					affected_tests: cfg(),
+					secrets_in_source: cfg(),
+				},
+				skipMultiFileExternalChecks: true,
+				outChecksRan: checksRan,
+			}),
+		);
+		expect(run).not.toHaveBeenCalled();
+		expect(out).toEqual([]);
+		expect(checksRan).toEqual(["secrets_in_source"]);
 	});
 
 	// test-contract: kill 7a707b609b6f3a5d (`outcome === null` → false) — a

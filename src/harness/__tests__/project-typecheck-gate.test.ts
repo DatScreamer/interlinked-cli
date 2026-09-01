@@ -8,9 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
+import { runWithProjectCompilerLease } from "../project-compiler-gate.js";
 import {
 	checkProjectTestsClean,
+	checkProjectTestsCleanAsync,
 	checkProjectTypecheckClean,
+	checkProjectTypecheckCleanAsync,
 	parseTestFailures,
 	parseTscDiagnostics,
 	resolveTestCommand,
@@ -493,6 +496,93 @@ describe("checkProjectTypecheckClean", () => {
 			},
 		]);
 	});
+
+	it("reports NOT CHECKED instead of spawning while another compiler owns the project", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { "typecheck:stable": 'node -e "process.exit(0)"' } }),
+		);
+		let releaseBarrier: () => void = () => {};
+		let markStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const barrier = new Promise<void>((resolve) => {
+			releaseBarrier = resolve;
+		});
+		const owner = runWithProjectCompilerLease(tmp, async () => {
+			markStarted();
+			await barrier;
+		});
+		await started;
+
+		const results = checkProjectTypecheckClean(tmp);
+		releaseBarrier();
+		await owner;
+
+		expect(results).toEqual([
+			{
+				source: "structural",
+				name: "project_typecheck_deferred",
+				severity: "warning",
+				message:
+					"Project typecheck was NOT CHECKED because another compiler owns this project. Retry before committing or pushing.",
+				determinism: "fully_deterministic",
+			},
+		]);
+	});
+});
+
+describe("checkProjectTypecheckCleanAsync", () => {
+	it("runs the daemon production path without blocking on spawnSync", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { "typecheck:stable": 'node -e "process.exit(0)"' } }),
+		);
+		await expect(checkProjectTypecheckCleanAsync(tmp)).resolves.toEqual([]);
+	});
+
+	it("does not turn an unstructured non-zero compiler exit into clean", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable":
+						'node -e "console.error(\\"compiler transport failed\\");process.exit(2)"',
+				},
+			}),
+		);
+		const results = await checkProjectTypecheckCleanAsync(tmp);
+		expect(results).toEqual([
+			expect.objectContaining({
+				name: "project_typecheck_clean",
+				severity: "error",
+				message: expect.stringContaining("compiler transport failed"),
+			}),
+		]);
+	});
+
+	it("parses structured diagnostics from a non-zero async compiler run", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"typecheck:stable":
+						'node -e "console.error(\\"src/async.ts(8,3): error TS2322: bad async type.\\");process.exit(1)"',
+				},
+			}),
+		);
+		await expect(checkProjectTypecheckCleanAsync(tmp)).resolves.toEqual([
+			{
+				source: "structural",
+				name: "project_typecheck_clean",
+				severity: "error",
+				message: "src/async.ts:8:3 — TS2322: bad async type.",
+				file: "src/async.ts",
+				determinism: "fully_deterministic",
+			},
+		]);
+	});
 });
 
 describe("resolveTestCommand", () => {
@@ -805,5 +895,73 @@ describe("checkProjectTestsClean", () => {
 			message: "Project tests (npm-test) exceeded 300s timeout or was terminated (exit 128). Verify CI manually.",
 			determinism: "fully_deterministic",
 		});
+	});
+});
+
+describe("checkProjectTestsCleanAsync", () => {
+	it("returns empty only after the bounded test command completes successfully", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } }),
+		);
+		await expect(checkProjectTestsCleanAsync(tmp)).resolves.toEqual([]);
+	});
+
+	it("surfaces a missing test launcher as an explicit unavailable no-verdict", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } }),
+		);
+		const savedPath = process.env.PATH;
+		process.env.PATH = "";
+		try {
+			await expect(checkProjectTestsCleanAsync(tmp)).resolves.toEqual([
+				{
+					source: "structural",
+					name: "project_tests_deferred",
+					severity: "warning",
+					message:
+						"Project tests (npm-test) were NOT CHECKED (unavailable). Retry before pushing.",
+					determinism: "fully_deterministic",
+				},
+			]);
+		} finally {
+			process.env.PATH = savedPath;
+		}
+	});
+
+	it("blocks on unstructured non-zero output instead of laundering a crash as clean", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({
+				scripts: {
+					test: 'node -e "console.error(\\"runner crashed\\");process.exit(2)"',
+				},
+			}),
+		);
+		const results = await checkProjectTestsCleanAsync(tmp);
+		expect(results).toHaveLength(1);
+		expect(nonNull(results[0])).toMatchObject({
+			name: "project_tests_clean",
+			severity: "error",
+		});
+		expect(nonNull(results[0]).message).toContain("runner crashed");
+	});
+
+	it("treats a wrapper-encoded signal exit as deferred, not as a test failure", async () => {
+		writeFileSync(
+			join(tmp, "package.json"),
+			JSON.stringify({ scripts: { test: 'node -e "process.exit(143)"' } }),
+		);
+		await expect(checkProjectTestsCleanAsync(tmp)).resolves.toEqual([
+			{
+				source: "structural",
+				name: "project_tests_deferred",
+				severity: "warning",
+				message:
+					"Project tests (npm-test) were NOT CHECKED (interrupted). Retry before pushing.",
+				determinism: "fully_deterministic",
+			},
+		]);
 	});
 });

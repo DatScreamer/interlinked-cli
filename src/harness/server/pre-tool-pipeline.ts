@@ -19,7 +19,6 @@
 // of the file.
 
 import { readSharedConfig } from "../../lib/config.js";
-import { injectCoordinationWarnings, shouldCoordinate } from "../auto-coordinate.js";
 import { isCoverageSuiteCommand, noteCoverageSuiteRunStart } from "../coverage-discharge.js";
 import { runCommitBaselineGate } from "../evaluator/commit-baseline-gate.js";
 import { runCommitFunctionTokenGate } from "../evaluator/commit-function-token-gate.js";
@@ -29,13 +28,6 @@ import {
 	baselineCallKey,
 	rememberBaselineSnapshot,
 } from "../evaluator/baseline-effect-guard.js";
-import {
-	appendShadowLog,
-	buildEvidenceEnvelope,
-	callClassifier,
-	createClassifierSessionState,
-	hashEvidence,
-} from "../policy-classifier.js";
 import type { HarnessDecision, HarnessEvent, SessionTrajectory } from "../types.js";
 import {
 	rememberWorkspaceSnapshot,
@@ -59,15 +51,18 @@ import {
 import {
 	captureDiffAwareBaseline,
 	injectStructureContext,
-	runProjectWideGitGate,
+	runProjectWideGitGateAsync,
 	runTddCommitGate,
 } from "./pre-tool-pipeline-stages.js";
 import {
-	getAutoCoordState,
 	getGraphForFile,
 	type ServerRuntime,
-	summarizeToolInput,
 } from "./runtime-context.js";
+import {
+	reportGuardBlock,
+	runAutoCoordination,
+	runClassifierEscalation,
+} from "./pre-tool-pipeline-integrations.js";
 import { appendShellSandboxAdvisory } from "./shell-sandbox-policy.js";
 
 // ---------------------------------------------------------------------------
@@ -93,142 +88,6 @@ function drainDeferredFindings(ctx: ServerRuntime, event: HarnessEvent, preDecis
 			...(preDecision.warnings ?? []),
 			...deferredFindings.map((f) => f.message),
 		];
-	}
-}
-
-/**
- * LLM Policy Classifier escalation (shadow mode). Only runs when the decision
- * is "allow", the evaluator attached an escalation, and the classifier is
- * enabled. Mutates `preDecision.warnings` in shadow mode; never changes the
- * decision (enforce-mode promotion is not wired yet). Fail-open on any error.
- */
-async function runClassifierEscalation(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	session: SessionTrajectory,
-	preDecision: HarnessDecision,
-): Promise<void> {
-	const CWD = ctx.cwd;
-	const log = ctx.log;
-	const classifierConfig = ctx.rules.policy_classifier;
-	if (!(preDecision.decision === "allow" && preDecision._escalation && classifierConfig?.enabled)) {
-		return;
-	}
-	const classifierStart = Date.now();
-	try {
-		// Get or create per-session classifier state
-		let classifierState = ctx.classifierSessions.get(event.session_id);
-		if (!classifierState) {
-			classifierState = createClassifierSessionState();
-			ctx.classifierSessions.set(event.session_id, classifierState);
-		}
-
-		const evidence = buildEvidenceEnvelope(event, session, preDecision._escalation);
-		const classification = await callClassifier(evidence, classifierConfig, classifierState);
-
-		const latencyMs = Date.now() - classifierStart;
-		const wouldHaveChanged =
-			classification.label === "deny" &&
-			classification.confidence >= (classifierConfig.confidence_threshold || 0.8);
-
-		// Shadow log
-		appendShadowLog(
-			{
-				ts: new Date().toISOString(),
-				session_id: event.session_id,
-				agent_name: event.agent_name || session.agent_name,
-				trigger: preDecision._escalation.trigger,
-				tool_name: event.tool_name || "",
-				action_class: evidence.action_class,
-				local_decision: "allow",
-				classification,
-				would_have_changed: wouldHaveChanged,
-				latency_ms: latencyMs,
-				evidence_hash: hashEvidence(evidence),
-			},
-			CWD,
-		);
-
-		// Shadow mode: inject warning but never change decision
-		if (classifierConfig.mode === "shadow") {
-			const warnings = preDecision.warnings || [];
-			warnings.push(
-				`[interlinked:policy] Shadow: ${classification.label} (${classification.confidence.toFixed(2)}) — ${classification.reasoning}`,
-			);
-			preDecision.warnings = warnings;
-		}
-		// Enforce mode will promote the shadow-only classifier result into
-		// a blocking decision once that path is wired up.
-
-		ctx.writeClassifierStatus(
-			`${classifierConfig.provider}:${classifierConfig.model}:ok:${latencyMs}ms`,
-		);
-		log(
-			`Policy classifier: ${classification.label} (${classification.confidence.toFixed(2)}) for ${preDecision._escalation.trigger} — ${latencyMs}ms`,
-		);
-	} catch (classifierErr) {
-		// Fail-open: classifier errors never block the tool call
-		ctx.writeClassifierStatus(`${classifierConfig.provider}:${classifierConfig.model}:error`);
-		log(
-			`Policy classifier error (fail-open): ${classifierErr instanceof Error ? classifierErr.message : String(classifierErr)}`,
-		);
-	}
-}
-
-/**
- * Auto-coordination: periodic read-only check-in with the MCP server. Mutates
- * `preDecision` (coordination warnings) and the per-session coord state on a
- * successful check-in; increments misses (and may disable) otherwise. Catch
- * path increments misses. No-op unless allow + a server bridge + the cadence.
- */
-async function runAutoCoordination(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	session: SessionTrajectory,
-	preDecision: HarnessDecision,
-): Promise<void> {
-	const log = ctx.log;
-	const eventToolName = event.tool_name || "";
-	if (
-		!(
-			preDecision.decision === "allow" &&
-			session &&
-			ctx.serverBridge &&
-			shouldCoordinate(
-				session,
-				getAutoCoordState(ctx, event.session_id),
-				ctx.autoCoordConfig,
-				eventToolName,
-			)
-		)
-	) {
-		return;
-	}
-	const coordState = getAutoCoordState(ctx, event.session_id);
-	try {
-		const coordResponse = await ctx.serverBridge.fetchCoordinationState(
-			event.agent_name || session.agent_name,
-			session,
-			ctx.autoCoordConfig.timeout_ms,
-		);
-		if (coordResponse) {
-			injectCoordinationWarnings(preDecision, coordResponse);
-			session.last_coordination_at = session.tool_call_count;
-			session.last_coordination_ts = Date.now();
-			coordState.consecutiveMisses = 0;
-			coordState.totalCheckins++;
-			log(
-				`Auto-coordination: ${coordResponse.unread.total} unread, ${coordResponse.task_changes.length} task changes`,
-			);
-		} else {
-			coordState.consecutiveMisses++;
-			if (coordState.consecutiveMisses >= ctx.autoCoordConfig.max_misses_before_disable) {
-				coordState.disabled = true;
-				log("Auto-coordination: disabled after consecutive misses");
-			}
-		}
-	} catch {
-		coordState.consecutiveMisses++;
 	}
 }
 
@@ -278,33 +137,6 @@ function observeLearnedRules(
 }
 
 /**
- * Report blocks to the server for team visibility. No-op unless a server
- * bridge is present and the decision is a block.
- */
-function reportGuardBlock(
-	ctx: ServerRuntime,
-	event: HarnessEvent,
-	session: SessionTrajectory,
-	preDecision: HarnessDecision,
-): void {
-	if (ctx.serverBridge && preDecision.decision === "block") {
-		ctx.serverBridge.reportGuardEvent({
-			agent_name: event.agent_name || session.agent_name,
-			event_type: "guard_block",
-			tool_name: event.tool_name,
-			tool_input_summary: summarizeToolInput(event),
-			decision: "block",
-			reason: preDecision.reason || "Blocked by guard rule",
-			occurred_at: event.timestamp,
-		});
-	}
-}
-
-/**
- * Run the full PreToolUse pipeline for a tool-use event. Returns the final
- * `HarnessDecision` (allow / block / ask).
- */
-/**
  * Combine the two per-edit metric gates into one verdict.
  *
  * Both gates run unconditionally; only their RESULTS are combined here. Coverage
@@ -323,6 +155,73 @@ function combineMetricGateDecisions(
 	return coverage ?? mutation;
 }
 
+/** Remember pre-call water-lines before any gate can short-circuit. */
+function rememberPreToolEffects(ctx: ServerRuntime, event: HarnessEvent): void {
+	if (event.dry_run) return;
+	rememberBaselineSnapshot(
+		baselineCallKey({
+			toolUseId: event.tool_use_id,
+			sessionId: event.session_id,
+			timestamp: event.timestamp,
+		}),
+		ctx.cwd,
+	);
+	if (shouldObserveWorkspaceEffects(event.tool_name)) {
+		rememberWorkspaceSnapshot({
+			toolUseId: event.tool_use_id,
+			sessionId: event.session_id,
+			root: ctx.cwd,
+		});
+	}
+}
+
+/** Record the start of a coverage-suite command for later discharge binding. */
+function observeCoverageRunStart(event: HarnessEvent): void {
+	const command =
+		typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
+	if (command && isCoverageSuiteCommand(command)) {
+		noteCoverageSuiteRunStart(event.session_id, event.timestamp);
+	}
+}
+
+/** Run both per-edit metric gates before combining their decisions. */
+async function runMetricGates(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	preDecision: HarnessDecision,
+): Promise<HarnessDecision | null> {
+	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
+	// Mutation must run even when coverage returns a decision: otherwise a
+	// coverage finding silently disables mutation measurement for the edit.
+	const mutationDecision = await runMutationWriteGate(ctx, event, preDecision);
+	return combineMetricGateDecisions(coverageDecision, mutationDecision);
+}
+
+interface CommitGateInput {
+	ctx: ServerRuntime;
+	event: HarnessEvent;
+	session: SessionTrajectory;
+	preDecision: HarnessDecision;
+	now: () => number;
+}
+
+/** Run cheap commit backstops before the full commit-time quality gate. */
+async function runCommitQualityGates({
+	ctx,
+	event,
+	session,
+	preDecision,
+	now,
+}: CommitGateInput): Promise<HarnessDecision | null> {
+	const baselineDecision = runCommitBaselineGate(event, preDecision);
+	if (baselineDecision) return baselineDecision;
+	const tokenDecision = runCommitFunctionTokenGate(event, preDecision);
+	if (tokenDecision) return tokenDecision;
+	const launderingDecision = runCommitLaunderingGate(event, session, { nowMs: now() });
+	if (launderingDecision) return launderingDecision;
+	return runCommitGate(ctx, event, preDecision);
+}
+
 export async function runPreToolPipeline(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
@@ -337,23 +236,7 @@ export async function runPreToolPipeline(
 	// that later blocks is harmless — the entry is bounded and simply expires
 	// unconsumed. Dry runs never snapshot (CLAUDE.md: a dry run must not move
 	// the gate). Pairs with consumeBaselineSnapshot in the post-tool pipeline.
-	if (!event.dry_run) {
-		rememberBaselineSnapshot(
-			baselineCallKey({
-				toolUseId: event.tool_use_id,
-				sessionId: event.session_id,
-				timestamp: event.timestamp,
-			}),
-			CWD,
-		);
-		if (shouldObserveWorkspaceEffects(event.tool_name)) {
-			rememberWorkspaceSnapshot({
-				toolUseId: event.tool_use_id,
-				sessionId: event.session_id,
-				root: CWD,
-			});
-		}
-	}
+	rememberPreToolEffects(ctx, event);
 	// Resolve graph for the file being edited (supports cross-repo edits)
 	const filePath = resolveEventFilePath(event);
 	const activeGraph = getGraphForFile(ctx, filePath || CWD);
@@ -389,28 +272,14 @@ export async function runPreToolPipeline(
 	// only the obligation's age (a failed earlier run's report is not this
 	// run's evidence). Pure observation over total string ops — never affects
 	// the decision.
-	const preCmd = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
-	if (preCmd && isCoverageSuiteCommand(preCmd)) {
-		noteCoverageSuiteRunStart(event.session_id, event.timestamp);
-	}
+	observeCoverageRunStart(event);
 
 	// --- Per-edit coverage gate (config-gated; shipped default is ON since 2026-06) ---
 	// The expensive apply-before-disk overlay+suite check. Placed after the
 	// synchronous cheap checks; short-circuits the rest of the async pipeline on
 	// a coverage block. A no-op (returns null immediately) when the repo opts
 	// out via guard-rules.local.json (`per_edit_coverage.enabled: false`).
-	const coverageDecision = await runCoverageWriteGateExtracted(ctx, event, preDecision);
-
-	// --- Per-edit mutation gate (config-gated, DEFAULT OFF) ---
-	// Capability-aware (spec §12): a no-op until `per_edit_mutation.enabled`; runs
-	// the mutation runner (null until a runner is wired → honest not-measured).
-	//
-	// Runs even when coverage already produced a decision. Returning early on the
-	// coverage result silently disabled this gate ENTIRELY — found 2026-07-27 with
-	// per_edit_mutation enabled, a reachable runner, and not one recorded run in a
-	// full day of edits.
-	const mutationDecision = await runMutationWriteGate(ctx, event, preDecision);
-	const metricDecision = combineMetricGateDecisions(coverageDecision, mutationDecision);
+	const metricDecision = await runMetricGates(ctx, event, preDecision);
 	if (metricDecision) return metricDecision;
 
 	// --- Commit-time quality gate (config-gated; shipped default is ON since 2026-06) ---
@@ -422,24 +291,24 @@ export async function runPreToolPipeline(
 	// Commit-time baseline-integrity backstop (ALWAYS ON) — block a commit that
 	// stages a loosened git-tracked ratchet baseline. Cheap; runs before the
 	// config-gated coverage commit gate.
-	const commitBaselineDecision = runCommitBaselineGate(event, preDecision);
-	if (commitBaselineDecision) return commitBaselineDecision;
-	const commitFunctionTokenDecision = runCommitFunctionTokenGate(event, preDecision);
-	if (commitFunctionTokenDecision) return commitFunctionTokenDecision;
-
-	// Workaround-laundering block (P3 §5.2 — the single outflow escalation of the
-	// P1 shadow detectors): block a commit whose staged content still carries a
-	// violation of a rule that blocked THIS session. Introduced-only + fail-open,
-	// so a legitimately fixed commit never blocks. Cheap (git shows, no suite) →
-	// runs before the full commit gate.
-	const launderingDecision = runCommitLaunderingGate(event, session, { nowMs: Date.now() });
-	if (launderingDecision) return launderingDecision;
-
-	const commitDecision = await runCommitGate(ctx, event, preDecision);
+	const commitDecision = await runCommitQualityGates({
+		ctx,
+		event,
+		session,
+		preDecision,
+		now: Date.now,
+	});
 	if (commitDecision) return commitDecision;
 
 	// --- LLM Policy Classifier: escalation check (shadow mode) ---
-	await runClassifierEscalation(ctx, event, session, preDecision);
+	await runClassifierEscalation({
+		ctx,
+		event,
+		session,
+		preDecision,
+		now: Date.now,
+		timestamp: () => new Date().toISOString(),
+	});
 
 	// --- Content Scanner: WebFetch proxy (3-way human review) ---
 	const webFetchDecision = await runWebFetchProxy(ctx, event, preDecision);
@@ -454,7 +323,7 @@ export async function runPreToolPipeline(
 	delete preDecision._contentScan;
 
 	// --- Auto-coordination: periodic read-only check-in with MCP server ---
-	await runAutoCoordination(ctx, event, session, preDecision);
+	await runAutoCoordination({ ctx, event, session, preDecision, now: Date.now });
 
 	// Inject any pending findings from background async analysis
 	injectAsyncAnalysisFindings(ctx, filePath, preDecision);
@@ -463,13 +332,13 @@ export async function runPreToolPipeline(
 	observeLearnedRules(ctx, event, preDecision);
 
 	// Report blocks/warns to server for team visibility
-	reportGuardBlock(ctx, event, session, preDecision);
+	reportGuardBlock({ ctx, event, session, preDecision });
 
 	// --- TDD commit gate: check for unresolved test failures before git commit ---
 	runTddCommitGate(ctx, event, session, preDecision);
 
 	// --- Project-wide typecheck gate (commit + push) + push-only test tier ---
-	runProjectWideGitGate(ctx, event, session, preDecision);
+	await runProjectWideGitGateAsync(ctx, event, session, preDecision);
 
 	// --- Grep acceleration: intercept search tools via trigram index ---
 	// Substitution path (block-and-answer) is DISABLED by default. Reason:

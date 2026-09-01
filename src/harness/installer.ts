@@ -30,7 +30,9 @@ import {
 	mergeSettings,
 	readJson,
 	removeJsonPath,
+	restoreTextFile,
 	resolveSettingsPath,
+	snapshotTextFile,
 	writeAtomic,
 	writeTextAtomic,
 } from "./installer-merge-engine.js";
@@ -98,6 +100,8 @@ export interface InstallResult {
 	/** One row per adapter whose `postInstall` failed, with the reason. Empty
 	 *  when `ok` is true. */
 	post_install_failures: Array<{ runner: RunnerId; reason: string }>;
+	/** Entries produced by this attempt. A failed replacement remains visible
+	 * here even when the durable manifest retains the prior working entry. */
 	entries: InstallerManifestEntry[];
 	skipped: Array<{ runner: RunnerId; reason: string }>;
 	manifest_path: string;
@@ -121,6 +125,55 @@ const MANIFEST_FILENAME = "installer-manifest.json";
 
 export function manifestPath(cwd: string): string {
 	return join(cwd, ".interlinked", MANIFEST_FILENAME);
+}
+
+interface SelectedInstallOutcome {
+	entry?: InstallerManifestEntry;
+	skipped?: InstallResult["skipped"][number];
+	purged: number;
+	foreign: number;
+}
+
+function installSelectedAdapter(
+	adapter: RunnerAdapter,
+	input: {
+		binaryAbs: string;
+		scope: InstallScope;
+		cwd: string;
+		installedAt: string;
+		dryRun: boolean;
+		priorManifest: InstallerManifestEntry[];
+	},
+): SelectedInstallOutcome {
+	const priorConflict = priorManagedArtifactConflict(input.priorManifest, adapter.id);
+	if (priorConflict !== null) {
+		return { skipped: { runner: adapter.id, reason: priorConflict }, purged: 0, foreign: 0 };
+	}
+	const prior = input.priorManifest.find((entry) => entry.runner === adapter.id);
+	const target = resolveSettingsPath(
+		input.cwd,
+		adapter.renderSettingsFragment(input.binaryAbs, input.scope).path,
+	);
+	const before = prior === undefined || input.dryRun ? null : snapshotTextFile(target);
+	const installed = installSingle(
+		adapter,
+		input.binaryAbs,
+		input.scope,
+		input.cwd,
+		input.installedAt,
+		input.dryRun,
+	);
+	if (!installed.ok) {
+		return { skipped: { runner: adapter.id, reason: installed.reason }, purged: 0, foreign: 0 };
+	}
+	if (installed.entry.post_install !== "failed" || prior === undefined) {
+		return { entry: installed.entry, purged: installed.purged, foreign: installed.foreign };
+	}
+	if (!input.dryRun) {
+		if (before === null) throw new Error(`cannot restore prior ${adapter.id} settings at ${target}`);
+		restoreTextFile(target, before);
+	}
+	return { entry: installed.entry, purged: 0, foreign: 0 };
 }
 
 // Moved to installer-merge-engine.ts (2026-08-30) so the manifest validator
@@ -156,31 +209,31 @@ export function installHooks(opts: InstallOptions): InstallResult {
 	let purged = 0;
 	let foreign = 0;
 	for (const adapter of selected) {
-		const priorConflict = priorManagedArtifactConflict(priorManifest, adapter.id);
-		if (priorConflict !== null) {
-			skipped.push({ runner: adapter.id, reason: priorConflict });
-			continue;
-		}
-		const outcome = installSingle(adapter, binaryAbs, scope, opts.cwd, nowIso, dryRun);
-		if (outcome.ok) {
-			entries.push(outcome.entry);
-			purged += outcome.purged;
-			foreign += outcome.foreign;
-		} else {
-			skipped.push({ runner: adapter.id, reason: outcome.reason });
-		}
+		const outcome = installSelectedAdapter(adapter, {
+			binaryAbs,
+			scope,
+			cwd: opts.cwd,
+			installedAt: nowIso,
+			dryRun,
+			priorManifest,
+		});
+		if (outcome.entry !== undefined) entries.push(outcome.entry);
+		if (outcome.skipped !== undefined) skipped.push(outcome.skipped);
+		purged += outcome.purged;
+		foreign += outcome.foreign;
 	}
 
 	// Stale-install cleanup: a prior install of a runner we just REPLACED may
 	// have written a *different* settings file — e.g. a user→project scope
 	// switch. The in-place purge in `installSingle` only reached the file this
-	// run rewrote, so clear the old one here. Keyed on REPLACED runners, not
+	// run rewrote, so clear the old one here. Keyed on SUCCESSFUL replacements, not
 	// merely selected ones (review 2026-08-30): a selected runner that was
 	// SKIPPED (malformed settings, missing target) produced no replacement, so
 	// its prior install must survive untouched — cleaning it while dropping its
 	// manifest entry silently destroyed working installs.
-	const replacedIds = new Set(entries.map((e) => e.runner));
-	const newFiles = new Set(entries.map((e) => e.settings_path));
+	const successfulEntries = entries.filter((entry) => entry.post_install === "ok");
+	const replacedIds = new Set(successfulEntries.map((entry) => entry.runner));
+	const newFiles = new Set(successfulEntries.map((entry) => entry.settings_path));
 	const orphansCleaned: string[] = [];
 	for (const prior of priorManifest) {
 		if (!replacedIds.has(prior.runner)) continue;
@@ -194,10 +247,13 @@ export function installHooks(opts: InstallOptions): InstallResult {
 	// the current run installs project/local hooks, a matching user-scope hook
 	// for the same project will be merged by runners like Claude Code and fire
 	// in addition to the project hook. Remove this project's user-scope entries
-	// from the same runner settings file, sparing other projects' hooks.
+	// from the same runner settings file, sparing other projects' hooks. A
+	// skipped or semantically failed replacement never earns this destructive
+	// cleanup step.
 	if (scope !== SCOPE_USER) {
 		const verdict = makePurgeVerdict(SCOPE_USER, opts.cwd);
 		for (const adapter of selected) {
+			if (!replacedIds.has(adapter.id)) continue;
 			const userFragment = adapter.renderSettingsFragment(binaryAbs, SCOPE_USER);
 			const userTarget = resolveSettingsPath(opts.cwd, userFragment.path);
 			if (newFiles.has(userTarget)) continue;
@@ -213,10 +269,17 @@ export function installHooks(opts: InstallOptions): InstallResult {
 	// selection instead of replacement (pre-2026-08-30) meant a selected-but-
 	// SKIPPED runner lost its manifest entry while its hooks stayed installed —
 	// unfindable by uninstall and invisible to refresh.
-	const retained = priorManifest.filter((e) => !replacedIds.has(e.runner));
-	if (!dryRun) writeManifest(mfPath, [...retained, ...entries]);
+	const retained = priorManifest.filter((entry) => !replacedIds.has(entry.runner));
+	const priorIds = new Set(priorManifest.map((entry) => entry.runner));
+	// A first-time postInstall failure keeps its row because its partial hook
+	// needs to remain uninstallable. A failed replacement has already restored
+	// its attempted target, so the prior one-row ownership record stays canonical.
+	const recordableEntries = entries.filter(
+		(entry) => entry.post_install === "ok" || !priorIds.has(entry.runner),
+	);
+	if (!dryRun) writeManifest(mfPath, [...retained, ...recordableEntries]);
 
-	// A postInstall failure is recorded on its entry by `installSingle`; lift
+	// A postInstall failure is recorded on the attempt entry by `installSingle`; lift
 	// it here so the CALLER cannot miss it. Before this, the throw was caught,
 	// logged to stderr and dropped — an install whose hooks never fire was
 	// reported as a success and written to the manifest as one.
@@ -312,9 +375,9 @@ function installSingle(
 	// its hooks.json until the feature flag is set. This used to write one
 	// stderr line and return `ok: true` anyway, so an installation that fires
 	// no hooks was recorded as a success. The failure is now carried on the
-	// entry and lifts to `InstallResult.ok`. The manifest entry is still
-	// produced: the JSON fragment DID land, and uninstall needs its record to
-	// remove it again.
+	// entry and lifts to `InstallResult.ok`. A first-time failure remains in the
+	// manifest so uninstall can remove its partial hook. When a prior working
+	// install exists, the caller restores this target and retains the prior row.
 	const postInstallError = runPostInstall(adapter, scope, cwd, dryRun);
 
 	const entry: InstallerManifestEntry = {
@@ -530,7 +593,7 @@ export { type ManifestState, readManifest, readManifestState } from "./installer
 function selectAdapters(all: RunnerAdapter[], requested: RunnerId[]): RunnerAdapter[] {
 	if (requested.length === 0) return all;
 	const out: RunnerAdapter[] = [];
-	for (const id of requested) {
+	for (const id of new Set(requested)) {
 		const a = getAdapter(id, all);
 		if (a) out.push(a);
 	}

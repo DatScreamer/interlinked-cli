@@ -158,6 +158,8 @@ export function toHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
 	// Carried for delivery de-duplication (not read by checks): the daemon
 	// keys redundant hook deliveries on tool_use_id.
 	if (event.tool_use_id) out.tool_use_id = event.tool_use_id;
+	if (event.post_delivery_token) out.post_delivery_token = event.post_delivery_token;
+	if (event.post_delivery_pid) out.post_delivery_pid = event.post_delivery_pid;
 
 	const action = event.action;
 	if (action.kind === "tool_call") {

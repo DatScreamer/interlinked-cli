@@ -8,6 +8,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ScanProgress } from "./verify/scan-progress.js";
+
 type SuppEntry = { file: string; check: string; reason: string };
 type ToolResult = { tool: string; file: string; message: string };
 
@@ -33,12 +35,21 @@ class FakeCheckEngine {
 	constructor(public root: string) {}
 	discoverTools = discoverToolsMock;
 	runChecks = runChecksMock;
+	runChecksAsync = runChecksMock;
 	runDepAudit = runDepAuditMock;
 }
 const formatToolReportMock = vi.fn<(tools: unknown) => string>(() => "TOOL-REPORT");
 vi.mock("../harness/check-engine/index.js", () => ({
 	CheckEngine: FakeCheckEngine,
 	formatToolReport: formatToolReportMock,
+}));
+
+const releaseHeavyProcessMock = vi.fn<() => void>();
+const tryAcquireProjectHeavyProcessLeaseMock = vi.fn<() => (() => void) | null>(
+	() => releaseHeavyProcessMock,
+);
+vi.mock("../harness/project-heavy-process-lock.js", () => ({
+	tryAcquireProjectHeavyProcessLease: tryAcquireProjectHeavyProcessLeaseMock,
 }));
 
 // --- harness/quality-checks --------------------------------------------------
@@ -145,15 +156,19 @@ vi.mock("./verify/structure.js", () => ({
 
 // --- verify/tool-results -----------------------------------------------------
 const checkProjectSetupMock = vi.fn<(cwd: string) => unknown[]>(() => []);
-const filterCodeQualityResultsMock = vi.fn<(r: unknown, s: Set<string>) => unknown>((r) => r);
-const runCodeQualityChecksMock = vi.fn<(files: string[], cwd: string) => unknown>(() => ({
-	undocumentedEnvVars: [],
-}));
+const clearCodeQualityResultsMock = vi.fn<(r: unknown) => void>();
+const filterCodeQualityResultsInPlaceMock = vi.fn<(r: unknown, s: Set<string>) => unknown>(
+	(r) => r,
+);
+const runCodeQualityChecksProgressiveMock = vi.fn<
+	(files: string[], cwd: string, progress: ScanProgress) => Promise<unknown>
+>(async () => ({ undocumentedEnvVars: [] }));
 const runSuggestionsMock = vi.fn<(args: unknown) => Map<string, unknown[]>>(() => new Map());
 vi.mock("./verify/tool-results.js", () => ({
 	checkProjectSetup: checkProjectSetupMock,
-	filterCodeQualityResults: filterCodeQualityResultsMock,
-	runCodeQualityChecks: runCodeQualityChecksMock,
+	clearCodeQualityResults: clearCodeQualityResultsMock,
+	filterCodeQualityResultsInPlace: filterCodeQualityResultsInPlaceMock,
+	runCodeQualityChecksProgressive: runCodeQualityChecksProgressiveMock,
 	runSuggestions: runSuggestionsMock,
 }));
 
@@ -207,6 +222,7 @@ beforeEach(() => {
 	runChecksMock.mockReturnValue({ results: [] });
 	runDepAuditMock.mockReturnValue({ kind: "audit" });
 	formatToolReportMock.mockReturnValue("TOOL-REPORT");
+	tryAcquireProjectHeavyProcessLeaseMock.mockReturnValue(releaseHeavyProcessMock);
 	detectDecisionSurfaceMock.mockReturnValue({ ds: true });
 	detectLockfileMultiplicityMock.mockReturnValue({ lm: true });
 	computeDecisionSurfaceRatchetMock.mockReturnValue({ dsr: true });
@@ -224,8 +240,10 @@ beforeEach(() => {
 	discoverFilesMock.mockReturnValue(["/p/a.ts", "/p/b.ts"]);
 	buildStructureJsonSectionMock.mockReturnValue({ structure: true });
 	checkProjectSetupMock.mockReturnValue([]);
-	filterCodeQualityResultsMock.mockImplementation((r: unknown) => r);
-	runCodeQualityChecksMock.mockReturnValue({ undocumentedEnvVars: [] });
+	filterCodeQualityResultsInPlaceMock.mockImplementation((r: unknown) => r);
+	runCodeQualityChecksProgressiveMock.mockImplementation(async () => ({
+		undocumentedEnvVars: [],
+	}));
 	runSuggestionsMock.mockReturnValue(new Map());
 	summarizeFlaggedFilesMock.mockReturnValue({ flaggedFiles: 0, totalFiles: 2, projectFindings: 0 });
 	existsSyncMock.mockReturnValue(true);
@@ -344,15 +362,20 @@ describe("runVerify streaming literals", () => {
 		expect(streamCaseDivergenceMock).not.toHaveBeenCalled();
 	});
 
-	it("prints the scanning-files progress text", async () => {
+	it("hands the scan a progress reporter sized to the discovered file count", async () => {
 		const { verifyCommand } = await importVerify();
 		await verifyCommand({ cwd: "/repo" });
-		expect(stderr).toContain("scanning files...");
+		const progress = runCodeQualityChecksProgressiveMock.mock.calls[0]?.[2];
+		progress?.start("checks");
+		// discoverFilesMock yields two files, so the reporter's total is 2.
+		expect(stderr).toContain("scanning checks 0/2");
 	});
 
-	it("emits the carriage-return clear sequence before the completion line", async () => {
+	it("emits the carriage-return clear sequence through the progress reporter", async () => {
 		const { verifyCommand } = await importVerify();
 		await verifyCommand({ cwd: "/repo" });
+		const progress = runCodeQualityChecksProgressiveMock.mock.calls[0]?.[2];
+		progress?.finish();
 		expect(stderr).toContain("\r\x1b[K");
 	});
 

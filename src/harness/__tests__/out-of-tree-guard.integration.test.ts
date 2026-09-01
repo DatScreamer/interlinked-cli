@@ -19,7 +19,10 @@
 // This test drives a real harness daemon over its unix socket (the only
 // path that exercises the `processEvent` PostToolUse handler and builds
 // `phase_breakdown` / `tool_breakdown`). It asserts that out-of-tree edits
-// skip the project-rooted surfaces and in-tree edits still trigger them.
+// skip the project-rooted surfaces and in-tree edits still trigger them. A
+// declared glossary sentinel in every target file makes structure execution
+// observable as a deterministic `glossary_residue` result; the assertion does
+// not depend on how many milliseconds a graph walk happens to take.
 
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -42,59 +45,23 @@ const OUTSIDE = join(SCRATCH, "elsewhere"); // a sibling tree, NOT under PROJECT
 const FAKE_HOME = join(SCRATCH, "fake-home"); // mimics ~/.claude/...
 const SOCKET = join(SCRATCH, "harness.sock");
 
-// These budgets bound REAL subprocess work — a cold artifact-graph build over
-// 250 files plus a biome run — so they are load-sensitive by nature, not
-// resolution-sensitive. Measured 2026-08-05: the suite failed 4 tests here
+// These budgets bound REAL subprocess work — including a biome run — so they
+// are load-sensitive by nature, not resolution-sensitive. Measured 2026-08-05:
+// the suite failed 4 tests here
 // whenever anything else was busy (a second vitest worker, the repo's own
 // harness daemon at ~566MB, a concurrent mutation run), and the file even
 // flaked 1-in-2 running ALONE on a loaded box. A controlled bisect ruled out
 // cross-test pollution: pairing the file with a trivial no-op test reproduced
 // the failures identically, so no other test's state is involved.
 //
-// The budgets are generous rather than tight on purpose. This test asserts a
-// SKIPPED phase costs near-zero while an in-tree edit costs real time — a
-// ratio, not a deadline — so a larger ceiling weakens nothing it checks; it
-// only stops a busy machine from being reported as a broken guard.
+// The budgets are generous rather than tight on purpose. Structure execution
+// and skipping are proven from result presence/absence, so a larger ceiling
+// weakens nothing the test checks; it only stops a busy machine from being
+// reported as a broken guard.
 const SERVER_STARTUP_TIMEOUT_MS = 120_000;
 const SEND_TIMEOUT_MS = 120_000;
-// `runStructureChecks` builds the artifact graph by walking the project
-// tree. A project with this many files makes the structure phase cost real,
-// measurable wall time on the (cold) first in-tree edit — well above the
-// near-zero a skipped phase records for an out-of-tree edit.
-const PROJECT_FILE_COUNT = 250;
-
-// --- Structure-phase skip assertion: RATIO against a same-process control ---
-//
-// An earlier version of this file asserted the skipped structure phase's ms
-// against a fixed absolute ceiling (6ms). That is the same anti-pattern the
-// MD_LINK_RE ReDoS-linearity test hit and fixed (commit 80eaf2b): an
-// absolute-millisecond number says nothing about the property under test,
-// only about how busy the machine happened to be. Under a loaded machine (a
-// 6-agent fleet + the full suite sharing this box) the "skipped" phase — real
-// cost near-zero — measured 7ms and 11ms against that 6ms ceiling and failed,
-// while an isolated rerun moments later passed 7/7. The skip behavior was
-// correct both times; only the load changed.
-//
-// The fix: measure a CONTROL in the SAME process — the real in-tree cold
-// artifact-graph build's own `scored_suggestions` ms (captured by the first
-// test below, which runs before the skip cases so the value exists when they
-// need it) — and assert each skip case stays under a comfortable FRACTION of
-// it, floored at STRUCTURE_SKIP_FLOOR_MS. Load inflates both sides together
-// (both share the same event loop / CPU contention), so the ratio survives
-// it; an accidental regression that makes the "skip" path actually build the
-// graph would cost close to 100% of the control — far past FRACTION either
-// way.
-//
-// Constants below are picked from measured values, not guesses: a fresh probe
-// run against this exact fixture recorded an in-tree cold-build ms of 27
-// (matching the 8-34ms historical range already documented above) against
-// out-of-tree skip ms of 0, 0, 3 (and 0 again once the graph was warm). The
-// live flake this replaces showed skip ms of 7 and 11 under load.
-const STRUCTURE_SKIP_FRACTION = 0.3; // 30% of the measured control
-// ~1.8x the worst skip ms seen in the live flake (11ms) — comfortably above
-// load jitter, comfortably below a real cold build (8-34ms historical, 27ms
-// measured here).
-const STRUCTURE_SKIP_FLOOR_MS = 20;
+const STRUCTURE_SENTINEL = "obsolete_structure_sentinel";
+const STRUCTURE_FINDING = "glossary_residue";
 
 let server: ChildProcess;
 
@@ -170,41 +137,25 @@ function hasPhase(decision: HarnessDecision, phase: string): boolean {
 	return decision.phase_breakdown != null && phase in decision.phase_breakdown;
 }
 
-/**
- * Same-process control for the structure-phase skip assertion (see the
- * STRUCTURE_SKIP_* constants above). Populated once by the in-tree cold-build
- * test, which the describe block below runs FIRST for exactly this reason.
- */
-let structureControlMs: number | undefined;
-
-/** Record the in-tree cold-build's own `scored_suggestions` ms as the control. */
-function recordStructureControl(ms: number): void {
-	structureControlMs = ms;
+/** True when the declared glossary sentinel proves structure analysis ran. */
+function hasStructureSentinelFinding(decision: HarnessDecision): boolean {
+	return (
+		decision.check_results?.some(
+			(result) => result.source === "structure" && result.name === STRUCTURE_FINDING,
+		) ?? false
+	);
 }
 
-/**
- * Assert a structure phase was SKIPPED (out-of-tree edit): its ms must stay
- * under a small fraction of the same-process in-tree cold-build control,
- * floored so machine-load jitter on an inherently near-zero measurement can't
- * fail the assertion. See the STRUCTURE_SKIP_* constants for why this is a
- * ratio and not an absolute ms.
- */
-function expectStructurePhaseSkipped(decision: HarnessDecision): void {
-	const observed = decision.phase_breakdown?.scored_suggestions ?? 0;
-	if (structureControlMs === undefined) {
-		throw new Error(
-			"structureControlMs not captured yet — the in-tree control case must run before any skip assertion",
-		);
-	}
-	expect(observed).toBeLessThanOrEqual(
-		Math.max(STRUCTURE_SKIP_FLOOR_MS, structureControlMs * STRUCTURE_SKIP_FRACTION),
-	);
+/** Valid TypeScript whose comment deterministically triggers the glossary rule. */
+function structureSentinelSource(declaration: string): string {
+	return `${declaration}\n// ${STRUCTURE_SENTINEL}\n`;
 }
 
 beforeAll(async () => {
 	rmSync(SCRATCH, { recursive: true, force: true });
 	mkdirSync(join(PROJECT, "src", "nested"), { recursive: true });
 	mkdirSync(join(PROJECT, ".interlinked"), { recursive: true });
+	mkdirSync(join(PROJECT, "interlinked", "artifacts"), { recursive: true });
 	mkdirSync(OUTSIDE, { recursive: true });
 	mkdirSync(join(FAKE_HOME, ".claude", "hooks"), { recursive: true });
 
@@ -227,20 +178,53 @@ beforeAll(async () => {
 	);
 	writeFileSync(join(PROJECT, "biome.json"), JSON.stringify({ files: { ignoreUnknown: true } }));
 
-	// Populate the project so the artifact-graph build (structure phase) has
-	// real work to do on the first in-tree edit.
-	for (let i = 0; i < PROJECT_FILE_COUNT; i++) {
-		writeFileSync(
-			join(PROJECT, "src", `mod${i}.ts`),
-			`export const value${i}: number = ${i};\n`,
-		);
-	}
+	// Make structure execution observable without timing it. The glossary rule
+	// reads every changed file and emits a fully deterministic result when it
+	// finds this declared deprecated sentinel. Every in-tree and out-of-tree
+	// target contains it, so presence proves execution and absence proves the
+	// out-of-tree gate skipped the structure branch.
+	writeFileSync(
+		join(PROJECT, "interlinked", "structure.json"),
+		JSON.stringify({
+			version: 1,
+			mode: "standard",
+			artifacts: { glossary: "artifacts/glossary.json" },
+		}),
+	);
+	writeFileSync(
+		join(PROJECT, "interlinked", "artifacts", "glossary.json"),
+		JSON.stringify({
+			version: 1,
+			terms: [
+				{
+					id: "preferred-structure-term",
+					canonical: "preferred_structure_term",
+					aliases: [],
+					deprecated: [STRUCTURE_SENTINEL],
+					docs: [],
+				},
+			],
+		}),
+	);
+
 	// In-tree edit targets.
-	writeFileSync(join(PROJECT, "src", "thing.ts"), "export const x: number = 1;\n");
-	writeFileSync(join(PROJECT, "src", "nested", "deep.ts"), "export const z: number = 9;\n");
+	writeFileSync(
+		join(PROJECT, "src", "thing.ts"),
+		structureSentinelSource("export const x: number = 1;"),
+	);
+	writeFileSync(
+		join(PROJECT, "src", "nested", "deep.ts"),
+		structureSentinelSource("export const z: number = 9;"),
+	);
 	// Out-of-tree edit targets: a sibling tree and a fake `~/.claude/...` path.
-	writeFileSync(join(OUTSIDE, "foreign.ts"), "export const a: number = 1;\n");
-	writeFileSync(join(FAKE_HOME, ".claude", "hooks", "hook.ts"), "export const b: number = 2;\n");
+	writeFileSync(
+		join(OUTSIDE, "foreign.ts"),
+		structureSentinelSource("export const a: number = 1;"),
+	);
+	writeFileSync(
+		join(FAKE_HOME, ".claude", "hooks", "hook.ts"),
+		structureSentinelSource("export const b: number = 2;"),
+	);
 
 	server = spawn(
 		TSX_BIN,
@@ -282,15 +266,6 @@ afterAll(() => {
 // `write.test.ts` sets a 60s override for the same reason — real subprocess work
 // does not fit the default.
 describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
-	// This case runs FIRST and deliberately: it is the only in-tree edit that
-	// hits a COLD artifact graph (`ctx.structureGraph` starts null), so its own
-	// `scored_suggestions` ms is the real-work CONTROL the skip cases below
-	// compare themselves against (see the STRUCTURE_SKIP_* constants and
-	// `expectStructurePhaseSkipped`). Once this test's graph build completes,
-	// later in-tree edits hit a WARM cache and cost ~1ms — no longer
-	// distinguishable from a skip on timing alone, which is exactly why this
-	// case must be the one to run first and why the others don't attempt a
-	// timing assertion of their own.
 	it("still runs subprocess + structure analysis for an in-tree edit", async () => {
 		const decision = await sendEvent(
 			editEvent(join(PROJECT, "src", "thing.ts"), "otg-in-abs"),
@@ -302,13 +277,11 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 		expect(decision.tool_breakdown?.some((t) => t.tool === "biome")).toBe(true);
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(true);
 
-		// The structure phase did real work — the artifact-graph build over the
-		// project tree costs measurably more than a skipped (out-of-tree) phase.
-		// This measurement IS the control the skip assertions below compare
-		// themselves against.
-		const controlMs = decision.phase_breakdown?.scored_suggestions ?? 0;
-		recordStructureControl(controlMs);
-		expect(controlMs).toBeGreaterThan(STRUCTURE_SKIP_FLOOR_MS);
+		// Structure analysis ran: the declared glossary sentinel in the edited
+		// file produced a deterministic structure result. This is independent of
+		// whether the graph build takes 1ms or 100ms.
+		expect(decision.checks_ran).toContain("structure");
+		expect(hasStructureSentinelFinding(decision)).toBe(true);
 
 		// Marks present here too (the in-tree path also goes through them).
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
@@ -326,10 +299,11 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 		expect(decision.tool_breakdown ?? null).toBeNull();
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
 
-		// Structure phase did effectively no work — the artifact-graph build
-		// was skipped, so the phase records near-zero (ratio-checked against
-		// the in-tree control above; see STRUCTURE_SKIP_* for why).
-		expectStructurePhaseSkipped(decision);
+		// The file contains the same glossary sentinel as the in-tree control.
+		// No structure result therefore proves the out-of-tree gate skipped the
+		// structure branch, rather than merely completing it quickly.
+		expect(decision.checks_ran ?? []).not.toContain("structure");
+		expect(hasStructureSentinelFinding(decision)).toBe(false);
 
 		// The phase marks still fire (skip the work, not the marks).
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
@@ -346,7 +320,8 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 
 		expect(decision.tool_breakdown ?? null).toBeNull();
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
-		expectStructurePhaseSkipped(decision);
+		expect(decision.checks_ran ?? []).not.toContain("structure");
+		expect(hasStructureSentinelFinding(decision)).toBe(false);
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
 		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
 	});
@@ -355,13 +330,17 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 		// `PROJECT/../escape.ts` resolves OUTSIDE PROJECT — confirms the guard
 		// normalizes paths (`resolve`) rather than matching on a literal prefix.
 		const escapePath = join(PROJECT, "..", "escape.ts");
-		writeFileSync(escapePath, "export const c: number = 3;\n");
+		writeFileSync(
+			escapePath,
+			structureSentinelSource("export const c: number = 3;"),
+		);
 
 		const decision = await sendEvent(editEvent(escapePath, "otg-out-traversal"));
 
 		expect(decision.tool_breakdown ?? null).toBeNull();
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(false);
-		expectStructurePhaseSkipped(decision);
+		expect(decision.checks_ran ?? []).not.toContain("structure");
+		expect(hasStructureSentinelFinding(decision)).toBe(false);
 		expect(hasPhase(decision, "project_wide_sweep")).toBe(true);
 		expect(hasPhase(decision, "scored_suggestions")).toBe(true);
 	});
@@ -374,6 +353,7 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 		expect(decision.tool_breakdown).toBeDefined();
 		expect(decision.tool_breakdown?.some((t) => t.tool === "biome")).toBe(true);
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(true);
+		expect(hasStructureSentinelFinding(decision)).toBe(true);
 	});
 
 	it("still runs subprocess analysis for an in-tree edit given as a relative path", async () => {
@@ -384,6 +364,7 @@ describe("out-of-tree PostToolUse guard", { timeout: 400_000 }, () => {
 		expect(decision.tool_breakdown).toBeDefined();
 		expect(decision.tool_breakdown?.some((t) => t.tool === "biome")).toBe(true);
 		expect(hasPhase(decision, "inline_biome_lint")).toBe(true);
+		expect(hasStructureSentinelFinding(decision)).toBe(true);
 	});
 
 	it("never crashes the PostToolUse pipeline for out-of-tree edits", async () => {

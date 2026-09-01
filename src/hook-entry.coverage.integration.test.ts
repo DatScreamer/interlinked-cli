@@ -1014,8 +1014,7 @@ interface DirectRunOptions {
 	 *  error-listener resolve path in readStdinJson. */
 	emitStdinError?: boolean;
 	/** Make the FIRST process.exit() call throw (later calls no-op). Used to
-	 *  reject mainFromStdin so the module IIFE's `.catch` (the "hook failed
-	 *  open" path) runs. */
+	 *  reject mainFromStdin so the module IIFE's runtime-failure catch runs. */
 	failFirstExit?: boolean;
 }
 
@@ -1065,7 +1064,7 @@ async function runDirectRunInProcess(
 		// calls process.exit() as its very last statement, so a no-op lets it
 		// resolve cleanly. The `failFirstExit` path deliberately throws on the
 		// first call to reject mainFromStdin and exercise the IIFE's `.catch`
-		// (which writes "hook failed open" then exits again — the second call
+		// (which writes "hook runtime failed" then exits again — the second call
 		// no-ops). The `as never` cast keeps the Node signature.
 		let exitCalls = 0;
 		(process as { exit: (code?: number) => never }).exit = ((code?: number) => {
@@ -1221,9 +1220,9 @@ describe("hook-entry as a direct-run import (in-process coverage)", () => {
 		expect(cap.exitCode).toBeUndefined();
 	});
 
-	it("runs the IIFE 'hook failed open' catch when mainFromStdin rejects", async () => {
+	it("makes the direct-run IIFE fail nonzero when mainFromStdin rejects", async () => {
 		// Forcing the first process.exit() to throw rejects mainFromStdin's
-		// promise, so the module IIFE's `.catch` writes the fail-open notice and
+		// promise, so the module IIFE's `.catch` writes the runtime-failure notice and
 		// exits again (the second call no-ops).
 		const payload = JSON.stringify({
 			session_id: "inproc-fail",
@@ -1236,9 +1235,10 @@ describe("hook-entry as a direct-run import (in-process coverage)", () => {
 			{},
 			{ stdinData: payload, failFirstExit: true },
 		);
-		expect(cap.stderr).toContain("hook failed open");
+		expect(cap.stderr).toContain("hook runtime failed");
 		expect(cap.stderr).toContain("synthetic first-exit failure");
-		// The catch handler calls process.exit(0) after logging.
-		expect(cap.exitCode).toBe(0);
+		// The outer shell wrapper translates this nonzero into the event's
+		// fail-closed or warn-open fallback instead of accepting a false allow.
+		expect(cap.exitCode).toBe(1);
 	});
 });

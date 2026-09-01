@@ -36,6 +36,11 @@ vi.mock("node:child_process", () => ({
 	spawn: mocks.spawn,
 }));
 
+vi.mock("../harness/daemon-process-identity.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../harness/daemon-process-identity.js")>();
+	return { ...actual, readHarnessProcessIdentity: vi.fn((_cwd: string, pid: number) => `id:${pid}`) };
+});
+
 vi.mock("node:fs", () => {
 	const enoent = (p: string): NodeJS.ErrnoException => {
 		const err = new Error(`ENOENT: no such file or directory, '${p}'`) as NodeJS.ErrnoException;
@@ -800,7 +805,7 @@ describe("harness-process — reapOrphanHarnesses", () => {
 				{
 					pid: EQ,
 					ppid: 1,
-					cmd: `node /h/interlinked-cli/dist/harness/server.js --verbose --cwd=${CWD}`,
+					cmd: `node /h/interlinked-cli/dist/harness/server.js --cwd=${CWD}`,
 				},
 			]);
 		});
@@ -1130,7 +1135,8 @@ describe("harness-process — ensureDistFresh", () => {
 	// Layout: cwd-relative dist candidate (#4) is the easiest to control because
 	// it is rooted at process.cwd() (= /repo) rather than import.meta.dirname.
 	const DIST = "/repo/dist/harness/server.js";
-	const SRC_SERVER = "/repo/src/harness/server.ts";
+	const STALE = { stale: true, newestSrcMs: 9_000, buildMs: 1_000 };
+	const FRESH = { stale: false, newestSrcMs: 1_000, buildMs: 9_000 };
 
 	it("no-ops when no dist server can be resolved", () => {
 		// Nothing staged → getHarnessServerPath() === "" → early return.
@@ -1138,39 +1144,34 @@ describe("harness-process — ensureDistFresh", () => {
 		expect(mocks.execSync).not.toHaveBeenCalled();
 	});
 
-	it("no-ops when the matching src/harness/server.ts is absent", () => {
+	it("no-ops when the matching source tree is absent", () => {
 		setFile(DIST, "compiled", 1000);
-		// No SRC_SERVER → early return before any mtime work.
-		ensureDistFresh();
+		ensureDistFresh({ readStaleness: () => null });
 		expect(mocks.execSync).not.toHaveBeenCalled();
 	});
 
-	it("does not rebuild when dist is newer than every src dir and the src server", () => {
+	it("does not rebuild when the recursive detector reports fresh", () => {
 		setFile(DIST, "compiled", 5000);
-		setFile(SRC_SERVER, "source", 1000);
-		setFile("/repo/src/harness", "", 1000);
-		setFile("/repo/src/lib", "", 1000);
-		setFile("/repo/src/commands", "", 1000);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		try {
-			ensureDistFresh();
+			ensureDistFresh({ readStaleness: () => FRESH });
 			expect(mocks.execSync).not.toHaveBeenCalled();
 		} finally {
 			logSpy.mockRestore();
 		}
 	});
 
-	it("rebuilds when a src dir is newer than dist (build succeeds)", () => {
+	it("rebuilds when recursive source inspection reports stale", () => {
 		setFile(DIST, "compiled", 1000);
-		setFile(SRC_SERVER, "source", 500);
-		setFile("/repo/src/harness", "", 9000); // newer than dist → stale
 		const logs: string[] = [];
 		const logSpy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
 			logs.push(a.map(String).join(" "));
 		});
 		mocks.execSync.mockReturnValue("");
 		try {
-			ensureDistFresh();
+			ensureDistFresh({
+				readStaleness: vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH),
+			});
 			const buildCall = mocks.execSync.mock.calls.find((args) =>
 				String(args[0]).includes("npm run build"),
 			);
@@ -1181,54 +1182,40 @@ describe("harness-process — ensureDistFresh", () => {
 		}
 	});
 
-	it("rebuilds when only the src server file is newer than dist", () => {
+	it("suppresses rebuild progress in quiet mode", () => {
 		setFile(DIST, "compiled", 1000);
-		setFile(SRC_SERVER, "source", 9000); // src server newer, no src dirs staged
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-		mocks.execSync.mockReturnValue("");
-		try {
-			ensureDistFresh();
-			const buildCall = mocks.execSync.mock.calls.find((args) =>
-				String(args[0]).includes("npm run build"),
-			);
-			expect(buildCall).toBeDefined();
-		} finally {
-			logSpy.mockRestore();
-		}
-	});
-
-	it("reports a build failure without throwing", () => {
-		setFile(DIST, "compiled", 1000);
-		setFile(SRC_SERVER, "source", 9000);
 		const logs: string[] = [];
 		const logSpy = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
 			logs.push(a.map(String).join(" "));
 		});
-		mocks.execSync.mockImplementation((cmd: string) => {
-			if (String(cmd).includes("npm run build")) throw new Error("tsc failed");
-			return "";
-		});
+		mocks.execSync.mockReturnValue("");
 		try {
-			expect(() => ensureDistFresh()).not.toThrow();
-			expect(logs.join("\n")).toMatch(/Build failed/);
+			ensureDistFresh({
+				quiet: true,
+				readStaleness: vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH),
+			});
+			const buildCall = mocks.execSync.mock.calls.find((args) =>
+				String(args[0]).includes("npm run build"),
+			);
+			expect(buildCall).toBeDefined();
+			expect(logs).toEqual([]);
 		} finally {
 			logSpy.mockRestore();
 		}
 	});
 
-	it("swallows an fs error during the staleness probe", async () => {
+	it("throws on build failure instead of launching stale dist", () => {
 		setFile(DIST, "compiled", 1000);
-		setFile(SRC_SERVER, "source", 1000);
-		const fs = await import("node:fs");
-		// statSync throws after the existence checks pass → outer catch.
-		const statSpy = vi.spyOn(fs, "statSync").mockImplementation(() => {
-			throw new Error("EIO");
+		mocks.execSync.mockImplementation((cmd: string) => {
+			if (String(cmd).includes("npm run build")) throw new Error("tsc failed");
+			return "";
 		});
-		try {
-			expect(() => ensureDistFresh()).not.toThrow();
-			expect(mocks.execSync).not.toHaveBeenCalled();
-		} finally {
-			statSpy.mockRestore();
-		}
+		expect(() => ensureDistFresh({ readStaleness: () => STALE })).toThrow("tsc failed");
+	});
+
+	it("throws if the build exits cleanly without refreshing dist", () => {
+		setFile(DIST, "compiled", 1000);
+		mocks.execSync.mockReturnValue("");
+		expect(() => ensureDistFresh({ readStaleness: () => STALE })).toThrow("dist is still stale");
 	});
 });

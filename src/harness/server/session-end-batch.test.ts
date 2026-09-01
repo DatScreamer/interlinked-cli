@@ -135,6 +135,33 @@ describe("runSessionEndJobs", () => {
 		expect(commands).toContain("coverage check --update-baseline");
 	});
 
+	it("keeps each heavy job single-flight until its detached child exits", () => {
+		const activeJobs = new Set<string>();
+		const exits: Array<() => void> = [];
+		let spawnCount = 0;
+		// SAFETY: the double implements the event/unref surface used by the
+		// production single-flight tracker; exit is driven explicitly below.
+		const spawn = (() => {
+			spawnCount += 1;
+			return {
+				on(event: string, cb: () => void) {
+					if (event === "exit") exits.push(cb);
+				},
+				unref() {},
+			};
+		}) as unknown as SpawnFn;
+		const deps = { spawn, cliEntry: "/repo/dist/index.js", execPath: "/node", activeJobs };
+
+		runSessionEndJobs(makeCtx(), activePlan, deps);
+		runSessionEndJobs(makeCtx(), activePlan, deps);
+		expect(spawnCount).toBe(2);
+		expect(activeJobs).toEqual(new Set(["recurrence-scan", "coverage-ratchet"]));
+
+		exits[0]?.();
+		runSessionEndJobs(makeCtx(), activePlan, deps);
+		expect(spawnCount).toBe(3);
+	});
+
 	it("does NOT spawn when the governor defers (busy machine)", () => {
 		let spawned = false;
 		const spawn = (() => {

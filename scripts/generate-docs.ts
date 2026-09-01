@@ -35,7 +35,7 @@ function generateGuardRules(): string {
 		"# Guard Rules Reference",
 		"",
 		`${rules.length} built-in rules that block or warn on dangerous operations.`,
-		"These evaluate on every PreToolUse event (before tool execution).",
+		"These evaluate on every delivered PreToolUse event (before tool execution).",
 		"",
 	];
 

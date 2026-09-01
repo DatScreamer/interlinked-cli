@@ -22,6 +22,7 @@ import { recordWarningResolutions, recordWarningsIssued } from "../feedback-effe
 import { isInsideRoot } from "../large-file-policy.js";
 import type { ProjectGraph } from "../project-graph.js";
 import { type ToolBreakdownEntry } from "../quality-checks.js";
+import type { ChangeSetExternalBatch } from "../quality-checks/change-set-external.js";
 import { recordHarnessCaught } from "../recurrence.js";
 import { recordImplEdit, recordTestWrite, TEST_FILE_RE } from "../server-tdd-cycle.js";
 import { acknowledgeChecks } from "../session-state.js";
@@ -70,6 +71,12 @@ export interface PerFileCheckCtx {
 	readonly postToolMetrics: ToolBreakdownEntry[];
 	/** Records the wall-clock delta since the previous mark under `name`. */
 	readonly markPhase: (name: string) => void;
+	/** Full request-owned path set. The quality phase uses this to replace N
+	 * external tool loops with one ChangeSet batch while retaining per-file
+	 * inline checks and attribution. */
+	editedFilePaths?: readonly string[];
+	/** Lazily created external batch shared by every path in this request. */
+	externalCheckBatch?: ChangeSetExternalBatch;
 	/** Once-per-event guard: the project-wide sweep fires at most once
 	 *  even when a patch touches many files. */
 	projectWideSweepFired: boolean;

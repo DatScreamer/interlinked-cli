@@ -179,24 +179,13 @@ describe("readActiveHarnessPid", () => {
 // -----------------------------------------------------------------------------
 describe("ensureDistFresh", () => {
 	const DIST_SERVER = join(FAKE_CWD, "dist", "harness", "server.js");
-	const SRC_ROOT = join(FAKE_CWD, "src");
-	const SRC_SERVER = join(SRC_ROOT, "harness", "server.ts");
-	const SRC_HARNESS_DIR = join(SRC_ROOT, "harness");
-	const SRC_LIB_DIR = join(SRC_ROOT, "lib");
-	const SRC_COMMANDS_DIR = join(SRC_ROOT, "commands");
-	const BUILD_CWD = dirname(SRC_ROOT);
+	const BUILD_CWD = dirname(dirname(dirname(DIST_SERVER)));
 	const BUILD_ARGS: [string, { cwd: string; stdio: string[]; timeout: number }] = [
 		"npm run build",
-		{ cwd: BUILD_CWD, stdio: ["ignore", "pipe", "pipe"], timeout: 30000 },
+		{ cwd: BUILD_CWD, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 },
 	];
-
-	function mockStat(mtimes: Record<string, number>): void {
-		mocks.statSync.mockImplementation((p: unknown) => {
-			const key = String(p);
-			if (!(key in mtimes)) throw new Error(`unexpected statSync path in test: ${key}`);
-			return { mtimeMs: mtimes[key], size: 0 };
-		});
-	}
+	const STALE = { stale: true, newestSrcMs: 2, buildMs: 1 };
+	const FRESH = { stale: false, newestSrcMs: 1, buildMs: 2 };
 
 	// test-contract: invariant — when no candidate dist/ binary exists at
 	// all, the function must return immediately after the getHarnessServerPath
@@ -215,67 +204,52 @@ describe("ensureDistFresh", () => {
 		expect(console.log).not.toHaveBeenCalled();
 	});
 
-	// test-contract: invariant — staleness detected via src/lib must trigger
-	// the exact build invocation (command, cwd, stdio, timeout).
-	it("P2: rebuilds when src/lib is newer than dist, with the exact build invocation", () => {
-		mocks.existsSync.mockImplementation(
-			(p: unknown) =>
-				p === DIST_SERVER || p === SRC_SERVER || p === SRC_HARNESS_DIR || p === SRC_LIB_DIR,
-		);
-		mockStat({ [DIST_SERVER]: 100, [SRC_HARNESS_DIR]: 50, [SRC_LIB_DIR]: 200 });
-		ensureDistFresh();
+	// test-contract: invariant — a recursive stale verdict must trigger the
+	// exact build invocation and a second verification pass.
+	it("P2: rebuilds a stale checkout with the exact build invocation", () => {
+		mocks.existsSync.mockImplementation((p: unknown) => p === DIST_SERVER);
+		const readStaleness = vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH);
+		ensureDistFresh({ readStaleness });
 		expect(mocks.execSync).toHaveBeenCalledTimes(1);
 		expect(mocks.execSync).toHaveBeenCalledWith(...BUILD_ARGS);
+		expect(readStaleness).toHaveBeenNthCalledWith(1, FAKE_CWD);
+		expect(readStaleness).toHaveBeenNthCalledWith(2, FAKE_CWD);
 		// Observable post-state: the success message is printed once the
 		// (mocked, non-throwing) build call returns.
 		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Rebuilt dist/"));
 	});
 
-	// test-contract: invariant — staleness detected via src/commands (with
-	// harness and lib both fresh) must also trigger the build.
-	it("P3: rebuilds when src/commands is newer than dist, harness and lib unchanged", () => {
-		mocks.existsSync.mockImplementation(
-			(p: unknown) =>
-				p === DIST_SERVER ||
-				p === SRC_SERVER ||
-				p === SRC_HARNESS_DIR ||
-				p === SRC_LIB_DIR ||
-				p === SRC_COMMANDS_DIR,
-		);
-		mockStat({
-			[DIST_SERVER]: 100,
-			[SRC_HARNESS_DIR]: 50,
-			[SRC_LIB_DIR]: 60,
-			[SRC_COMMANDS_DIR]: 300,
-			[SRC_SERVER]: 90,
+	// test-contract: boundary — JSON callers suppress progress so stdout stays
+	// one valid JSON document while retaining the same build behavior.
+	it("P3: quiet mode rebuilds without progress output", () => {
+		mocks.existsSync.mockImplementation((p: unknown) => p === DIST_SERVER);
+		ensureDistFresh({
+			quiet: true,
+			readStaleness: vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH),
 		});
-		ensureDistFresh();
 		expect(mocks.execSync).toHaveBeenCalledTimes(1);
 		expect(mocks.execSync).toHaveBeenCalledWith(...BUILD_ARGS);
-		// Observable post-state: the success message is printed once the
-		// (mocked, non-throwing) build call returns.
-		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Rebuilt dist/"));
+		expect(console.log).not.toHaveBeenCalled();
 	});
 
-	// test-contract: boundary — an src/harness mtime exactly equal to the
-	// dist mtime must NOT count as stale (strict `>`, not `>=`).
-	it("P4: does not rebuild when src/harness mtime exactly equals dist mtime", () => {
-		mocks.existsSync.mockImplementation(
-			(p: unknown) => p === DIST_SERVER || p === SRC_SERVER || p === SRC_HARNESS_DIR,
+	// test-contract: boundary — a null result means an installed package with
+	// no source tree, not a build failure.
+	it("P4: installed packages without src remain a no-op", () => {
+		mocks.existsSync.mockImplementation((p: unknown) => p === DIST_SERVER);
+		ensureDistFresh({ readStaleness: () => null });
+		expect(mocks.execSync).not.toHaveBeenCalled();
+	});
+
+	// test-contract: failure — a stale checkout may never silently launch the
+	// previous dist generation when the build fails.
+	it("P5: build failure is terminal", () => {
+		mocks.existsSync.mockImplementation((p: unknown) => p === DIST_SERVER);
+		mocks.execSync.mockImplementation(() => {
+			throw new Error("compiler failed");
+		});
+		expect(() => ensureDistFresh({ readStaleness: () => STALE })).toThrow(
+			"refusing to start the harness with stale code",
 		);
-		mockStat({ [DIST_SERVER]: 100, [SRC_HARNESS_DIR]: 100, [SRC_SERVER]: 100 });
-		ensureDistFresh();
-		expect(mocks.execSync).not.toHaveBeenCalled();
-	});
-
-	// test-contract: boundary — an src/harness/server.ts mtime exactly equal
-	// to the dist mtime must NOT count as stale (strict `>`, not `>=`); no
-	// srcDirs entry exists so this isolates the final post-loop comparison.
-	it("P5: does not rebuild when src/harness/server.ts mtime exactly equals dist mtime", () => {
-		mocks.existsSync.mockImplementation((p: unknown) => p === DIST_SERVER || p === SRC_SERVER);
-		mockStat({ [DIST_SERVER]: 100, [SRC_SERVER]: 100 });
-		ensureDistFresh();
-		expect(mocks.execSync).not.toHaveBeenCalled();
 	});
 });
 

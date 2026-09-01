@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,14 +63,30 @@ function startLegacyHarnessServer(
 	decision: HarnessDecision,
 	received: HarnessEvent[],
 ): Promise<void> {
+	return startLegacyHarnessHandler(socketPath, (event, reply) => {
+		received.push(event);
+		reply(decision);
+	});
+}
+
+function startLegacyHarnessHandler(
+	socketPath: string,
+	handle: (event: HarnessEvent, reply: (decision: HarnessDecision) => void) => void,
+): Promise<void> {
 	legacyServer = createServer((socket: Socket) => {
 		let buffer = "";
+		socket.on("error", () => {
+			// A deliberately timed-out hook destroys its client socket before the
+			// simulated daemon publishes its late result.
+		});
 		socket.on("data", (chunk) => {
 			buffer += chunk.toString("utf-8");
 			const idx = buffer.indexOf("\n");
 			if (idx === -1) return;
-			received.push(JSON.parse(buffer.slice(0, idx)) as HarnessEvent);
-			socket.write(`${JSON.stringify(decision)}\n`);
+			const event = JSON.parse(buffer.slice(0, idx)) as HarnessEvent;
+			handle(event, (decision) => {
+				if (!socket.destroyed) socket.end(`${JSON.stringify(decision)}\n`);
+			});
 		});
 	});
 	return new Promise((resolve, reject) => {
@@ -247,6 +263,193 @@ describe("runHookEntry — end-to-end with real daemon", () => {
 		});
 		expect("id" in (received[0] ?? {})).toBe(false);
 		expect("method" in (received[0] ?? {})).toBe(false);
+	});
+
+	it("forwards a PostTool delivery token and acknowledges the synchronous ready record", async () => {
+		const socketPath = join(tmp, ".interlinked", "harness.sock");
+		const spoolDir = join(tmp, ".interlinked", "quality-warning-spool");
+		mkdirSync(spoolDir);
+		let deliveryToken = "";
+		let deliveryPid: number | undefined;
+		await startLegacyHarnessHandler(socketPath, (event, reply) => {
+			if (event.hook_event !== "PostToolUse") {
+				reply({ decision: "allow", warnings: [] });
+				return;
+			}
+			deliveryToken = event.post_delivery_token ?? "";
+			deliveryPid = event.post_delivery_pid;
+			writeFileSync(
+				join(spoolDir, `${deliveryToken}.active.json`),
+				JSON.stringify({
+					version: 1,
+					token: deliveryToken,
+					session_id: "modern-post",
+					started_at: new Date().toISOString(),
+					client_pid: deliveryPid,
+				}),
+			);
+			writeFileSync(
+				join(spoolDir, `${deliveryToken}.ready.json`),
+				JSON.stringify({
+					version: 1,
+					token: deliveryToken,
+					session_id: "modern-post",
+					produced_at: new Date().toISOString(),
+					warnings: ["[interlinked:test] direct warning"],
+				}),
+			);
+			writeFileSync(
+				join(tmp, ".interlinked", "pending-quality-warnings.json"),
+				JSON.stringify(["[interlinked:test] direct warning"]),
+			);
+			reply({ decision: "allow", warnings: ["[interlinked:test] direct warning"] });
+		});
+
+		const post = await runHookEntry({
+			nativeEventName: "PostToolUse",
+			nativeJson: {
+				session_id: "modern-post",
+				cwd: tmp,
+				tool_name: "Write",
+				tool_input: { file_path: "src/a.ts", content: "export const a = 1;" },
+				tool_response: {},
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath,
+		});
+
+		expect(deliveryToken).toMatch(/^[a-zA-Z0-9_-]{16,128}$/);
+		expect(deliveryPid).toBe(process.pid);
+		expect(post.stdout).toContain("direct warning");
+		expect(existsSync(join(spoolDir, `${deliveryToken}.ready.json`))).toBe(false);
+		expect(existsSync(join(spoolDir, `${deliveryToken}.active.json`))).toBe(false);
+		expect(existsSync(join(tmp, ".interlinked", "pending-quality-warnings.json"))).toBe(false);
+
+		const pre = await runHookEntry({
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "modern-post",
+				cwd: tmp,
+				tool_name: "Read",
+				tool_input: { file_path: "src/a.ts" },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath,
+		});
+		expect(pre.stdout ?? "").not.toContain("direct warning");
+	});
+
+	it("delivers a timed-out PostTool warning exactly once through the modern PreTool runtime", async () => {
+		const socketPath = join(tmp, ".interlinked", "harness.sock");
+		const spoolDir = join(tmp, ".interlinked", "quality-warning-spool");
+		mkdirSync(spoolDir);
+		let captureLateRequest!: (request: {
+			token: string;
+			reply: (decision: HarnessDecision) => void;
+		}) => void;
+		const lateRequest = new Promise<{ token: string; reply: (decision: HarnessDecision) => void }>((resolve) => {
+			captureLateRequest = resolve;
+		});
+		await startLegacyHarnessHandler(socketPath, (event, reply) => {
+			if (event.hook_event !== "PostToolUse") {
+				reply({ decision: "allow", warnings: [] });
+				return;
+			}
+			captureLateRequest({ token: event.post_delivery_token ?? "", reply });
+		});
+
+		const post = await runHookEntry({
+			nativeEventName: "PostToolUse",
+			nativeJson: {
+				session_id: "late-modern",
+				cwd: tmp,
+				tool_name: "Bash",
+				tool_input: { command: "echo ok" },
+				tool_response: { exit_code: 0 },
+			},
+			env: {},
+			runner: "claude-code",
+			cwd: tmp,
+			socketPath,
+			timeout_ms: 5,
+		});
+		expect(post.fell_back).toBe(true);
+		expect(post.stdout ?? "").not.toContain("late warning");
+		const late = await lateRequest;
+		expect(late.token).not.toBe("");
+		writeFileSync(
+			join(spoolDir, `${late.token}.ready.json`),
+			JSON.stringify({
+				version: 1,
+				token: late.token,
+				session_id: "late-modern",
+				produced_at: new Date().toISOString(),
+				warnings: ["[interlinked:test] late warning"],
+			}),
+		);
+		late.reply({ decision: "allow", warnings: ["[interlinked:test] late warning"] });
+
+		const preOptions = {
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "late-modern",
+				cwd: tmp,
+				tool_name: "Read",
+				tool_input: { file_path: "src/a.ts" },
+			},
+			env: {},
+			runner: "claude-code" as const,
+			cwd: tmp,
+			socketPath,
+		};
+		const first = await vi.waitFor(
+			async () => {
+				const candidate = await runHookEntry(preOptions);
+				expect(candidate.stdout ?? "").toContain("late warning");
+				return candidate;
+			},
+			{ timeout: 1_000, interval: 10 },
+		);
+		const second = await runHookEntry(preOptions);
+		expect(first.stdout ?? "").toContain("late warning");
+		expect(second.stdout ?? "").not.toContain("late warning");
+	});
+
+	it("drains a completed late warning even when the daemon socket has disappeared", async () => {
+		const spoolDir = join(tmp, ".interlinked", "quality-warning-spool");
+		mkdirSync(spoolDir);
+		writeFileSync(
+			join(spoolDir, "daemon-gone-token.ready.json"),
+			JSON.stringify({
+				version: 1,
+				token: "daemon-gone-token",
+				session_id: "daemon-gone",
+				produced_at: new Date(Date.now() - 1_000).toISOString(),
+				warnings: ["[interlinked:test] survived daemon exit"],
+			}),
+		);
+		const options = {
+			nativeEventName: "PreToolUse",
+			nativeJson: {
+				session_id: "daemon-gone",
+				cwd: tmp,
+				tool_name: "Read",
+				tool_input: { file_path: "src/a.ts" },
+			},
+			env: { INTERLINKED_NO_SELF_HEAL: "1" },
+			runner: "claude-code" as const,
+			cwd: tmp,
+		};
+
+		const first = await runHookEntry(options);
+		const second = await runHookEntry(options);
+		expect(first.fell_back).toBe(true);
+		expect(first.stdout).toContain("survived daemon exit");
+		expect(second.stdout ?? "").not.toContain("survived daemon exit");
 	});
 
 	it("honors INTERLINKED_HOOK_PROTOCOL=framed even when the socket is named harness.sock", async () => {

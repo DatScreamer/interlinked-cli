@@ -21,16 +21,31 @@ import type { JsonObject } from "./json-types.js";
 // (quotes, escapes, comments-outside-quotes, `;`/`&&`/`||`/`|`/`&`/parens
 // separators, leading VAR= assignments, keywords, `exec`) and recognizes
 // exactly:
-//   - `node <script whose exact basename is hook-entry.js>`;
-//   - `node <script whose exact basename is interlinked-activity.mjs>`;
-//   - an `interlinked-hook` EXECUTABLE (bare or by path basename);
+//   - `node <script whose exact basename is hook-entry.js> --runner <known>
+//     --event <present>`;
+//   - an `interlinked-hook` executable/script with that same adapter argument
+//     shape;
+//   - `node .interlinked/hooks/interlinked-activity.mjs` (or that exact
+//     repo-relative suffix beneath an absolute path);
 //   - the exact legacy generated variable-assignment form
 //     (`HOOK_SCRIPT_REL=".interlinked/hooks/interlinked-activity.mjs"` in one
-//     segment, `node …$HOOK_SCRIPT_REL…` in another).
+//     segment, `HOOK_DIR="$PWD"` in another, and
+//     `node "$HOOK_DIR/$HOOK_SCRIPT_REL"` in another).
 // Callers hand it COMMAND STRINGS, never serialized JSON — document scanning
 // goes through {@link documentContainsInterlinkedHook}.
 const LEGACY_MJS_PATH = ".interlinked/hooks/interlinked-activity.mjs";
 const LEGACY_ASSIGNMENT = `HOOK_SCRIPT_REL="${LEGACY_MJS_PATH}"`;
+const LEGACY_DIR_ASSIGNMENT = 'HOOK_DIR="$PWD"';
+const LEGACY_VARIABLE_SCRIPT = "$HOOK_DIR/$HOOK_SCRIPT_REL";
+const REGISTERED_RUNNERS = new Set([
+	"claude-code",
+	"copilot-cli",
+	"cursor",
+	"gemini-cli",
+	"codex",
+	"opencode",
+	"pi",
+]);
 const SHELL_KEYWORDS = new Set(["if", "then", "else", "elif", "fi", "while", "until", "do", "done", "!", "{", "}"]);
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
@@ -108,28 +123,113 @@ function stripQuotes(word: string): string {
 	return quoted ? word.slice(1, -1) : word;
 }
 
+interface ParsedInvocation {
+	executable: string;
+	script: string | null;
+	args: string[];
+}
+
 /** The executable word and (for node) its script word of ONE segment, with
  *  keywords, `VAR=` assignments, `exec`, and node CLI options skipped. */
-function invocationOf(segment: string): { executable: string; script: string | null } | null {
+function invocationOf(segment: string): ParsedInvocation | null {
 	const words = shellWords(stripShellComment(segment));
 	let i = 0;
 	while (i < words.length && isSkippableLeadingWord(words[i] ?? "")) i++;
 	const executable = words[i];
 	if (executable === undefined) return null;
-	return { executable: stripQuotes(executable), script: nodeScriptWord(words, i) };
+	return parsedInvocation(words, i, stripQuotes(executable));
+}
+
+function parsedInvocation(
+	words: string[],
+	executableIndex: number,
+	executable: string,
+): ParsedInvocation {
+	if (executable === "node") return parsedNodeInvocation(words, executableIndex);
+	return {
+		executable,
+		script: null,
+		args: words.slice(executableIndex + 1).map(stripQuotes),
+	};
+}
+
+function parsedNodeInvocation(words: string[], executableIndex: number): ParsedInvocation {
+	const scriptIndex = nodeScriptIndex(words, executableIndex);
+	if (scriptIndex === null) return { executable: "node", script: null, args: [] };
+	return {
+		executable: "node",
+		script: stripQuotes(words[scriptIndex] ?? ""),
+		args: words.slice(scriptIndex + 1).map(stripQuotes),
+	};
 }
 
 function isSkippableLeadingWord(word: string): boolean {
 	return SHELL_KEYWORDS.has(word) || ASSIGNMENT_RE.test(word) || word === "exec";
 }
 
-/** For a `node` invocation, the script word (first non-option argument). */
-function nodeScriptWord(words: string[], executableIndex: number): string | null {
+/** For a `node` invocation, the script word.
+ *
+ * Interlinked's generated commands put the script immediately after `node`.
+ * Treat any Node option as ambiguous instead of guessing whether it consumes
+ * the following word: `node --require /tmp/hook-entry.js app.js` executes
+ * `app.js`, but a naive "first non-option" scan claims the preload argument as
+ * our entry point and lets purge/uninstall delete a user's hook. The standard
+ * `--` option terminator is unambiguous and remains supported. */
+function nodeScriptIndex(words: string[], executableIndex: number): number | null {
 	if (stripQuotes(words[executableIndex] ?? "") !== "node") return null;
 	let j = executableIndex + 1;
-	while (j < words.length && (words[j] ?? "").startsWith("-")) j++;
-	const script = words[j];
-	return script === undefined ? null : stripQuotes(script);
+	const firstArgument = stripQuotes(words[j] ?? "");
+	if (firstArgument === "--") j++;
+	else if (firstArgument.startsWith("-")) return null;
+	return words[j] === undefined ? null : j;
+}
+
+/** Read one long option exactly once. Both `--name value` and
+ *  `--name=value` are accepted; missing, option-shaped, or duplicate values
+ *  are ambiguous and therefore not ownership evidence. */
+function optionValue(args: string[], name: string): string | null {
+	let found: string | null = null;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		const match = optionMatch(args, i, name);
+		if (match === null) continue;
+		if (match.value === null || found !== null) return null;
+		found = match.value;
+		i += match.consumedNext ? 1 : 0;
+	}
+	return found;
+}
+
+function optionMatch(
+	args: string[],
+	index: number,
+	name: string,
+): { value: string | null; consumedNext: boolean } | null {
+	const arg = args[index] ?? "";
+	if (arg === name) {
+		const next = args[index + 1] ?? "";
+		return {
+			value: next.length > 0 && !next.startsWith("-") ? next : null,
+			consumedNext: true,
+		};
+	}
+	if (!arg.startsWith(`${name}=`)) return null;
+	const value = stripQuotes(arg.slice(name.length + 1));
+	return {
+		value: value.length > 0 && !value.startsWith("-") ? value : null,
+		consumedNext: false,
+	};
+}
+
+function isCanonicalAdapterInvocation(invocation: ParsedInvocation): boolean {
+	const runner = optionValue(invocation.args, "--runner");
+	const event = optionValue(invocation.args, "--event");
+	return runner !== null && REGISTERED_RUNNERS.has(runner) && event !== null;
+}
+
+function isRecognizedLegacyScript(script: string, legacyAssigned: boolean): boolean {
+	if (script === LEGACY_MJS_PATH || script.endsWith(`/${LEGACY_MJS_PATH}`)) return true;
+	return legacyAssigned && script === LEGACY_VARIABLE_SCRIPT;
 }
 
 /** One recognized Interlinked invocation, with its identity classified. */
@@ -139,31 +239,41 @@ export interface HookInvocation {
 	kind: "hook-entry" | "legacy-mjs" | "interlinked-hook";
 }
 
-/** Classify ONE segment's invocation as Interlinked-owned, or null. Identity
- *  is EXACT-BASENAME (review 2026-08-31: `endsWith("hook-entry.js")` also
- *  claimed a user's `my-hook-entry.js`, and a claimed entry is a removed
- *  entry on the uninstall path). */
+/** Classify ONE segment's invocation as Interlinked-owned, or null. Adapter
+ *  identity combines an exact basename with canonical runner/event arguments;
+ *  legacy identity uses only the reserved project hook path. */
 function ownedInvocationOf(segment: string, legacyAssigned: boolean): HookInvocation | null {
 	const invocation = invocationOf(segment);
 	if (invocation === null) return null;
 	const kind = ownedInvocationKind(invocation, legacyAssigned);
-	return kind === null ? null : { ...invocation, kind };
+	return kind === null
+		? null
+		: { executable: invocation.executable, script: invocation.script, kind };
 }
 
 function ownedInvocationKind(
-	invocation: { executable: string; script: string | null },
+	invocation: ParsedInvocation,
 	legacyAssigned: boolean,
 ): HookInvocation["kind"] | null {
-	const { executable, script } = invocation;
-	if (script !== null) {
-		const scriptName = basename(script);
-		if (scriptName === "hook-entry.js") return "hook-entry";
-		if (scriptName === "interlinked-activity.mjs") return "legacy-mjs";
-		// The bin is also invocable through node (`node '/…/interlinked-hook' …`).
-		if (scriptName === "interlinked-hook") return "interlinked-hook";
-		if (legacyAssigned && script.includes("$HOOK_SCRIPT_REL")) return "legacy-mjs";
-	}
-	return basename(executable) === "interlinked-hook" ? "interlinked-hook" : null;
+	const scriptKind = ownedScriptKind(invocation, legacyAssigned);
+	if (scriptKind !== null) return scriptKind;
+	return isCanonicalAdapterInvocation(invocation) && basename(invocation.executable) === "interlinked-hook"
+		? "interlinked-hook"
+		: null;
+}
+
+function ownedScriptKind(
+	invocation: ParsedInvocation,
+	legacyAssigned: boolean,
+): HookInvocation["kind"] | null {
+	const script = invocation.script;
+	if (script === null) return null;
+	if (isRecognizedLegacyScript(script, legacyAssigned)) return "legacy-mjs";
+	if (!isCanonicalAdapterInvocation(invocation)) return null;
+	const scriptName = basename(script);
+	if (scriptName === "hook-entry.js") return "hook-entry";
+	// The bin is also invocable through node (`node '/…/interlinked-hook' …`).
+	return scriptName === "interlinked-hook" ? "interlinked-hook" : null;
 }
 
 /** True when `command` (ONE shell command string, never a JSON document) is
@@ -177,9 +287,9 @@ export function isInterlinkedHookCommand(command: string): boolean {
 /** Every Interlinked-owned invocation in ONE shell command string, in order. */
 export function ownedInvocations(command: string): HookInvocation[] {
 	const segments = splitShellSegments(command);
-	const legacyAssigned = segments.some((s) =>
-		stripShellComment(s).trim().startsWith(LEGACY_ASSIGNMENT),
-	);
+	const exactSegments = new Set(segments.map((segment) => stripShellComment(segment).trim()));
+	const legacyAssigned =
+		exactSegments.has(LEGACY_ASSIGNMENT) && exactSegments.has(LEGACY_DIR_ASSIGNMENT);
 	const out: HookInvocation[] = [];
 	for (const segment of segments) {
 		const invocation = ownedInvocationOf(segment, legacyAssigned);
@@ -188,16 +298,16 @@ export function ownedInvocations(command: string): HookInvocation[] {
 	return out;
 }
 
-/** True when the entry INVOKES `binaryPath` — the binary sits in the node
- *  script position or is itself the executable, never merely somewhere in
- *  the entry's text (review 2026-08-30 final pass: a user hook that only
- *  ECHOED the recorded binary path was deleted by a substring fallback). */
+/** True when the entry invokes `binaryPath` with canonical adapter
+ *  runner/event arguments. The binary sits in the node script position or is
+ *  itself the executable, never merely somewhere in the entry's text. */
 export function isHookEntryInvokingBinary(entry: unknown, binaryPath: string): boolean {
 	if (binaryPath.length === 0) return false;
 	return hookEntryCommands(entry).some((command) =>
 		splitShellSegments(command).some((segment) => {
 			const invocation = invocationOf(segment);
 			if (invocation === null) return false;
+			if (!isCanonicalAdapterInvocation(invocation)) return false;
 			return invocation.script === binaryPath || invocation.executable === binaryPath;
 		}),
 	);

@@ -53,6 +53,17 @@ vi.mock("../lib/hooks.js", () => ({
 
 vi.mock("../lib/settings.js", () => ({
 	detectClients: vi.fn(),
+	// Pure id-translation table, not a seam — mocked with the real values so the
+	// dry-run summary resolves the same adapters production does.
+	CLIENT_TO_RUNNER: {
+		claude: "claude-code",
+		copilot: "copilot-cli",
+		gemini: "gemini-cli",
+		codex: "codex",
+		cursor: "cursor",
+		opencode: "opencode",
+		pi: "pi",
+	},
 }));
 
 vi.mock("../lib/skill-installers.js", () => ({
@@ -122,16 +133,13 @@ function logged(spy: ReturnType<typeof vi.spyOn>): string {
 }
 
 let logSpy: ReturnType<typeof vi.spyOn>;
-let exitSpy: ReturnType<typeof vi.spyOn>;
+let errorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-	exitSpy = vi
-		.spyOn(process, "exit")
-		.mockImplementation(((code?: number) => {
-			throw new Error(`process.exit:${code}`);
-		}) as never);
+	errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+	process.exitCode = undefined;
 	vi.spyOn(process, "cwd").mockReturnValue(CWD);
 
 	vi.mocked(isConfigured).mockReturnValue(false);
@@ -158,6 +166,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	process.exitCode = undefined;
 	vi.restoreAllMocks();
 });
 
@@ -239,10 +248,11 @@ describe("maybeMigrateLegacyConfig", () => {
 
 describe("applyOptionFlags — invalid sync mode", () => {
 	it("prefixes the message with 'Error:'", async () => {
-		await expect(enableCommand({ syncMode: "turbo" })).rejects.toThrow("process.exit:1");
+		await enableCommand({ syncMode: "turbo" });
 
-		expect(logged(logSpy)).toContain("Error: Invalid sync mode");
-		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(logged(errorSpy)).toContain("Error: Invalid sync mode");
+		expect(process.exitCode).toBe(1);
+		expect(vi.mocked(writeHookScript)).not.toHaveBeenCalled();
 	});
 });
 
@@ -330,7 +340,7 @@ describe("maybeScaffoldStructure", () => {
 	it("prints the '!' failure marker when scaffolding throws", async () => {
 		vi.mocked(structureInitCommand).mockRejectedValue(new Error("bad mode"));
 
-		await enableCommand({ structure: "weird" });
+		await enableCommand({ structure: "standard" });
 
 		expect(logged(logSpy)).toContain("! Structure scaffolding failed: bad mode");
 	});
@@ -351,7 +361,7 @@ describe("noteUndetectedClients", () => {
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(out).toContain("Not detected: copilot, gemini, codex, cursor");
+		expect(out).toContain("Not detected: copilot, gemini, codex, cursor, opencode, pi");
 	});
 });
 
@@ -375,7 +385,9 @@ describe("printSummary", () => {
 
 		await enableCommand({});
 
-		expect(logged(logSpy)).toContain("--clients claude,copilot,gemini,codex,cursor");
+		expect(logged(logSpy)).toContain(
+			"--clients claude,copilot,gemini,codex,cursor,opencode,pi",
+		);
 	});
 });
 

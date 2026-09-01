@@ -20,6 +20,14 @@
 import { recordDaemonEvent } from "../harness/daemon-ledger.js";
 import type { DaemonLedgerEvent } from "../harness/daemon-ledger.js";
 import {
+	type ProcessIdentityReader,
+	readHarnessProcessIdentity,
+	sameProcessIdentity,
+	stillMatchingIdentities,
+	verifiedProcessIdentities,
+} from "../harness/daemon-process-identity.js";
+import {
+	daemonSocketPaths,
 	type DiscoveredDaemon,
 	discoverDaemons,
 	isDaemonSocketServing,
@@ -31,19 +39,35 @@ import {
 	reapOrphanHarnesses,
 } from "./harness-process.js";
 
-/** Grace period between SIGTERM and the "did it actually stop?" check. */
-const STOP_GRACE_MS = 1_000;
+const STOP_GRACE_MS = 3_000;
+const STOP_KILL_WAIT_MS = 1_000;
+const STOP_POLL_MS = 200;
 
 export interface DaemonControlDeps {
 	discover?: (cwd: string) => DiscoveredDaemon[];
+	/** Enumerated separately from pid files so missing metadata cannot hide a
+	 * serving socket from the reaper's protected set. */
+	socketPaths?: (cwd: string) => string[];
 	/** PIDs of daemons for this repo that no pid file names — the `ps`-derived
 	 *  orphan set. These are exactly the processes `disable` used to miss. */
 	extraPids?: (cwd: string) => number[];
 	probe?: (socketPath: string) => Promise<boolean>;
-	kill?: (pid: number) => void;
+	kill?: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
 	isAlive?: (pid: number) => boolean;
+	/** Stable start-time + argv identity. Null means the PID is not a verified
+	 * Interlinked daemon for this cwd and must never be signaled. */
+	identify?: ProcessIdentityReader;
 	/** Pids that must never be signalled (this process + its ancestor chain). */
 	protectedPids?: () => Set<number>;
+	/** Default true: subtract this process's ancestors from the stop targets.
+	 *  The RESTART path passes false (review 2026-08-29, live-reproduced): an
+	 *  automatic handover spawns `harness restart` FROM the daemon it must
+	 *  replace, so the daemon is the CLI's ancestor — sparing it made every
+	 *  automatic handover a silent no-op ("already running") that the watcher
+	 *  retried forever. Safe to disable here because `targets` only ever holds
+	 *  pid-file/ps-verified harness daemons, never the invoking shell; the CLI
+	 *  process itself stays protected unconditionally. */
+	spareAncestralDaemons?: boolean;
 	recordEvent?: (evt: DaemonLedgerEvent) => void;
 	wait?: (ms: number) => Promise<void>;
 	/** Test seam — the underlying `ps`-driven sweep. Injecting it is what lets a
@@ -57,20 +81,148 @@ function realIsAlive(pid: number): boolean {
 		process.kill(pid, 0);
 		return true;
 	} catch (err) {
+		// SAFETY: Node process.kill failures carry the documented errno `code`.
 		return (err as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
-function realKill(pid: number): void {
+function realKill(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
 	try {
-		process.kill(pid, "SIGTERM");
+		process.kill(pid, signal);
 	} catch {
 		/* intentional: ESRCH (already gone) is the expected happy path */
 	}
 }
 
+interface StopSignalDeps {
+	identify: ProcessIdentityReader;
+	isAlive: (pid: number) => boolean;
+	kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+	wait: (ms: number) => Promise<void>;
+}
+
+async function waitForExit(args: {
+	cwd: string;
+	targets: ReadonlyMap<number, string>;
+	deps: StopSignalDeps;
+	maxMs: number;
+}): Promise<Map<number, string>> {
+	const { cwd, targets, deps, maxMs } = args;
+	const { isAlive, identify, wait } = deps;
+	let remaining = stillMatchingIdentities(cwd, targets, isAlive, identify);
+	let elapsed = 0;
+	while (remaining.size > 0 && elapsed < maxMs) {
+		const delay = Math.min(STOP_POLL_MS, maxMs - elapsed);
+		await wait(delay);
+		elapsed += delay;
+		remaining = stillMatchingIdentities(cwd, remaining, isAlive, identify);
+	}
+	return remaining;
+}
+
+function collectStopCandidates(cwd: string, deps: DaemonControlDeps): Set<number> {
+	const discover = deps.discover ?? discoverDaemons;
+	const extras = deps.extraPids ?? orphanPids;
+	const protectedPids = (deps.protectedPids ?? collectAncestorPids)();
+	const targets = new Set<number>();
+	for (const entry of discover(cwd)) {
+		if (entry.pid !== null && entry.alive) targets.add(entry.pid);
+	}
+	for (const pid of extras(cwd)) targets.add(pid);
+	if (deps.spareAncestralDaemons ?? true) {
+		for (const pid of protectedPids) targets.delete(pid);
+	}
+	targets.delete(process.pid);
+	return targets;
+}
+
+function collectStopTargets(cwd: string, deps: DaemonControlDeps): Map<number, string> {
+	return verifiedProcessIdentities(
+		cwd,
+		collectStopCandidates(cwd, deps),
+		deps.identify ?? readHarnessProcessIdentity,
+	);
+}
+
+function signalMatchingTargets(args: {
+	cwd: string;
+	targets: ReadonlyMap<number, string>;
+	signal: "SIGTERM" | "SIGKILL";
+	deps: StopSignalDeps;
+}): void {
+	const { cwd, targets, signal, deps } = args;
+	for (const [pid, expectedIdentity] of targets) {
+		if (
+			sameProcessIdentity({
+				cwd,
+				pid,
+				expectedIdentity,
+				isAlive: deps.isAlive,
+				identify: deps.identify,
+			})
+		) {
+			deps.kill(pid, signal);
+		}
+	}
+}
+
+async function terminateTargets(
+	cwd: string,
+	targets: Map<number, string>,
+	deps: DaemonControlDeps,
+): Promise<StopAllResult> {
+	const kill = deps.kill ?? realKill;
+	const isAlive = deps.isAlive ?? realIsAlive;
+	const identify = deps.identify ?? readHarnessProcessIdentity;
+	const wait = deps.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const signalDeps = { identify, isAlive, kill, wait };
+	signalMatchingTargets({ cwd, targets, signal: "SIGTERM", deps: signalDeps });
+	const afterTerm = await waitForExit({
+		cwd,
+		targets,
+		deps: signalDeps,
+		maxMs: STOP_GRACE_MS,
+	});
+	signalMatchingTargets({ cwd, targets: afterTerm, signal: "SIGKILL", deps: signalDeps });
+	const afterKill = await waitForExit({
+		cwd,
+		targets: afterTerm,
+		deps: signalDeps,
+		maxMs: STOP_KILL_WAIT_MS,
+	});
+	const survived = [...afterKill.keys()];
+	const survivedSet = new Set(survived);
+	return { stopped: [...targets.keys()].filter((pid) => !survivedSet.has(pid)), survived };
+}
+
 function orphanPids(cwd: string): number[] {
 	return reapOrphanHarnesses(cwd, { dryRun: true }).candidates.map((c) => c.pid);
+}
+
+async function mappedServingPids(
+	entries: readonly DiscoveredDaemon[],
+	probe: (socketPath: string) => Promise<boolean>,
+): Promise<{ serving: Set<number>; mappedSockets: Set<string> }> {
+	const serving = new Set<number>();
+	const mappedSockets = new Set<string>();
+	for (const entry of entries) {
+		if (entry.pid === null || !entry.alive) continue;
+		mappedSockets.add(entry.paths.socket);
+		if (await probe(entry.paths.socket)) serving.add(entry.pid);
+	}
+	return { serving, mappedSockets };
+}
+
+async function hasUnmappedServingSocket(args: {
+	socketPaths: readonly string[];
+	mappedSockets: ReadonlySet<string>;
+	probe: (socketPath: string) => Promise<boolean>;
+}): Promise<boolean> {
+	const { socketPaths, mappedSockets, probe } = args;
+	for (const socketPath of socketPaths) {
+		if (!mappedSockets.has(socketPath) && (await probe(socketPath))) return true;
+	}
+	return false;
 }
 
 /**
@@ -86,11 +238,21 @@ export async function collectServingDaemonPids(
 	deps: DaemonControlDeps = {},
 ): Promise<Set<number>> {
 	const discover = deps.discover ?? discoverDaemons;
+	const listSockets = deps.socketPaths ?? daemonSocketPaths;
+	const candidates = deps.extraPids ?? orphanPids;
 	const probe = deps.probe ?? ((p: string) => isDaemonSocketServing(p));
-	const serving = new Set<number>();
-	for (const entry of discover(cwd)) {
-		if (entry.pid === null || !entry.alive) continue;
-		if (await probe(entry.paths.socket)) serving.add(entry.pid);
+	const { serving, mappedSockets } = await mappedServingPids(discover(cwd), probe);
+	if (
+		await hasUnmappedServingSocket({
+			socketPaths: listSockets(cwd),
+			mappedSockets,
+			probe,
+		})
+	) {
+		// No pid-to-socket mapping means the exact owner is unknowable. Protect
+		// every ps-verified daemon for this cwd: leaving an orphan alive is safer
+		// than killing the process currently serving the guard.
+		for (const pid of candidates(cwd)) serving.add(pid);
 	}
 	return serving;
 }
@@ -128,19 +290,7 @@ export async function stopAllDaemons(
 	cwd: string,
 	deps: DaemonControlDeps = {},
 ): Promise<StopAllResult> {
-	const discover = deps.discover ?? discoverDaemons;
-	const extras = deps.extraPids ?? orphanPids;
-	const protectedPids = (deps.protectedPids ?? collectAncestorPids)();
-	const kill = deps.kill ?? realKill;
-	const isAlive = deps.isAlive ?? realIsAlive;
-	const wait = deps.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-
-	const targets = new Set<number>();
-	for (const entry of discover(cwd)) {
-		if (entry.pid !== null && entry.alive) targets.add(entry.pid);
-	}
-	for (const pid of extras(cwd)) targets.add(pid);
-	for (const pid of protectedPids) targets.delete(pid);
+	const targets = collectStopTargets(cwd, deps);
 	if (targets.size === 0) return { stopped: [], survived: [] };
 
 	(deps.recordEvent ?? ((evt: DaemonLedgerEvent) => recordDaemonEvent(cwd, evt)))({
@@ -148,13 +298,7 @@ export async function stopAllDaemons(
 		pid: process.pid,
 		event: "handover",
 		reason: "explicit-stop",
-		detail: `stopping ${targets.size} daemon(s): ${[...targets].join(", ")}`,
+		detail: `stopping ${targets.size} daemon(s): ${[...targets.keys()].join(", ")}`,
 	});
-	for (const pid of targets) kill(pid);
-	await wait(STOP_GRACE_MS);
-
-	const stopped: number[] = [];
-	const survived: number[] = [];
-	for (const pid of targets) (isAlive(pid) ? survived : stopped).push(pid);
-	return { stopped, survived };
+	return terminateTargets(cwd, targets, deps);
 }

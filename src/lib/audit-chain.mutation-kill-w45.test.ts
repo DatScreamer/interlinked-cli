@@ -92,10 +92,9 @@ describe("verifyAuditChain — negative / edge parsing (must not miscount)", () 
 	});
 
 	// test-contract: boundary — comment above isJsonObject's call site says
-	// non-object JSON (array/string/number/null) is treated as unrecognized
-	// and skipped rather than crashing the walk; null is the sharpest case
+	// Non-object JSON is corrupt audit evidence. Null is the sharpest case
 	// since accessing .type on it without the guard would throw.
-	it("N2: a non-object JSON value (null) is skipped without throwing and without becoming a guard event (kills !isJsonObject -> false)", () => {
+	it("N2: a non-object JSON value (null) fails closed without throwing", () => {
 		const cwd = makeTmpCwd();
 		const rec1: RawRecord = { type: "guard_block", previousHash: GENESIS_HASH, ts: "t1" };
 		const hash1 = computeEntryHash(rec1);
@@ -109,10 +108,12 @@ describe("verifyAuditChain — negative / edge parsing (must not miscount)", () 
 
 		expect(() => verifyAuditChain(cwd)).not.toThrow();
 		const result = verifyAuditChain(cwd);
-		expect(result.valid).toBe(true);
-		expect(result.total_events).toBe(3);
-		expect(result.guard_events).toBe(2);
-		expect(result.chained_events).toBe(2);
+		expect(result.valid).toBe(false);
+		expect(result.total_events).toBe(2);
+		expect(result.guard_events).toBe(1);
+		expect(result.chained_events).toBe(1);
+		expect(result.first_bad_line_number).toBe(2);
+		expect(result.first_bad_reason).toMatch(/not a JSON object/);
 	});
 
 	// test-contract: invariant — hasHash requires a 64-char string (a real

@@ -108,7 +108,7 @@ describe("treeStamp execSync command + options", () => {
 			}
 			throw new Error(`unexpected execSync call: ${cmd} ${JSON.stringify(opts)}`);
 		};
-		// biome-ignore lint/suspicious/noExplicitAny: mirrors node:child_process's execSync overload set
+		// The cast mirrors node:child_process's overloaded execSync test-double boundary.
 		mockExecSync.mockImplementation(impl as any);
 	});
 

@@ -21,13 +21,13 @@ const SIGKILL_GRACE_MS = 1000;
 function makeFakeChild(pid: number | undefined) {
 	const child = new EventEmitter() as EventEmitter & {
 		pid: number | undefined;
-		stdout: EventEmitter;
-		stderr: EventEmitter;
+		stdout: EventEmitter & { destroy: ReturnType<typeof vi.fn> };
+		stderr: EventEmitter & { destroy: ReturnType<typeof vi.fn> };
 		kill: ReturnType<typeof vi.fn>;
 	};
 	child.pid = pid;
-	child.stdout = new EventEmitter();
-	child.stderr = new EventEmitter();
+	child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+	child.stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() });
 	child.kill = vi.fn(() => true);
 	return child;
 }
@@ -268,37 +268,78 @@ describe("runProcessAsync — mutation-kill w34", () => {
 		expect(r.stderr.length).toBe(10 * 1024 * 1024);
 	});
 
-	// test-contract: mutation-kill — kills b4c8a0d4ebb0b6f8 (ConditionalExpression
-	// 'killGraceTimer !== null' -> 'true' inside the 'exit' handler); with an armed grace
-	// timer, the exit handler must clear BOTH the deadline timer and the grace timer.
-	it("exit handler clears both the deadline timer and an armed grace timer", async () => {
+	// test-contract: bug — a wrapper exit is not proof its compiler descendants exited;
+	// project admission must remain held until the detached group itself disappears.
+	it("keeps the kill grace armed after wrapper exit until the process group is gone", async () => {
 		vi.useFakeTimers();
-		const fakeChild = makeFakeChild(undefined);
+		const fakeChild = makeFakeChild(4242);
 		vi.mocked(spawn).mockImplementationOnce(() => fakeChild as unknown as ChildProcess);
+		let groupAlive = true;
+		vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			if (pid === -4242 && signal === 0) {
+				if (groupAlive) return true;
+				throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+			}
+			return true;
+		});
 		const promise = runProcessAsync("fake-cmd", [], { timeout: 10 });
-		await vi.advanceTimersByTimeAsync(10); // arms the grace timer
+		await vi.advanceTimersByTimeAsync(10);
+		let settled = false;
+		void promise.then(() => {
+			settled = true;
+		});
 		const clearSpy = vi.spyOn(global, "clearTimeout");
 		fakeChild.emit("exit", 0);
+		expect(clearSpy).not.toHaveBeenCalled();
+		expect(settled).toBe(false);
+		groupAlive = false;
+		await vi.advanceTimersByTimeAsync(10);
+		await promise;
+		expect(settled).toBe(true);
 		expect(clearSpy).toHaveBeenCalledTimes(2);
-		fakeChild.emit("close", 0);
+	});
+
+	// test-contract: bug — a TERM-resistant descendant must still receive the
+	// SIGKILL escalation even after its wrapper has already emitted `exit`.
+	it("escalates the surviving process group after its wrapper exits", async () => {
+		vi.useFakeTimers();
+		const fakeChild = makeFakeChild(4343);
+		vi.mocked(spawn).mockImplementationOnce(() => fakeChild as unknown as ChildProcess);
+		let groupAlive = true;
+		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			if (pid === -4343 && signal === "SIGKILL") groupAlive = false;
+			if (pid === -4343 && signal === 0 && !groupAlive) {
+				throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+			}
+			return true;
+		});
+		const promise = runProcessAsync("fake-cmd", [], { timeout: 10 });
+		await vi.advanceTimersByTimeAsync(10);
+		fakeChild.emit("exit", 0);
+		await vi.advanceTimersByTimeAsync(SIGKILL_GRACE_MS);
+		expect(killSpy).toHaveBeenCalledWith(-4343, "SIGKILL");
+		await vi.advanceTimersByTimeAsync(10);
 		await promise;
 	});
 
-	// test-contract: mutation-kill — kills 7b9255664a4a3b1b (-> 'false'), 5b302670c6415ff3
-	// (EqualityOperator flipped to '==='), and f86decb851c3bf93 (BlockStatement -> '{}') on the
-	// exit handler's `killGraceTimer !== null` guard — each would skip clearing an armed grace
-	// timer, dropping the exit-handler's clearTimeout call count from 2 to 1.
-	it("exit handler's grace-timer guard actually clears when armed (not just skipped)", async () => {
+	// test-contract: bug — platforms without POSIX process-group observation
+	// still need the inherited-pipe close guard after a killed wrapper exits.
+	it("settles a killed no-group child through the close guard when close never arrives", async () => {
 		vi.useFakeTimers();
 		const fakeChild = makeFakeChild(undefined);
 		vi.mocked(spawn).mockImplementationOnce(() => fakeChild as unknown as ChildProcess);
 		const promise = runProcessAsync("fake-cmd", [], { timeout: 10 });
 		await vi.advanceTimersByTimeAsync(10);
-		const clearSpy = vi.spyOn(global, "clearTimeout");
+		let settled = false;
+		void promise.then(() => {
+			settled = true;
+		});
 		fakeChild.emit("exit", 0);
-		expect(clearSpy).toHaveBeenCalledTimes(2);
-		fakeChild.emit("close", 0);
+		await vi.advanceTimersByTimeAsync(249);
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
 		await promise;
+		expect(settled).toBe(true);
 	});
 
 	// test-contract: mutation-kill — kills 59231acf56a05f07 (StringLiteral '"abort"' -> '""')
@@ -326,7 +367,7 @@ describe("runProcessAsync — mutation-kill w34", () => {
 		// factory to strip `unref` off only the 250ms closeGuard handle; the real
 		// `setTimeout` overload set doesn't model that shape, so `any` is the
 		// pragmatic escape rather than fighting the overloads for a test double.
-		// biome-ignore lint/suspicious/noExplicitAny: timer-handle stub, see SAFETY above
+		// Keep this timer-handle stub loose for the overload-shaped test double above.
 		const realSetTimeout: any = global.setTimeout;
 		vi.spyOn(global, "setTimeout").mockImplementation(((...callArgs: unknown[]) => {
 			const handle = realSetTimeout(...callArgs);
@@ -334,7 +375,7 @@ describe("runProcessAsync — mutation-kill w34", () => {
 				handle.unref = undefined;
 			}
 			return handle;
-			// biome-ignore lint/suspicious/noExplicitAny: matches the loose stub above
+			// This assertion matches the deliberately loose timer stub above.
 		}) as any);
 		const promise = runProcessAsync("fake-cmd", [], { timeout: 30_000 });
 		expect(() => fakeChild.emit("exit", 0)).not.toThrow();

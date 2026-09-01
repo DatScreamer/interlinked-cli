@@ -39,7 +39,7 @@ const NOW_MS = 1_800_000_000_000;
 describe("attemptSelfHealOnStop — positive (must fire)", () => {
 	// P1: a configured repo with no daemon pid at all, down past the bound.
 	it("P1: fires self-heal when configured but no daemon has ever started, past the bound", () => {
-		const spawnDaemon = vi.fn();
+		const spawnDaemon = vi.fn(() => process.pid);
 		const result = attemptSelfHealOnStop(stopEvent({ context: { cwd: root } }), root, {}, { spawnDaemon, resolveServerPath: () => "/fake/server.js" }, {
 			now: () => NOW_MS,
 			lastLedgerEventAt: () => 0, // "down forever" — well past the 60s bound
@@ -51,7 +51,7 @@ describe("attemptSelfHealOnStop — positive (must fire)", () => {
 	// P2: a dead-but-present pid, down past the bound.
 	it("P2: fires self-heal for a dead pidfile down past the bound", () => {
 		writeFileSync(join(root, ".interlinked", "harness.pid"), "999999999");
-		const spawnDaemon = vi.fn();
+		const spawnDaemon = vi.fn(() => process.pid);
 		const result = attemptSelfHealOnStop(stopEvent({ context: { cwd: root } }), root, {}, { spawnDaemon, resolveServerPath: () => "/fake/server.js" }, {
 			now: () => NOW_MS,
 			lastLedgerEventAt: () => NOW_MS - 120_000,

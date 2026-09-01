@@ -143,12 +143,20 @@ vi.mock("../lib/formatter.js", () => ({
 	header: (t: string) => t,
 }));
 
-vi.mock("./doctor-system.js", () => ({ runSystemChecks: mockRunSystemChecks }));
+vi.mock("./doctor-system.js", () => ({
+	runSystemChecks: mockRunSystemChecks,
+	// Doctor now takes its orphan count from the protection-aware sweep rather
+	// than a private `ps` scan that counted the live daemon.
+	countVerifiedOrphans: vi.fn(async () => 0),
+}));
 vi.mock("./harness.js", () => ({ isHarnessRunning: mockIsHarnessRunning }));
-// Only `queryHarness` is reached from doctor's graph (through
-// harness-liveness); the real `probeHarnessSocket` runs on top of it, so the
-// existsSync-then-round-trip logic under test stays real.
-vi.mock("./harness-status-helpers.js", () => ({ queryHarness: mockQueryHarness }));
+// The liveness probe queries by explicit socket path (framed-aware, review
+// 2026-08-26); route it to the same mock so the existsSync-then-round-trip
+// logic under test stays real.
+vi.mock("./harness-status-helpers.js", () => ({
+	queryHarness: mockQueryHarness,
+	queryHarnessSocket: mockQueryHarness,
+}));
 // Adoption-artifact rows are covered by adopt.test.ts; stubbed empty here so
 // these fixtures keep their pre-adopt output shape (no warn row from the
 // host repo's missing baselines leaking into unrelated expectations).
@@ -171,6 +179,9 @@ vi.mock("../lib/auth.js", () => ({ resolveAuthToken: mockResolveAuthToken }));
 vi.mock("../lib/hooks.js", () => ({
 	HOOK_SCRIPT_VERSION: "1.2.3",
 	writeHookScript: mockWriteHookScript,
+	// The drift check resolves the current binary; the mocked fs has no
+	// manifest, so the check itself yields no rows in these fixtures.
+	resolveHookBinaryPath: () => "/mock/dist/hook-entry.js",
 }));
 
 vi.mock("../lib/settings-validator.js", () => ({
@@ -551,7 +562,9 @@ describe("doctorCommand", () => {
 		fsState.exists.add(settings);
 		fsState.content.set(
 			settings,
-			'{"hooks":{"PreToolUse":[{"command":"interlinked-activity"}]}}',
+			// Ownership is SHAPE-parsed (2026-08-30): the fixture must carry the
+			// real generated legacy command, not the bare marker string.
+			'{"hooks":{"PreToolUse":[{"command":"node \\".interlinked/hooks/interlinked-activity.mjs\\""}]}}',
 		);
 		await run();
 		expect(captured()).toContain("[pass] Claude Code hooks -- Hooks installed");
@@ -565,18 +578,22 @@ describe("doctorCommand", () => {
 		fsState.content.set(settings, "{}");
 		await run();
 		expect(captured()).toContain(
-			"[warn] Gemini CLI hooks -- Settings file exists but no Interlinked CLI hooks -- run 'interlinked enable'",
+			"[warn] Google Gemini CLI hooks -- Settings file exists but no Interlinked CLI hooks -- run 'interlinked enable'",
 		);
 	});
 
+	// Codex's hook commands live in `.codex/hooks.json`; `config.toml` only
+	// carries the `[features] hooks = true` gate. This case previously pointed
+	// at config.toml, which is why doctor warned about every correct Codex
+	// install — the path, not the read, was the defect.
 	it("warns when client settings file cannot be read", async () => {
 		seedHealthyFs();
 		fsState.exists.add(`${CWD}/.codex`);
-		const settings = `${CWD}/.codex/config.toml`;
+		const settings = `${CWD}/.codex/hooks.json`;
 		fsState.exists.add(settings);
 		fsState.throwOnReadFile.add(settings);
 		await run();
-		expect(captured()).toContain("[warn] Codex CLI hooks -- Could not read settings file");
+		expect(captured()).toContain("[warn] OpenAI Codex CLI hooks -- Could not read settings file");
 	});
 
 	it("warns when a present client dir is missing its settings file", async () => {
@@ -865,7 +882,7 @@ describe("doctorCommand", () => {
 		seedHealthyFs();
 		mockIsHarnessRunning.mockReturnValue({ running: true, pid: 4242 });
 		fsState.exists.add(`${CWD}/.interlinked/harness.sock`);
-		mockQueryHarness.mockResolvedValue({ ok: true });
+		mockQueryHarness.mockResolvedValue({ decision: "allow" });
 		await run();
 		expect(captured()).toContain("[pass] Harness server -- Running (PID 4242) -- socket answering");
 	});

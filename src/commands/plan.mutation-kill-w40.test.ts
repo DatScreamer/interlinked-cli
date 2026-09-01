@@ -17,12 +17,14 @@ vi.mock("node:fs", async (importOriginal) => {
 		...actual,
 		readdirSync: (...args: unknown[]) => {
 			fsCalls.readdirSyncArgs.push(args);
-			// biome-ignore lint: passthrough to the real implementation
+			// SAFETY: the mock forwards the exact captured arguments to the real
+			// overloaded function and preserves its runtime return value.
 			return (actual.readdirSync as (...a: unknown[]) => unknown)(...args);
 		},
 		readFileSync: (...args: unknown[]) => {
 			fsCalls.readFileSyncArgs.push(args);
-			// biome-ignore lint: passthrough to the real implementation
+			// SAFETY: the mock forwards the exact captured arguments to the real
+			// overloaded function and preserves its runtime return value.
 			return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
 		},
 	};

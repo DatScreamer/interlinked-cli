@@ -23,7 +23,11 @@ import {
 	findFeaturesTableHeaderLines,
 	readCodexHooksFlag,
 } from "../lib/codex-feature-flag.js";
-import { isInterlinkedHookCommand } from "../lib/hook-ownership.js";
+import {
+	hookEntryCommands,
+	isHookEntryInvokingBinary,
+	isInterlinkedHookCommand,
+} from "../lib/hook-ownership.js";
 import { getAdapter } from "./adapters/index.js";
 import { resolveSettingsPath } from "./installer.js";
 import { isManagedProviderFile, managedProviderFileHash } from "./managed-provider-file.js";
@@ -45,26 +49,49 @@ export interface HookVerification {
 	problems: string[];
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
-	return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function containsBinary(value: unknown, binaryAbs: string): boolean {
-	return JSON.stringify(value)?.includes(binaryAbs) ?? false;
-}
-
-/** Every string leaf, with its JSON path — for the stale-command sweep. */
-function collectStrings(value: unknown, out: string[]): void {
-	if (typeof value === "string") {
-		out.push(value);
-		return;
+/** JSON-semantic structural equality. Object insertion order and prototype
+ *  are not part of a settings document's meaning; array order remains exact. */
+function structurallyEqual(a: unknown, b: unknown): boolean {
+	if (Object.is(a, b)) return true;
+	if (Array.isArray(a)) {
+		if (!Array.isArray(b) || a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (!structurallyEqual(a[i], b[i])) return false;
+		}
+		return true;
 	}
+	if (Array.isArray(b)) return false;
+	const aObject = asObject(a);
+	const bObject = asObject(b);
+	if (aObject === null || bObject === null) return false;
+	// JSON serialization omits object properties whose value is undefined;
+	// adapter fragments may retain such optional properties before installation.
+	const aKeys = Object.keys(aObject).filter((key) => aObject[key] !== undefined);
+	const bKeys = Object.keys(bObject).filter((key) => bObject[key] !== undefined);
+	if (aKeys.length !== bKeys.length) return false;
+	for (const key of aKeys) {
+		if (!Object.hasOwn(bObject, key) || !structurallyEqual(aObject[key], bObject[key])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function containsOwnedBinary(value: unknown, binaryAbs: string): boolean {
 	if (Array.isArray(value)) {
-		for (const item of value) collectStrings(item, out);
+		return value.some((entry) => isHookEntryInvokingBinary(entry, binaryAbs));
+	}
+	return isHookEntryInvokingBinary(value, binaryAbs);
+}
+
+/** Commands registered under native hook containers, never prose metadata. */
+function collectHookCommands(value: unknown, out: string[]): void {
+	if (Array.isArray(value)) {
+		for (const entry of value) out.push(...hookEntryCommands(entry));
 		return;
 	}
 	if (value !== null && typeof value === "object") {
-		for (const item of Object.values(value)) collectStrings(item, out);
+		for (const item of Object.values(value)) collectHookCommands(item, out);
 	}
 }
 
@@ -90,11 +117,11 @@ function checkNativeArray(
 	}
 	let ownedInDoc = 0;
 	for (const el of docValue) {
-		if (containsBinary(el, binaryAbs)) ownedInDoc++;
+		if (isHookEntryInvokingBinary(el, binaryAbs)) ownedInDoc++;
 	}
 	let matched = 0;
 	for (const want of expected) {
-		const hits = docValue.filter((el) => deepEqual(el, want)).length;
+		const hits = docValue.filter((el) => structurallyEqual(el, want)).length;
 		if (hits !== 1) {
 			problems.push(`${path}: expected hook entry present ${hits} time(s); expected exactly 1`);
 		} else {
@@ -129,8 +156,8 @@ function checkFragmentShape(
 		// a deregistered event still registered in the document.
 		if (docObj !== null) {
 			for (const [key, value] of Object.entries(docObj)) {
-				if (key in expectedObj) continue;
-				if (containsBinary(value, binaryAbs)) {
+				if (Object.hasOwn(expectedObj, key)) continue;
+				if (containsOwnedBinary(value, binaryAbs)) {
 					const childPath = pathPrefix === "" ? key : `${pathPrefix}.${key}`;
 					problems.push(`${childPath}: owned hook entry at a native path the adapter no longer declares`);
 				}
@@ -138,7 +165,7 @@ function checkFragmentShape(
 		}
 		return;
 	}
-	if (!deepEqual(expectedNode, docNode)) {
+	if (!structurallyEqual(expectedNode, docNode)) {
 		problems.push(`${pathPrefix}: expected ${JSON.stringify(expectedNode)}, found ${JSON.stringify(docNode)}`);
 	}
 }
@@ -181,10 +208,11 @@ function checkStaleCommands(
 ): void {
 	if (entry.scope === "user") return;
 	const expected: string[] = [];
-	collectStrings(expectedFragment, expected);
+	collectHookCommands(expectedFragment, expected);
 	const expectedSet = new Set(expected);
 	const strings: string[] = [];
-	collectStrings(parsed, strings);
+	const parsedObject = asObject(parsed);
+	collectHookCommands(parsedObject?.hooks, strings);
 	for (const s of strings) {
 		if (isInterlinkedHookCommand(s) && !expectedSet.has(s)) {
 			problems.push(`stale Interlinked-owned command not in the adapter's current render: ${s.slice(0, 120)}`);

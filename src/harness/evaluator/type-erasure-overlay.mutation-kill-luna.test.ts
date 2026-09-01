@@ -187,7 +187,9 @@ describe("type-erasure overlay mutation contracts", () => {
 	// test-contract: public-api — test-file paths relax only the bare annotation rule while retaining other type-erasure rules.
 	it("recognizes test-file path boundaries precisely", () => {
 		const cases = [
-			{ path: "/tmp/foo.test.ts.extra", expected: true },
+			// Suffix after ".test." defeats the end anchor; the path must still carry
+			// a real TS extension or the overlay is not applicable at all.
+			{ path: "/tmp/foo.test.ts.extra.ts", expected: true },
 			{ path: "/tmp/test/foo.ts", expected: false },
 			{ path: "/tmp/tests/foo.ts", expected: false },
 		];

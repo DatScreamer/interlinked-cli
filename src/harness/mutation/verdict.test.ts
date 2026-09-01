@@ -9,6 +9,7 @@ const receipt: MutationReceipt = {
 	engine: "stryker",
 	engineVersion: "1",
 	measuredAt: "t",
+	outcome: "measured_clean",
 };
 
 /** Build a measured outcome; site-count defaults keep oversize OFF unless overridden. */
@@ -57,6 +58,56 @@ describe("mutationOutcomeToDecision", () => {
 		expect(d.decision).toBe("allow");
 		expect(d.warnings).toEqual(["[mutation:not-measured] cloud down"]);
 		expect(d.reason).toBeUndefined();
+	});
+
+	// Review 2026-08-28 item 1: adoption is an allow — the gate must not block a
+	// bootstrap — but its warning MUST survive onto the wire, so the agent (and
+	// any report) sees "adopted", never a silent pass that reads as clean.
+	it("maps baseline_adoption_ready to allow WITH the adoption warning on the wire", () => {
+		const d = mutationOutcomeToDecision({
+			kind: "baseline_adoption_ready",
+			receipt: { ...receipt, outcome: "baseline_adopted" },
+			refreshedManifest: {
+				version: 1,
+				generation: 1,
+				authoritativeAt: "t",
+				engine: "stryker",
+				engineVersion: "1",
+				dependencyGraphVersion: "g",
+				environmentHash: "e",
+				files: {},
+			},
+			warning: "[interlinked:mutation] baseline adopted for src/x.ts — NOT certified clean",
+		});
+		expect(d.decision).toBe("allow");
+		expect(d.warnings?.[0]).toContain("baseline adopted");
+		expect(d.warnings?.[0]).toContain("NOT certified clean");
+	});
+
+	// Review 2026-08-28 item 3: adoption must not swallow the RED-witness — a
+	// new test that never failed on base is still worth flagging on a first
+	// sighting, arguably MORE so (the adopted floor rests on that test).
+	it("emits BOTH the adoption warning and the RED-witness warning on a first sighting", () => {
+		const d = mutationOutcomeToDecision({
+			kind: "baseline_adoption_ready",
+			receipt: { ...receipt, outcome: "baseline_adopted" },
+			refreshedManifest: {
+				version: 1,
+				generation: 1,
+				authoritativeAt: "t",
+				engine: "stryker",
+				engineVersion: "1",
+				dependencyGraphVersion: "g",
+				environmentHash: "e",
+				files: {},
+			},
+			warning: "[interlinked:mutation] baseline adopted for src/x.ts — NOT certified clean",
+			redWitnessFailed: true,
+		});
+		expect(d.decision).toBe("allow");
+		expect(d.warnings).toHaveLength(2);
+		expect(d.warnings?.[0]).toContain("baseline adopted");
+		expect(d.warnings?.[1]).toContain("RED-witness");
 	});
 
 	it("maps a measured-clean allow to a plain allow", () => {

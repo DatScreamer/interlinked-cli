@@ -12,6 +12,12 @@ import { isJsonObject } from "../lib/json-types.js";
 import type { JsonObject } from "../lib/json-types.js";
 import type { AgentSource, HarnessDecision, HarnessEvent, ResolvedTarget } from "./types.js";
 import type { UnifiedAction, UnifiedHookEvent } from "./unified-event.js";
+import {
+	asJsonObject,
+	compactJson,
+	readString,
+	readStringArray,
+} from "./legacy-client-json.js";
 
 export const LEGACY_HARNESS_SOCKET_BASENAME = "harness.sock";
 export const DEFAULT_LEGACY_PRE_TOOL_TIMEOUT_MS = 5000;
@@ -146,6 +152,8 @@ export function callLegacyHarness(
  *  A helper so `toLegacyHarnessEvent` stays under the cyclomatic cap. */
 function copyDeliveryId(event: UnifiedHookEvent, out: HarnessEvent): void {
 	if (event.event_id) out.event_id = event.event_id;
+	if (event.post_delivery_token) out.post_delivery_token = event.post_delivery_token;
+	if (event.post_delivery_pid) out.post_delivery_pid = event.post_delivery_pid;
 }
 
 export function toLegacyHarnessEvent(event: UnifiedHookEvent): HarnessEvent {
@@ -481,27 +489,4 @@ function copyString(
 			out.parent_tool_use_id = value;
 			return;
 	}
-}
-
-function compactJson(value: JsonObject): JsonObject {
-	const out: JsonObject = {};
-	for (const [key, item] of Object.entries(value)) {
-		if (item !== undefined) out[key] = item;
-	}
-	return out;
-}
-
-function asJsonObject(value: unknown): JsonObject | null {
-	return isJsonObject(value) ? value : null;
-}
-
-
-function readString(value: unknown): string | null {
-	return typeof value === "string" ? value : null;
-}
-
-function readStringArray(value: unknown): string[] | null {
-	if (!Array.isArray(value)) return null;
-	const strings = value.filter((item): item is string => typeof item === "string");
-	return strings.length > 0 ? strings : null;
 }

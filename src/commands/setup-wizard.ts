@@ -314,7 +314,7 @@ export const WIZARD_COPY = {
 	receiptHeader: "Now enforced — every line names the command that changes it:",
 	tourHeader: "What Interlinked runs for you from here:",
 	tour: [
-		"  every tool call judged live — ~260 checks + 123 guard rules; security rails block, findings warn",
+		"  every delivered hook event judged live — current check and guard counts: interlinked harness checks",
 		"  TDD: a new source file asks for its failing companion test first (strict blocks, balanced warns)",
 		"  coverage: adopt seeds today's % as the floor; every edit holds-or-raises it toward your goal",
 		"  mutation testing: `interlinked mutation` ratchets survivor scores per file; deep-audit lane, not per-edit by default",
@@ -328,7 +328,7 @@ export const WIZARD_COPY = {
 		"Make any edit in your agent — the harness judges it live.",
 		"  interlinked status     scorecard (edits judged, findings, blocks)",
 		"  interlinked mode       switch enforcement mode any time",
-		"  interlinked disable    the exit ramp — restores every settings file",
+		"  interlinked disable    non-destructive stand-down (full removal: disable --uninstall)",
 	],
 } as const;
 

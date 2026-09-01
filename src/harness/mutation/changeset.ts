@@ -9,6 +9,11 @@
 
 import { isJsonObject } from "../../lib/json-types.js";
 import type { JsonObject } from "../../lib/json-types.js";
+import {
+	extractApplyPatchRaw,
+	parseApplyPatchSections,
+	type ApplyPatchSection,
+} from "../apply-patch-content.js";
 
 export interface PatchEdit {
 	oldString: string;
@@ -18,6 +23,7 @@ export interface PatchEdit {
 export type FileOp =
 	| { kind: "write"; path: string; content: string }
 	| { kind: "patch"; path: string; edits: PatchEdit[] }
+	| { kind: "apply_patch"; path: string; section: ApplyPatchSection }
 	| { kind: "delete"; path: string }
 	| { kind: "rename"; from: string; to: string };
 
@@ -64,6 +70,20 @@ function multiEditOp(input: JsonObject): ChangeSet | null {
 	return { ops: [{ kind: "patch", path, edits }] };
 }
 
+function applyPatchOps(input: JsonObject): ChangeSet | null {
+	const raw = extractApplyPatchRaw(input);
+	if (raw === "") return null;
+	const sections = parseApplyPatchSections(raw);
+	if (sections.length === 0) return null;
+	return {
+		ops: sections.map((section) => ({
+			kind: "apply_patch" as const,
+			path: section.path,
+			section,
+		})),
+	};
+}
+
 /** Normalize a Claude Code tool_input into a ChangeSet, or null for non-mutating tools. */
 export function normalizeChangeSet(toolName: string, toolInput: unknown): ChangeSet | null {
 	if (!isJsonObject(toolInput)) return null;
@@ -74,6 +94,9 @@ export function normalizeChangeSet(toolName: string, toolInput: unknown): Change
 			return editOp(toolInput);
 		case "MultiEdit":
 			return multiEditOp(toolInput);
+		case "apply_patch":
+		case "ApplyPatch":
+			return applyPatchOps(toolInput);
 		default:
 			return null;
 	}
@@ -86,6 +109,9 @@ export function changedPaths(set: ChangeSet): string[] {
 		if (op.kind === "rename") {
 			paths.add(op.from);
 			paths.add(op.to);
+		} else if (op.kind === "apply_patch") {
+			paths.add(op.path);
+			if (op.section.fromPath !== undefined) paths.add(op.section.fromPath);
 		} else {
 			paths.add(op.path);
 		}

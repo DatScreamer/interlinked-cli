@@ -3,14 +3,20 @@
 // after the collection.jsonl migration. The round-trip cases drive the actual
 // reader (readLocalActivity) to prove the mirror is consumable, not just written.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { verifyAuditChain } from "../../../lib/audit-chain.js";
 import { readLocalActivity } from "../../../lib/local-activity.js";
 import { nonNull } from "../../../lib/non-null.js";
-import type { HarnessEvent } from "../../types.js";
-import { mapEventToActivityRecord, writeActivityRecord } from "../activity-writer.js";
+import type { HarnessDecision, HarnessEvent } from "../../types.js";
+import {
+	mapEventToActivityRecord,
+	mapLifecycleEventToActivityRecord,
+	writeActivityRecord,
+	writeLifecycleActivityRecord,
+} from "../activity-writer.js";
 
 function harnessEvent(partial: Partial<HarnessEvent> = {}): HarnessEvent {
 	return {
@@ -117,7 +123,7 @@ describe("mapEventToActivityRecord — v5 mapping", () => {
 				agent_name: "/root/kill_a_survivors",
 				subagent_id: "sub-thread",
 				parent_agent: "parent-thread",
-				model: "gpt-5.6-luna",
+				model: "vendor-model-luna",
 			}),
 			"/r",
 		);
@@ -126,9 +132,85 @@ describe("mapEventToActivityRecord — v5 mapping", () => {
 			agent: "/root/kill_a_survivors",
 			subagent_id: "sub-thread",
 			parent_agent: "parent-thread",
-			model: "gpt-5.6-luna",
+			model: "vendor-model-luna",
 		});
 	});
+});
+
+describe("mapLifecycleEventToActivityRecord — non-tool mapping", () => {
+	it.each([
+		["SessionStart", "session_start"],
+		["SessionEnd", "session_end"],
+		["Interrupt", "interrupt"],
+		["Stop", "agent_stop"],
+		["UserPromptSubmit", "user_prompt"],
+		["Notification", "notification"],
+		["PreCompact", "context_compact"],
+		["PreCompress", "context_compact"],
+		["PostCompact", "context_compacted"],
+		["AfterModel", "model_response"],
+		["TeammateIdle", "teammate_idle"],
+		["PermissionRequest", "permission_request"],
+		["WorktreeCreate", "worktree_create"],
+		["SkillEnter", "skill_enter"],
+		["SkillLeave", "skill_leave"],
+		["SkillList", "skill_list"],
+	])("normalizes %s to %s", (hookEvent, expectedType) => {
+		const rec = mapLifecycleEventToActivityRecord(
+			harnessEvent({ hook_event: hookEvent }),
+			"/repo",
+		);
+		expect(rec?.type).toBe(expectedType);
+	});
+
+	it("uses the scanner's redacted prompt for both prompt and summary", () => {
+		const rawPrompt = "Email alice@example.com with the release details";
+		const decision: HarnessDecision = {
+			decision: "allow",
+			redacted_prompt: "Email <EMAIL> with the release details",
+		};
+		const rec = mapLifecycleEventToActivityRecord(
+			harnessEvent({
+				agent_source: "codex",
+				hook_event: "UserPromptSubmit",
+				prompt: rawPrompt,
+				seq: 7,
+				event_id: "evt-prompt",
+			}),
+			"/repo",
+			decision,
+		);
+
+		expect(rec).toMatchObject({
+			type: "user_prompt",
+			agent: "codex",
+			prompt: "Email <EMAIL> with the release details",
+			summary: "Email <EMAIL> with the release details",
+			scrubbed: true,
+			seq: 7,
+			event_id: "evt-prompt",
+		});
+		expect(JSON.stringify(rec)).not.toContain(rawPrompt);
+	});
+
+	it.each([
+		"PreToolUse",
+		"PostToolUse",
+		"PostToolUseFailure",
+		"BeforeTool",
+		"AfterTool",
+		// These already have canonical collection.v1 agent_event records.
+		"SubagentStart",
+		"SubagentStop",
+		"TaskCompleted",
+	])(
+		"never maps tool event %s through the lifecycle writer",
+		(hookEvent) => {
+			expect(
+				mapLifecycleEventToActivityRecord(harnessEvent({ hook_event: hookEvent }), "/repo"),
+			).toBeNull();
+		},
+	);
 });
 
 describe("writeActivityRecord — round-trips through readLocalActivity", () => {
@@ -194,6 +276,30 @@ describe("writeActivityRecord — round-trips through readLocalActivity", () => 
 		expect(tu?.model).toBe("claude-test-5");
 	});
 
+	it("does not run the Claude thinking reader for a Codex rollout", () => {
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		const transcript = join(dir, "codex-rollout.jsonl");
+		writeFileSync(
+			transcript,
+			`${JSON.stringify({ type: "assistant", message: { model: "wrong-parser", content: [{ type: "thinking", thinking: "must not attach" }] } })}\n`,
+		);
+		writeActivityRecord(
+			harnessEvent({
+				agent_source: "codex",
+				hook_event: "PreToolUse",
+				tool_name: "Read",
+				cwd: dir,
+				transcript_path: transcript,
+			}),
+			dir,
+		);
+
+		const rec = readLocalActivity({ cwd: dir }).find((event) => event.type === "tool_use_start");
+		expect(rec && "thinking" in rec).toBe(false);
+		expect(rec && "model" in rec).toBe(false);
+		expect(existsSync(join(dir, ".interlinked", "thinking-cursor.json"))).toBe(false);
+	});
+
 	// Parity guard: the active hook-entry → daemon path must capture the SAME
 	// field surface the old self-contained .mjs hook did. The thinking-capture
 	// regression happened because a capability present in one hook impl was
@@ -237,5 +343,65 @@ describe("writeActivityRecord — round-trips through readLocalActivity", () => 
 		];
 		const missing = required.filter((k) => rec?.[k] === undefined);
 		expect(missing).toEqual([]);
+	});
+});
+
+describe("writeLifecycleActivityRecord — redacted round-trip", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "lifecycle-activity-writer-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("appends one redacted prompt row readable by CLI activity readers", () => {
+		const rawPrompt = "Contact alice@example.com about the incident";
+		writeLifecycleActivityRecord(
+			harnessEvent({
+				agent_source: "codex",
+				cwd: dir,
+				hook_event: "UserPromptSubmit",
+				prompt: rawPrompt,
+				session_id: "codex-prompt",
+			}),
+			dir,
+			{ decision: "allow", redacted_prompt: "Contact <EMAIL> about the incident" },
+		);
+
+		const events = readLocalActivity({ cwd: dir });
+		expect(events).toHaveLength(1);
+		expect(nonNull(events[0])).toMatchObject({
+			type: "user_prompt",
+			prompt: "Contact <EMAIL> about the incident",
+			summary: "Contact <EMAIL> about the incident",
+			scrubbed: true,
+			session: "codex-prompt",
+		});
+		expect(readFileSync(join(dir, ".interlinked", "activity.jsonl"), "utf8")).not.toContain(
+			rawPrompt,
+		);
+	});
+
+	it("writes nothing when accidentally passed a PreToolUse event", () => {
+		writeLifecycleActivityRecord(
+			harnessEvent({ hook_event: "PreToolUse", cwd: dir }),
+			dir,
+		);
+		expect(readLocalActivity({ cwd: dir })).toEqual([]);
+	});
+
+	it("hash-chains a SessionEnd record through the same audit contract", () => {
+		writeLifecycleActivityRecord(
+			harnessEvent({ hook_event: "SessionEnd", cwd: dir, tool_input: { reason: "complete" } }),
+			dir,
+		);
+
+		expect(verifyAuditChain(dir)).toMatchObject({
+			valid: true,
+			guard_events: 1,
+			chained_events: 1,
+			unchained_guard_events: 0,
+		});
 	});
 });

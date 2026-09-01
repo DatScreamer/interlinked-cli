@@ -1,0 +1,15 @@
+{
+  "schema_version": "simplification-benchmark-pair/v1",
+  "fixture_id": "positive-delete-unused-adapter",
+  "remedy": "delete",
+  "contract": {
+    "description": "Both variants export the same live formatter; only the overbuilt variant carries an unreachable legacy adapter.",
+    "required_behaviors": ["format remains the only public export", "format('a') returns '[a]'"],
+    "scorer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "variants": {
+    "overbuilt": [{ "path": "src/format.ts", "language": "typescript", "content": "function legacy(value: string) { return '<' + value + '>'; }\nexport function format(value: string) { return '[' + value + ']'; }\n" }],
+    "minimal": [{ "path": "src/format.ts", "language": "typescript", "content": "export function format(value: string) { return '[' + value + ']'; }\n" }]
+  },
+  "expected": { "overbuilt_matching_findings_min": 1, "minimal_total_findings_max": 0, "rank_margin_min": 0.1, "protected_false_positives_max": 0 }
+}

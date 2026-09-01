@@ -41,6 +41,27 @@ describe("antiStompDepsFor", () => {
 		}
 	});
 
+	// test-contract: invariant — a loser spawned for a handover attempt stamps
+	// the attempt id on its exit row, so the churn reducer RESOLVES the
+	// attempt (four lost races in a window must never re-trip the backoff).
+	it("stamps the inherited handover attempt id on the exit row", () => {
+		const dir = mkdtempSync(join(tmpdir(), "anti-stomp-attempt-"));
+		process.env.INTERLINKED_HANDOVER_ATTEMPT = "dead0002";
+		// interlinked: defer conditional_in_test -- try/finally is env+tmpdir cleanup, not case branching
+		try {
+			antiStompDepsFor(dir, vi.fn()).recordExit();
+			const row = readFileSync(join(dir, ".interlinked", "daemon-events.jsonl"), "utf-8");
+			expect(JSON.parse(row.trim())).toMatchObject({
+				event: "exit",
+				reason: "anti-stomp",
+				attempt_id: "dead0002",
+			});
+		} finally {
+			delete process.env.INTERLINKED_HANDOVER_ATTEMPT;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	// P: the logger is passed straight through — the daemon's own stderr.
 	it("delegates logging to the supplied logger", () => {
 		const seen: string[] = [];
@@ -105,46 +126,119 @@ describe("loseAntiStompRace", () => {
 });
 
 describe("reapZombieIncumbent", () => {
-	it("SIGTERMs the given pid", () => {
-		// Record signals as STATE (pid, signal pairs) — the kernel call itself
-		// has no other observable from inside the process.
+	it("SIGTERMs a twice-verified daemon and waits until that process is gone", async () => {
 		const signalsSent: Array<[number, string]> = [];
-		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, sig) => {
-			signalsSent.push([Number(pid), String(sig)]);
-			return true;
-		});
 		const logAlways = vi.fn();
-		reapZombieIncumbent(4242, logAlways);
+		let alive = true;
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways,
+			deps: {
+				identify: () => "daemon-identity",
+				kill: (pid, signal) => {
+					signalsSent.push([pid, signal]);
+					alive = false;
+				},
+				isAlive: () => alive,
+				sleep: async () => {},
+			},
+		});
+		expect(result).toBe("gone");
 		expect(signalsSent).toEqual([[4242, "SIGTERM"]]);
 		expect(logAlways).not.toHaveBeenCalled();
-		killSpy.mockRestore();
 	});
 
-	it("silently ignores ESRCH (the pid was already gone by the time we signalled it)", () => {
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+	it("silently accepts ESRCH when the verified process is already gone", async () => {
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways: vi.fn(),
+			deps: { identify: () => "daemon-identity", isAlive: () => true, kill: () => {
 			// SAFETY: ErrnoException is Error plus optional string fields; adding `code` below makes the shape real.
 			const err = new Error("kill ESRCH") as NodeJS.ErrnoException;
 			err.code = "ESRCH";
 			throw err;
+			} },
 		});
-		const logAlways = vi.fn();
-		expect(() => reapZombieIncumbent(4242, logAlways)).not.toThrow();
-		expect(logAlways).not.toHaveBeenCalled();
-		killSpy.mockRestore();
+		expect(result).toBe("gone");
 	});
 
-	it("logs (but does not throw) on an unexpected signalling failure, e.g. EPERM", () => {
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+	it("returns failed and logs an unexpected signalling failure", async () => {
+		const logAlways = vi.fn();
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways,
+			deps: { identify: () => "daemon-identity", isAlive: () => true, kill: () => {
 			// SAFETY: ErrnoException is Error plus optional string fields; adding `code` below makes the shape real.
 			const err = new Error("kill EPERM") as NodeJS.ErrnoException;
 			err.code = "EPERM";
 			throw err;
+			} },
 		});
-		const logAlways = vi.fn();
-		expect(() => reapZombieIncumbent(4242, logAlways)).not.toThrow();
+		expect(result).toBe("failed");
 		expect(logAlways).toHaveBeenCalledTimes(1);
 		expect(String(logAlways.mock.calls[0]?.[0])).toContain("4242");
-		killSpy.mockRestore();
+	});
+
+	it("never signals an unverified pid", async () => {
+		const kill = vi.fn();
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways: vi.fn(),
+			deps: { identify: () => null, isAlive: () => true, kill },
+		});
+		expect(result).toBe("unverified");
+		expect(kill).not.toHaveBeenCalled();
+	});
+
+	it("treats already-exited stale pid metadata as gone even when identity is unavailable", async () => {
+		const kill = vi.fn();
+		const logAlways = vi.fn();
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways,
+			deps: { identify: () => null, isAlive: () => false, kill },
+		});
+		expect(result).toBe("gone");
+		expect(kill).not.toHaveBeenCalled();
+		expect(logAlways).not.toHaveBeenCalled();
+	});
+
+	it("does not SIGKILL a replacement that reuses the numeric pid", async () => {
+		const identify = vi
+			.fn<() => string | null>()
+			.mockReturnValueOnce("original")
+			.mockReturnValueOnce("original")
+			.mockReturnValue("replacement");
+		const kill = vi.fn();
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways: vi.fn(),
+			deps: { identify, kill, isAlive: () => true, sleep: async () => {} },
+		});
+		expect(result).toBe("replaced");
+		expect(kill).toHaveBeenCalledTimes(1);
+		expect(kill).toHaveBeenCalledWith(4242, "SIGTERM");
+	});
+
+	it("identity-rechecks before escalating a SIGTERM-deaf daemon to SIGKILL", async () => {
+		let alive = true;
+		const kill = vi.fn((_pid: number, signal: "SIGTERM" | "SIGKILL") => {
+			if (signal === "SIGKILL") alive = false;
+		});
+		const result = await reapZombieIncumbent({
+			pid: 4242,
+			cwd: "/repo",
+			logAlways: vi.fn(),
+			deps: { identify: () => "original", kill, isAlive: () => alive, sleep: async () => {} },
+		});
+		expect(result).toBe("gone");
+		expect(kill.mock.calls.map((call) => call[1])).toEqual(["SIGTERM", "SIGKILL"]);
 	});
 });
 

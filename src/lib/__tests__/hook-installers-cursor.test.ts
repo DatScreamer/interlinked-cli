@@ -262,7 +262,7 @@ describe("installCursorHooks / uninstallCursorHooks", () => {
 		// skipped, not crashed on), an interlinked array (to be removed), and a
 		// foreign array (a surviving real hook keeps the file alive so we land
 		// in the keep-file branch rather than deleting it).
-		const interlinkedCmd = `node ${join(tmp, "interlinked-activity.mjs")}`;
+		const interlinkedCmd = "node .interlinked/hooks/interlinked-activity.mjs";
 		const seeded = {
 			version: 1,
 			hooks: {

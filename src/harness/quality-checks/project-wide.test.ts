@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProjectWideCheckConfig } from "../types.js";
-import { ProjectWideSweepState } from "./project-wide.js";
+import type { CheckReport } from "../check-engine/types.js";
+
+const { mRunChecks } = vi.hoisted(() => ({ mRunChecks: vi.fn() }));
+
+vi.mock("../check-engine/index.js", () => ({
+	getOrCreateEngine: vi.fn(() => ({ runChecks: mRunChecks })),
+}));
+
+import { ProjectWideSweepState, runProjectWideChecks } from "./project-wide.js";
 
 /**
  * The sweep debouncer decides how often the expensive project-wide pass runs.
@@ -66,5 +74,33 @@ describe("ProjectWideSweepState — the sweep debouncer", () => {
 		const s = new ProjectWideSweepState();
 		s.recordFileChecked("src/a.ts");
 		expect(s.checkedFiles.has("src/b.ts")).toBe(false);
+	});
+});
+
+describe("runProjectWideChecks — unavailable tools", () => {
+	it("reports a missing requested tool as deferred and retains the retry cadence", () => {
+		const state = new ProjectWideSweepState();
+		state.editsSinceLastSweep = 3;
+		const report: CheckReport = {
+			results: [],
+			toolsRun: [{ id: "biome", available: false, reason: "not installed" }],
+			toolsSkipped: [{ id: "biome", available: false, reason: "not installed" }],
+			skipped: [{ check: "biome", reason: "not installed", category: "tool_missing" }],
+			elapsedMs: 0,
+			metrics: [],
+			deduplicatedCount: 0,
+		};
+		mRunChecks.mockReturnValueOnce(report);
+
+		const result = runProjectWideChecks(
+			config({ tools: ["biome"], max_findings: 10, severity: "warning" }),
+			state,
+			"/repo",
+		);
+
+		expect(result.toolsRun).toEqual([]);
+		expect(result.deferredReasons).toEqual(["biome: not installed"]);
+		expect(result.findings).toEqual([]);
+		expect(state.editsSinceLastSweep).toBe(3);
 	});
 });

@@ -26,6 +26,7 @@ const GITIGNORE_ENTRIES = [
 	".interlinked/harness.sock",
 	".interlinked/harness.pid",
 	".interlinked/pending-quality-warnings.json",
+	".interlinked/quality-warning-spool/",
 	".interlinked/index/",
 	".interlinked/semantic.local.json",
 	".interlinked/error-history.jsonl",
@@ -51,6 +52,7 @@ const DATA_GITIGNORE_ENTRIES = new Set([
 	".interlinked/sessions/",
 	".interlinked/failures/",
 	".interlinked/checkpoints.json",
+	".interlinked/quality-warning-spool/",
 ]);
 
 /**

@@ -21,9 +21,12 @@
 //   stopped   — no pid, nothing answered (honest, expected, harmless)
 
 import { existsSync } from "node:fs";
+import { createDaemonClient } from "../harness/daemon-client.js";
+import { daemonSocketPaths, discoverDaemons } from "../harness/session-paths.js";
+import { isRawStatusDecision, parseDaemonHealth } from "../harness/socket-readiness.js";
 import { c } from "../lib/formatter.js";
-import { getSocketPath } from "./harness-process.js";
-import { queryHarness } from "./harness-status-helpers.js";
+import { getFramedSocketPath, getSocketPath } from "./harness-process.js";
+import { queryHarnessSocket } from "./harness-status-helpers.js";
 
 export type HarnessLivenessState = "listening" | "zombie" | "stopped";
 
@@ -63,9 +66,36 @@ export async function probeHarnessSocket(
 	cwd: string,
 	timeoutMs: number = LIVENESS_PROBE_TIMEOUT_MS,
 ): Promise<boolean> {
-	if (!existsSync(getSocketPath(cwd))) return false;
-	const answer = await queryHarness(
-		cwd,
+	// Every daemon flavor counts (review 2026-08-26, both passes): the raw
+	// socket speaks newline-JSON hook events; framed per-session daemons speak
+	// the RPC envelope, so they are probed with a REAL `daemon.health` call —
+	// sending a raw StatusQuery at a framed socket only proved "something
+	// listens" while generating bad_request error traffic on every status/
+	// doctor run. Named session sockets are discovered, not just the default.
+	// First success wins immediately; a silent sibling cannot stall an answer.
+	// Cancellation (review pass 15): the first success ABORTS the losing
+	// probes — otherwise a silent raw socket keeps its socket + timer holding
+	// the event loop for the full timeout after framed health already won.
+	const controller = new AbortController();
+	const probes: Array<Promise<boolean>> = [];
+	const rawPath = getSocketPath(cwd);
+	if (existsSync(rawPath)) probes.push(probeRawSocket(rawPath, timeoutMs, controller.signal));
+	for (const framedPath of framedSocketCandidates(cwd, rawPath)) {
+		probes.push(probeFramedHealth(framedPath, timeoutMs, controller.signal));
+	}
+	if (probes.length === 0) return false;
+	const won = await firstSuccess(probes);
+	if (won) controller.abort();
+	return won;
+}
+
+async function probeRawSocket(
+	socketPath: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const answer = await queryHarnessSocket(
+		socketPath,
 		{
 			hook_event: "StatusQuery",
 			session_id: "cli-status",
@@ -73,8 +103,65 @@ export async function probeHarnessSocket(
 			timestamp: new Date().toISOString(),
 		},
 		timeoutMs,
+		signal,
 	);
-	return answer !== null;
+	return isRawStatusDecision(answer);
+}
+
+/** A framed daemon is healthy only if it answers its OWN protocol's
+ *  `daemon.health` with a VALID health body — an envelope-shaped anything is
+ *  not health (review pass 15: any non-null object used to count). */
+async function probeFramedHealth(
+	socketPath: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	try {
+		const health = await createDaemonClient(socketPath).call(
+			"daemon.health",
+			{},
+			signal ? { timeout_ms: timeoutMs, signal } : { timeout_ms: timeoutMs },
+		);
+		return parseDaemonHealth(health) !== null;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Parse a `daemon.health` result into a typed DaemonHealth, or null. EVERY
+ * required field is validated (review pass 16: the earlier two-field check
+ * accepted `{status:"ready", protocol_version:"garbage"}`). Degraded still
+ * counts as alive; a WRONG protocol version does not — an incompatible
+ * daemon needs a restart, and reporting it "listening" would hide that.
+ */
+export { parseDaemonHealth } from "../harness/socket-readiness.js";
+
+
+/** All framed socket paths worth probing: pid-file-discovered session daemons
+ *  (named sessions included — doctor previously saw only the default) plus the
+ *  default framed path, deduped, existing on disk, never the raw socket. */
+function framedSocketCandidates(cwd: string, rawPath: string): string[] {
+	const discovered = daemonSocketPaths(cwd).filter((path) => path !== rawPath);
+	return [...new Set([getFramedSocketPath(cwd, undefined), ...discovered])].filter(
+		(p): p is string => typeof p === "string" && p.length > 0 && p !== rawPath && existsSync(p),
+	);
+}
+
+/** Resolve true on the FIRST fulfilled true; false only when every probe has
+ *  settled falsy. A rejected probe counts as false. */
+function firstSuccess(probes: Array<Promise<boolean>>): Promise<boolean> {
+	return new Promise((resolve) => {
+		let remaining = probes.length;
+		const settle = (ok: boolean): void => {
+			if (ok) resolve(true);
+			remaining -= 1;
+			if (remaining === 0) resolve(false);
+		};
+		for (const p of probes) {
+			p.then(settle, () => settle(false));
+		}
+	});
 }
 
 /** Delay before the confirming re-probe. Binding a unix socket is sub-second
@@ -85,8 +172,13 @@ const LIVENESS_CONFIRM_DELAY_MS = 750;
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		timer.unref();
+		// Deliberately NOT unref'd (review 2026-08-26): this timer is AWAITED, so
+		// releasing it from event-loop ownership let the whole process exit with
+		// "unsettled top-level await" (code 13) whenever nothing else was pending
+		// — which is exactly the framed-only-daemon case the confirm delay
+		// exists to re-check. The wait is bounded and paid only in the ambiguous
+		// zombie-suspect state.
+		setTimeout(resolve, ms);
 	});
 }
 
@@ -106,7 +198,11 @@ export async function probeHarnessLive(
 	confirmDelayMs: number = LIVENESS_CONFIRM_DELAY_MS,
 ): Promise<boolean> {
 	if (await probeHarnessSocket(cwd)) return true;
-	if (!processRunning) return false;
+	// `processRunning` reflects only the legacy harness.pid; a NAMED session
+	// daemon that is alive but still binding its socket earned the confirming
+	// re-probe too (review pass 15: it was reported "stopped" mid-startup).
+	const anyDaemonAlive = processRunning || discoverDaemons(cwd).some((d) => d.alive);
+	if (!anyDaemonAlive) return false;
 	await delay(confirmDelayMs);
 	return probeHarnessSocket(cwd);
 }

@@ -20,15 +20,14 @@ import {
 	getConfigDir,
 	getLocalConfigPath,
 	getSharedConfigPath,
-	hasLegacyConfig,
-	migrateLegacyConfig,
 } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
 import { readGuardDisable } from "../lib/guard-state.js";
 import { HOOK_SCRIPT_VERSION, writeHookScript } from "../lib/hooks.js";
+import { readCodexHooksFlag } from "../lib/codex-feature-flag.js";
 import { isJsonObject } from "../lib/json-types.js";
-import { clientHookTargets } from "../lib/settings.js";
 import { functionTokenCapConfigIssue } from "../harness/metric-caps.js";
+import { clientHookTargets } from "../lib/settings.js";
 import {
 	defaultSettingsPaths,
 	stripMalformedRules,
@@ -37,6 +36,10 @@ import {
 import { runSystemChecks } from "./doctor-system.js";
 import { harnessServerRow } from "./harness-liveness.js";
 import { isHarnessRunning } from "./harness.js";
+import type { CheckResult, CheckStatus } from "./doctor-check-types.js";
+
+export type { CheckResult, CheckStatus } from "./doctor-check-types.js";
+export { authTokenCheck, legacyConfigCheck } from "./doctor-checks-auth.js";
 
 /**
  * Pull the `mode` field out of a parsed config.json value, or undefined when
@@ -60,7 +63,7 @@ function parseConfiguredMode(value: unknown): string | undefined {
  * compare, doctor would read `0.1.0+mode-budget` as `0.1.0` and skip the
  * regenerate even though the baked timeout is for the wrong mode.
  */
-function expectedHookVersion(cwd: string): string {
+export function expectedHookVersion(cwd: string): string {
 	const sharedConfigPath = getSharedConfigPath(cwd);
 	let modeName: HarnessMode = DEFAULT_HARNESS_MODE;
 	if (existsSync(sharedConfigPath)) {
@@ -75,16 +78,6 @@ function expectedHookVersion(cwd: string): string {
 		}
 	}
 	return `${HOOK_SCRIPT_VERSION}+mode-${modeName}`;
-}
-
-export type CheckStatus = "pass" | "fail" | "warn";
-
-export interface CheckResult {
-	name: string;
-	status: CheckStatus;
-	message: string;
-	fixable?: boolean;
-	fixAction?: string;
 }
 
 export function statusIcon(status: CheckStatus): string {
@@ -128,9 +121,15 @@ export function collectionLivenessCheck(live: CollectionLiveness): {
 	}
 }
 
-/** System checks (CPU / memory / orphan daemons), normalized to CheckResult. */
-export function systemChecks(): CheckResult[] {
-	return runSystemChecks().map((r) => ({ name: r.name, status: r.status, message: r.message }));
+/** System checks (CPU / memory / orphan daemons), normalized to CheckResult.
+ *  `orphanCount` comes from the caller's protection-aware sweep so doctor and
+ *  `harness status` cannot disagree about what an orphan is. */
+export function systemChecks(orphanCount: number | null): CheckResult[] {
+	return runSystemChecks(orphanCount).map((r) => ({
+		name: r.name,
+		status: r.status,
+		message: r.message,
+	}));
 }
 
 /** Config-directory / shared-config / local-config / agent-identity / hook-presence
@@ -348,45 +347,6 @@ export function permissionRuleChecks(cwd: string, fix: boolean): CheckResult[] {
 		});
 	}
 	return out;
-}
-
-/** Auth token presence (6). Localhost dev servers downgrade an absent token
- *  from fail to warn (unauthenticated access is allowed there). */
-export function authTokenCheck(token: string | null, isLocalDevServer: boolean): CheckResult {
-	if (token) {
-		return { name: "Auth token", status: "pass", message: "Token available" };
-	}
-	if (isLocalDevServer) {
-		return {
-			name: "Auth token",
-			status: "warn",
-			message: "No auth token (localhost dev mode allows unauthenticated access)",
-		};
-	}
-	return { name: "Auth token", status: "fail", message: "No auth token -- run 'interlinked login'" };
-}
-
-/** Legacy `.claude/interlinked-session.json` detection + migration (7). */
-export function legacyConfigCheck(cwd: string, fix: boolean): CheckResult[] {
-	if (!hasLegacyConfig(cwd)) return [];
-	if (fix && migrateLegacyConfig(cwd)) {
-		return [
-			{
-				name: "Legacy config",
-				status: "pass",
-				message: "Migrated .claude/interlinked-session.json to .interlinked/",
-			},
-		];
-	}
-	return [
-		{
-			name: "Legacy config",
-			status: "warn",
-			message: "Found .claude/interlinked-session.json -- should migrate to .interlinked/",
-			fixable: true,
-			fixAction: "migrate",
-		},
-	];
 }
 
 /** Build the Session-files CheckResult from a directory's file listing (8). */

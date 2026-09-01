@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,9 @@ function report(status: string): unknown {
 	const line2 = CONTENT.split("\n")[1] ?? "";
 	const col = line2.indexOf(">") + 1;
 	return {
+		engine: { exitCode: 0 },
+		testRun: { overlayGreen: true, redWitnessSatisfied: null, executedTestCount: 1 },
+		testFiles: { "src/a.test.ts": { tests: [{ id: "test-1", name: "f" }] } },
 		files: {
 			[FILE]: {
 				source: CONTENT,
@@ -160,6 +163,20 @@ describe("renderMeasureCommand — outcome rendering", () => {
 		expect(renderMeasureCommand(FILE, outcome, null)).toBe(
 			[header(`Mutation Measure — ${FILE}`), c.red("  FAILED: connection refused")].join("\n"),
 		);
+	});
+
+	it("renders partial evidence as not recorded while retaining parsed findings", () => {
+		const outcome: MeasureOutcome = {
+			status: "partial",
+			reason: "engine exited 2",
+			mutantCount: 2,
+			survivorCount: 1,
+			survivors: [{ line: 3, mutator: "EqualityOperator", replacement: ">=" }],
+		};
+		const rendered = renderMeasureCommand(FILE, outcome, null);
+		expect(rendered).toContain("PARTIAL — NOT RECORDED: engine exited 2");
+		expect(rendered).toContain("Parsed mutants");
+		expect(rendered).toContain("L3  EqualityOperator");
 	});
 
 	it("falls back to 'unknown error' when an error outcome carries no reason", () => {
@@ -319,6 +336,29 @@ describe("maybeRecordMeasurement", () => {
 			cwd: dir,
 		});
 		expect(result).toEqual({ recorded: false, reason: "run was busy — nothing to record" });
+	});
+
+	// test-contract: invariant — review 2026-08-28 (Grok issue 2): the tri-state
+	// contract binds EVERY mutation-state writer. A corrupt on-disk manifest must
+	// refuse `--record` with the original bytes untouched — the old
+	// `loadManifest() ?? emptyManifest()` treated corrupt as missing and replaced
+	// damaged history with a fresh floor. Real filesystem, no mocks.
+	it("N: refuses to record over a CORRUPT on-disk manifest, leaving its bytes unchanged", async () => {
+		const manifestPath = join(dir, "mutation-manifest.json");
+		const corruptBytes = "{ this is not json";
+		writeFileSync(manifestPath, corruptBytes);
+		const result = await maybeRecordMeasurement({
+			record: true,
+			outcome: measuredOutcome(report("Killed")),
+			configDir: dir,
+			key: FILE,
+			content: CONTENT,
+			cwd: dir,
+		});
+		expect(result?.recorded).toBe(false);
+		expect(result?.reason).toContain("corrupt");
+		expect(result?.reason).toContain("preserved");
+		expect(readFileSync(manifestPath, "utf-8")).toBe(corruptBytes);
 	});
 
 	it("records a real measured-clean run into a fresh manifest on disk", async () => {

@@ -13,8 +13,13 @@
 
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { nonNull } from "../lib/non-null.js";
+import {
+	classifyHarnessSocket,
+	type HarnessSocketState,
+	isHarnessSocketReady,
+} from "./socket-readiness.js";
 
 export interface DaemonPaths {
 	socket: string;
@@ -172,9 +177,10 @@ const DEFAULT_SOCKET_PROBE_TIMEOUT_MS = 300;
  * path, platform quirk) is NOT swallowed here; the caller decides how to
  * fail safe on that (see `server.ts`'s anti-stomp check).
  */
-export function isDaemonSocketServing(
+function probeDaemonSocket(
 	socketPath: string,
-	opts: SocketProbeOptions = {},
+	opts: SocketProbeOptions,
+	ambiguousResult: boolean,
 ): Promise<boolean> {
 	const timeoutMs = opts.timeout_ms ?? DEFAULT_SOCKET_PROBE_TIMEOUT_MS;
 	return new Promise((resolve) => {
@@ -191,7 +197,7 @@ export function isDaemonSocketServing(
 			}
 			resolve(result);
 		};
-		const timer = setTimeout(() => finish(true), timeoutMs);
+		const timer = setTimeout(() => finish(ambiguousResult), timeoutMs);
 		socket.on("connect", () => finish(true));
 		socket.on("error", (err: NodeJS.ErrnoException) => {
 			const code = err.code;
@@ -199,9 +205,35 @@ export function isDaemonSocketServing(
 				finish(false);
 				return;
 			}
-			finish(true);
+			finish(ambiguousResult);
 		});
 	});
+}
+
+export function isDaemonSocketServing(
+	socketPath: string,
+	opts: SocketProbeOptions = {},
+): Promise<boolean> {
+	return probeDaemonSocket(socketPath, opts, true);
+}
+
+/** Strict startup-readiness probe. Unlike the anti-stomp probe above, an
+ * ambiguous timeout or unexpected socket error is not readiness: callers may
+ * report success only after a real connection was accepted. */
+export function isDaemonSocketReady(
+	socketPath: string,
+	opts: SocketProbeOptions = {},
+): Promise<boolean> {
+	const protocol = basename(socketPath) === "harness.sock" ? "raw" : "framed";
+	return isHarnessSocketReady({ socketPath, protocol, opts }).catch(() => false);
+}
+
+export function classifyDaemonSocket(
+	socketPath: string,
+	opts: SocketProbeOptions = {},
+): Promise<HarnessSocketState> {
+	const protocol = basename(socketPath) === "harness.sock" ? "raw" : "framed";
+	return classifyHarnessSocket({ socketPath, protocol, opts });
 }
 
 // -----------------------------------------------------------------------------

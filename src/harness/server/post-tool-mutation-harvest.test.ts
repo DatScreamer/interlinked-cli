@@ -1,4 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+// These tests run with the REAL repo cwd; without these mocks the durable
+// side effects (run ledger + pending-store JSON) write into the actual
+// .interlinked/ — synthetic rows polluted the live ledger once (external
+// review 2026-08-23, finding 4). Registry logic stays real; only persistence
+// and the ledger append are neutralized.
+vi.mock("../mutation/run-log.js", () => ({ appendMutationRun: vi.fn() }));
+vi.mock("../mutation/pending-registry.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../mutation/pending-registry.js")>();
+	return { ...actual, initPendingRegistryStore: vi.fn(), commitPendingRegistry: vi.fn() };
+});
 import { overlayHash, pendingRegistry, resetPendingRegistry } from "../mutation/pending-registry.js";
 import { recordPending } from "../mutation/pending-runs.js";
 import type { HarnessDecision, HarnessEvent } from "../types.js";
@@ -47,6 +57,35 @@ beforeEach(() => {
 });
 
 describe("appendMutationHarvestWarning", () => {
+	// test-contract: invariant — Grok 2026-08-28 issue 4: `mode: "off"` must
+	// silence BOTH windows. The PreToolUse gate no-ops on it; a harvest keyed
+	// only off `enabled` kept claiming pending jobs for a disabled gate.
+	it("N: mode 'off' produces nothing and claims no pending handle", async () => {
+		const cwd = process.cwd();
+		recordPending(pendingRegistry(NOW), {
+			file: "src/a.ts",
+			overlayHash: overlayHash(CONTENT),
+			jobId: "j-off",
+			runnerUrl: "http://runner/",
+			startedAt: NOW,
+		});
+		const ctx = {
+			cwd,
+			rules: { per_edit_mutation: { enabled: true, mode: "off", runner_urls: ["http://runner/"] } },
+			// SAFETY: same structural stand-in shape as ctxWith — the function
+			// reads only cwd and rules.per_edit_mutation.
+		} as unknown as ServerRuntime;
+		const decision: HarnessDecision = { decision: "allow" };
+		await appendMutationHarvestWarning(ctx, writeEvent(`${cwd}/src/a.ts`), decision, {
+			readDisk: () => CONTENT,
+			fetchImpl: okFetch,
+			now: () => NOW,
+		});
+		expect(decision.warnings).toBeUndefined();
+		// The handle is still claimable — off-mode must not consume it.
+		expect(pendingRegistry(NOW).runs).toHaveLength(1);
+	});
+
 	it("reports survivors from a run the PreToolUse window could not wait for", async () => {
 		const cwd = process.cwd();
 		recordPending(pendingRegistry(NOW), {
@@ -63,6 +102,49 @@ describe("appendMutationHarvestWarning", () => {
 			now: () => NOW,
 		});
 		expect(decision.warnings?.join("\n")).toContain("surviving mutant");
+	});
+
+	// test-contract: invariant — review 2026-08-28 P1: the harvester writes an
+	// EVIDENCE status, never an evaluator-minted outcome. The ledger row must
+	// say `harvest_partial` + `partial: true` — incomplete evidence, neither
+	// clean nor a committed `finding` — and the mock was previously never
+	// asserted, so nothing pinned the persisted shape at all.
+	it("P: the persisted ledger row carries outcome harvest_partial and partial:true", async () => {
+		const { appendMutationRun } = await import("../mutation/run-log.js");
+		const mAppend = vi.mocked(appendMutationRun);
+		mAppend.mockClear();
+		const cwd = process.cwd();
+		recordPending(pendingRegistry(NOW), {
+			file: "src/a.ts",
+			overlayHash: overlayHash(CONTENT),
+			jobId: "j-row",
+			runnerUrl: "http://runner/",
+			startedAt: NOW,
+		});
+		await appendMutationHarvestWarning(ctxWith(true, cwd), writeEvent(`${cwd}/src/a.ts`), { decision: "allow" }, {
+			readDisk: () => CONTENT,
+			fetchImpl: okFetch,
+			now: () => NOW,
+		});
+		expect(mAppend).toHaveBeenCalledTimes(1);
+		const row = mAppend.mock.calls[0]?.[1];
+		expect(row?.outcome).toBe("harvest_partial");
+		expect(row?.partial).toBe(true);
+		expect(row?.source).toBe("harvest");
+	});
+
+	it("N: an unmatched window (zero harvested jobs) writes NO ledger row", async () => {
+		const { appendMutationRun } = await import("../mutation/run-log.js");
+		const mAppend = vi.mocked(appendMutationRun);
+		mAppend.mockClear();
+		const cwd = process.cwd();
+		// No pending run recorded — nothing to claim, nothing to persist.
+		await appendMutationHarvestWarning(ctxWith(true, cwd), writeEvent(`${cwd}/src/a.ts`), { decision: "allow" }, {
+			readDisk: () => CONTENT,
+			fetchImpl: okFetch,
+			now: () => NOW,
+		});
+		expect(mAppend).not.toHaveBeenCalled();
 	});
 
 	it("waits for a run that is still going when the phase starts", async () => {
@@ -96,10 +178,14 @@ describe("appendMutationHarvestWarning", () => {
 		expect(decision.warnings?.join("\n")).toContain("surviving mutant");
 	});
 
-	it("reports a measured-clean result rather than staying silent about it", async () => {
-		// Silence made the path unobservable: "claimed, waited, nothing survived"
-		// looked identical to "never correlated at all". The agent should be able
-		// to see the clean result it earned.
+	it("reports a no-survivors harvest WITHOUT calling it clean", async () => {
+		// Two requirements pull against each other here and both must hold.
+		// Silence made the path unobservable: "claimed, waited, nothing
+		// survived" looked identical to "never correlated at all". But the
+		// harvest extracts SURVIVORS ONLY — no test run, no engine exit, no
+		// mutant census, and it never passes through the evaluator — so "no
+		// survivors" is equally consistent with a run that executed no tests.
+		// Report the observation; refuse the word "clean".
 		const cwd = process.cwd();
 		recordPending(pendingRegistry(NOW), {
 			file: "src/a.ts",
@@ -119,7 +205,13 @@ describe("appendMutationHarvestWarning", () => {
 			fetchImpl: noSurvivors,
 			now: () => NOW,
 		});
-		expect(decision.warnings?.join("\n")).toContain("measured clean");
+		const said = decision.warnings?.join("\n") ?? "";
+		// Observable: the agent can see the harvest reported and found nothing.
+		expect(said).toContain("NO SURVIVORS");
+		expect(said).toContain("1/1");
+		// But NOT certified: survivor-only evidence is not a clean attestation.
+		expect(said).not.toContain("measured clean");
+		expect(said).toContain("not a clean attestation");
 	});
 
 	it("reports pending runs that never came back, instead of implying clean", async () => {

@@ -14,19 +14,22 @@
 // introducing a new async/Atomics bridge into one call site.
 //
 // Every failure mode (missing binary, crash, timeout, malformed reply,
-// explicit {id,error}) degrades to `[]` plus exactly one console.error line
-// — the overlay guard's availability never depends on the sidecar being
-// healthy. After SIDECAR_MAX_CONSECUTIVE_FAILURES in a row, the client stops
+// explicit {id,error}) yields a typed {status:"unavailable", reason} plus
+// exactly one console.error line — the overlay guard's availability never
+// depends on the sidecar being healthy, but consumers CAN now distinguish
+// "checked clean" from "checker never ran" (the legacy wrapper collapses
+// unavailable to `[]`). After SIDECAR_MAX_CONSECUTIVE_FAILURES in a row, the client stops
 // even trying to spawn for SIDECAR_COOLDOWN_MS (one warning on ENTERING
 // cooldown, silence while suppressed) — the per-call analog of "restart-on-
 // crash with a cap ... then fall back" for a model with no persistent
 // process to restart.
 
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tryAcquireProjectCompilerLease } from "../../project-compiler-gate.js";
 import type { CheckResult } from "../types.js";
 import {
 	isSidecarErrorResponse,
@@ -55,6 +58,18 @@ const SIDECAR_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 let consecutiveFailures = 0;
 let cooldownUntilMs = 0;
+
+/**
+ * Typed outcome of one sidecar overlay run. "unavailable" means the checker
+ * NEVER RAN (spawn failure, timeout/kill, malformed reply, explicit error,
+ * cooldown) — it is not the same as "checked clean". Transactional consumers
+ * (multi-edit, verify-changeset) must treat "unavailable" as a gate failure;
+ * the legacy `runOverlayViaSidecar` wrapper collapses it to `[]` for the
+ * ordinary advisory PreToolUse path, which surfaces the stderr warning only.
+ */
+export type SidecarOverlayOutcome =
+	| { status: "ok"; findings: CheckResult[] }
+	| { status: "unavailable"; reason: string };
 
 /** Test-only reset — the module-level failure counters would otherwise leak
  *  across test cases sharing this module instance. */
@@ -101,17 +116,17 @@ function isCooldownActive(): boolean {
 	return Date.now() < cooldownUntilMs;
 }
 
-function recordFailure(reason: string): CheckResult[] {
+function recordFailure(reason: string): SidecarOverlayOutcome {
 	consecutiveFailures++;
 	if (consecutiveFailures >= SIDECAR_MAX_CONSECUTIVE_FAILURES && !isCooldownActive()) {
 		cooldownUntilMs = Date.now() + SIDECAR_COOLDOWN_MS;
 		warnOnce(
-			`${reason} — ${consecutiveFailures} consecutive failures, falling back to no findings for ${Math.round(SIDECAR_COOLDOWN_MS / 1000)}s`,
+			`${reason} — ${consecutiveFailures} consecutive failures, entering cooldown for ${Math.round(SIDECAR_COOLDOWN_MS / 1000)}s`,
 		);
-		return [];
+	} else {
+		warnOnce(reason);
 	}
-	warnOnce(reason);
-	return [];
+	return { status: "unavailable", reason };
 }
 
 function recordSuccess(): void {
@@ -147,13 +162,25 @@ function parseReplyLine(stdout: string): SidecarOverlayResponse | null {
 /**
  * Run one overlay check by spawning the sidecar process. Synchronous —
  * matches the synchronous PreToolUse call chain (see module doc above).
- * Never throws; every failure mode returns `[]`.
+ * Never throws; every failure mode returns a typed "unavailable" outcome so
+ * consumers can distinguish "checked clean" from "checker never ran".
  */
-export function runOverlayViaSidecar(input: RunTscOverlayInput): CheckResult[] {
-	if (isCooldownActive()) return [];
+export function runOverlayViaSidecarTyped(input: RunTscOverlayInput): SidecarOverlayOutcome {
+	if (isCooldownActive()) {
+		return {
+			status: "unavailable",
+			reason: "sidecar in cooldown after repeated consecutive failures",
+		};
+	}
 
 	const spec = resolveSidecarSpawnSpec();
 	if (!spec) return recordFailure("sidecar entry point not found (missing build?)");
+	const releaseCompiler = tryAcquireProjectCompilerLease(input.projectRoot);
+	if (!releaseCompiler) {
+		const reason = "sidecar deferred: another TypeScript compiler is already running for this project";
+		warnOnce(reason);
+		return { status: "unavailable", reason };
+	}
 
 	const request: SidecarOverlayRequest = {
 		id: 1,
@@ -162,12 +189,17 @@ export function runOverlayViaSidecar(input: RunTscOverlayInput): CheckResult[] {
 		params: input,
 	};
 
-	const result = spawnSync(spec.command, spec.args, {
-		input: `${JSON.stringify(request)}\n`,
-		encoding: "utf-8",
-		timeout: SIDECAR_REQUEST_TIMEOUT_MS,
-		maxBuffer: SIDECAR_MAX_BUFFER_BYTES,
-	});
+	let result: SpawnSyncReturns<string>;
+	try {
+		result = spawnSync(spec.command, spec.args, {
+			input: `${JSON.stringify(request)}\n`,
+			encoding: "utf-8",
+			timeout: SIDECAR_REQUEST_TIMEOUT_MS,
+			maxBuffer: SIDECAR_MAX_BUFFER_BYTES,
+		});
+	} finally {
+		releaseCompiler();
+	}
 
 	if (result.error) {
 		return recordFailure(`sidecar spawn failed: ${result.error.message}`);
@@ -184,7 +216,19 @@ export function runOverlayViaSidecar(input: RunTscOverlayInput): CheckResult[] {
 	if (isSidecarErrorResponse(reply)) return recordFailure(`sidecar reported an error: ${reply.error}`);
 
 	recordSuccess();
-	return reply.result;
+	return { status: "ok", findings: reply.result };
+}
+
+/**
+ * Legacy shape — findings only. "unavailable" collapses to `[]`, which is
+ * indistinguishable from "checked clean"; the stderr warning emitted inside
+ * the typed run is the only visible signal. Kept for the ordinary advisory
+ * PreToolUse path. Transactional callers (multi-edit, verify-changeset) must
+ * use `runOverlayViaSidecarTyped` (via `runTscOverlayTyped`) instead.
+ */
+export function runOverlayViaSidecar(input: RunTscOverlayInput): CheckResult[] {
+	const outcome = runOverlayViaSidecarTyped(input);
+	return outcome.status === "ok" ? outcome.findings : [];
 }
 
 // Re-exported so callers that only need to detect "is this an ENOENT / dev-

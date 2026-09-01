@@ -377,8 +377,11 @@ export async function writeCommand(
 		exitWithError(useJson, err, EXIT_USAGE, "interlinked write: ");
 	}
 
-	// Gate — the whole point.
-	const result = gateProposedContent(entries);
+	// Gate — the whole point. `interlinked write` is a TRANSACTIONAL write
+	// path (single and --batch): an unavailable TypeScript checker must ABORT,
+	// never fail open (review pass 18 — "unavailable is not clean" applies to
+	// every transactional write surface, not only multi-edit/verify-changeset).
+	const result = gateProposedContent(entries, { tscUnavailableSeverity: GATE_SEVERITY_ERROR });
 
 	// Any blocking failure → abort the whole batch.
 	const blocking = result.failures.filter((f) => f.severity === GATE_SEVERITY_ERROR);

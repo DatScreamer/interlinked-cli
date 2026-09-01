@@ -431,7 +431,7 @@ describe("parseInstallCommands — rawCommand runtime type guard", () => {
 	// `typeof` reports "object", not "string" — only the type check catches
 	// it.
 	it("P: a boxed String object rawCommand yields nothing (typeof guard, not just falsy)", () => {
-		// biome-ignore lint: deliberately exercising the runtime type guard with a non-primitive
+		// Deliberately exercise the runtime type guard with a non-primitive string wrapper.
 		expect(parseInstallCommands(new String("npm install foo") as unknown as string)).toEqual([]);
 	});
 

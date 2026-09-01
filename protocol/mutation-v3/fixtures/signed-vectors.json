@@ -1,0 +1,193 @@
+{
+  "protocol_version": "interlinked-mutation/3.0",
+  "description": "Deterministic signed verification vector for the cross-repository trust contract. Control signs acceptance, terminalization, and terminal-arm result envelopes; runner signs execution receipts and execution-arm result envelopes. Both may carry the generic result purpose, but the envelope signer must equal the verified signer of its arm receipt. Source artifacts bind the exact git-archive-tar-v1 format, id, sha256, and byte length. The producer (interlinked-cloud, WebCrypto) and consumer (interlinked-cli, node:crypto) must reproduce these exact bytes. Contract: result_hash = sha256(canonicalJson(envelope minus seq/occurred_at/result_hash/signature)); envelope signature = Ed25519 over utf8(canonicalJson({key_id, occurred_at, result_hash})); receipt signature = Ed25519 over utf8(canonicalJson({key_id, payload})).",
+  "vector": {
+    "registry": {
+      "k_control": {
+        "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=\n-----END PUBLIC KEY-----\n",
+        "purposes": [
+          "acceptance",
+          "terminalization",
+          "result"
+        ]
+      },
+      "k_runner": {
+        "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=\n-----END PUBLIC KEY-----\n",
+        "purposes": [
+          "execution",
+          "result"
+        ]
+      }
+    },
+    "expected_job": {
+      "tenant": "t_dev",
+      "project": "p_cli",
+      "repository": "github.com/QuentinCody/interlinked-cli",
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "target_file": "src/lib/example.ts",
+      "target_content_hash": "e5db777a1c3c09d39dd0e783bf2a44f7149509f3d5210b5cfb3f971171dabd2d",
+      "job_key": "job_0001"
+    },
+    "server_authority": {
+      "tenant": "t_dev",
+      "project": "p_cli"
+    },
+    "expected_admission": {
+      "request_hash": "a49dba4607b6b6dbec68c5dd854a639d2fd041675e2b7544e5d453e75fceb31c",
+      "changeset_hash": "e758fb502c4af783b9bfe4e07d70626eda418735e6bcd8bc34452adf99c13d42",
+      "source_artifact": {
+        "format": "git-archive-tar-v1",
+        "artifact_id": "src_fixture_bundle_0001",
+        "sha256": "99412da7d8c5829910981d0f3c240ae69665a85b961f55b01a6d8ae57b7eb59b",
+        "bytes": 3072
+      }
+    },
+    "target_content": "export function example(x: number): string {\n\tconst adjusted = x + 1;\n\treturn adjusted > 0 ? \"x\" : \"\";\n}\n",
+    "source_artifact_bytes_base64": "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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "acceptance_receipt": "{\"payload\":{\"receipt_version\":\"1\",\"kind\":\"acceptance\",\"protocol_version\":\"interlinked-mutation/3.0\",\"issued_at\":\"2026-08-31T11:58:00.000Z\",\"job\":{\"tenant\":\"t_dev\",\"project\":\"p_cli\",\"repository\":\"github.com/QuentinCody/interlinked-cli\",\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"target_file\":\"src/lib/example.ts\",\"target_content_hash\":\"e5db777a1c3c09d39dd0e783bf2a44f7149509f3d5210b5cfb3f971171dabd2d\",\"job_key\":\"job_0001\"},\"approved_policy_ids\":[\"policy-string-literal-noise\"],\"policy_version\":\"policy-set-2026-08\",\"request_hash\":\"a49dba4607b6b6dbec68c5dd854a639d2fd041675e2b7544e5d453e75fceb31c\",\"test_scope_hash\":\"89c0441b7372ead1be5fc878e1547a488c84e7175c7379d4b0e026e7caae4bf1\",\"quota_reservation_id\":\"quota_job_0001\",\"changeset_hash\":\"e758fb502c4af783b9bfe4e07d70626eda418735e6bcd8bc34452adf99c13d42\",\"source_artifact\":{\"format\":\"git-archive-tar-v1\",\"artifact_id\":\"src_fixture_bundle_0001\",\"sha256\":\"99412da7d8c5829910981d0f3c240ae69665a85b961f55b01a6d8ae57b7eb59b\",\"bytes\":3072},\"intended_image_digest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"intended_engine_config_hash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"intended_scope_mode\":\"import_graph\"},\"signature\":{\"key_id\":\"k_control\",\"value\":\"Vt0OjZyyEZ73AxnRpvPfLztIED9d5/yBmCEbVXFDfKWxyVIo6S9JdOo8nCYpV03YWaIA2QfPBE4VhOMXY/OMBg==\"}}",
+    "execution_receipt": "{\"payload\":{\"receipt_version\":\"1\",\"kind\":\"execution\",\"issued_at\":\"2026-08-31T11:59:00.000Z\",\"acceptance_receipt_hash\":\"1a32b8a0e51861b9a9b2ef6a1fdfc84516784a6057adec83954b92150a04259b\",\"source_artifact\":{\"format\":\"git-archive-tar-v1\",\"artifact_id\":\"src_fixture_bundle_0001\",\"sha256\":\"99412da7d8c5829910981d0f3c240ae69665a85b961f55b01a6d8ae57b7eb59b\",\"bytes\":3072},\"job_key\":\"job_0001\",\"attempt_id\":\"attempt_0001\",\"image_digest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"engine_name\":\"stryker\",\"engine_version\":\"8.2.0\",\"engine_config_hash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"lockfile_hash\":\"2ed4c4dd609419c10232411eb5b57e1bbdb7e49cae572dcbaa7e2074520ebb23\",\"runtime_identity\":\"node-22.22.0\",\"package_manager_identity\":\"npm-10.9.4\",\"test_command_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"test_selection_algorithm\":\"import-graph-v2\",\"selected_test_hash\":\"89c0441b7372ead1be5fc878e1547a488c84e7175c7379d4b0e026e7caae4bf1\",\"selected_test_count\":1},\"signature\":{\"key_id\":\"k_runner\",\"value\":\"QGFF+EjapGM0b83BSeH9A9IZzP3wYrYdEOBVtFf0UkT9238nfC5i76AE7/ok+aO0KN+sXSSpJ2GpkpORfZlyCQ==\"}}",
+    "report_text": "{\"report_version\":\"1\",\"files\":{\"src/lib/example.ts\":{\"mutants\":[{\"mutant_id\":\"b42cf91c6dd95fc91c723a789ab24a854f6570dd13371cf4b8146edc5dcc800b\",\"site_id\":\"5306c23cddcd0ba745e0fdad95364b4b20e55aeed850b89ed7311b5f068044d5\",\"symbol_id\":\"dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde\",\"qualified_name\":\"example\",\"symbol_context\":\"example\",\"mutator\":\"EqualityOperator\",\"original_lexeme\":\">\",\"replacement\":\">=\",\"start_offset\":87,\"ordinal_within_symbol\":0,\"status\":\"killed\"},{\"mutant_id\":\"38bd3bf2b3e82c7c8c0c022726996833727cec50002676b37e09da794596ac1a\",\"site_id\":\"0340b01ec2834f4106189afbedbf41d15b02cbdf22bf2cc602de0da4133307c1\",\"symbol_id\":\"dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde\",\"qualified_name\":\"example\",\"symbol_context\":\"example\",\"mutator\":\"ArithmeticOperator\",\"original_lexeme\":\"+\",\"replacement\":\"-\",\"start_offset\":65,\"ordinal_within_symbol\":0,\"status\":\"killed\"},{\"mutant_id\":\"476a53a8821bec8ca42fe86396360761ae1c939ac0516568c5bf465f261c641f\",\"site_id\":\"54a52406151f8b8713d4e7aea02136d81e6c593d18952da9eed38c8c9b396502\",\"symbol_id\":\"dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde\",\"qualified_name\":\"example\",\"symbol_context\":\"example\",\"mutator\":\"StringLiteral\",\"original_lexeme\":\"\\\"x\\\"\",\"replacement\":\"\\\"\\\"\",\"start_offset\":93,\"ordinal_within_symbol\":0,\"policy_id\":\"policy-string-literal-noise\",\"status\":\"excluded\"}]}}}",
+    "verification_now": "2026-08-31T13:00:00.000Z",
+    "envelope": {
+      "protocol_version": "interlinked-mutation/3.0",
+      "kind": "mutation_result",
+      "job": {
+        "tenant": "t_dev",
+        "project": "p_cli",
+        "repository": "github.com/QuentinCody/interlinked-cli",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "target_file": "src/lib/example.ts",
+        "target_content_hash": "e5db777a1c3c09d39dd0e783bf2a44f7149509f3d5210b5cfb3f971171dabd2d",
+        "job_key": "job_0001"
+      },
+      "acceptance_receipt_hash": "1a32b8a0e51861b9a9b2ef6a1fdfc84516784a6057adec83954b92150a04259b",
+      "execution_receipt_hash": "315ab6d1ac7a35bcb140984c16fe47a93d8743bc543c52ead7162e9e6f151bdb",
+      "attempt_id": "attempt_0001",
+      "result_hash": "f0b0f36c61ff51ae63c90b805ccf2f8249989833fda194db687d99e0be84a901",
+      "signature": {
+        "key_id": "k_runner",
+        "value": "X0X3s3ZXwxXPseUF+xAJuFP4zel/kuqhKG7VZ24RCZfhI4aVtCMvHmSAs4w0av6L2IAJjLT3Cz3PPTr8nV++DQ=="
+      },
+      "seq": 7,
+      "occurred_at": "2026-08-31T12:00:00.000Z",
+      "scope": {
+        "mode": "import_graph",
+        "test_files": [
+          "src/lib/example.test.ts"
+        ],
+        "incremental": false,
+        "mutation_scope": "whole_file"
+      },
+      "engine": {
+        "name": "stryker",
+        "version": "8.2.0",
+        "config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "exit_code": 0
+      },
+      "runner": {
+        "build": "runner-build-2026-08-31",
+        "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "census": {
+        "generated": 3,
+        "executable": 2,
+        "approved_excluded": 1
+      },
+      "excluded": [
+        {
+          "mutant_id": "476a53a8821bec8ca42fe86396360761ae1c939ac0516568c5bf465f261c641f",
+          "site_id": "54a52406151f8b8713d4e7aea02136d81e6c593d18952da9eed38c8c9b396502",
+          "symbol_id": "dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde",
+          "qualified_name": "example",
+          "symbol_context": "example",
+          "mutator": "StringLiteral",
+          "original_lexeme": "\"x\"",
+          "replacement": "\"\"",
+          "start_offset": 93,
+          "ordinal_within_symbol": 0,
+          "policy_id": "policy-string-literal-noise"
+        }
+      ],
+      "mutants": [
+        {
+          "mutant_id": "b42cf91c6dd95fc91c723a789ab24a854f6570dd13371cf4b8146edc5dcc800b",
+          "site_id": "5306c23cddcd0ba745e0fdad95364b4b20e55aeed850b89ed7311b5f068044d5",
+          "symbol_id": "dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde",
+          "qualified_name": "example",
+          "symbol_context": "example",
+          "mutator": "EqualityOperator",
+          "original_lexeme": ">",
+          "replacement": ">=",
+          "start_offset": 87,
+          "ordinal_within_symbol": 0,
+          "status": "killed"
+        },
+        {
+          "mutant_id": "38bd3bf2b3e82c7c8c0c022726996833727cec50002676b37e09da794596ac1a",
+          "site_id": "0340b01ec2834f4106189afbedbf41d15b02cbdf22bf2cc602de0da4133307c1",
+          "symbol_id": "dbb1e85dc6aebc15c6fb1efca27dd80cdbf07892e6ed1096c3795f5fb7233fde",
+          "qualified_name": "example",
+          "symbol_context": "example",
+          "mutator": "ArithmeticOperator",
+          "original_lexeme": "+",
+          "replacement": "-",
+          "start_offset": 65,
+          "ordinal_within_symbol": 0,
+          "status": "killed"
+        }
+      ],
+      "identity_algorithm": "interlinked-site-v2",
+      "test_run": {
+        "executed_test_count": 12,
+        "overlay_green": true,
+        "red_witness_satisfied": null,
+        "command_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runner_name": "vitest",
+        "runner_version": "3.2.0"
+      },
+      "report": {
+        "r2_sha256": "2b3d6800b58d2fac70818f00a7893524945452d5645bc728d8e42e690adc9e87",
+        "bytes": 1384,
+        "content_hash": "2b3d6800b58d2fac70818f00a7893524945452d5645bc728d8e42e690adc9e87"
+      }
+    },
+    "tamper_cases": [
+      {
+        "name": "flip-mutant-status",
+        "patch_path": "mutants[1].status",
+        "value": "survived",
+        "expected_failure_includes": "result_hash mismatch"
+      },
+      {
+        "name": "forge-signature",
+        "patch_path": "signature.value",
+        "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "expected_failure_includes": "signature verification failed"
+      },
+      {
+        "name": "backdate-occurred-at",
+        "patch_path": "occurred_at",
+        "value": "2026-08-31T11:00:00.000Z",
+        "expected_failure_includes": "signature verification failed"
+      },
+      {
+        "name": "relabel-result-key-without-resigning",
+        "patch_path": "signature.key_id",
+        "value": "k_control",
+        "expected_failure_includes": "signature verification failed"
+      },
+      {
+        "name": "truncate-census",
+        "patch_path": "census.executable",
+        "value": 1,
+        "expected_failure_includes": "parse:"
+      },
+      {
+        "name": "swap-report-hash",
+        "patch_path": "report.content_hash",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000",
+        "expected_failure_includes": "result_hash mismatch"
+      }
+    ]
+  }
+}

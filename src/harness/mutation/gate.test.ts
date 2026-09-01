@@ -3,10 +3,11 @@ import { MutationNotMeasurableError } from "./cloud-runner.js";
 import {
 	type FileOverlay,
 	type MutationGateContext,
-	type MutationRange,
+	type MutationRunOptions,
 	type MutationRunner,
 	type PendingHandle,
 	type PerEditMutationConfig,
+	multiSourceNotMeasuredReason,
 	mutationTargetFor,
 	primaryCodeFile,
 	runPerEditMutationGate,
@@ -36,8 +37,43 @@ function survivor(status: AdaptedMutant["status"] = "survived"): AdaptedMutant {
 	};
 }
 
-function fakeRunner(mutants: AdaptedMutant[], avail = true, testRun?: TestRunResult): MutationRunner {
-	return { available: () => avail, run: () => Promise.resolve(testRun ? { mutants, testRun } : { mutants }) };
+/** A well-formed run: the suite ran and passed. */
+const GREEN_RUN: TestRunResult = { overlayGreen: true, redWitnessSatisfied: null };
+
+/**
+ * A stand-in runner. The default now carries GREEN test-run evidence, because
+ * goal 28 §8 makes that evidence a precondition for certifying clean — before
+ * the change, a runner that returned mutants and NO test run was allowed to
+ * produce a measured-clean allow, which is the false clean the contract closes.
+ *
+ * Pass `testRun: null` to model a runner that reports no test run at all; that
+ * cannot be expressed by passing `undefined`, since a default parameter fires
+ * on an explicit `undefined`.
+ *
+ * The default likewise carries `engineExitCode: 0` (strict, 2026-08-28): a
+ * proven engine finish is a precondition for clean. Pass `engineExit: null`
+ * (the sentinel, not the value) to model a runner that omits the field.
+ */
+function fakeRunner(
+	mutants: AdaptedMutant[],
+	opts: {
+		avail?: boolean;
+		testRun?: TestRunResult | null;
+		engineExit?: { exitCode: number | null } | null;
+		executedTestCount?: number | null;
+	} = {},
+): MutationRunner {
+	const { avail = true, testRun = GREEN_RUN, engineExit = { exitCode: 0 }, executedTestCount = 1 } = opts;
+	const engine = engineExit === null ? {} : { engineExitCode: engineExit.exitCode };
+	return {
+		available: () => avail,
+		run: () =>
+			Promise.resolve(
+				testRun === null
+					? { mutants, executedTestCount, ...engine }
+					: { mutants, testRun, executedTestCount, ...engine },
+			),
+	};
 }
 
 /**
@@ -103,13 +139,74 @@ describe("runPerEditMutationGate", () => {
 	});
 
 	it("returns not-measured when the runner reports unavailable", async () => {
-		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([], false) }));
+		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([], { avail: false }) }));
 		expect(d?.warnings?.[0]).toContain("not-measured");
 	});
 
 	it("fails closed when unavailable_behavior is block", async () => {
 		const d = await runPerEditMutationGate(ctx({ runner: null, config: cfg({ unavailable_behavior: "block" }) }));
 		expect(d?.decision).toBe("block");
+	});
+
+	// MUT-AC-26: today's normalizers (Write/Edit/MultiEdit) are SINGLE-FILE,
+	// so the multi-source refusal cannot be reached through a real tool_input
+	// yet — it is the guard that keeps a future multi-file adapter
+	// (apply_patch etc.) from silently under-measuring on day one. Pinned at
+	// the exported helper the gate calls first.
+	it("P: two eligible source files ⇒ a not-measured reason naming the count (MUT-AC-26)", () => {
+		const reason = multiSourceNotMeasuredReason(["src/a.ts", "src/b.ts"]);
+		expect(reason).toContain("2 eligible source files");
+		expect(reason).toContain("MUT-AC-26");
+	});
+
+	it("N: one source + its companion TEST is single-target — no refusal", () => {
+		expect(multiSourceNotMeasuredReason(["src/a.ts", "src/a.test.ts"])).toBeNull();
+	});
+
+	it("N: one source alone, or tests/scratch only, never refuses", () => {
+		expect(multiSourceNotMeasuredReason(["src/a.ts"])).toBeNull();
+		expect(multiSourceNotMeasuredReason(["src/a.test.ts", "scratch/probe.ts"])).toBeNull();
+	});
+
+	it("P: a red suite with ZERO mutants — the Worker's real red-suite shape — still BLOCKS end to end (review 2026-08-25 pass 7)", async () => {
+		const d = await runPerEditMutationGate(
+			ctx({ runner: fakeRunner([], { testRun: { overlayGreen: false, redWitnessSatisfied: null } }) }),
+		);
+		expect(d?.decision).toBe("block");
+	});
+
+	it("P: COMPOSED path — Worker-shaped HTTP body → createCloudMutationRunner → gate → block, zero persist calls (review 2026-08-25 pass 8)", async () => {
+		// The pass-7 pins proved each layer separately; this one test protects
+		// the cross-layer contract that actually failed: the raw wire shape of a
+		// red overlay suite must come out of the gate as a block, never as
+		// not-measured, and must never touch persistence.
+		const { createCloudMutationRunner } = await import("./cloud-runner.js");
+		const runner = createCloudMutationRunner({ url: "https://worker", timeoutMs: 1000 }, () =>
+			Promise.resolve({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ files: {}, testRun: { overlayGreen: false, redWitnessSatisfied: null } }),
+			}),
+		);
+		const persisted: unknown[] = [];
+		const d = await runPerEditMutationGate(ctx({ runner, persist: (m) => void persisted.push(m) }));
+		// Assert the EXACT cause (review 2026-08-25 pass 9): a block for any other
+		// reason would still be a regression of this contract.
+		expect(d).toMatchObject({ decision: "block", rule_id: "per-edit-mutation", category: "mutation" });
+		expect(d?.reason).toContain("affected tests are RED");
+		expect(persisted).toHaveLength(0);
+	});
+
+	it("P: a RUNNER EXCEPTION also fails closed under unavailable_behavior=block (review 2026-08-24 item 4)", async () => {
+		// Before the choke point, only a NULL runner honored block; exceptions,
+		// timeouts, and missing shards all fell through to allow-unmeasured.
+		const throwing: MutationRunner = { available: () => true, run: () => Promise.reject(new Error("boom")) };
+		const d = await runPerEditMutationGate(
+			ctx({ runner: throwing, config: cfg({ unavailable_behavior: "block" }) }),
+		);
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toContain("boom");
 	});
 
 	it("blocks a measured new survivor", async () => {
@@ -131,15 +228,28 @@ describe("runPerEditMutationGate", () => {
 	});
 
 	it("blocks a red overlay suite through the gate, even with a killed mutant (spec §7)", async () => {
-		const runner = fakeRunner([survivor("killed")], true, { overlayGreen: false, redWitnessSatisfied: null });
+		const runner = fakeRunner([survivor("killed")], { testRun: { overlayGreen: false, redWitnessSatisfied: null } });
 		const d = await runPerEditMutationGate(ctx({ runner }));
 		expect(d?.decision).toBe("block");
 		expect(d?.reason).toContain("RED on this edit");
 	});
 
-	it("no-ops when the edited file has no disk content to overlay", async () => {
+	// This case previously asserted the gate NO-OPS for a file with no disk
+	// content — i.e. it pinned the defect. A brand-new source file is the
+	// highest-risk edit in the tree (no prior tests, no baseline), and it was
+	// the one edit that skipped the gate silently, leaving nothing to audit.
+	// "Not measured" is the honest answer: visible, and blockable under a
+	// fail-closed unavailable_behavior.
+	it("P: a NEW file (no disk baseline) returns an explicit not-measured, never silence", async () => {
 		const d = await runPerEditMutationGate(ctx({ readDisk: () => null }));
-		expect(d).toBeNull();
+		expect(d).not.toBeNull();
+		expect(d?.warnings?.[0]).toContain("not-measured");
+		expect(d?.warnings?.[0]).toContain("no on-disk baseline");
+	});
+
+	it("P: the not-measured reason names the file so the user can act on it", async () => {
+		const d = await runPerEditMutationGate(ctx({ readDisk: () => null }));
+		expect(d?.warnings?.[0]).toContain(FILE);
 	});
 
 	it("returns not-measured when the runner throws", async () => {
@@ -178,6 +288,22 @@ describe("runPerEditMutationGate — manifest/receipt persistence (spec §4/§12
 		expect(spy.calls).toHaveLength(1);
 		expect(spy.calls[0]?.generation).toBe(1); // bumped from the empty manifest's 0
 		expect(spy.calls[0]?.overlayHash).toHaveLength(64); // receipt bound to the overlay
+	});
+
+	// test-contract: invariant — the "never forge clean" guarantee: a partial shard
+	// set (incompleteShards > 0) must land as not-measured and NEVER refresh the
+	// manifest, however clean the reporting shards look (review finding 1).
+	it("N: an INCOMPLETE sharded result is not-measured and does NOT persist", async () => {
+		const spy = persistSpy();
+		const partial: MutationRunner = {
+			available: () => true,
+			run: () => Promise.resolve({ mutants: [survivor("killed")], incompleteShards: 1 }),
+		};
+		const d = await runPerEditMutationGate(ctx({ runner: partial, persist: spy.persist }));
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.[0]).toContain("not-measured");
+		expect(d?.warnings?.[0]).toContain("did not report");
+		expect(spy.calls).toHaveLength(0);
 	});
 
 	it("does NOT persist on a survivor block", async () => {
@@ -584,7 +710,8 @@ describe("failClosed — exact wire shape (spec §9)", () => {
 		const d = await runPerEditMutationGate(ctx({ runner: null, config: cfg({ unavailable_behavior: "block" }) }));
 		expect(d).toEqual({
 			decision: "block",
-			reason: "[interlinked:mutation] BLOCKED: mutation could not be measured (unavailable_behavior=block).",
+			reason:
+				"[interlinked:mutation] BLOCKED: mutation could not be measured — no mutation runner configured (unavailable_behavior=block).",
 			rule_id: "per-edit-mutation",
 			severity: "medium",
 			category: "mutation",
@@ -606,22 +733,24 @@ describe("runPerEditMutationGate — exact not-measured wire shape when no runne
 	});
 });
 
-describe("runPerEditMutationGate — edit-scope range threading (measure the diff, not the file)", () => {
+describe("runPerEditMutationGate — v1 always measures the WHOLE FILE (review passes 11-18)", () => {
 	const LINES = Array.from({ length: 20 }, (_, i) => `L${i + 1}`);
 	const BEFORE = LINES.join("\n");
 	const AFTER = LINES.map((l, i) => (i === 9 ? "CHANGED" : l)).join("\n");
 	const SCOPED_FILE = "src/scoped.ts";
 
-	// test-contract: invariant — a small, localized edit inside a large-enough
-	// file must be measured as a SPAN (the changed line ± context, clamped to
-	// the file), and that exact range — not the whole file — is what the
-	// runner receives as its 4th argument.
-	it("passes the exact computed span as the runner's range argument for a small localized edit", async () => {
-		let capturedRange: MutationRange | undefined;
+	// test-contract: invariant — line-range execution is REMOVED from v1.
+	// Stryker only emits mutants whose whole AST span fits a range, so every
+	// ranged run was a partial view (adverse evidence possible, clean never
+	// certifiable) and a boundary-spanning mutant could vanish entirely. Even
+	// a small localized edit must hand the runner NO range argument: the whole
+	// file runs; verdict scoping stays symbol-level in the evaluator.
+	it("passes NO range for a small localized edit — the runner measures the whole file", async () => {
+		let capturedArgs: unknown[] | null = null;
 		const capturing: MutationRunner = {
 			available: () => true,
-			run: (_f, _o, _overlays, range) => {
-				capturedRange = range;
+			run: (...args) => {
+				capturedArgs = args;
 				return Promise.resolve({ mutants: [survivor("killed")] });
 			},
 		};
@@ -632,7 +761,78 @@ describe("runPerEditMutationGate — edit-scope range threading (measure the dif
 				runner: capturing,
 			}),
 		);
-		expect(capturedRange).toEqual({ start: 7, end: 13 });
+		// file, overlayContent, overlays — and NOTHING after (no 4th range arg).
+		expect(capturedArgs).toHaveLength(3);
+		expect((capturedArgs ?? [])[3]).toBeUndefined();
+	});
+});
+
+describe("runPerEditMutationGate — dependency-graph test selection", () => {
+	it("ships the exact selected tests, their local dependencies, and the scope mode", async () => {
+		const selectedTest = "src/x.integration.test.ts";
+		const testHelper = "src/x-test-helper.ts";
+		let capturedOverlays: FileOverlay[] | undefined;
+		let capturedOptions: MutationRunOptions | undefined;
+		const runner: MutationRunner = {
+			available: () => true,
+			run: (_file, _overlay, overlays, options) => {
+				capturedOverlays = overlays;
+				capturedOptions = options;
+				return Promise.resolve({ mutants: [survivor("killed")], testRun: GREEN_RUN, engineExitCode: 0 });
+			},
+		};
+		const disk = new Map([
+			[FILE, CONTENT],
+			[selectedTest, 'import "./x-test-helper.js";\n'],
+			[testHelper, "export const fixture = 1;\n"],
+		]);
+		await runPerEditMutationGate(
+			ctx({
+				runner,
+				readDisk: (path) => disk.get(path) ?? null,
+				testSelection: {
+					kind: "selected",
+					options: { testFiles: [selectedTest], scopeMode: "import_graph" },
+					partial: false,
+				},
+			}),
+		);
+		expect(capturedOptions).toEqual({ testFiles: [selectedTest], scopeMode: "import_graph" });
+		expect(capturedOverlays?.map((overlay) => overlay.path)).toEqual([FILE, selectedTest, testHelper]);
+	});
+
+	it("does not invoke the runner when the production path cannot prove an exact test scope", async () => {
+		let calls = 0;
+		const runner: MutationRunner = {
+			available: () => true,
+			run: () => {
+				calls += 1;
+				return Promise.resolve({ mutants: [] });
+			},
+		};
+		const decision = await runPerEditMutationGate(
+			ctx({
+				runner,
+				testSelection: { kind: "unavailable", reason: "dependency graph unavailable" },
+			}),
+		);
+		expect(calls).toBe(0);
+		expect(decision?.warnings?.[0]).toContain("dependency graph unavailable");
+	});
+
+	it("lets a reduced companion scope find adverse evidence but never certify clean", async () => {
+		const decision = await runPerEditMutationGate(
+			ctx({
+				runner: fakeRunner([survivor("killed")]),
+				testSelection: {
+					kind: "selected",
+					options: { testFiles: ["src/x.mutation-kill.test.ts"], scopeMode: "companion_fallback" },
+					partial: true,
+				},
+			}),
+		);
+		expect(decision?.decision).toBe("allow");
+		expect(decision?.warnings?.[0]).toContain("partial");
 	});
 });
 
@@ -704,8 +904,11 @@ describe("runPerEditMutationGate — persistence-failure warning is the ONLY war
 			throw new Error("disk full");
 		};
 		const d = await runPerEditMutationGate(ctx({ runner: fakeRunner([survivor("killed")]), persist }));
+		// Wording deliberately admits the split-brain (Grok 2026-08-28 issue 3):
+		// the persister writes manifest THEN receipt, so a mid-sequence throw can
+		// leave a valid manifest — "PARTIAL", never "nothing happened".
 		expect(d?.warnings).toEqual([
-			"[interlinked:mutation] manifest persistence failed (disk full) — allow stands; next run re-measures.",
+			"[interlinked:mutation] manifest persistence failed partway (disk full) — the on-disk mutation state may be PARTIAL (a manifest can exist without its receipt or index). The allow stands; the next run re-measures against whatever survived.",
 		]);
 	});
 });
@@ -830,6 +1033,37 @@ describe("buildOverlays / overlayContentFor — a test-only edit's overlay set (
 			{ path: SRC, content: SRC_CONTENT },
 			{ path: TEST, content: "NEW test body\n" },
 		]);
+	});
+
+	it("resolves the graph scope from the chosen source target, not from the edited companion test", async () => {
+		let selectedTarget: string | undefined;
+		let capturedOptions: MutationRunOptions | undefined;
+		const runner: MutationRunner = {
+			available: () => true,
+			run: (_file, _overlay, _overlays, options) => {
+				capturedOptions = options;
+				return Promise.resolve({ mutants: [survivor("killed")], testRun: GREEN_RUN, engineExitCode: 0 });
+			},
+		};
+		await runPerEditMutationGate(
+			ctx({
+				toolName: "Edit",
+				toolInput: { file_path: TEST, old_string: "OLD", new_string: "NEW" },
+				readDisk: (path) => (path === SRC ? SRC_CONTENT : path === TEST ? "OLD test body\n" : null),
+				runner,
+				baseManifest: emptyManifest(META),
+				selectTests: (target) => {
+					selectedTarget = target;
+					return {
+						kind: "selected",
+						options: { testFiles: [TEST], scopeMode: "import_graph" },
+						partial: false,
+					};
+				},
+			}),
+		);
+		expect(selectedTarget).toBe(SRC);
+		expect(capturedOptions).toEqual({ testFiles: [TEST], scopeMode: "import_graph" });
 	});
 
 	// test-contract: invariant — when the companion test does not exist on

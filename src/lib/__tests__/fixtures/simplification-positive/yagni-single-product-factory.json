@@ -1,0 +1,15 @@
+{
+  "schema_version": "simplification-benchmark-pair/v1",
+  "fixture_id": "positive-yagni-single-product-factory",
+  "remedy": "yagni",
+  "contract": {
+    "description": "A private one-product factory and direct construction have the same callers and behavior.",
+    "required_behaviors": ["makeStore returns MemoryStore", "the factory is not public or a test seam"],
+    "scorer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "variants": {
+    "overbuilt": [{ "path": "src/store.ts", "language": "typescript", "content": "class MemoryStore {}\nfunction createStore() { return new MemoryStore(); }\nexport function makeStore() { return createStore(); }\n" }],
+    "minimal": [{ "path": "src/store.ts", "language": "typescript", "content": "class MemoryStore {}\nexport function makeStore() { return new MemoryStore(); }\n" }]
+  },
+  "expected": { "overbuilt_matching_findings_min": 1, "minimal_total_findings_max": 0, "rank_margin_min": 0.1, "protected_false_positives_max": 0 }
+}

@@ -67,6 +67,9 @@ export interface CheckOptions {
 	tools?: ToolId[];
 	/** Which tools to skip. */
 	skipTools?: ToolId[];
+	/** Internal composition seam: the caller already owns the project's
+	 * cross-process heavyweight lease across a larger verification run. */
+	admissionAlreadyHeld?: boolean;
 }
 
 /** Result of tool availability detection. */
@@ -148,5 +151,11 @@ export interface ToolMetrics {
 export interface SkipEntry {
 	check: string;
 	reason: string;
-	category: "tool_missing" | "config_disabled" | "file_type_mismatch" | "timeout" | "error";
+	category:
+		| "tool_missing"
+		| "config_disabled"
+		| "file_type_mismatch"
+		| "resource_busy"
+		| "timeout"
+		| "error";
 }

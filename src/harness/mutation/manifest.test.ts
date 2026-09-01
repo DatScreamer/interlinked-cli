@@ -271,6 +271,59 @@ describe("applyMeasuredRun (measured-clean refresh)", () => {
 		expect(base.files[FILE]?.s1?.symbolHash).toBe("h1"); // base untouched (pure)
 	});
 
+	// test-contract: invariant — the partial-scope laundering guard (external
+	// review 2026-08-23, third pass, finding 1). Stryker omits mutants whose
+	// whole AST span exceeds a requested range, so a ranged run's mutant set is
+	// a floor, never a census: it must MERGE into the manifest, never replace.
+	it("P: a PARTIAL run on an unchanged symbol retains unmeasured prior mutants (the m1/m2 repro)", () => {
+		const base = manifestWith(FILE, [
+			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived"), rec("m2", "survived")] }),
+		]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: overlay([["s1", "h1"]]),
+			measured: [measured("m1", "s1", "killed")],
+			at: AT,
+			partial: true,
+		});
+		const mutants = out.files[FILE]?.s1?.mutants ?? {};
+		expect(mutants.m1?.status).toBe("killed"); // measured status wins
+		expect(mutants.m2?.status).toBe("survived"); // NOT dropped by the partial view
+	});
+
+	it("P: a PARTIAL run on a CHANGED symbol keeps the prior record verbatim", () => {
+		const base = manifestWith(FILE, [
+			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived"), rec("m2", "survived")] }),
+		]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: overlay([["s1", "h1-CHANGED"]]),
+			measured: [measured("m1", "s1", "killed")],
+			at: AT,
+			partial: true,
+		});
+		const record = out.files[FILE]?.s1;
+		expect(record?.symbolHash).toBe("h1"); // prior record carried, not replaced
+		expect(Object.keys(record?.mutants ?? {}).sort()).toEqual(["m1", "m2"]);
+		expect(record?.mutants.m2?.status).toBe("survived");
+	});
+
+	it("N: a FULL run still replaces the symbol's mutant map (differential refresh unchanged)", () => {
+		const base = manifestWith(FILE, [
+			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived"), rec("m2", "survived")] }),
+		]);
+		const out = applyMeasuredRun({
+			base,
+			file: FILE,
+			overlayHashes: overlay([["s1", "h1-CHANGED"]]),
+			measured: [measured("m1", "s1", "killed")],
+			at: AT,
+		});
+		expect(Object.keys(out.files[FILE]?.s1?.mutants ?? {})).toEqual(["m1"]);
+	});
+
 	it("preserves firstSeen for a persisting mutantId and stamps new ones", () => {
 		const base = manifestWith(FILE, [
 			sym({ symbolId: "s1", symbolHash: "h1", mutants: [rec("m1", "survived")] }),
@@ -365,6 +418,7 @@ describe("receipt persistence", () => {
 		engine: "stryker",
 		engineVersion: "1.0.0",
 		measuredAt: "2026-06-28T12:00:00Z",
+		outcome: "measured_clean",
 	};
 
 	it("appends one JSON line per receipt", () => {

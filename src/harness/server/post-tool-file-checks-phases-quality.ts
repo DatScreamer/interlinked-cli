@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { GENERIC_CHECK_META, QUALITY_CHECK_META } from "../check-metadata.js";
+import { isOperationalCheckDeferral } from "../operational-check-deferrals.js";
 import type { QualityCheckResult } from "../quality-checks/result-types.js";
 import {
 	classifyDeterminism,
@@ -33,6 +34,79 @@ import { collectDeletionHygieneDiffFindings } from "./deletion-hygiene-diff.js";
 import type { PerFileCheckCtx } from "./post-tool-file-checks.js";
 import type { ServerRuntime } from "./runtime-context.js";
 import { collectSuggestionFindings } from "./suggestion-checks.js";
+
+/** Whether a quality result records missing evidence rather than a verdict. */
+export function isQualityDeferralName(name: string): boolean {
+	return isOperationalCheckDeferral(name);
+}
+
+function deferredCheckLabel(result: QualityCheckResult): string {
+	const match = result.message.match(/\(([^()]+)\)\s*$/);
+	if (result.name === "external_check_deferred") {
+		return match?.[1] ?? "external checks";
+	}
+	if (result.name === "affected_tests_deferred") return "affected tests";
+	return result.name.replace(/_/g, " ");
+}
+
+function deferredReason(result: QualityCheckResult): string {
+	const detail = result.detail
+		?.replace(/^No (?:check|project-wide|test) verdict was produced[:.]?\s*/i, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (detail) return detail;
+	const messageReason = result.message.match(/\(([^()]+)\)\s*$/)?.[1];
+	return messageReason ?? "checker unavailable";
+}
+
+function groupQualityDeferrals(
+	qualityResults: readonly QualityCheckResult[],
+): Map<string, QualityCheckResult[]> {
+	const groups = new Map<string, QualityCheckResult[]>();
+	for (const result of qualityResults) {
+		if (!isQualityDeferralName(result.name)) continue;
+		const key = result.file ?? "";
+		const group = groups.get(key) ?? [];
+		group.push(result);
+		groups.set(key, group);
+	}
+	return groups;
+}
+
+/**
+ * Keep deferral evidence individually structured while presenting one compact,
+ * actionable warning per file. Even a lone deferral uses this formatter: the
+ * generic quality formatter appends the full per-check repair playbook, which
+ * turned ordinary capacity backpressure into a 10+ line PostToolUse panel.
+ */
+/** Public formatting seam shared by the per-file and project-wide PostToolUse
+ * phases so every no-verdict result follows the same compact output contract. */
+export function formatQualityDecisionWarnings(
+	qualityResults: QualityCheckResult[],
+): string[] {
+	const deferredByFile = groupQualityDeferrals(qualityResults);
+	const warnings: string[] = [];
+	const emittedDeferredFiles = new Set<string>();
+	for (const result of qualityResults) {
+		if (!isQualityDeferralName(result.name)) {
+			warnings.push(...formatQualityWarnings([result]));
+			continue;
+		}
+
+		const key = result.file ?? "";
+		if (emittedDeferredFiles.has(key)) continue;
+		emittedDeferredFiles.add(key);
+		const group = deferredByFile.get(key) ?? [result];
+		const target = result.file ? ` for ${result.file}` : "";
+		const labels = [...new Set(group.map(deferredCheckLabel))];
+		const reasons = [...new Set(group.map(deferredReason))];
+		const checkWord = group.length === 1 ? "check" : "checks";
+		warnings.push(
+			`[interlinked:checks-deferred] [proven] NOT CHECKED: ${labels.join(", ")}${target} (${reasons.join("; ")}). Retry each deferred check after active project work finishes; no clean verdict exists for ${checkWord}.`,
+		);
+	}
+	return warnings;
+}
 
 /**
  * Smart-tsc filtering: when only internal logic changed (no export-surface
@@ -61,25 +135,6 @@ export function buildSmartTscOpts(
 	);
 	ctx.log(`Smart tsc: filtering to ${filterFile} (internal-only edit)`);
 	return { tscFilterFile: filterFile };
-}
-
-/**
- * Record the names of enabled quality checks whose `file_types` match the
- * edited file's extension into `checksRan` (which checks actually applied).
- */
-export function recordChecksRan(
-	qualityChecks: NonNullable<GuardRulesConfig["quality_checks"]>,
-	editedFilePath: string,
-	checksRan: string[],
-): void {
-	for (const [name, check] of Object.entries(qualityChecks)) {
-		if (
-			check.enabled &&
-			check.file_types.some((t: string) => editedFilePath.endsWith(t))
-		) {
-			checksRan.push(name);
-		}
-	}
 }
 
 /**
@@ -174,7 +229,7 @@ export function applyQualityDecision(
 	if (qualityResults.length === 0) return;
 	decision.warnings = [
 		...(decision.warnings || []),
-		...formatQualityWarnings(qualityResults),
+		...formatQualityDecisionWarnings(qualityResults),
 	];
 
 	// Block only on fully_deterministic quality checks with error severity, plus
@@ -204,9 +259,9 @@ export function applyQualityDecision(
 		// Bug B1: a PostToolUse block MUST carry a reason, else the hook renders
 		// the "no reason was attached" fallback.
 		const blockingText =
-			formatQualityWarnings(blocking).join("\n\n") ||
+			formatQualityDecisionWarnings(blocking).join("\n\n") ||
 			"[interlinked] PostToolUse quality checks flagged a deterministic error.";
-		const advisoryText = formatQualityWarnings(advisory).join("\n\n");
+		const advisoryText = formatQualityDecisionWarnings(advisory).join("\n\n");
 		decision.reason ??= advisoryText
 			? `${blockingText}\n\n— Advisory findings (not blocking; address when convenient) —\n\n${advisoryText}`
 			: blockingText;

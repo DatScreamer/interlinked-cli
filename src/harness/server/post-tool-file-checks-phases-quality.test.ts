@@ -1,7 +1,8 @@
 // Behavioral coverage for `./post-tool-file-checks-phases-quality.js` — the
-// seven quality-phase helpers extracted verbatim out of the PostToolUse
-// per-file check orchestrator (buildSmartTscOpts, recordChecksRan,
-// expandQualitySiblings, collectQualityResultEntries, applyQualityDecision,
+// quality-phase helpers extracted out of the PostToolUse
+// per-file check orchestrator (buildSmartTscOpts,
+// expandQualitySiblings, collectQualityResultEntries, deferral formatting,
+// applyQualityDecision,
 // computeEditRegion [private, exercised via runScoredSuggestionsPhase],
 // runScoredSuggestionsPhase).
 //
@@ -107,7 +108,6 @@ import {
 	buildSmartTscOpts,
 	collectQualityResultEntries,
 	expandQualitySiblings,
-	recordChecksRan,
 	runScoredSuggestionsPhase,
 } from "./post-tool-file-checks-phases-quality.js";
 import { collectSuggestionFindings } from "./suggestion-checks.js";
@@ -286,26 +286,6 @@ describe("buildSmartTscOpts", () => {
 		);
 		expect(result).toEqual({ tscFilterFile: "src/mod.ts" });
 		expect(ctx.log).toHaveBeenCalledWith("Smart tsc: filtering to src/mod.ts (internal-only edit)");
-	});
-});
-
-// ===========================================================================
-// recordChecksRan
-// ===========================================================================
-
-describe("recordChecksRan", () => {
-	// test-contract: bug — `.some()` (any one file_type matching is enough)
-	// must gate inclusion, not `.every()` (which would require ALL of the
-	// check's extensions to match the single edited file — impossible for a
-	// multi-extension check, silently dropping it from `checksRan` forever).
-	it("records a check name once any one of its file_types matches (some, not every)", () => {
-		const checksRan: string[] = [];
-		recordChecksRan(
-			{ typescript: { enabled: true, file_types: [".ts", ".xyz"], timeout_ms: 5000, severity: "error" } },
-			"/repo/src/mod.ts",
-			checksRan,
-		);
-		expect(checksRan).toEqual(["typescript"]);
 	});
 });
 
@@ -510,6 +490,57 @@ describe("applyQualityDecision", () => {
 		expect(decision.reason).toBe(
 			"[q] check_a\n\n— Advisory findings (not blocking; address when convenient) —\n\n[q] check_b\n\n[q] check_c",
 		);
+	});
+
+	it("compacts same-file deferrals without collapsing a different file", () => {
+		const ctx = makeCtx();
+		const decision: HarnessDecision = { decision: "allow" };
+		applyQualityDecision(ctx, [
+			qr({
+				name: "external_check_deferred",
+				message: "External check deferred (typescript)",
+				file: FILE,
+				detail: "No check verdict was produced: busy",
+			}),
+			qr({
+				name: "affected_tests_deferred",
+				message: "Affected tests deferred",
+				file: FILE,
+				detail: "No test verdict was produced.",
+			}),
+			qr({
+				name: "external_check_deferred",
+				message: "External check deferred elsewhere",
+				file: "/repo/src/other.ts",
+			}),
+		], decision);
+
+		expect(decision.warnings).toHaveLength(2);
+		expect(decision.warnings?.[0]).toContain("[interlinked:checks-deferred]");
+		expect(decision.warnings?.[0]).toContain("typescript, affected tests");
+		expect(decision.warnings?.[0]?.split("\n")).toHaveLength(1);
+		expect(decision.warnings?.[1]).toContain("external checks");
+		expect(decision.warnings?.[1]?.split("\n")).toHaveLength(1);
+	});
+
+	it("keeps a lone capacity deferral to one concise line", () => {
+		const ctx = makeCtx();
+		const decision: HarnessDecision = { decision: "allow" };
+		applyQualityDecision(ctx, [
+			qr({
+				name: "external_check_deferred",
+				message: "External check deferred for src/a.ts (typescript)",
+				file: "src/a.ts",
+				detail:
+					"No check verdict was produced: external-tool capacity is busy; this check was deferred without a verdict",
+			}),
+		], decision);
+
+		expect(decision.warnings).toHaveLength(1);
+		expect(decision.warnings?.[0]?.split("\n")).toHaveLength(1);
+		expect(decision.warnings?.[0]).toContain("typescript for src/a.ts");
+		expect(decision.warnings?.[0]).toContain("no clean verdict exists");
+		expect(decision.warnings?.[0]).not.toContain("Fix all type errors");
 	});
 
 	// test-contract: bug — when formatQualityWarnings(blocking) formats to an

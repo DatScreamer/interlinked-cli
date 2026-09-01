@@ -57,6 +57,9 @@ export class ProjectWideSweepState {
 export interface ProjectWideSweepResult {
 	findings: QualityCheckResult[];
 	toolsRun: ToolId[];
+	/** Reasons requested tools produced no verdict. Non-empty means this sweep
+	 * must retry and must never be logged as clean. */
+	deferredReasons?: string[];
 	elapsedMs: number;
 }
 
@@ -110,12 +113,31 @@ function buildSweepResult(
 	config: ProjectWideCheckConfig,
 	start: number,
 ): ProjectWideSweepResult {
+	const deferredSkips = report.skipped.filter(
+		(entry) =>
+			entry.category === "resource_busy" ||
+			entry.category === "tool_missing" ||
+			entry.category === "timeout" ||
+			entry.category === "error",
+	);
+	const unavailableResults = report.results.filter(
+		(result) => result.ruleId === "tsc-unavailable",
+	);
+	const deferredToolIds = new Set<string>([
+		...deferredSkips.map((entry) => entry.check),
+		...unavailableResults.map((result) => result.tool),
+	]);
+	const deferredReasons = [
+		...deferredSkips.map((entry) => `${entry.check}: ${entry.reason}`),
+		...unavailableResults.map((result) => `${result.tool}: ${result.message}`),
+	];
 	const toolsRun: ToolId[] = [];
 	const findings: QualityCheckResult[] = [];
 	for (const tool of report.toolsRun) {
-		toolsRun.push(tool.id);
+		if (!deferredToolIds.has(tool.id)) toolsRun.push(tool.id);
 	}
 	for (const r of report.results) {
+		if (r.ruleId === "tsc-unavailable") continue;
 		const key = ProjectWideSweepState.findingKey(r.tool, r);
 		if (sweepState.reportedFindings.has(key)) continue;
 		sweepState.reportedFindings.add(key);
@@ -127,6 +149,6 @@ function buildSweepResult(
 		});
 		if (findings.length >= config.max_findings) break;
 	}
-	sweepState.resetCounter();
-	return { findings, toolsRun, elapsedMs: Date.now() - start };
+	if (deferredReasons.length === 0) sweepState.resetCounter();
+	return { findings, toolsRun, deferredReasons, elapsedMs: Date.now() - start };
 }

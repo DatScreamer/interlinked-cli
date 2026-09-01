@@ -67,10 +67,14 @@ describe("checkImportFromOwnBarrel package resolution", () => {
 
 	it("uses the cached nearest name until the explicit reset hook is called", () => {
 		// test-contract: invariant — package-name lookup is cached by directory, and the exported reset hook is the public way to observe changed package metadata.
+		// The first call resolves and caches "before-name" (and correctly fires on it); the second call still
+		// sees the cached name, so the rewritten "after-name" stays invisible until the reset hook runs.
 		const dir = join(sandbox, "cached");
 		packageAt(dir, "before-name");
 		const file = sourcePath("cached", "widget.ts");
-		expect(checkImportFromOwnBarrel('import value from "before-name";', file)).toEqual([]);
+		expect(checkImportFromOwnBarrel('import value from "before-name";', file)).toEqual([
+			finding(1, `imports from own package 'before-name' — use a deep submodule path instead: import value from "before-name";`),
+		]);
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "after-name" }));
 		expect(checkImportFromOwnBarrel('import value from "after-name";', file)).toEqual([]);
@@ -84,13 +88,16 @@ describe("checkImportFromOwnBarrel package resolution", () => {
 describe("checkImportFromOwnBarrel public spellings and findings", () => {
 	it("flags every supported local barrel spelling with exact line and text", () => {
 		// test-contract: public-api — all documented local barrel spellings are rejected consistently, including extension variants and the bare dot forms.
+		// One call per specifier: the checker caps a single file at five findings (pinned below), so a
+		// nine-line fixture can never surface the last four spellings.
 		const specifiers = [".", "./", "./index", "./index.js", "./index.ts", "./index.mjs", "./index.cjs", "./index.jsx", "./index.tsx"];
 		const file = sourcePath("spellings.ts");
-		const content = specifiers.map((specifier) => `  import { value } from "${specifier}";`).join("\n");
-		const expected = specifiers.map((specifier, index) =>
-			finding(index + 1, `imports from own-directory barrel '${specifier}' — import from the sibling submodule directly: import { value } from "${specifier}";`),
-		);
-		expect(checkImportFromOwnBarrel(content, file)).toEqual(expected);
+		for (const specifier of specifiers) {
+			const content = `  import { value } from "${specifier}";`;
+			expect(checkImportFromOwnBarrel(content, file)).toEqual([
+				finding(1, `imports from own-directory barrel '${specifier}' — import from the sibling submodule directly: import { value } from "${specifier}";`),
+			]);
+		}
 	});
 
 	it("caps findings at five while preserving the first five source lines", () => {

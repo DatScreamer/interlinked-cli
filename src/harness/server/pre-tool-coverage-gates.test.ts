@@ -4,7 +4,7 @@
 // helper's gating / merge logic is driven deterministically without a real
 // suite, git, or overlay.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
@@ -25,7 +25,10 @@ vi.mock("../mutation/gate.js", () => ({
 }));
 
 vi.mock("../mutation/manifest.js", () => ({
-	loadManifest: vi.fn(() => null),
+	// Review 2026-08-28 item 4: the wiring reads the tri-state loader, and only
+	// `missing` may bootstrap an adoptable empty baseline. Default = missing;
+	// the corrupt-manifest test overrides per-case.
+	loadManifestState: vi.fn(() => ({ kind: "missing" })),
 	emptyManifest: vi.fn(() => ({ mutants: [] })),
 	// The wiring hands the gate a real fs persister (measured-clean passes save
 	// the manifest + append a receipt); a noop factory keeps these tests disk-free.
@@ -36,22 +39,16 @@ vi.mock("../mutation/cloud-runner.js", () => ({
 	createCloudMutationRunner: vi.fn(() => ({ runOverlay: vi.fn() })),
 }));
 
-vi.mock("../mutation/sharded-runner.js", () => ({
-	createShardedMutationRunner: vi.fn(() => ({ runOverlay: vi.fn(), sharded: true })),
-}));
-
 import { checkCommitGate } from "../evaluator/commit-gate.js";
 import { checkCoverageWrite } from "../evaluator/coverage-write-guard.js";
 import { createCloudMutationRunner } from "../mutation/cloud-runner.js";
 import { runPerEditMutationGate } from "../mutation/gate.js";
-import { createShardedMutationRunner } from "../mutation/sharded-runner.js";
 import { runCommitGate, runCoverageWriteGate, runMutationWriteGate } from "./pre-tool-coverage-gates.js";
 
 const mCheckCoverage = checkCoverageWrite as unknown as Mock;
 const mCheckCommit = checkCommitGate as unknown as Mock;
 const mMutation = runPerEditMutationGate as unknown as Mock;
 const mCreateRunner = createCloudMutationRunner as unknown as Mock;
-const mCreateShardedRunner = createShardedMutationRunner as unknown as Mock;
 
 function ev(partial: Partial<HarnessEvent> = {}): HarnessEvent {
 	return {
@@ -155,7 +152,6 @@ beforeEach(() => {
 	mCheckCommit.mockResolvedValue(null);
 	mMutation.mockResolvedValue(null);
 	mCreateRunner.mockReturnValue({ runOverlay: vi.fn() });
-	mCreateShardedRunner.mockReturnValue({ runOverlay: vi.fn(), sharded: true });
 });
 
 afterEach(() => {
@@ -414,6 +410,22 @@ describe("runMutationWriteGate", () => {
 		expect(mMutation).not.toHaveBeenCalled();
 	});
 
+	// CLAUDE.md: "A dry run must not move the gate." `harness test --write/--edit`
+	// sets `dry_run` on a synthetic event. Without this guard the mutation gate
+	// ran for real on an edit that never happened — persisting a refreshed
+	// manifest, appending a receipt, writing a run-log row and committing the
+	// pending registry. It was missed because this gate's persistence is
+	// indirect (a `persist` callback), not a visible file write.
+	it("N: a dry_run event never reaches the gate — no run, no persistence", async () => {
+		const decision = await runMutationWriteGate(
+			ctxMutation({ enabled: true, mode: "block" }),
+			ev({ tool_name: "Write", dry_run: true }),
+			allow(),
+		);
+		expect(decision).toBeNull();
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
 	it("no-op (default OFF, gate never called) when per_edit_mutation is absent", async () => {
 		const decision = await runMutationWriteGate(ctxMutation(undefined), ev({ tool_name: "Write" }), allow());
 		expect(decision).toBeNull();
@@ -463,10 +475,73 @@ describe("runMutationWriteGate", () => {
 		);
 		expect(mCreateRunner).toHaveBeenCalledOnce();
 		expect(mMutation.mock.calls[0]?.[0]?.runner).not.toBeNull();
-		expect(mCreateShardedRunner).not.toHaveBeenCalled();
 	});
 
-	it("enabled + multiple runner_urls: builds a sharded runner over every url (primary + extras)", async () => {
+	it("reuses the daemon graph and passes differently-named affected tests as a complete scope", async () => {
+		const root = mkdtempSync(join(tmpdir(), "mutation-scope-gate-"));
+		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "subject.ts"), "export const subject = 1;\n");
+			writeFileSync(
+				join(root, "src", "subject-roundtrip.test.ts"),
+				'import { subject } from "./subject.js";\nvoid subject;\n',
+			);
+			const runtime = {
+				...ctxMutation({ enabled: true, mode: "block" }),
+				cwd: root,
+				graphCache: new Map(),
+				log: () => {},
+			} as unknown as ServerRuntime;
+			await runMutationWriteGate(
+				runtime,
+				ev({ tool_name: "Write", tool_input: { file_path: "src/subject.ts", content: "export const subject = 2;\n" } }),
+				allow(),
+			);
+			expect(mMutation.mock.calls[0]?.[0]?.selectTests("src/subject.ts")).toEqual({
+				kind: "selected",
+				options: { testFiles: ["src/subject-roundtrip.test.ts"], scopeMode: "import_graph" },
+				partial: false,
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("marks an over-cap companion-only selection partial so it cannot certify clean", async () => {
+		const root = mkdtempSync(join(tmpdir(), "mutation-scope-cap-"));
+		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "subject.ts"), "export const subject = 1;\n");
+			writeFileSync(
+				join(root, "src", "subject.mutation-kill.test.ts"),
+				'import { subject } from "./subject.js";\nvoid subject;\n',
+			);
+			const runtime = {
+				...ctxMutation({ enabled: true, mode: "block", max_test_scope: 0 }),
+				cwd: root,
+				graphCache: new Map(),
+				log: () => {},
+			} as unknown as ServerRuntime;
+			await runMutationWriteGate(
+				runtime,
+				ev({ tool_name: "Write", tool_input: { file_path: "src/subject.ts", content: "export const subject = 2;\n" } }),
+				allow(),
+			);
+			expect(mMutation.mock.calls[0]?.[0]?.selectTests("src/subject.ts")).toEqual({
+				kind: "selected",
+				options: { testFiles: ["src/subject.mutation-kill.test.ts"], scopeMode: "companion_fallback" },
+				partial: true,
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	// SHARDING RETIRED FROM v1 (review passes 11-18): line-range partitioning
+	// loses boundary-spanning mutants, so multi-URL fan-out and cloud_shards
+	// no longer build sharded runners (the sharded-runner module is deleted).
+	// ONE runner, whole file; extra urls are a dormant failover seam.
+	it("N: multiple runner_urls build ONE runner on the primary — never a sharded partition", async () => {
 		mMutation.mockResolvedValue(null);
 		await runMutationWriteGate(
 			ctxMutation({
@@ -478,10 +553,62 @@ describe("runMutationWriteGate", () => {
 			ev({ tool_name: "Write" }),
 			allow(),
 		);
-		// Two non-empty urls (empty string filtered) => 2 plain runners created, then sharded.
-		expect(mCreateRunner).toHaveBeenCalledTimes(2);
-		expect(mCreateShardedRunner).toHaveBeenCalledOnce();
-		expect(mMutation.mock.calls[0]?.[0]?.runner).toEqual({ runOverlay: expect.any(Function), sharded: true });
+		expect(mCreateRunner).toHaveBeenCalledTimes(1);
+		expect(mCreateRunner.mock.calls[0]?.[0]?.url).toBe("https://runner-a.example");
+	});
+
+	it("N: cloud_shards is IGNORED — one un-shard-tagged runner regardless of the knob", async () => {
+		mMutation.mockResolvedValue(null);
+		await runMutationWriteGate(
+			ctxMutation({
+				enabled: true,
+				mode: "block",
+				runner_url: "https://runner.example",
+				cloud_shards: 3,
+			}),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		expect(mCreateRunner).toHaveBeenCalledTimes(1);
+		expect(mCreateRunner.mock.calls[0]?.[0]?.shard).toBeUndefined();
+	});
+
+	it("N: cloud_shards + multiple urls still yields exactly one runner, no shard tags", async () => {
+		mMutation.mockResolvedValue(null);
+		await runMutationWriteGate(
+			ctxMutation({
+				enabled: true,
+				mode: "block",
+				runner_url: "https://runner-a.example",
+				runner_urls: ["https://runner-b.example"],
+				cloud_shards: 4,
+			}),
+			ev({ tool_name: "Write" }),
+			allow(),
+		);
+		expect(mCreateRunner).toHaveBeenCalledTimes(1);
+		for (const call of mCreateRunner.mock.calls) {
+			expect(call[0]?.shard).toBeUndefined();
+		}
+	});
+
+	it("N: cloud_shards of 1, 0, or nonsense stays the unsharded single-runner path", async () => {
+		mMutation.mockResolvedValue(null);
+		for (const bad of [1, 0, -2, 1.5, Number.NaN]) {
+			mCreateRunner.mockClear();
+			await runMutationWriteGate(
+				ctxMutation({
+					enabled: true,
+					mode: "block",
+					runner_url: "https://runner.example",
+					cloud_shards: bad,
+				}),
+				ev({ tool_name: "Write" }),
+				allow(),
+			);
+			expect(mCreateRunner).toHaveBeenCalledOnce();
+			expect(mCreateRunner.mock.calls[0]?.[0]?.shard).toBeUndefined();
+		}
 	});
 
 	it("returns the gate's block, merging pre-decision warnings onto it", async () => {
@@ -518,5 +645,53 @@ describe("runMutationWriteGate", () => {
 		);
 		expect(decision).toBeNull();
 		expect(preDecision.warnings).toBeUndefined();
+	});
+
+	// Review 2026-08-28 (second pass, finding 1): a corrupt manifest must not
+	// become a fresh adoption, AND the exit must obey the operator's
+	// `unavailable_behavior` policy through the one choke point — the first
+	// version of this pin hand-built an allow, silently bypassing fail-closed.
+	// In every case the gate itself never runs, so even a clean runner result
+	// can persist nothing.
+	async function corruptManifestCase(cfg: Record<string, unknown>) {
+		const { loadManifestState } = await import("../mutation/manifest.js");
+		(loadManifestState as unknown as Mock).mockReturnValueOnce({
+			kind: "corrupt",
+			detail: "Unexpected token < in JSON",
+		});
+		mMutation.mockResolvedValue({ decision: "allow" }); // a clean runner result, were it reached
+		return runMutationWriteGate(ctxMutation(cfg), ev({ tool_name: "Write" }), allow());
+	}
+
+	it("P: corrupt + unavailable_behavior=block ⇒ BLOCKS (fail-closed policy governs)", async () => {
+		const d = await corruptManifestCase({ enabled: true, mode: "block", unavailable_behavior: "block" });
+		expect(d?.decision).toBe("block");
+		expect(d?.reason).toContain("corrupt");
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("P: corrupt + allow_unmeasured ⇒ honest not-measured warning, file preserved", async () => {
+		const d = await corruptManifestCase({
+			enabled: true,
+			mode: "block",
+			unavailable_behavior: "allow_unmeasured",
+		});
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.[0]).toContain("[mutation:not-measured]");
+		expect(d?.warnings?.[0]).toContain("preserved");
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("P: corrupt + WARN mode downgrades the fail-closed block to allow + warning", async () => {
+		const d = await corruptManifestCase({ enabled: true, mode: "warn", unavailable_behavior: "block" });
+		expect(d?.decision).toBe("allow");
+		expect(d?.warnings?.[0]).toContain("corrupt");
+		expect(mMutation).not.toHaveBeenCalled();
+	});
+
+	it("N: mode=off produces NOTHING — not even a warning", async () => {
+		const d = await corruptManifestCase({ enabled: true, mode: "off", unavailable_behavior: "block" });
+		expect(d).toBeNull();
+		expect(mMutation).not.toHaveBeenCalled();
 	});
 });

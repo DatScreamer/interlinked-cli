@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { extractCountClaims } from "./extract-counts.js";
 import {
-	extractCountClaims,
 	extractIdNamespaces,
 	extractLooseDefinedIds,
 	extractRangeClaims,
@@ -125,6 +125,32 @@ describe("id extraction hardening (sol-max batch 1)", () => {
 
 	it("rejects an underscore-extended noun token (round-6 #9)", () => {
 		expect(extractCountClaims(["six widgets_case"])).toEqual([]);
+	});
+
+	it("rejects a number that continues a slashed id (stop-digest FP 2026-08-21)", () => {
+		// "NIP-29/43 events" is one id list, not a "43 events" count claim —
+		// the claim bound event→NIP for the whole repo and flagged an
+		// unrelated CHANGELOG "14 events" line against the NIP census.
+		expect(extractCountClaims(["NIP-29/43 events are signed"])).toEqual([]);
+	});
+
+	it("rejects an approximate (~) quantity (stop-digest FP 2026-08-21)", () => {
+		// "~17 commands" asserts an approximation; only exact counts are
+		// checkable against a census.
+		expect(extractCountClaims(["~17 commands still import it"])).toEqual([]);
+	});
+
+	it("rejects verbs and function words ending in s as the noun (stop-digest FP 2026-08-21)", () => {
+		// "the tree said 25 was the 75th percentile" parsed as claim "25 was".
+		expect(extractCountClaims(["the tree said 25 was the 75th percentile"])).toEqual([]);
+		expect(extractCountClaims(["the flag 12 has no effect"])).toEqual([]);
+		expect(extractCountClaims(["value 9 does nothing"])).toEqual([]);
+		expect(extractCountClaims(["3 versus 4"])).toEqual([]);
+	});
+
+	it("still accepts an exact claim after the new guards (control)", () => {
+		expect(extractCountClaims(["six bets"])[0]?.value).toBe(6);
+		expect(extractCountClaims(["28 invariants"])[0]?.value).toBe(28);
 	});
 
 	it("does not fabricate a range from an unpaired leading underscore (round-7 #4)", () => {

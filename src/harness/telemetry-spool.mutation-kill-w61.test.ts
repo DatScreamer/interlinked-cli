@@ -149,11 +149,10 @@ describe("parseJsonl guards against non-string input — kills ffaac7280b85bc7c"
 	it("returns [] instead of throwing when given undefined", () => {
 		// SAFETY: deliberately passing a value outside the declared `string`
 		// type to exercise the runtime `!text` guard that protects non-TS callers.
-		// biome-ignore lint: intentionally bypassing the type system to reach
-		// the runtime `!text` guard.
+		// Intentionally bypass the type system to reach the runtime `!text` guard.
 		expect(() => parseJsonl(undefined as any)).not.toThrow();
 		// SAFETY: same rationale as above.
-		// biome-ignore lint: same as above.
+		// Keep this second call loose for the same runtime-boundary check.
 		expect(parseJsonl(undefined as any)).toEqual([]);
 	});
 });

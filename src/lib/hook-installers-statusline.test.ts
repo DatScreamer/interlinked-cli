@@ -191,7 +191,7 @@ describe("installStatusLine — script generation", () => {
 			installStatusLine(["claude"]);
 			const script = files.get(SCRIPT_PATH) as string;
 			expect(script).toContain("REVIVE_ALARM_SECS=45");
-			expect(script).toContain("hook supervisor restarting it");
+			expect(script).toContain("harness down — hook recovery active");
 			expect(script).toContain("harness offline");
 		});
 

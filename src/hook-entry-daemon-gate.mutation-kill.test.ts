@@ -38,7 +38,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 		...actual,
 		spawn: (command: string, args: string[], options: unknown) => {
 			spawnCalls.push({ command, args, options });
-			return { unref: () => {} } as unknown as ReturnType<typeof actual.spawn>;
+			return { pid: process.pid, unref: () => {} } as unknown as ReturnType<typeof actual.spawn>;
 		},
 	};
 });
@@ -254,6 +254,7 @@ describe("selfHealServerPath — candidate discovery (via attemptDaemonSelfHeal,
 			now: () => 1_700_000_000_000,
 			spawnDaemon: (serverPath) => {
 				spawned.path = serverPath;
+				return process.pid;
 			},
 		});
 	}
@@ -323,5 +324,26 @@ describe("spawnDaemonDetached — exact argv/options invariant (mass-kills the 1
 			"default",
 		]);
 		expect(call.options).toEqual({ detached: true, stdio: "ignore" });
+	});
+
+	it.each([
+		["999999999999", `--max-old-space-size=${DEFAULT_DAEMON_HEAP_MB}`],
+		["-1", `--max-old-space-size=${DEFAULT_DAEMON_HEAP_MB}`],
+		["Infinity", `--max-old-space-size=${DEFAULT_DAEMON_HEAP_MB}`],
+	] as const)("uses the validated heap override %s", (raw, expected) => {
+		const previous = process.env.INTERLINKED_HARNESS_HEAP_MB;
+		process.env.INTERLINKED_HARNESS_HEAP_MB = raw;
+		try {
+			expect(
+				attemptDaemonSelfHeal(dir, {}, {
+					resolveServerPath: () => "/fake/harness/server.js",
+					now: () => 1_700_000_000_000,
+				}),
+			).toBe("spawned");
+			expect(spawnCalls[0]?.args[0]).toBe(expected);
+		} finally {
+			if (previous === undefined) delete process.env.INTERLINKED_HARNESS_HEAP_MB;
+			else process.env.INTERLINKED_HARNESS_HEAP_MB = previous;
+		}
 	});
 });

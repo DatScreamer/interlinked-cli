@@ -133,6 +133,25 @@ describe("sed -i (in-place)", () => {
 		expect(detectBashCodeFileWrite("sedX -i 's/a/b/' src/edit.ts")).toBeNull();
 	});
 
+	// Review 2026-08-28 (final round): the PUBLIC-path pins for the quoted-pipe
+	// fix — the helper-level regression alone could stay green while this
+	// wiring regressed. The naive split let `rg -i 'a|b'` donate its -i to a
+	// downstream `sed -n`, false-blocking a read-only pipeline (a zero-FP
+	// violation, reproduced live during review).
+	// test-contract: bug — a quoted alternation must not split a read-only
+	// pipeline into a false sed -i write (zero-FP contract for this pre_block).
+	it("N-quoted-pipe: a read-only rg|sed -n pipeline with quoted alternation is NOT a write", () => {
+		expect(detectBashCodeFileWrite(`rg -i 'a|b' src/app.ts | sed -n '1,200p'`)).toBeNull();
+	});
+
+	// test-contract: bug — the quote-aware split must not over-correct: a real
+	// sed -i AFTER a quoted-alternation segment still blocks with its target.
+	it("P-quoted-pipe: the same quoted regex followed by a REAL sed -i still blocks", () => {
+		const hit = detectBashCodeFileWrite(`rg -i 'a|b' src/app.ts | sed -i 's/foo|bar/x/' src/app.ts`);
+		expect(hit?.target).toBe("src/app.ts");
+		expect(hit?.mechanism).toBe("sed -i (in-place)");
+	});
+
 	it("R3-NEW N2: grep -i is not sed -i (its -i is case-insensitive, not in-place)", () => {
 		expect(detectBashCodeFileWrite("grep -i pattern src/app.ts")).toBeNull();
 	});

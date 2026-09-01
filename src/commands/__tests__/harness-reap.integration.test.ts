@@ -43,6 +43,21 @@ vi.mock("node:fs", () => ({
 	unlinkSync: mocks.unlinkSync,
 }));
 
+// Live reaping is identity-fenced: selection from `ps` is followed by a
+// stable process-start/argv identity check immediately before every signal.
+// This suite owns the selection and signalling choreography, so provide a
+// deterministic identity here; replacement/unverified PID behavior is pinned
+// separately in harness-process-reap.test.ts.
+vi.mock("../../harness/daemon-process-identity.js", async (importOriginal) => {
+	const actual = await importOriginal<
+		typeof import("../../harness/daemon-process-identity.js")
+	>();
+	return {
+		...actual,
+		readHarnessProcessIdentity: vi.fn((_cwd: string, pid: number) => `identity:${pid}`),
+	};
+});
+
 import { reapOrphanHarnesses } from "../harness.js";
 import { harnessReapCommand } from "../harness-reap.js";
 
@@ -186,26 +201,36 @@ describe("reapOrphanHarnesses helper (refactored to return candidates)", () => {
 	});
 
 	it("signals every orphan before waiting for any one of them to exit", () => {
-		const sentSignals: Array<{ pid: number; signal: string | number }> = [];
+		const events: Array<{ pid: number; kind: "term" | "post-signal-poll" }> = [];
+		const signalled = new Set<number>();
 		const killSpy = vi
 			.spyOn(process, "kill")
 			.mockImplementation(((pid: number, sig?: string | number): true => {
-				sentSignals.push({ pid, signal: sig ?? 0 });
 				if (sig === 0) {
+					// Authentication probes happen before SIGTERM and are not exit
+					// polling. Record only probes made after this PID was signalled.
+					if (signalled.has(pid)) events.push({ pid, kind: "post-signal-poll" });
 					const err = new Error("ESRCH") as NodeJS.ErrnoException;
-					err.code = "ESRCH";
-					throw err;
+					if (signalled.has(pid)) {
+						err.code = "ESRCH";
+						throw err;
+					}
+					return true;
+				}
+				if (sig === "SIGTERM") {
+					signalled.add(pid);
+					events.push({ pid, kind: "term" });
 				}
 				return true;
 			}) as typeof process.kill);
 		try {
 			const result = reapOrphanHarnesses("/repo");
 			expect(result.killed.sort()).toEqual([ORPHAN_A, ORPHAN_B].sort());
-			const firstPollIndex = sentSignals.findIndex((entry) => entry.signal === 0);
+			const firstPollIndex = events.findIndex((entry) => entry.kind === "post-signal-poll");
 			expect(firstPollIndex).toBeGreaterThanOrEqual(2);
-			expect(sentSignals.slice(0, firstPollIndex)).toEqual([
-				{ pid: ORPHAN_A, signal: "SIGTERM" },
-				{ pid: ORPHAN_B, signal: "SIGTERM" },
+			expect(events.slice(0, firstPollIndex)).toEqual([
+				{ pid: ORPHAN_A, kind: "term" },
+				{ pid: ORPHAN_B, kind: "term" },
 			]);
 		} finally {
 			killSpy.mockRestore();

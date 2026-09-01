@@ -307,9 +307,15 @@ export async function mutationSurvivorsCommand(opts: MutationSurvivorsOptions): 
 		return;
 	}
 
-	const { loadManifest } = await import("../harness/mutation/manifest.js");
+	const { corruptManifestMessage, loadManifestState } = await import("../harness/mutation/manifest.js");
 	const { loadLedger, withDispositions } = await import("../harness/mutation/disposition-store.js");
-	const baseManifest = loadManifest(configDir);
+	const state = loadManifestState(configDir);
+	if (state.kind === "corrupt") {
+		outputError(mode, corruptManifestMessage(configDir, state.detail));
+		process.exitCode = 1;
+		return;
+	}
+	const baseManifest = state.kind === "valid" ? state.manifest : null;
 	if (!baseManifest) {
 		outputError(
 			mode,

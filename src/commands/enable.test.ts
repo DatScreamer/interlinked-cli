@@ -116,6 +116,7 @@ import {
 } from "../lib/config.js";
 import { getAdapter } from "../harness/adapters/index.js";
 import { stripAnsi } from "../lib/formatter.js";
+import { clearGuardDisable } from "../lib/guard-state.js";
 import {
 	detectHookManagers,
 	ensureGitignore,
@@ -189,18 +190,13 @@ function logged(spy: ReturnType<typeof vi.spyOn>): string {
 }
 
 let logSpy: ReturnType<typeof vi.spyOn>;
-let exitSpy: ReturnType<typeof vi.spyOn>;
+let errorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-	// process.exit is reached on the invalid-sync-mode branch; throw so the
-	// command unwinds at that point instead of running to completion.
-	exitSpy = vi
-		.spyOn(process, "exit")
-		.mockImplementation(((code?: number) => {
-			throw new Error(`process.exit:${code}`);
-		}) as never);
+	errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+	process.exitCode = undefined;
 	vi.spyOn(process, "cwd").mockReturnValue(CWD);
 
 	// Conservative apply-path defaults; individual tests override as needed.
@@ -225,6 +221,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	process.exitCode = undefined;
 	vi.restoreAllMocks();
 });
 
@@ -301,17 +298,48 @@ describe("enableCommand — dry run", () => {
 		);
 	});
 
-	it("skips clients with no summary entry (guards the CLIENT_SUMMARIES lookup)", async () => {
-		vi.mocked(detectClients).mockReturnValue([]);
-
-		// "bogus" is not a real ClientName → CLIENT_SUMMARIES[client] is
-		// undefined and the `if (summary)` guard must skip it without throwing.
+	it("refuses an unknown client before even the dry-run plan is rendered", async () => {
 		await enableCommand({ dryRun: true, clients: "bogus" });
 
-		const out = logged(logSpy);
-		expect(out).toContain("Would install hooks for:");
-		// No event-summary line for the unknown client.
-		expect(out).not.toContain("bogus — ");
+		expect(logged(errorSpy)).toContain(
+			"Unknown client: bogus. No files or processes were changed.",
+		);
+		expect(process.exitCode).toBe(1);
+		expect(logged(logSpy)).toBe("");
+		expect(vi.mocked(detectClients)).not.toHaveBeenCalled();
+		expect(vi.mocked(initConfig)).not.toHaveBeenCalled();
+		expect(vi.mocked(writeHookScript)).not.toHaveBeenCalled();
+		expect(vi.mocked(harnessStartCommand)).not.toHaveBeenCalled();
+	});
+});
+
+describe("enableCommand — explicit client validation", () => {
+	it("refuses a mixed valid and invalid list before any setup side effect", async () => {
+		await enableCommand({ clients: " Claude, bogus, codex " });
+
+		expect(logged(errorSpy)).toContain("Unknown client: bogus");
+		expect(logged(errorSpy)).toContain(
+			"Supported clients: claude,copilot,gemini,codex,cursor,opencode,pi",
+		);
+		expect(process.exitCode).toBe(1);
+		expect(vi.mocked(isConfigured)).not.toHaveBeenCalled();
+		expect(vi.mocked(initConfig)).not.toHaveBeenCalled();
+		expect(vi.mocked(writeHookScript)).not.toHaveBeenCalled();
+		expect(vi.mocked(installAllHooks)).not.toHaveBeenCalled();
+		expect(vi.mocked(installSkills)).not.toHaveBeenCalled();
+		expect(vi.mocked(harnessStartCommand)).not.toHaveBeenCalled();
+	});
+
+	it("deduplicates normalized supported ids without changing their order", async () => {
+		vi.mocked(installAllHooks).mockReturnValue([
+			install("claude", { installed: true, events: ["PreToolUse"] }),
+			install("codex", { installed: true, events: ["PreToolUse"] }),
+		]);
+
+		await enableCommand({ clients: " Claude,claude,CODEX " });
+
+		expect(vi.mocked(installAllHooks)).toHaveBeenCalledWith(CWD, ["claude", "codex"]);
+		expect(process.exitCode).toBeUndefined();
 	});
 });
 
@@ -445,15 +473,29 @@ describe("enableCommand — option flags", () => {
 		expect(logged(logSpy)).toContain("Set sync mode: local");
 	});
 
-	it("rejects an invalid sync mode and exits(1) before installing hooks", async () => {
-		await expect(enableCommand({ syncMode: "turbo" })).rejects.toThrow("process.exit:1");
+	it("rejects an invalid sync mode before any setup side effect", async () => {
+		await enableCommand({ syncMode: "turbo" });
 
-		const out = logged(logSpy);
-		expect(out).toContain('Invalid sync mode "turbo"');
-		expect(out).toContain("Must be one of: realtime, local, manual");
-		expect(exitSpy).toHaveBeenCalledWith(1);
-		// exit unwinds before the install phase.
+		const error = logged(errorSpy);
+		expect(error).toContain('Invalid sync mode "turbo"');
+		expect(error).toContain("No files or processes were changed");
+		expect(error).toContain("Must be one of: realtime, local, manual");
+		expect(process.exitCode).toBe(1);
+		expect(vi.mocked(isConfigured)).not.toHaveBeenCalled();
+		expect(vi.mocked(clearGuardDisable)).not.toHaveBeenCalled();
+		expect(vi.mocked(updateLocalConfig)).not.toHaveBeenCalled();
 		expect(vi.mocked(installAllHooks)).not.toHaveBeenCalled();
+		expect(vi.mocked(writeHookScript)).not.toHaveBeenCalled();
+		expect(vi.mocked(harnessStartCommand)).not.toHaveBeenCalled();
+	});
+
+	it("rejects mixed valid clients plus an invalid sync mode before setup", async () => {
+		await enableCommand({ clients: "claude,codex", syncMode: "turbo" });
+
+		expect(process.exitCode).toBe(1);
+		expect(vi.mocked(initConfig)).not.toHaveBeenCalled();
+		expect(vi.mocked(installAllHooks)).not.toHaveBeenCalled();
+		expect(vi.mocked(harnessStartCommand)).not.toHaveBeenCalled();
 	});
 
 	it("sets the data dir", async () => {
@@ -822,10 +864,26 @@ describe("enableCommand — structure scaffolding", () => {
 		});
 	});
 
+	it("refuses an invalid structure mode before any setup side effect", async () => {
+		await enableCommand({ clients: "claude", structure: "weird" });
+
+		const error = logged(errorSpy);
+		expect(error).toContain('Invalid structure mode "weird"');
+		expect(error).toContain("No files or processes were changed");
+		expect(error).toContain("Must be one of: minimal, standard, strict");
+		expect(process.exitCode).toBe(1);
+		expect(vi.mocked(initConfig)).not.toHaveBeenCalled();
+		expect(vi.mocked(clearGuardDisable)).not.toHaveBeenCalled();
+		expect(vi.mocked(writeHookScript)).not.toHaveBeenCalled();
+		expect(vi.mocked(installAllHooks)).not.toHaveBeenCalled();
+		expect(vi.mocked(harnessStartCommand)).not.toHaveBeenCalled();
+		expect(vi.mocked(structureInitCommand)).not.toHaveBeenCalled();
+	});
+
 	it("reports the Error message when structure scaffolding throws an Error", async () => {
 		vi.mocked(structureInitCommand).mockRejectedValue(new Error("bad mode"));
 
-		await enableCommand({ structure: "weird" });
+		await enableCommand({ structure: "standard" });
 
 		expect(logged(logSpy)).toContain("Structure scaffolding failed: bad mode");
 	});
@@ -833,7 +891,7 @@ describe("enableCommand — structure scaffolding", () => {
 	it("stringifies a non-Error rejection from structure scaffolding", async () => {
 		vi.mocked(structureInitCommand).mockRejectedValue("kaboom");
 
-		await enableCommand({ structure: "weird" });
+		await enableCommand({ structure: "minimal" });
 
 		expect(logged(logSpy)).toContain("Structure scaffolding failed: kaboom");
 	});

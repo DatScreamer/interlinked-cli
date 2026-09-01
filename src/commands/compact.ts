@@ -20,22 +20,25 @@
 // `interlinked audit verify` reads archive segments (manifest order) before the
 // live file, so the hash chain verifies end-to-end across compaction.
 //
-// NOTE: not crash-atomic. The window between truncating the live file and
-// writing the manifest is two small writes; if interrupted there, re-run
-// `interlinked compact` — it is idempotent on an already-compacted state.
+// WRITE ORDER: durable metadata precedes visibility and destruction. A complete
+// temporary gzip is described by a durable rotation claim, then hard-linked to
+// its final name, then indexed with a lowered sync cursor, and only THEN is the
+// live prefix dropped under the shared append lock. Retry verifies the recorded
+// source/prefix and gzip digest, so either pre-manifest or post-manifest crashes
+// complete the same sequence instead of archiving its prefix twice.
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
 import type { Command, OptionValues } from "commander";
+import {
+	findLineBoundaryAtOrBefore,
+	gzipFileRange,
+	MAX_CAPTURED_JSONL_LINE_BYTES,
+	readFileRange,
+	scanFileLines,
+} from "../lib/bounded-file-io.js";
 import { getDataDir } from "../lib/config.js";
+import { fileIdentity } from "../lib/file-suffix-replacement.js";
 import { c } from "../lib/formatter.js";
 import { isJsonObject, type JsonObject } from "../lib/json-types.js";
 
@@ -45,65 +48,30 @@ const CHAINED_TYPES = new Set(["guard_block", "guard_warn", "guard_allow", "sess
 /** Default: keep at least this many recent bytes live (recent reads + audit headroom). */
 const DEFAULT_KEEP_RECENT_BYTES = 2 * 1024 * 1024;
 
-const NEWLINE = 0x0a;
-
-export interface ArchiveSegment {
-	seq: number;
-	file: string;
-	bytes: number;
-	gz_bytes: number;
-	records: number;
-	created_at: string;
-}
-
-export interface ArchiveManifest {
-	version: 1;
-	segments: ArchiveSegment[];
-}
-
-function archiveDirPath(cwd: string = process.cwd()): string {
-	return join(getDataDir(cwd), "archive");
-}
-
-function archiveManifestPath(cwd: string = process.cwd()): string {
-	return join(archiveDirPath(cwd), "manifest.json");
-}
-
-/** One manifest segment. Written exclusively by `compactCommand` below (a
- *  single in-repo writer, unlike the multi-writer activity/collection logs),
- *  so an entry that doesn't match this shape is corruption rather than a
- *  legitimately-optional legacy field — the whole manifest falls back to
- *  empty rather than silently serving a partial segment list to `audit
- *  verify`, which reads segments in manifest order to walk the hash chain. */
-function parseArchiveSegment(value: unknown): ArchiveSegment | null {
-	if (!isJsonObject(value)) return null;
-	const { seq, file, bytes, gz_bytes, records, created_at } = value;
-	if (typeof seq !== "number" || typeof file !== "string") return null;
-	if (typeof bytes !== "number" || typeof gz_bytes !== "number") return null;
-	if (typeof records !== "number" || typeof created_at !== "string") return null;
-	return { seq, file, bytes, gz_bytes, records, created_at };
-}
-
-function parseArchiveManifest(value: unknown): ArchiveManifest | null {
-	if (!isJsonObject(value) || !Array.isArray(value.segments)) return null;
-	const segments: ArchiveSegment[] = [];
-	for (const entry of value.segments) {
-		const seg = parseArchiveSegment(entry);
-		if (!seg) return null;
-		segments.push(seg);
-	}
-	return { version: 1, segments };
-}
-
-export function loadArchiveManifest(cwd: string = process.cwd()): ArchiveManifest {
-	const path = archiveManifestPath(cwd);
-	if (!existsSync(path)) return { version: 1, segments: [] };
-	try {
-		return parseArchiveManifest(JSON.parse(readFileSync(path, "utf-8"))) ?? { version: 1, segments: [] };
-	} catch {
-		return { version: 1, segments: [] };
-	}
-}
+import {
+	type ArchiveManifest,
+	type ArchiveSegment,
+	compactPlainLog,
+	PLAIN_COMPACTABLE_LOGS,
+	type PlainCompactResult,
+} from "./compact-plain.js";
+import { MAX_SYNC_STATE_BYTES } from "../lib/local-activity-sync.js";
+import {
+	type ActivityRecoveryDeps,
+	type ActivityRotationConflict,
+	type ActivityRotationResult,
+	resumePendingActivityRotation,
+	rotateActivityPrefix,
+} from "./compact-activity-write.js";
+import {
+	activityArchiveDir,
+	activityManifestPath,
+	loadArchiveManifest,
+	loadOrRebuildArchiveManifest,
+	nextActivitySegmentSeq,
+} from "./compact-activity-manifest.js";
+export type { ArchiveManifest, ArchiveSegment } from "./compact-plain.js";
+export { loadArchiveManifest, loadOrRebuildArchiveManifest } from "./compact-activity-manifest.js";
 
 interface PlanResult {
 	cutByte: number; // bytes archived (prefix length)
@@ -112,42 +80,160 @@ interface PlanResult {
 	reason?: string; // why nothing is archivable (when cutByte === 0)
 }
 
+interface ActivitySyncState {
+	syncState: JsonObject;
+	syncedBytes: number;
+}
+
+type ActivityEmitter = (data: JsonObject, human: string) => void;
+
+function readActivitySyncState(path: string): ActivitySyncState {
+	if (!existsSync(path)) return { syncState: {}, syncedBytes: 0 };
+	try {
+		const bytes = statSync(path).size;
+		if (bytes > MAX_SYNC_STATE_BYTES) return { syncState: {}, syncedBytes: 0 };
+		const syncState = JSON.parse(
+			readFileRange(path, 0, bytes, MAX_SYNC_STATE_BYTES).toString("utf8"),
+		);
+		if (!isJsonObject(syncState)) return { syncState: {}, syncedBytes: 0 };
+		const syncedBytes =
+			typeof syncState.synced_through_bytes === "number"
+				? syncState.synced_through_bytes
+				: 0;
+		return { syncState, syncedBytes };
+	} catch {
+		return { syncState: {}, syncedBytes: 0 };
+	}
+}
+
+function invalidSyncCursorReason(syncedBytes: number, fileSize: number): string | undefined {
+	if (!Number.isSafeInteger(syncedBytes) || syncedBytes < 0 || syncedBytes > fileSize) {
+		return `sync cursor ${syncedBytes} is outside the live activity log (0..${fileSize}); cursor invalidated`;
+	}
+	return undefined;
+}
+
+function resumePendingActivity(
+	deps: ActivityRecoveryDeps,
+	dryRun: boolean,
+	emit: ActivityEmitter,
+): boolean {
+	const pending = resumePendingActivityRotation(deps, dryRun);
+	if (!pending) return false;
+	emit(
+		{
+			compacted: pending.recovered,
+			recovered: pending.recovered,
+			segment: pending.segment.file,
+			archived_bytes: pending.segment.bytes,
+			live_after_bytes: pending.liveAfterBytes,
+		},
+		pending.recovered
+			? `${c.green("✓ Recovered")} pending archive/${pending.segment.file} without creating a duplicate segment`
+			: `${c.bold("Dry run")} — pending archive/${pending.segment.file} must be recovered before another compaction`,
+	);
+	return true;
+}
+
+function emitActivityRotation(
+	rotation: ActivityRotationResult | ActivityRotationConflict,
+	fileSize: number,
+	emit: ActivityEmitter,
+): void {
+	if ("segmentFile" in rotation) {
+		emit(
+			{ compacted: false, segment: rotation.segmentFile, reason: rotation.reason },
+			`${c.dim("Nothing compacted")} — ${rotation.reason}.`,
+		);
+		return;
+	}
+	const archived = rotation.segment;
+	const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+	emit(
+		{
+			compacted: true,
+			segment: archived.file,
+			archived_bytes: archived.bytes,
+			archived_records: archived.records,
+			gz_bytes: archived.gz_bytes,
+			live_after_bytes: rotation.liveAfterBytes,
+			synced_through_bytes: rotation.syncedThroughBytes,
+		},
+		`${c.green("✓ Compacted")} ${mb(archived.bytes)}MB (${archived.records} records) → archive/${archived.file}\n` +
+			`  gzipped to ${mb(archived.gz_bytes)}MB (${Math.round((1 - archived.gz_bytes / archived.bytes) * 100)}% smaller, lossless)\n` +
+			`  live activity.jsonl: ${mb(fileSize)}MB → ${mb(rotation.liveAfterBytes)}MB\n` +
+			`  ${c.dim(`recover: gunzip -c .interlinked/archive/${archived.file}  ·  audit verify reads archives automatically`)}`,
+	);
+}
+
+function emitActivityDryRun(
+	activityPath: string,
+	plan: PlanResult,
+	segmentFile: string,
+	emit: ActivityEmitter,
+): void {
+	const gzBytes = gzipFileRange(activityPath, 0, plan.cutByte).gzipBytes;
+	const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+	emit(
+		{
+			compacted: false,
+			dry_run: true,
+			would_archive_bytes: plan.cutByte,
+			would_archive_records: plan.records,
+			gz_bytes: gzBytes,
+			live_after_bytes: plan.liveAfter,
+			segment: segmentFile,
+		},
+		`${c.bold("Dry run")} — would archive ${mb(plan.cutByte)}MB (${plan.records} records) → ${segmentFile}\n` +
+			`  gzipped: ${mb(gzBytes)}MB (${Math.round((1 - gzBytes / plan.cutByte) * 100)}% smaller)\n` +
+			`  live activity.jsonl after: ${mb(plan.liveAfter)}MB`,
+	);
+}
+
 /**
  * Find the safe cut point: the largest record-boundary offset that is
  * <= min(syncedBytes, fileSize - keepRecentBytes) AND <= the start of the last
  * hash-chained record.
  */
 function planCut(
-	buf: Buffer,
+	path: string,
+	fileSize: number,
 	syncedBytes: number,
 	keepRecentBytes: number,
 	ignoreSync = false,
 ): PlanResult {
-	const fileSize = buf.length;
-	const lineStarts: number[] = [0];
 	let lastChainedStart = -1;
-	let lineStart = 0;
-	for (let i = 0; i < buf.length; i++) {
-		if (buf[i] !== NEWLINE) continue;
-		const line = buf.toString("utf-8", lineStart, i).trim();
-		if (line) {
+	scanFileLines(
+		path,
+		(line) => {
+			if (!line.complete || !line.nonEmpty) return;
+			// An over-cap row cannot be safely parsed. Treat it as a possible chain
+			// link so boundedness can only reduce compaction, never archive past the
+			// audit head the live writer needs.
+			if (line.oversized || line.text === undefined) {
+				lastChainedStart = line.start;
+				return;
+			}
 			try {
-				const rec = JSON.parse(line);
+				const rec = JSON.parse(line.text.trim());
 				if (
 					isJsonObject(rec) &&
 					typeof rec.type === "string" &&
 					CHAINED_TYPES.has(rec.type) &&
 					typeof rec.hash === "string"
 				) {
-					lastChainedStart = lineStart;
+					lastChainedStart = line.start;
 				}
 			} catch {
 				/* intentional: skip malformed line, keep scanning offsets */
 			}
-		}
-		lineStart = i + 1;
-		if (lineStart < fileSize) lineStarts.push(lineStart);
-	}
+		},
+		{
+			endExclusive: fileSize,
+			maxCapturedLineBytes: MAX_CAPTURED_JSONL_LINE_BYTES,
+			includeFinalLine: false,
+		},
+	);
 
 	const syncBound = ignoreSync ? fileSize : syncedBytes;
 	let limit = Math.min(syncBound, fileSize - keepRecentBytes);
@@ -162,19 +248,16 @@ function planCut(
 		return { cutByte: 0, records: 0, liveAfter: fileSize, reason };
 	}
 
-	let cutByte = 0;
-	for (const start of lineStarts) {
-		if (start <= limit) cutByte = start;
-		else break;
-	}
+	const boundary = findLineBoundaryAtOrBefore(path, limit, false);
+	const cutByte = boundary.offset;
 	if (cutByte <= 0) {
 		return { cutByte: 0, records: 0, liveAfter: fileSize, reason: "first record exceeds the archivable region" };
 	}
-	const records = lineStarts.filter((s) => s < cutByte).length;
-	return { cutByte, records, liveAfter: fileSize - cutByte };
+	return { cutByte, records: boundary.records, liveAfter: fileSize - cutByte };
 }
 
-export async function compactCommand(opts: OptionValues): Promise<void> {
+/** The activity.jsonl compaction (sync-cursor + audit-chain constrained). */
+async function compactActivityLog(opts: OptionValues): Promise<void> {
 	const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 	const isJson = Boolean(opts.json);
 	const dryRun = Boolean(opts.dryRun);
@@ -184,7 +267,7 @@ export async function compactCommand(opts: OptionValues): Promise<void> {
 	const dataDir = getDataDir(cwd);
 	const activityPath = join(dataDir, "activity.jsonl");
 	const syncStatePath = join(dataDir, "sync-state.json");
-	const archiveDir = archiveDirPath(cwd);
+	const archiveDir = activityArchiveDir(cwd);
 	const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
 
 	const emit = (data: JsonObject, human: string) => {
@@ -197,24 +280,35 @@ export async function compactCommand(opts: OptionValues): Promise<void> {
 		return;
 	}
 
+	const source = fileIdentity(activityPath);
 	const fileSize = statSync(activityPath).size;
 
-	let syncedBytes = 0;
-	let syncState: JsonObject = {};
-	if (existsSync(syncStatePath)) {
-		try {
-			syncState = JSON.parse(readFileSync(syncStatePath, "utf-8")) as JsonObject;
-			if (typeof syncState.synced_through_bytes === "number") {
-				syncedBytes = syncState.synced_through_bytes;
-			}
-		} catch {
-			/* intentional: malformed sync-state — treat as nothing synced (safe) */
-		}
-	}
+	const { syncState, syncedBytes } = readActivitySyncState(syncStatePath);
+	if (
+		resumePendingActivity(
+			{
+				activityPath,
+				archiveDir,
+				syncStatePath,
+				manifestPath: activityManifestPath(cwd),
+				syncState,
+				loadManifest: () => loadOrRebuildArchiveManifest(cwd),
+			},
+			dryRun,
+			emit,
+		)
+	) return;
 
 	const ignoreSync = Boolean(opts.all);
-	const buf = readFileSync(activityPath);
-	const plan = planCut(buf, syncedBytes, keepRecentBytes, ignoreSync);
+	const invalidCursor = ignoreSync ? undefined : invalidSyncCursorReason(syncedBytes, fileSize);
+	if (invalidCursor) {
+		emit(
+			{ compacted: false, file_bytes: fileSize, synced_bytes: syncedBytes, reason: invalidCursor },
+			`${c.dim("Nothing safely compactable")} — ${invalidCursor}.`,
+		);
+		return;
+	}
+	const plan = planCut(activityPath, fileSize, syncedBytes, keepRecentBytes, ignoreSync);
 
 	if (plan.cutByte <= 0) {
 		emit(
@@ -224,79 +318,71 @@ export async function compactCommand(opts: OptionValues): Promise<void> {
 		return;
 	}
 
-	const manifest = loadArchiveManifest(cwd);
-	const seq = (manifest.segments.at(-1)?.seq ?? 0) + 1;
+	const manifest = loadOrRebuildArchiveManifest(cwd);
+	const seq = nextActivitySegmentSeq(cwd, manifest);
 	const segmentFile = `activity-${String(seq).padStart(4, "0")}.jsonl.gz`;
-	const gz = gzipSync(buf.subarray(0, plan.cutByte));
 
 	if (dryRun) {
-		emit(
-			{
-				compacted: false,
-				dry_run: true,
-				would_archive_bytes: plan.cutByte,
-				would_archive_records: plan.records,
-				gz_bytes: gz.length,
-				live_after_bytes: plan.liveAfter,
-				segment: segmentFile,
-			},
-			`${c.bold("Dry run")} — would archive ${mb(plan.cutByte)}MB (${plan.records} records) → ${segmentFile}\n` +
-				`  gzipped: ${mb(gz.length)}MB (${Math.round((1 - gz.length / plan.cutByte) * 100)}% smaller)\n` +
-				`  live activity.jsonl after: ${mb(plan.liveAfter)}MB`,
-		);
+		emitActivityDryRun(activityPath, plan, segmentFile, emit);
 		return;
 	}
 
-	// 1) Write the gzipped segment (temp → rename so a reader never sees a partial .gz).
-	mkdirSync(archiveDir, { recursive: true });
-	const segPath = join(archiveDir, segmentFile);
-	const segTmp = `${segPath}.tmp`;
-	writeFileSync(segTmp, gz);
-	renameSync(segTmp, segPath);
-
-	// 2) Truncate the live file to the remainder (temp → atomic rename).
-	const liveTmp = `${activityPath}.compact.tmp`;
-	writeFileSync(liveTmp, buf.subarray(plan.cutByte));
-	renameSync(liveTmp, activityPath);
-
-	// 3) Adjust the sync cursor: archived bytes were already synced, so the
-	//    cursor (offset into the now-shorter live file) drops by the same amount.
-	syncState.synced_through_bytes = Math.max(0, syncedBytes - plan.cutByte);
-	writeFileSync(syncStatePath, JSON.stringify(syncState));
-
-	// 4) Record the segment in the manifest (read order for audit verify).
-	manifest.segments.push({
-		seq,
-		file: segmentFile,
-		bytes: plan.cutByte,
-		gz_bytes: gz.length,
+	const rotation = rotateActivityPrefix({
+		activityPath,
+		syncStatePath,
+		archiveDir,
+		manifestPath: activityManifestPath(cwd),
+		cutByte: plan.cutByte,
 		records: plan.records,
-		created_at: new Date().toISOString(),
+		syncedBytes,
+		source,
+		syncState,
+		loadManifest: () => loadOrRebuildArchiveManifest(cwd),
+		nextSequence: (current) => nextActivitySegmentSeq(cwd, current),
 	});
-	writeFileSync(archiveManifestPath(cwd), JSON.stringify(manifest, null, 2));
+	emitActivityRotation(rotation, fileSize, emit);
+}
 
-	emit(
-		{
-			compacted: true,
-			segment: segmentFile,
-			archived_bytes: plan.cutByte,
-			archived_records: plan.records,
-			gz_bytes: gz.length,
-			live_after_bytes: plan.liveAfter,
-			synced_through_bytes: syncState.synced_through_bytes,
-		},
-		`${c.green("✓ Compacted")} ${mb(plan.cutByte)}MB (${plan.records} records) → archive/${segmentFile}\n` +
-			`  gzipped to ${mb(gz.length)}MB (${Math.round((1 - gz.length / plan.cutByte) * 100)}% smaller, lossless)\n` +
-			`  live activity.jsonl: ${mb(fileSize)}MB → ${mb(plan.liveAfter)}MB\n` +
-			`  ${c.dim(`recover: gunzip -c .interlinked/archive/${segmentFile}  ·  audit verify reads archives automatically`)}`,
+/** Emit one plain-log result. Absent logs stay silent — most repos have no
+ *  collection/timeline yet, and noise there would drown the activity report. */
+function emitPlainResult(r: PlainCompactResult, isJson: boolean): void {
+	if (r.reason?.startsWith("no ")) return;
+	const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+	if (isJson) {
+		console.log(JSON.stringify(r, null, 2));
+		return;
+	}
+	if (!r.compacted && r.archived_bytes <= 0) {
+		console.log(c.dim(`${r.log}.jsonl: nothing compactable — ${r.reason ?? "within recent tail"}`));
+		return;
+	}
+	const verb = r.compacted ? `${c.green("✓ Compacted")} ${r.log}.jsonl:` : `${c.bold("Dry run")} — ${r.log}.jsonl: would archive`;
+	console.log(
+		`${verb} ${mb(r.archived_bytes)}MB (${r.archived_records} records) → archive/${r.segment}\n` +
+			`  gzipped to ${mb(r.gz_bytes)}MB, live after: ${mb(r.live_after_bytes)}MB`,
 	);
+}
+
+/** `interlinked compact` — activity.jsonl first (cursor/audit-safe), then the
+ *  plain daemon logs (collection.jsonl, timeline.jsonl) via compact-plain.ts. */
+export async function compactCommand(opts: OptionValues): Promise<void> {
+	await compactActivityLog(opts);
+	const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
+	const keepRecentBytes =
+		typeof opts.keepRecentBytes === "number" ? opts.keepRecentBytes : DEFAULT_KEEP_RECENT_BYTES;
+	for (const log of PLAIN_COMPACTABLE_LOGS) {
+		const result = compactPlainLog(log, { cwd, keepRecentBytes, dryRun: Boolean(opts.dryRun) });
+		emitPlainResult(result, Boolean(opts.json));
+	}
 }
 
 /** Register the `compact` subcommand on the root program (keeps index.ts under its line cap). */
 export function registerCompactCommand(program: Command): void {
 	program
 		.command("compact")
-		.description("Gzip + archive the synced prefix of activity.jsonl (lossless), reclaiming disk")
+		.description(
+			"Gzip + archive the synced prefix of activity.jsonl plus the collection/timeline logs (lossless), reclaiming disk",
+		)
 		.option("--dry-run", "Show what would be archived without changing anything")
 		.option("--keep-recent-mb <mb>", "Keep at least this many MB of recent log live", "2")
 		.option("--all", "Archive past the recent tail even when un-synced (local-only / disk recovery; archived events won't be sent to the server)")

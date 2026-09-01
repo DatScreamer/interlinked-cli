@@ -28,11 +28,13 @@ import { PROVEN_TOOL_CHECKS, TOOL_CHECK_INSTRUCTIONS } from "./instructions.js";
 /** Every id PROVEN_TOOL_CHECKS should contain, sorted for stable diffing. */
 const EXPECTED_PROVEN_MEMBERS = [
 	"affected_tests",
+	"affected_tests_deferred",
 	"binary_content",
 	"biome_lint",
 	"dependency_audit",
 	"empty_file",
 	"eslint",
+	"external_check_deferred",
 	"export_ripple",
 	"gitleaks",
 	"lockfile_drift",
@@ -73,6 +75,10 @@ const EXPECTED_INSTRUCTIONS: Readonly<Record<string, string>> = {
 		"Secrets or credentials were detected by gitleaks. Remove them immediately and rotate the exposed credential. Use environment variables or a secrets manager (e.g., Vault, AWS Secrets Manager) instead. If this was committed to git, the credential is already exposed — rotation is mandatory.",
 	affected_tests:
 		"The test file for this source file is failing. Fix the source code so the tests pass. Do NOT modify the tests to make them pass — fix the implementation.",
+	affected_tests_deferred:
+		"No test result exists for this check. Re-run the affected test after the active check finishes; do not interpret deferral as either passing or failing.",
+	external_check_deferred:
+		"No external-check verdict exists. Re-run the check after active work finishes; do not interpret deferral, timeout, or runner failure as a clean result.",
 	inline_language_checks:
 		"Each finding below lists the line and a fix_instruction from the language profile. Address the specific pattern (bare except, .unwrap() in non-test code, force cast, etc.). Do NOT suppress with comments — change the code.",
 	binary_content:

@@ -93,14 +93,21 @@ describe("appendActivityRecordOnly mutants", () => {
 	});
 
 	// test-contract: invariant — kills f76d84ec35338a75 (`!existsSync(dir)` ->
-	// `true`): once the dir already exists, a repeat call must not invoke
-	// mkdirSync again (forcing the guard true would call it unconditionally).
-	it("does not call mkdirSync again once the target directory already exists", () => {
+	// `true`): once the data dir exists, a repeat call must not recreate THAT
+	// parent. The shared mutation lock legitimately creates its short-lived lock
+	// directory on every append; forcing the guard true adds a second call.
+	it("does not recreate the data directory once it already exists", () => {
 		appendActivityRecordOnly({ ts: "t1", agent: "a", type: "x" }, tmp);
 		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["a"]);
 		mkdirSyncSpy.mockClear();
 		appendActivityRecordOnly({ ts: "t2", agent: "b", type: "y" }, tmp);
-		expect(mkdirSyncSpy).not.toHaveBeenCalled();
+		expect(mkdirSyncSpy).toHaveBeenCalledTimes(1);
+		expect(mkdirSyncSpy.mock.calls[0]?.[0]).toContain(
+			"activity.jsonl.interlinked-mutation.lock",
+		);
+		expect(mkdirSyncSpy).not.toHaveBeenCalledWith(join(tmp, INTERLINKED), {
+			recursive: true,
+		});
 		expect(readLocalActivity({ cwd: tmp }).map((e) => e.agent)).toEqual(["b", "a"]);
 	});
 

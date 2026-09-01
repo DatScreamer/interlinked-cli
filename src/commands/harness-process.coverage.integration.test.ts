@@ -15,9 +15,9 @@
 //   - collectAncestorPids: the ps-walk parent chain + the execSync-throws arm.
 //   - openDaemonStderrLog (mkdir / pre-existing offset / failure) +
 //     close/read (happy + failure + null).
-//   - ensureDistFresh: no-server short-circuit, missing-src short-circuit,
-//     fresh (no rebuild), stale-dir → rebuild ok, stale-src-file → rebuild,
-//     build-throws arm, outer-catch (statSync throws).
+//   - ensureDistFresh: no-server / installed-package short-circuits, recursive
+//     fresh vs stale verdicts, exact build invocation, quiet JSON progress,
+//     build failure, and post-build freshness verification.
 //   - getHarnessServerPath: first-candidate hit + empty-string fallthrough.
 //   - isHarnessRunning: no-pid-file, NaN pid, alive, stale-cleanup (kill
 //     throws → unlink) + unlink-also-throws.
@@ -54,6 +54,11 @@ vi.mock("node:child_process", () => ({
 	execSync: mocks.execSync,
 	spawn: mocks.spawn,
 }));
+
+vi.mock("../harness/daemon-process-identity.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../harness/daemon-process-identity.js")>();
+	return { ...actual, readHarnessProcessIdentity: vi.fn((_cwd: string, pid: number) => `id:${pid}`) };
+});
 
 vi.mock("node:fs", () => ({
 	closeSync: mocks.closeSync,
@@ -360,11 +365,17 @@ describe("reapOrphanHarnesses — signalling + escalation", () => {
 		});
 		mocks.existsSync.mockImplementation((p: unknown) => String(p).endsWith(".sock"));
 
+		const termAccepted = new Set<number>();
+		const gone = new Set<number>();
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, sig?: string | number) => {
 			// 9001 vanishes on SIGTERM (ESRCH → reaped). 9002 takes the SIGTERM but
 			// is gone by the liveness poll (signal 0 throws ESRCH → exits the loop).
-			if (sig === "SIGTERM" && pid === 9001) throw esrch();
-			if (sig === 0) throw esrch();
+			if (sig === "SIGTERM" && pid === 9001) {
+				gone.add(pid);
+				throw esrch();
+			}
+			if (sig === "SIGTERM") termAccepted.add(pid);
+			if (sig === 0 && (gone.has(pid) || termAccepted.has(pid))) throw esrch();
 			return true;
 		}) as typeof process.kill);
 
@@ -643,7 +654,8 @@ describe("ensureDistFresh", () => {
 	// over a candidate list. We point existsSync at exactly the paths we want so
 	// the resolved dist server is deterministic.
 	const DIST = "/repo/dist/harness/server.js";
-	const SRC_SERVER = "/repo/src/harness/server.ts";
+	const STALE = { stale: true, newestSrcMs: 9_000, buildMs: 1_000 };
+	const FRESH = { stale: false, newestSrcMs: 1_000, buildMs: 9_000 };
 
 	function existsFor(set: Set<string>) {
 		mocks.existsSync.mockImplementation((p: unknown) => set.has(String(p)));
@@ -655,78 +667,76 @@ describe("ensureDistFresh", () => {
 		expect(mocks.execSync).not.toHaveBeenCalled();
 	});
 
-	it("short-circuits when the matching src/server.ts is absent", () => {
-		// Candidate #4 (flat-layout dist) resolves, but no matching src file.
+	it("short-circuits when an installed package has no source tree", () => {
+		// Candidate #4 resolves, but the recursive detector cannot read src/.
 		existsFor(new Set([DIST]));
-		ensureDistFresh();
-		expect(mocks.statSync).not.toHaveBeenCalled();
+		const readStaleness = vi.fn().mockReturnValue(null);
+		ensureDistFresh({ readStaleness });
+		expect(readStaleness).toHaveBeenCalledWith("/repo");
 		expect(mocks.execSync).not.toHaveBeenCalled();
 	});
 
-	it("does not rebuild when dist is newer than every src input", () => {
-		existsFor(new Set([DIST, SRC_SERVER, "/repo/src/harness", "/repo/src/lib", "/repo/src/commands"]));
-		mocks.statSync.mockImplementation((p: unknown) => {
-			const s = String(p);
-			// dist newest; all src older.
-			return { mtimeMs: s === DIST ? 5000 : 1000 } as unknown as ReturnType<typeof mocks.statSync>;
-		});
-		ensureDistFresh();
+	it("does not rebuild when the recursive detector reports fresh", () => {
+		existsFor(new Set([DIST]));
+		ensureDistFresh({ readStaleness: () => FRESH });
 		expect(mocks.execSync).not.toHaveBeenCalled();
 		expect(logText()).toBe("");
 	});
 
-	it("rebuilds when a src directory is newer than dist (build succeeds)", () => {
-		existsFor(new Set([DIST, SRC_SERVER, "/repo/src/harness", "/repo/src/lib", "/repo/src/commands"]));
-		mocks.statSync.mockImplementation((p: unknown) => {
-			const s = String(p);
-			// src/harness newer than dist → stale via the dir loop.
-			return { mtimeMs: s === "/repo/src/harness" ? 9000 : 1000 } as unknown as ReturnType<typeof mocks.statSync>;
-		});
+	it("rebuilds a stale checkout and verifies the resulting dist", () => {
+		existsFor(new Set([DIST]));
+		const readStaleness = vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH);
 		mocks.execSync.mockReturnValue("built");
-		ensureDistFresh();
+		ensureDistFresh({ readStaleness });
 		expect(mocks.execSync).toHaveBeenCalledOnce();
 		const opts = mocks.execSync.mock.calls[0]?.[1] as { cwd: string };
 		expect(opts.cwd).toBe("/repo");
+		expect(mocks.execSync).toHaveBeenCalledWith("npm run build", {
+			cwd: "/repo",
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: 120_000,
+		});
+		expect(readStaleness).toHaveBeenCalledTimes(2);
 		expect(logText()).toContain("Source newer than dist — rebuilding...");
 		expect(logText()).toContain("Rebuilt dist/");
 	});
 
-	it("rebuilds when only the src server file is newer (dirs equal/older)", () => {
-		// Only SRC_SERVER exists among the src dirs → dir loop finds none stale,
-		// then the `statSync(srcServer) > distMtime` tail flips stale=true.
-		existsFor(new Set([DIST, SRC_SERVER]));
-		mocks.statSync.mockImplementation((p: unknown) => {
-			const s = String(p);
-			return { mtimeMs: s === SRC_SERVER ? 9000 : 1000 } as unknown as ReturnType<typeof mocks.statSync>;
-		});
+	it("keeps JSON stdout quiet while rebuilding", () => {
+		existsFor(new Set([DIST]));
 		mocks.execSync.mockReturnValue("built");
-		ensureDistFresh();
+		ensureDistFresh({
+			quiet: true,
+			readStaleness: vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(FRESH),
+		});
 		expect(mocks.execSync).toHaveBeenCalledOnce();
-		expect(logText()).toContain("Rebuilt dist/");
+		expect(logText()).toBe("");
 	});
 
-	it("reports a build failure when execSync throws", () => {
-		existsFor(new Set([DIST, SRC_SERVER, "/repo/src/harness"]));
-		mocks.statSync.mockImplementation((p: unknown) => {
-			const s = String(p);
-			return { mtimeMs: s === "/repo/src/harness" ? 9000 : 1000 } as unknown as ReturnType<typeof mocks.statSync>;
-		});
+	it("throws when rebuilding stale source fails", () => {
+		existsFor(new Set([DIST]));
 		mocks.execSync.mockImplementation(() => {
 			throw new Error("npm run build failed");
 		});
-		ensureDistFresh();
-		expect(logText()).toContain("Build failed — starting harness with potentially stale code");
+		expect(() => ensureDistFresh({ readStaleness: () => STALE })).toThrow(
+			"Build failed; refusing to start the harness with stale code: npm run build failed",
+		);
 	});
 
-	it("swallows an fs error in the outer staleness try (statSync throws)", () => {
-		existsFor(new Set([DIST, SRC_SERVER]));
-		mocks.statSync.mockImplementation(() => {
-			throw new Error("EIO");
-		});
-		// Must not throw; no rebuild attempted.
-		ensureDistFresh();
-		expect(mocks.execSync).not.toHaveBeenCalled();
-		expect(logText()).toBe("");
+	it("throws when a nominally successful build leaves dist stale", () => {
+		existsFor(new Set([DIST]));
+		mocks.execSync.mockReturnValue("built");
+		expect(() => ensureDistFresh({ readStaleness: () => STALE })).toThrow(
+			"Build completed but dist is still stale",
+		);
+	});
+
+	it("throws when a nominally successful build removes the verifiable dist shape", () => {
+		existsFor(new Set([DIST]));
+		mocks.execSync.mockReturnValue("built");
+		const readStaleness = vi.fn().mockReturnValueOnce(STALE).mockReturnValueOnce(null);
+		expect(() => ensureDistFresh({ readStaleness })).toThrow(
+			"dist freshness could not be verified",
+		);
 	});
 });
 

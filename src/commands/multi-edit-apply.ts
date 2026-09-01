@@ -15,6 +15,7 @@ import {
 	evaluateBiomeDiffOverlay,
 	evaluateTscDiffOverlay,
 	isTscFindingBlocking,
+	TSC_CHECKER_UNAVAILABLE_CODE,
 } from "../harness/diff-overlay.js";
 import { findProjectRoot } from "../harness/quality-checks/project-root.js";
 import { nonNull } from "../lib/non-null.js";
@@ -221,6 +222,22 @@ export function gateProposedContentInline(
 			.filter((b) => b.path !== path)
 			.map((b) => ({ filePath: b.path, content: b.content }));
 		const tsc = evaluateTscDiffOverlay(path, content, projectRoot, siblings);
+		// Unavailable is NOT clean: multi-edit is a transaction, and an empty
+		// newFindings array from a checker that never ran (sidecar spawn
+		// failure / timeout / cooldown) must abort it, never land it. The
+		// caller treats any failure row as GATE_REJECTED — files unchanged.
+		if (tsc.checkerUnavailable !== undefined) {
+			failures.push({
+				path,
+				tool: "tsc",
+				code: TSC_CHECKER_UNAVAILABLE_CODE,
+				line: 0,
+				message:
+					`type checker unavailable (${tsc.checkerUnavailable}) — ` +
+					"this file was NOT type-checked; transaction aborted because unavailable is not clean",
+			});
+			continue;
+		}
 		const blocking = tsc.newFindings.filter(isTscFindingBlocking);
 		for (const f of blocking) {
 			failures.push({

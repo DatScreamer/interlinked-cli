@@ -38,12 +38,24 @@ export function mutationIdentityAvailable(): boolean {
 	return loadTs() !== null;
 }
 
-/** 16-hex-char digest — short enough to read in a report, wide enough that a
- *  collision across one file's mutants is not a practical concern. */
-/** 16 hex chars — short enough to read in a report, wide enough that a collision
- *  within one file's mutant set is not a practical concern. */
-function sha16(parts: string[]): StableId {
-	return createHash("sha256").update(parts.join("\x00")).digest("hex").slice(0, 16);
+/** Full digest over a NUL-delimited tuple. The delimiter is part of the
+ * identity contract: `["a", "bc"]` must never alias `["ab", "c"]`. */
+function sha256Parts(parts: readonly string[]): string {
+	return createHash("sha256").update(parts.join("\x00")).digest("hex");
+}
+
+/** Unambiguous portable tuple encoding. V1's NUL delimiter is preserved
+ * above for manifest compatibility; v2 hashes a JSON string array so a NUL in
+ * a raw lexeme/replacement can never move a field boundary. */
+function sha256PortableParts(parts: readonly string[]): string {
+	return createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex");
+}
+
+/** 16 hex chars — the legacy manifest/display identity. Do not widen this in
+ * place: existing manifests are keyed by these exact values. Protocol-v3 wire
+ * evidence uses the separately versioned full-width derivation below. */
+function sha16(parts: readonly string[]): StableId {
+	return sha256Parts(parts).slice(0, 16);
 }
 
 function parseFile(ts: TsModule, file: string, content: string): TS.SourceFile {
@@ -123,13 +135,61 @@ function enclosingFunction(ts: TsModule, sf: TS.SourceFile, offset: number): TS.
 interface ResolvedSite {
 	symbolId: StableId;
 	qualifiedName: string;
+	symbolContext: string;
+	arity: number;
+}
+
+function anonymousContextOrdinal(ts: TsModule, sf: TS.SourceFile, target: TS.Node): number {
+	let boundary: TS.Node = sf;
+	let cursor = target.parent;
+	while (cursor && cursor !== sf) {
+		if (
+			(isFunctionLike(ts, cursor) && localName(ts, sf, cursor) !== "(anonymous)") ||
+			ts.isClassDeclaration(cursor) ||
+			ts.isModuleDeclaration(cursor)
+		) {
+			boundary = cursor;
+			break;
+		}
+		cursor = cursor.parent;
+	}
+	let ordinal = 0;
+	let answer = 0;
+	const visit = (node: TS.Node): void => {
+		if (node !== boundary) {
+			if (ts.isClassDeclaration(node) || ts.isModuleDeclaration(node)) return;
+			if (isFunctionLike(ts, node)) {
+				if (localName(ts, sf, node) !== "(anonymous)") return;
+				if (node === target) answer = ordinal;
+				ordinal++;
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(boundary);
+	return answer;
+}
+
+/** Stable disambiguator for symbols whose display name is not unique. Named
+ * symbols keep their established qualified-name anchor. Anonymous/computed
+ * symbols gain a preorder ordinal inside the nearest named function/class/
+ * namespace; changing that ordinal necessarily changes the containing symbol
+ * and therefore belongs to the changed region. */
+function portableSymbolContext(ts: TsModule, sf: TS.SourceFile, node: TS.Node | null, qn: string): string {
+	if (node === null || localName(ts, sf, node) !== "(anonymous)") return qn;
+	return `${qn}#anonymous-${anonymousContextOrdinal(ts, sf, node)}`;
 }
 
 function resolveSite(ts: TsModule, sf: TS.SourceFile, file: string, offset: number): ResolvedSite {
 	const fn = enclosingFunction(ts, sf, offset);
 	const qn = fn ? qualifiedName(ts, sf, fn) : MODULE_QUALIFIED_NAME;
 	const arity = fn ? arityOf(fn) : 0;
-	return { symbolId: symbolIdFor(file, qn, arity), qualifiedName: qn };
+	return {
+		symbolId: symbolIdFor(file, qn, arity),
+		qualifiedName: qn,
+		symbolContext: portableSymbolContext(ts, sf, fn, qn),
+		arity,
+	};
 }
 
 function groupKey(symbolId: StableId, mutator: string, lexeme: string): string {
@@ -138,7 +198,8 @@ function groupKey(symbolId: StableId, mutator: string, lexeme: string): string {
 
 /**
  * Re-anchor a file's raw mutants to stable identities. Ordinal is the rank of a
- * site's DISTINCT character offset within its (symbol, mutator, lexeme) group —
+ * site's DISTINCT UTF-16 code-unit offset within its
+ * (symbol, mutator, lexeme) group —
  * so two mutants at one token (same offset, different replacement) share a
  * `siteId` and differ only in `mutantId`. Returns null when typescript is absent.
  */
@@ -179,6 +240,82 @@ export function deriveIdentities(
 			mutator: r.raw.mutator,
 			originalLexeme: r.raw.originalLexeme,
 			replacement: r.raw.replacement,
+			ordinalWithinSymbol: ordinal,
+		};
+	});
+}
+
+/**
+ * Full-width wire identity used by mutation protocol v3.
+ *
+ * This is deliberately a NEW algorithm rather than a widening of v1. The
+ * local v1 manifest hashes truncated symbol and site identifiers into their
+ * descendants, so a 64-character value emitted under the old algorithm name
+ * would still inherit a 64-bit intermediate collision boundary. V2 keeps the
+ * same semantic tuple and ordinal rules but carries full SHA-256 at every
+ * level. The CLI can therefore verify paid/cloud evidence without trusting an
+ * engine-local id while continuing to derive the unchanged v1 manifest keys.
+ */
+export const PORTABLE_IDENTITY_ALGORITHM = "interlinked-site-v2" as const;
+
+export interface PortableMutantIdentity {
+	mutantId: string;
+	siteId: string;
+	symbolId: string;
+	qualifiedName: string;
+	symbolContext: string;
+	mutator: string;
+	originalLexeme: string;
+	replacement: string;
+	ordinalWithinSymbol: number;
+}
+
+/** Recompute the portable protocol-v3 identities from LOCAL target content.
+ * Returns null when the TypeScript parser is unavailable, matching the legacy
+ * derivation's honest-degradation contract. */
+export function derivePortableIdentities(
+	file: string,
+	content: string,
+	rawMutants: RawMutant[],
+): PortableMutantIdentity[] | null {
+	const ts = loadTs();
+	if (!ts) return null;
+	const sf = parseFile(ts, file, content);
+	const resolved = rawMutants.map((raw) => ({ raw, site: resolveSite(ts, sf, file, raw.startOffset) }));
+
+	const offsetsByGroup = new Map<string, Set<number>>();
+	for (const row of resolved) {
+		const fullSymbolId = sha256PortableParts([file, row.site.symbolContext, String(row.site.arity)]);
+		const key = groupKey(fullSymbolId, row.raw.mutator, row.raw.originalLexeme);
+		const offsets = offsetsByGroup.get(key) ?? new Set<number>();
+		offsets.add(row.raw.startOffset);
+		offsetsByGroup.set(key, offsets);
+	}
+	const rankByGroup = new Map<string, Map<number, number>>();
+	for (const [key, offsets] of offsetsByGroup) {
+		const sorted = [...offsets].sort((a, b) => a - b);
+		rankByGroup.set(key, new Map(sorted.map((offset, ordinal) => [offset, ordinal])));
+	}
+
+	return resolved.map((row) => {
+		const symbolId = sha256PortableParts([file, row.site.symbolContext, String(row.site.arity)]);
+		const key = groupKey(symbolId, row.raw.mutator, row.raw.originalLexeme);
+		const ordinal = rankByGroup.get(key)?.get(row.raw.startOffset) ?? 0;
+		const siteId = sha256PortableParts([
+			symbolId,
+			row.raw.mutator,
+			row.raw.originalLexeme,
+			String(ordinal),
+		]);
+		return {
+			mutantId: sha256PortableParts([siteId, row.raw.replacement]),
+			siteId,
+			symbolId,
+			qualifiedName: row.site.qualifiedName,
+			symbolContext: row.site.symbolContext,
+			mutator: row.raw.mutator,
+			originalLexeme: row.raw.originalLexeme,
+			replacement: row.raw.replacement,
 			ordinalWithinSymbol: ordinal,
 		};
 	});

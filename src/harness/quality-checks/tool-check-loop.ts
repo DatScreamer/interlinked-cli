@@ -15,29 +15,34 @@
 // onCheckBoundary(`inline_<name>`). A handler returning an array (even empty)
 // falls through to the boundary, matching a branch that ran to completion.
 
-import { spawnSync } from "node:child_process";
 import { extname, isAbsolute, resolve, sep } from "node:path";
-import { nonNull } from "../../lib/non-null.js";
-import { configNameToToolId, getOrCreateEngine } from "../check-engine/index.js";
 import { parseNpmAuditJson, parseOsvScannerJson } from "../check-engine/output-parsers.js";
+import { runProcessAsync } from "../check-engine/spawn-async.js";
 import { isGeneratedFile, isTestFile } from "../checks/shared.js";
 import { listWithOverflow } from "../finding-overflow.js";
 import { getProfileForFile } from "../language-profiles.js";
+import { isOperationalCheckDeferral } from "../operational-check-deferrals.js";
+import { tryAcquireProjectHeavyProcessLease } from "../project-heavy-process-lock.js";
 import type { HarnessEvent, QualityCheckConfig } from "../types.js";
-import { resolveDependencyAuditCommand } from "./dependency-audit.js";
+import { resolveDependencyAuditCommandAsync } from "./dependency-audit.js";
 import { runInlineLanguageChecks } from "./inline-language-checks.js";
+import { MULTI_FILE_NAMED_EXTERNAL_CHECKS } from "./change-set-external.js";
 import { findProjectRoot } from "./project-root.js";
 import type { QualityCheckResult, ToolBreakdownEntry } from "./result-types.js";
 import { containsSecrets } from "./secret-detection.js";
 import { collectSoftwareVersionReferences } from "./software-version-regression.js";
 import { findAnyTypes } from "./strong-typing.js";
 import { isLikelyTestFile } from "./test-classifier.js";
-import { TEST_DISPATCHERS } from "./test-dispatchers.js";
+import {
+	TEST_DISPATCHERS,
+	type TestDispatcher,
+} from "./test-dispatchers.js";
 import {
 	runLockfileDriftCheck,
 	runPackageJsonConsistencyCheck,
 	runSoftwareVersionChecks,
 } from "./tool-check-loop-manifest-checks.js";
+import { deferredExternalCheck, runCommandCheck } from "./tool-command-check.js";
 
 /**
  * Yield the Node event loop so other socket connections in the daemon can
@@ -73,6 +78,12 @@ export interface ToolCheckLoopContext {
 	baseline: { softwareVersions?: ReturnType<typeof collectSoftwareVersionReferences> } | undefined;
 	/** Out-parameter — one entry per subprocess tool invocation. */
 	outToolMetrics: ToolBreakdownEntry[] | undefined;
+	/** Out-parameter — check names that reached a real verdict. Skipped,
+	 *  deferred, and thrown handlers never enter this list. */
+	outChecksRan?: string[] | undefined;
+	/** True when one request-owned ChangeSet batch is responsible for command
+	 * checks and named handlers that spawn external processes. */
+	skipMultiFileExternalChecks?: boolean | undefined;
 	/** False when the edited file is outside the harness's own project. */
 	editedFileInRepo: boolean | undefined;
 	/** Diagnostic per-check boundary callback. */
@@ -88,7 +99,7 @@ type NamedCheckHandler = (
 	ctx: ToolCheckLoopContext,
 	name: string,
 	check: QualityCheckConfig,
-) => QualityCheckResult[] | null;
+) => QualityCheckResult[] | null | Promise<QualityCheckResult[] | null>;
 
 /** secrets_in_source — inline content scan of the edit payload. */
 function runSecretsCheck(
@@ -165,65 +176,94 @@ function runStrongTypingCheck(
 }
 
 /** dependency_audit — SCA over edited package/lock files. */
-function runDependencyAudit(
+async function runDependencyAudit(
 	ctx: ToolCheckLoopContext,
 	name: string,
 	check: QualityCheckConfig,
-): QualityCheckResult[] | null {
+): Promise<QualityCheckResult[] | null> {
 	// SCA: run dependency audit when package/lock files are edited.
 	// Detects known CVEs in project dependencies.
 	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
 	const fileName = ctx.filePath.split("/").pop() || "";
-	const resolved = resolveDependencyAuditCommand(fileName, {
-		useOsvScanner: check.use_osv_scanner,
-		offline: check.offline,
-	});
-	if (!resolved) return null;
-
-	const auditResult = spawnSync(nonNull(resolved.cmd[0]), resolved.cmd.slice(1), {
-		shell: false,
-		timeout: check.timeout_ms,
-		cwd: checkCwd,
-		encoding: "utf-8",
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-
-	if (auditResult.error && (auditResult.error as NodeJS.ErrnoException).code === "ENOENT") {
-		return null; // Audit tool not installed — skip silently
-	}
-
-	// Every supported tool exits non-zero when vulnerabilities are found.
-	// status=0 means clean; status=null means timeout (treat as skip).
-	if (auditResult.status === 0 || auditResult.status === null) return null;
-
-	const stdout = (auditResult.stdout || "").trim();
-	let detail = "";
-	if (resolved.parser === "osv-scanner") {
-		const summary = parseOsvScannerJson(stdout);
-		if (!summary) return null; // non-zero exit but no parsable vulns — skip
-		detail = summary.detail;
-	} else if (resolved.parser === "npm-audit") {
-		const summary = parseNpmAuditJson(stdout);
-		detail = summary?.detail ?? "";
-	} else {
-		// pip-audit / cargo-audit / govulncheck: surface raw stderr tail.
-		// Structured parsing for these lives behind osv-scanner — if a
-		// user opts out of it, we degrade gracefully rather than parse
-		// four more bespoke JSON shapes here.
-		detail =
-			(auditResult.stderr || "").split("\n").slice(0, 5).join("\n") ||
-			"vulnerabilities found";
-	}
-
-	return [
-		{
+	const release = tryAcquireProjectHeavyProcessLease(checkCwd);
+	if (!release) {
+		return deferredExternalCheck(
+			ctx.filePath,
 			name,
-			severity: check.severity,
-			message: `Dependency vulnerabilities found after editing ${ctx.filePath}`,
-			file: ctx.filePath,
-			detail: detail || `Run \`${resolved.cmd[0]}\` for details (parser: ${resolved.parser})`,
-		},
-	];
+			"heavy-process capacity is busy; dependency audit did not run",
+		);
+	}
+	try {
+		// Resolution may version-probe osv-scanner, so it belongs inside the same
+		// admission lease as the audit itself.
+		const resolved = await resolveDependencyAuditCommandAsync(fileName, {
+			useOsvScanner: check.use_osv_scanner,
+			offline: check.offline,
+		});
+		if (!resolved) return null;
+		const command = resolved.cmd[0];
+		if (!command) {
+			return deferredExternalCheck(ctx.filePath, name, "audit command was unavailable");
+		}
+
+		const auditResult = await runProcessAsync(command, resolved.cmd.slice(1), {
+			timeout: check.timeout_ms,
+			cwd: checkCwd,
+		});
+		if (auditResult.timedOut) {
+			return deferredExternalCheck(ctx.filePath, name, "dependency audit timed out");
+		}
+		if (auditResult.killed || (auditResult.code !== null && auditResult.code >= 128)) {
+			return deferredExternalCheck(ctx.filePath, name, "dependency audit was interrupted");
+		}
+		if (auditResult.code === null) {
+			return deferredExternalCheck(ctx.filePath, name, "dependency audit runner was unavailable");
+		}
+
+		// Every supported tool exits non-zero when vulnerabilities are found.
+		if (auditResult.code === 0) return [];
+
+		const stdout = auditResult.stdout.trim();
+		let detail = "";
+		if (resolved.parser === "osv-scanner") {
+			const summary = parseOsvScannerJson(stdout);
+			if (!summary) {
+				return deferredExternalCheck(
+					ctx.filePath,
+					name,
+					"dependency audit exited non-zero without a parseable report",
+				);
+			}
+			detail = summary.detail;
+		} else if (resolved.parser === "npm-audit") {
+			const summary = parseNpmAuditJson(stdout);
+			if (!summary) {
+				return deferredExternalCheck(
+					ctx.filePath,
+					name,
+					"npm audit exited non-zero without a parseable report",
+				);
+			}
+			detail = summary.detail;
+		} else {
+			// pip-audit / cargo-audit / govulncheck: surface raw stderr tail.
+			detail =
+				auditResult.stderr.split("\n").slice(0, 5).join("\n") ||
+				"vulnerabilities found";
+		}
+
+		return [
+			{
+				name,
+				severity: check.severity,
+				message: `Dependency vulnerabilities found after editing ${ctx.filePath}`,
+				file: ctx.filePath,
+				detail: detail || `Run \`${command}\` for details (parser: ${resolved.parser})`,
+			},
+		];
+	} finally {
+		release();
+	}
 }
 
 /** inline_language_checks — data-driven per-language inline pattern checks. */
@@ -251,11 +291,11 @@ function runInlineLanguageChecksBranch(
 }
 
 /** affected_tests — dispatch per-language test invocation. */
-function runAffectedTests(
+async function runAffectedTests(
 	ctx: ToolCheckLoopContext,
 	name: string,
 	check: QualityCheckConfig,
-): QualityCheckResult[] | null {
+): Promise<QualityCheckResult[] | null> {
 	// Dispatch per-language test invocation. Dispatchers own their own
 	// runner shape and scoping (file-level, package-level, or
 	// project-wide).
@@ -266,11 +306,14 @@ function runAffectedTests(
 	if (!profile) return null;
 	if (isLikelyTestFile(baseForTests, absPath)) return null;
 
-	const dispatcher = TEST_DISPATCHERS[profile.id];
+	// Keep the public registry as the lookup seam. Tests and downstream
+	// embedders replace registry entries to supply their own runner, while the
+	// widened view accounts for languages that deliberately have no dispatcher.
+	const dispatcher = (TEST_DISPATCHERS as Partial<Record<string, TestDispatcher>>)[profile.id];
 	if (!dispatcher) return null;
 
 	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
-	const dispatched = dispatcher({
+	const dispatched = await dispatcher({
 		filePath: ctx.filePath,
 		absPath,
 		profile,
@@ -289,65 +332,6 @@ function runAffectedTests(
 		file: r.file,
 		detail: r.detail,
 	}));
-}
-
-/** Fallback for any `check.command`-based subprocess tool — delegates to the
- *  unified check engine. Async because the engine runs out-of-process. */
-async function runCommandCheck(
-	ctx: ToolCheckLoopContext,
-	name: string,
-	check: QualityCheckConfig,
-): Promise<QualityCheckResult[] | null> {
-	// Delegate to the unified check engine for subprocess-based tools.
-	const toolId = configNameToToolId(name);
-	if (!toolId || toolId === "dep-audit") return null;
-
-	const checkCwd = findProjectRoot(ctx.filePath, ctx.cwd) || ctx.cwd;
-	const engine = getOrCreateEngine(checkCwd);
-
-	const filterToFile = ctx.tscFilterFile ? true : name !== "typescript"; // tsc runs project-wide unless smart-tsc filtering
-	const targetFile =
-		ctx.tscFilterFile && name === "typescript"
-			? resolve(checkCwd, ctx.tscFilterFile)
-			: ctx.filePath;
-
-	const engineReport = await engine.runChecksAsync(
-		{
-			projectRoot: checkCwd,
-			mode: "file",
-			targetFile,
-			filterToFile,
-		},
-		{ tools: [toolId], timeoutMs: check.timeout_ms },
-	);
-
-	if (ctx.outToolMetrics) {
-		for (const m of engineReport.metrics) {
-			ctx.outToolMetrics.push({
-				tool: m.tool,
-				ms: m.elapsedMs,
-				finding_count: m.findingCount,
-			});
-		}
-	}
-
-	if (engineReport.results.length === 0) return [];
-	const output = engineReport.results
-		.slice(0, 15)
-		.map((r) => `${r.file}(${r.line}): ${r.message}`)
-		.join("\n");
-	const overflow =
-		engineReport.results.length > 15 ? `\n... (${engineReport.results.length - 15} more)` : "";
-
-	return [
-		{
-			name,
-			severity: check.severity,
-			message: `${name} found issues in ${ctx.filePath}`,
-			file: ctx.filePath,
-			detail: output + overflow,
-		},
-	];
 }
 
 /** name → handler. Two names (software_version_regression,
@@ -379,6 +363,12 @@ export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<Quali
 	for (const [name, check] of Object.entries(checks)) {
 		if (!check.enabled) continue;
 		if (!check.file_types.some((t) => filePath.endsWith(t))) continue;
+		if (
+			ctx.skipMultiFileExternalChecks &&
+			(check.command || MULTI_FILE_NAMED_EXTERNAL_CHECKS.has(name))
+		) {
+			continue;
+		}
 
 		// Yield to the event loop between checks so concurrent socket
 		// connections can be serviced. The cost is one microtask boundary
@@ -412,7 +402,7 @@ export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<Quali
 			const handler = NAMED_CHECK_HANDLERS[name];
 			let outcome: QualityCheckResult[] | null;
 			if (handler) {
-				outcome = handler(ctx, name, check);
+				outcome = await handler(ctx, name, check);
 			} else if (check.command) {
 				outcome = await runCommandCheck(ctx, name, check);
 			} else {
@@ -422,17 +412,29 @@ export async function runToolCheckLoop(ctx: ToolCheckLoopContext): Promise<Quali
 			// per-check boundary below. An array (even empty) falls through.
 			if (outcome === null) continue;
 			results.push(...outcome);
-		} catch (err) {
-			// Timeout or crash — skip this check, don't block agent
-			const msg = err instanceof Error ? err.message : String(err);
-			if (msg.includes("ETIMEDOUT") || msg.includes("timed out")) {
-				// Timeout is expected for slow checks — silently skip
+			if (outcome.some((result) => isOperationalCheckDeferral(result.name))) {
+				onCheckBoundary?.(`deferred_${name}`);
+				continue;
 			}
-			// Other errors: log but don't propagate
+			// Unknown config entries have neither a handler nor a command and do
+			// not represent a check execution, even though their no-op iteration is
+			// retained for backwards-compatible boundary timing.
+			if (handler || check.command) ctx.outChecksRan?.push(name);
+		} catch (err) {
+			// A handler failure is not clean. Keep the pipeline fail-open, but
+			// surface an explicit no-verdict row and classify its timing as
+			// deferred rather than completed.
+			const msg = err instanceof Error ? err.message : String(err);
+			results.push(
+				...deferredExternalCheck(ctx.filePath, name, `check handler threw: ${msg}`),
+			);
+			onCheckBoundary?.(`deferred_${name}`);
+			continue;
 		}
 		// Per-check phase boundary for diagnostic instrumentation. Fires
-		// even when the check was a no-op or timed out — the boundary
-		// captures wall time spent on this iteration's branch regardless.
+		// when the check completed (or the config entry was an unknown no-op).
+		// Deferred attempts use `deferred_<name>` above so timing telemetry never
+		// labels a no-verdict attempt as completed.
 		onCheckBoundary?.(`inline_${name}`);
 	}
 

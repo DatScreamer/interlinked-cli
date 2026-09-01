@@ -29,6 +29,38 @@ const CLIENT_LIST_HELP =
 const RUNNER_LIST_HELP =
 	"Comma-separated runners (claude-code,copilot-cli,cursor,gemini-cli,codex,opencode,pi); defaults to auto-detect";
 
+async function setupAction(opts: OptionValues): Promise<void> {
+	await enableCommand({
+		server: opts.server,
+		agent: opts.agent,
+		clients: opts.clients,
+		syncMode: opts.syncMode,
+		dryRun: opts.dryRun,
+	});
+	// `enable` validates both entry points. A refused enable must terminate
+	// setup too: login or onboarding would contradict its no-change result.
+	if (process.exitCode !== undefined && process.exitCode !== 0) return;
+	if (opts.dryRun) return;
+	if (opts.token) {
+		await loginCommand({ server: opts.server, token: opts.token });
+		return;
+	}
+	if (!resolveAuthToken()) {
+		await loginCommand({ server: opts.server });
+		return;
+	}
+	console.log(c.dim("\nAuth token already present. Skipping login."));
+	const onboarding = await ensureRemoteOnboarding({ serverUrl: opts.server });
+	if (onboarding.status !== "linked") return;
+	console.log(
+		c.dim(
+			`Remote agent linked: ${onboarding.agentName || "agent"}${
+				onboarding.agentHandle ? ` (${onboarding.agentHandle})` : ""
+			}`,
+		),
+	);
+}
+
 export function registerSetupCommands(program: Command): void {
 	program
 		.command("reload")
@@ -151,39 +183,7 @@ export function registerSetupCommands(program: Command): void {
 		.option("--sync-mode <mode>", "Sync mode: realtime (default), local, manual")
 		.option("--token <token>", "Manual token for CI/headless use")
 		.option("--dry-run", "Show what would change without modifying files")
-		.action(async (opts: OptionValues) => {
-			await enableCommand({
-				server: opts.server,
-				agent: opts.agent,
-				clients: opts.clients,
-				syncMode: opts.syncMode,
-				dryRun: opts.dryRun,
-			});
-
-			if (opts.dryRun) return;
-
-			if (opts.token) {
-				await loginCommand({ server: opts.server, token: opts.token });
-				return;
-			}
-
-			if (resolveAuthToken()) {
-				console.log(c.dim("\nAuth token already present. Skipping login."));
-				const onboarding = await ensureRemoteOnboarding({ serverUrl: opts.server });
-				if (onboarding.status === "linked") {
-					console.log(
-						c.dim(
-							`Remote agent linked: ${onboarding.agentName || "agent"}${
-								onboarding.agentHandle ? ` (${onboarding.agentHandle})` : ""
-							}`,
-						),
-					);
-				}
-				return;
-			}
-
-			await loginCommand({ server: opts.server });
-		});
+		.action(setupAction);
 
 	program
 		.command("update")

@@ -21,7 +21,11 @@ function blockReason(survivors: MutantRecord[], uncovered: number): string {
 	if (survivors.length > 0) parts.push(`${survivors.length} new surviving mutant(s)`);
 	if (uncovered > 0) parts.push(`${uncovered} uncovered changed mutation site(s)`);
 	const detail = survivors.length > 0 ? ` Survivors: ${survivors.map(survivorSummary).join("; ")}.` : "";
-	return `[interlinked:mutation] BLOCKED: ${parts.join(" + ")} in the changed region.${detail} Resolve by strengthening the test, fixing or removing the code, or annotating an equivalent mutant.`;
+	// No "annotate an equivalent mutant" escape here (review 2026-08-28 item 8):
+	// the equivalence workflow requires EMPIRICAL proof — patch the mutant, run
+	// the suite (feedback: prove equivalence empirically) — and `equivalent`
+	// status needs a verifier-issued certificate, not a self-serve annotation.
+	return `[interlinked:mutation] BLOCKED: ${parts.join(" + ")} in the changed region.${detail} Resolve by strengthening the test or fixing/removing the code; if you believe a mutant is equivalent, prove it empirically (patch the mutant, run the suite) rather than annotating it away.`;
 }
 
 /** Spec §6 small-scope block: too many mutation sites in the changed region to gate
@@ -44,8 +48,10 @@ function suiteRedReason(): string {
 }
 
 /** Spec §7 RED-witness warning: a newly-added test passed on the pre-edit base too,
- *  so it never demonstrably failed — a weak/tautological test. WARN, not a block. */
-function redWitnessWarning(): string {
+ *  so it never demonstrably failed — a weak/tautological test. WARN, not a block.
+ *  Exported for the adoption path (gate-decision.ts), which composes its own
+ *  warning list — review 2026-08-28 item 3: adoption must not swallow this. */
+export function redWitnessWarning(): string {
 	return (
 		"[interlinked:mutation] the new test did not fail on the pre-edit base (RED-witness unmet) — " +
 		"it may be tautological. Confirm it actually exercises the new behavior."
@@ -56,6 +62,19 @@ function redWitnessWarning(): string {
 export function mutationOutcomeToDecision(outcome: MutationGateOutcome): HarnessDecision {
 	if (outcome.kind === "unavailable") {
 		return { decision: "allow", warnings: [outcome.warning], rule_id: RULE_ID, category: CATEGORY };
+	}
+	if (outcome.kind === "baseline_adoption_ready") {
+		// An allow that RECORDS — the warning keeps adoption visible so it can
+		// never be read (or reported) as a clean measurement. NOTE for callers
+		// that persist: this mapping emits the outcome's own warning verbatim,
+		// which says "adopted" — a persisting caller must go through
+		// gate-decision.ts::adoptionDecision instead, which declares adoption
+		// only AFTER the persistence callback completes (review 2026-08-28 item
+		// 1; not crash-durable — the sequence has no transaction).
+		const warnings = outcome.redWitnessFailed
+			? [outcome.warning, redWitnessWarning()]
+			: [outcome.warning];
+		return { decision: "allow", warnings, rule_id: RULE_ID, category: CATEGORY };
 	}
 	if (outcome.decision === "block") {
 		// Priority: a red suite is the most fundamental failure; then oversize ("split

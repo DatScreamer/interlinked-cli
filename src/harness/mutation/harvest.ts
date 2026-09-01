@@ -175,8 +175,12 @@ function pluralize(n: number, word: string): string {
 /**
  * One warning naming the survivors, or null when there is nothing to say.
  *
- * Silence on a clean harvest is deliberate: a per-edit gate that speaks on every
- * edit trains the reader to stop looking.
+ * Silence on a zero-survivor report is deliberate: a per-edit gate that speaks
+ * on every edit trains the reader to stop looking. NOT "clean" (review
+ * 2026-08-28): an empty survivor list from the late window is only a valid
+ * survivor report containing zero survivors — it never went through the
+ * evaluator and carries no test/engine/census evidence, so it certifies
+ * nothing (the ledger row says `harvest_partial` for the same reason).
  */
 export function formatHarvestWarning(file: string, survivors: HarvestedSurvivor[]): string | null {
 	if (survivors.length === 0) return null;

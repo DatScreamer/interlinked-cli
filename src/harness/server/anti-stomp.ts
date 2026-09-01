@@ -29,6 +29,12 @@
 import { readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { recordDaemonEvent } from "../daemon-ledger.js";
+import {
+	type ProcessIdentityReader,
+	readHarnessProcessIdentity,
+} from "../daemon-process-identity.js";
+import { currentProcessAttemptId } from "../handover-churn.js";
+import { releaseStartupLock } from "../startup-lock.js";
 
 export interface AntiStompDeps {
 	logAlways: (msg: string) => void;
@@ -46,9 +52,25 @@ export interface AntiStompDeps {
 export function antiStompDepsFor(cwd: string, logAlways: (msg: string) => void): AntiStompDeps {
 	return {
 		logAlways,
-		recordExit: () =>
-			recordDaemonEvent(cwd, { at: Date.now(), pid: process.pid, event: "exit", reason: "anti-stomp" }),
-		exit: () => process.exit(0),
+		recordExit: () => {
+			// Stamp the handover attempt this loser was spawned to serve (env or
+			// already consumed by the startup guard): an exit row carrying the id
+			// RESOLVES the attempt in the churn reducer, so a lost race never
+			// counts toward the restart backoff (review 2026-08-29: four such
+			// races in ten minutes could re-trip it).
+			const attemptId = currentProcessAttemptId();
+			recordDaemonEvent(cwd, {
+				at: Date.now(),
+				pid: process.pid,
+				event: "exit",
+				reason: "anti-stomp",
+				...(attemptId !== undefined ? { attempt_id: attemptId } : {}),
+			});
+		},
+		exit: () => {
+			releaseStartupLock(cwd);
+			process.exit(0);
+		},
 	};
 }
 
@@ -120,21 +142,157 @@ export function removeOwnPidLitter(cwd: string, ownPid: number = process.pid): v
 // deferring to it forever.
 
 /**
- * Best-effort SIGTERM of a live-but-not-serving incumbent. Never throws:
- * `ESRCH` (already gone by the time we signal it) is expected and silent;
- * any other failure is logged but non-fatal — the caller is about to bind
- * the socket and take over regardless of whether this signal lands.
- * Deliberately SIGTERM-only (not SIGKILL): the zombie's own shutdown path,
- * if its event loop is merely slow rather than fully wedged, still gets a
- * chance to exit cleanly and release its pid file.
+ * Terminate a live-but-not-serving incumbent without ever signalling a PID
+ * whose verified process identity changed. SIGTERM gets a bounded grace
+ * period; a still-matching process is then SIGKILLed and confirmed gone.
+ * Callers may take over only on `gone`; replacement, unverifiable identity,
+ * or failed termination preserves the incumbent metadata and aborts startup.
  */
-export function reapZombieIncumbent(pid: number, logAlways: (msg: string) => void): void {
+export type ZombieReapResult = "gone" | "replaced" | "unverified" | "failed";
+
+export interface ZombieReapDeps {
+	identify?: ProcessIdentityReader;
+	kill?: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+	isAlive?: (pid: number) => boolean;
+	sleep?: (ms: number) => Promise<void>;
+}
+
+const ZOMBIE_TERM_WAIT_MS = 1_000;
+const ZOMBIE_KILL_WAIT_MS = 500;
+const ZOMBIE_EXIT_POLL_MS = 25;
+
+function matchingZombieIdentity(
+	cwd: string,
+	pid: number,
+	identify: ProcessIdentityReader,
+): string | null {
+	const expected = identify(cwd, pid);
+	if (expected === null) return null;
+	return identify(cwd, pid) === expected ? expected : null;
+}
+
+function signalZombie(
+	pid: number,
+	signal: "SIGTERM" | "SIGKILL",
+	logAlways: (msg: string) => void,
+	kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void,
+): "signaled" | "gone" | "failed" {
 	try {
-		process.kill(pid, "SIGTERM");
+		kill(pid, signal);
+		return "signaled";
 	} catch (err) {
+		// SAFETY: Node's process.kill failures use the documented ErrnoException
+		// shape; non-Error throws simply have an undefined code and take failure.
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code !== "ESRCH") {
-			logAlways(`[interlinked] Could not signal zombie incumbent PID ${pid}: ${String(err)}`);
-		}
+		if (code === "ESRCH") return "gone";
+		logAlways(`[interlinked] Could not signal zombie incumbent PID ${pid}: ${String(err)}`);
+		return "failed";
 	}
+}
+
+function processIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function sleepBriefly(ms: number): Promise<void> {
+	return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForZombieExit(args: {
+	pid: number;
+	cwd: string;
+	expectedIdentity: string;
+	identify: ProcessIdentityReader;
+	isAlive: (pid: number) => boolean;
+	sleep: (ms: number) => Promise<void>;
+	timeoutMs: number;
+}): Promise<"gone" | "replaced" | "alive"> {
+	const deadline = Date.now() + args.timeoutMs;
+	while (Date.now() < deadline) {
+		if (!args.isAlive(args.pid)) return "gone";
+		const currentIdentity = args.identify(args.cwd, args.pid);
+		// A different verified identity means the original daemon exited and
+		// the numeric PID was reused. Never signal the replacement.
+		if (currentIdentity !== null && currentIdentity !== args.expectedIdentity) return "replaced";
+		await args.sleep(ZOMBIE_EXIT_POLL_MS);
+	}
+	return args.isAlive(args.pid) ? "alive" : "gone";
+}
+
+async function forceZombieExit(args: {
+	pid: number;
+	cwd: string;
+	expectedIdentity: string;
+	identify: ProcessIdentityReader;
+	isAlive: (pid: number) => boolean;
+	sleep: (ms: number) => Promise<void>;
+	logAlways: (msg: string) => void;
+	kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+}): Promise<ZombieReapResult> {
+	if (!args.isAlive(args.pid)) return "gone";
+	const currentIdentity = args.identify(args.cwd, args.pid);
+	if (currentIdentity !== args.expectedIdentity) {
+		return currentIdentity === null ? "failed" : "replaced";
+	}
+	const signalResult = signalZombie(args.pid, "SIGKILL", args.logAlways, args.kill);
+	if (signalResult !== "signaled") return signalResult;
+	const outcome = await waitForZombieExit({ ...args, timeoutMs: ZOMBIE_KILL_WAIT_MS });
+	return outcome === "alive" ? "failed" : outcome;
+}
+
+async function completeZombieReap(args: {
+	pid: number;
+	cwd: string;
+	expectedIdentity: string;
+	identify: ProcessIdentityReader;
+	logAlways: (msg: string) => void;
+	deps: ZombieReapDeps;
+}): Promise<ZombieReapResult> {
+	const { pid, cwd, expectedIdentity, identify, logAlways, deps } = args;
+	const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
+	const signalResult = signalZombie(pid, "SIGTERM", logAlways, kill);
+	if (signalResult !== "signaled") return signalResult;
+	const waitArgs = {
+		pid,
+		cwd,
+		expectedIdentity,
+		identify,
+		isAlive: deps.isAlive ?? processIsAlive,
+		sleep: deps.sleep ?? sleepBriefly,
+	};
+	const outcome = await waitForZombieExit({ ...waitArgs, timeoutMs: ZOMBIE_TERM_WAIT_MS });
+	if (outcome !== "alive") return outcome;
+	return forceZombieExit({ ...waitArgs, logAlways, kill });
+}
+
+export async function reapZombieIncumbent(args: {
+	pid: number;
+	cwd: string;
+	logAlways: (msg: string) => void;
+	deps?: ZombieReapDeps;
+}): Promise<ZombieReapResult> {
+	const { pid, cwd, logAlways, deps = {} } = args;
+	const isAlive = deps.isAlive ?? processIsAlive;
+	if (!isAlive(pid)) return "gone";
+	const identify = deps.identify ?? readHarnessProcessIdentity;
+	const expectedIdentity = matchingZombieIdentity(cwd, pid, identify);
+	if (expectedIdentity === null) {
+		logAlways(
+			`[interlinked] Stale daemon pid metadata names unverified PID ${pid}; refusing to signal it.`,
+		);
+		return "unverified";
+	}
+	return completeZombieReap({
+		pid,
+		cwd,
+		expectedIdentity,
+		identify,
+		logAlways,
+		deps: { ...deps, isAlive },
+	});
 }

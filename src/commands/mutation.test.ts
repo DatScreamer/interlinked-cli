@@ -766,6 +766,9 @@ describe("mutationMeasureCommand", () => {
 	function strykerBody(status: string): unknown {
 		const col = (SRC.split("\n")[1] ?? "").indexOf(">") + 1;
 		return {
+			engine: { exitCode: 0 },
+			testRun: { overlayGreen: true, redWitnessSatisfied: null, executedTestCount: 1 },
+			testFiles: { "src/foo.test.ts": { tests: [{ id: "test-1", name: "f" }] } },
 			files: {
 				[FILE]: {
 					source: SRC,

@@ -32,6 +32,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "../lib/json-types.js";
+import { readLocalActivity } from "../lib/local-activity.js";
+import { nonNull } from "../lib/non-null.js";
+import { createCodexAdapter } from "./adapters/codex.js";
+import { writeLifecycleActivityRecord } from "./server/activity-writer.js";
 import type { HarnessDecision, HarnessEvent } from "./types.js";
 
 // ---- mock every sibling module the loop imports ---------------------------
@@ -56,6 +60,8 @@ vi.mock("./server/lifecycle-events.js", () => ({
 	handleLifecycleEvent: vi.fn(),
 }));
 vi.mock("./server/post-tool-pipeline.js", () => ({
+	POST_TOOL_PIPELINE_FAILURE_WARNING:
+		"[interlinked:post-tool-pipeline] [proven] NOT CHECKED: PostToolUse checks failed before producing a verdict; run 'interlinked verify' before treating this edit as clean.",
 	runPostToolPipeline: vi.fn(),
 }));
 vi.mock("./server/pre-tool-pipeline.js", () => ({
@@ -145,6 +151,7 @@ function makeHarness(cwd = "/repo") {
 		syncRuntimeIn: vi.fn(),
 		syncRuntimeOut: vi.fn(),
 		writeCollectionRecord: vi.fn(),
+		writeLifecycleActivityRecord: vi.fn(),
 	};
 
 	return { deps, ctx, sessions, sessionMap, log, protocolStatus };
@@ -279,6 +286,7 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 
 		expect(mPrePipeline).toHaveBeenCalledTimes(1);
 		expect(h.deps.writeCollectionRecord).toHaveBeenCalledTimes(1);
+		expect(h.deps.writeLifecycleActivityRecord).not.toHaveBeenCalled();
 		expect(mForward).toHaveBeenCalledWith(expect.objectContaining({ hook_event: "PreToolUse" }), ALLOW);
 		expect(decision).toBe(blocked);
 		expect(mPostPipeline).not.toHaveBeenCalled();
@@ -297,6 +305,7 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 
 		expect(mPostPipeline).toHaveBeenCalledTimes(1);
 		expect(h.deps.writeCollectionRecord).toHaveBeenCalledTimes(1);
+		expect(h.deps.writeLifecycleActivityRecord).not.toHaveBeenCalled();
 		expect(decision).toBe(warn);
 		expect(mForward).not.toHaveBeenCalled();
 	});
@@ -315,7 +324,8 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 		);
 
 		expect(decision.decision).toBe("allow");
-		expect(decision.warnings?.join(" ")).toContain("PostToolUse check errored");
+		expect(decision.warnings?.join(" ")).toContain("NOT CHECKED");
+		expect(decision.warnings?.join(" ")).toContain("interlinked verify");
 		expect(h.log).toHaveBeenCalledWith(expect.stringContaining("PostToolUse pipeline threw"));
 	});
 
@@ -332,6 +342,10 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 		expect(mPrePipeline).not.toHaveBeenCalled();
 		expect(mPostPipeline).not.toHaveBeenCalled();
 		expect(h.deps.writeCollectionRecord).not.toHaveBeenCalled();
+		expect(h.deps.writeLifecycleActivityRecord).toHaveBeenCalledWith(
+			expect.objectContaining({ hook_event: "Notification" }),
+			undefined,
+		);
 	});
 
 	it("lifecycle decision short-circuits before Pre/Post dispatch", async () => {
@@ -340,11 +354,23 @@ describe("processEvent — parse + dispatch (via evaluateEventLine)", () => {
 		mLifecycle.mockResolvedValueOnce(lc);
 		const loop = createEventLoop(h.deps);
 
-		const decision = await loop.evaluateEventLine(preEvent(), "raw");
+		const decision = await loop.evaluateEventLine(
+			preEvent({
+				hook_event: "UserPromptSubmit",
+				tool_name: undefined,
+				tool_input: undefined,
+				prompt: "hello",
+			}),
+			"raw",
+		);
 
 		expect(decision).toBe(lc);
 		expect(mPrePipeline).not.toHaveBeenCalled();
 		expect(mPostPipeline).not.toHaveBeenCalled();
+		expect(h.deps.writeLifecycleActivityRecord).toHaveBeenCalledWith(
+			expect.objectContaining({ hook_event: "UserPromptSubmit", prompt: "hello" }),
+			lc,
+		);
 		// finally still ran.
 		expect(h.deps.syncRuntimeOut).toHaveBeenCalledTimes(1);
 	});
@@ -616,6 +642,61 @@ describe("evaluateUnifiedViaRuntime", () => {
 	});
 });
 
+describe("Codex hook-entry normalization → event loop → lifecycle activity", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "codex-prompt-activity-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("appends one redacted UserPromptSubmit row without a tool-stream duplicate", async () => {
+		const rawPrompt = "Email alice@example.com with the incident notes";
+		const redactedPrompt = "Email <EMAIL> with the incident notes";
+		const unified = createCodexAdapter().parseHookInput(
+			{ session_id: "codex-prompt-session", cwd: dir, prompt: rawPrompt },
+			"UserPromptSubmit",
+		);
+		const realLegacy = await vi.importActual<typeof import("./legacy-client.js")>(
+			"./legacy-client.js",
+		);
+		mToLegacy.mockImplementationOnce(realLegacy.toLegacyHarnessEvent);
+		mLifecycle.mockResolvedValueOnce({ decision: "allow", redacted_prompt: redactedPrompt });
+		const h = makeHarness(dir);
+		vi.mocked(h.deps.writeLifecycleActivityRecord).mockImplementation((event, decision) => {
+			writeLifecycleActivityRecord(event, dir, decision);
+		});
+
+		const decision = await createEventLoop(h.deps).evaluateUnifiedViaRuntime(unified);
+
+		expect(decision).toEqual({ decision: "allow", redacted_prompt: redactedPrompt });
+		expect(mLifecycle).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				agent_source: "codex",
+				hook_event: "UserPromptSubmit",
+				prompt: rawPrompt,
+			}),
+			expect.anything(),
+		);
+		expect(h.deps.writeCollectionRecord).not.toHaveBeenCalled();
+		const events = readLocalActivity({ cwd: dir });
+		expect(events).toHaveLength(1);
+		expect(nonNull(events[0])).toMatchObject({
+			agent: "codex",
+			hook: "UserPromptSubmit",
+			prompt: redactedPrompt,
+			scrubbed: true,
+			session: "codex-prompt-session",
+			type: "user_prompt",
+		});
+		expect(readFileSync(join(dir, ".interlinked", "activity.jsonl"), "utf8")).not.toContain(
+			rawPrompt,
+		);
+	});
+});
+
 describe("PostToolUse fail-open — non-Error rejection", () => {
 	it("stringifies a non-Error rejection in the fail-open log and still allows", async () => {
 		// Symmetric with the Error case above: a check that rejects with a bare
@@ -632,7 +713,9 @@ describe("PostToolUse fail-open — non-Error rejection", () => {
 
 		expect(decision).toEqual({
 			decision: "allow",
-			warnings: ["[interlinked] a PostToolUse check errored and was skipped (fail-open)."],
+			warnings: [
+				"[interlinked:post-tool-pipeline] [proven] NOT CHECKED: PostToolUse checks failed before producing a verdict; run 'interlinked verify' before treating this edit as clean.",
+			],
 		});
 		expect(h.log).toHaveBeenCalledWith(
 			"PostToolUse pipeline threw (failing open): plain-string-post-throw",

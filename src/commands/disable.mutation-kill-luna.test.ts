@@ -29,7 +29,15 @@ import { disableCommand } from "./disable.js";
 import { harnessStopCommand, isHarnessRunning } from "./harness.js";
 
 const CWD = "/mutation/project";
-const CLIENTS: ClientName[] = ["claude", "copilot", "gemini", "codex", "cursor"];
+const CLIENTS: ClientName[] = [
+	"claude",
+	"copilot",
+	"gemini",
+	"codex",
+	"cursor",
+	"opencode",
+	"pi",
+];
 
 function outputOf(spy: ReturnType<typeof vi.spyOn>): string {
 	return stripAnsi((spy.mock.calls as unknown[][]).map((args) => args.join(" ")).join("\n"));

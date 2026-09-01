@@ -7,6 +7,7 @@
 // shape; the Artifacts impl is the deferred optimization (stubbed, out of scope).
 
 import { type ChangeSet, changedPaths, type FileOp, type PatchEdit } from "./changeset.js";
+import { reconstructAfterContent } from "../apply-patch-content.js";
 
 export type FileTree = Map<string, string>;
 
@@ -35,6 +36,26 @@ function applyEdits(content: string, edits: PatchEdit[]): string {
 	return result;
 }
 
+function reconstructedV4aContent(
+	tree: FileTree,
+	op: Extract<FileOp, { kind: "apply_patch" }>,
+): { sourcePath: string; after: string } {
+	const sourcePath = op.section.fromPath ?? op.path;
+	const after = reconstructAfterContent(op.section, tree.get(sourcePath) ?? "");
+	if (after === null) throw new Error(`could not reconstruct apply_patch section for ${op.path}`);
+	return { sourcePath, after };
+}
+
+function applyV4aOp(tree: FileTree, op: Extract<FileOp, { kind: "apply_patch" }>): void {
+	const { sourcePath, after } = reconstructedV4aContent(tree, op);
+	if (op.section.op === "delete") {
+		tree.delete(sourcePath);
+		return;
+	}
+	if (sourcePath !== op.path) tree.delete(sourcePath);
+	tree.set(op.path, after);
+}
+
 function applyOp(tree: FileTree, op: FileOp): void {
 	switch (op.kind) {
 		case "write":
@@ -42,6 +63,9 @@ function applyOp(tree: FileTree, op: FileOp): void {
 			return;
 		case "patch":
 			tree.set(op.path, applyEdits(tree.get(op.path) ?? "", op.edits));
+			return;
+		case "apply_patch":
+			applyV4aOp(tree, op);
 			return;
 		case "delete":
 			tree.delete(op.path);

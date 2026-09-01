@@ -4,18 +4,17 @@
 // Zero external dependencies. Provides local-first activity storage
 // so CLI commands work offline and can sync later.
 
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	statSync,
-} from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+	countNonEmptyFileLines,
+	MAX_CAPTURED_JSONL_LINE_BYTES,
+	readFirstNonEmptyFileLine,
+} from "./bounded-file-io.js";
 import { buildCollectionRecord, PRE_EVENT_TYPES, TOOL_EVENT_TYPES } from "./collection/builder.js";
 import { appendCollection, getCollectionPath } from "./collection/writer.js";
 import { isJsonObject } from "./json-types.js";
+import { appendFileWithMutationLock } from "./file-mutation-lock.js";
 import {
 	countJsonlLines,
 	parseLocalActivityEvent,
@@ -30,13 +29,19 @@ import {
 } from "./local-activity-paths.js";
 import { readSyncState } from "./local-activity-sync.js";
 import { nonNull } from "./non-null.js";
+import { readBoundedLocalSessions } from "./local-session-reader.js";
 
 // Re-exported for back-compat call sites that import these from local-activity.js.
 export { mergeAndDedup } from "./local-activity-merge.js";
 export {
 	appendSyncError,
+	assertActivitySyncCursor,
+	captureActivitySyncBasis,
+	checkpointSyncState,
 	getUnsyncedEvents,
 	readSyncState,
+	type ActivitySyncBasis,
+	SyncCursorInvalidatedError,
 	type UnsyncedEvents,
 	updateSyncState,
 } from "./local-activity-sync.js";
@@ -90,7 +95,7 @@ export function appendActivityRecordOnly(event: LocalActivityEvent, cwd?: string
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
-	appendFileSync(activityPath, `${JSON.stringify(event)}\n`);
+	appendFileWithMutationLock(activityPath, `${JSON.stringify(event)}\n`);
 }
 
 export function appendLocalActivity(event: LocalActivityEvent, cwd?: string): void {
@@ -241,24 +246,7 @@ export function readLocalActivity(opts?: ReadActivityOpts): LocalActivityEvent[]
  * Read all session state files.
  */
 export function readLocalSessions(cwd?: string): SessionState[] {
-	const dir = getSessionsDir(cwd);
-	if (!existsSync(dir)) return [];
-
-	const sessions: SessionState[] = [];
-	try {
-		for (const file of readdirSync(dir)) {
-			if (!file.endsWith(".json")) continue;
-			try {
-				const data = JSON.parse(readFileSync(join(dir, file), "utf-8"));
-				sessions.push(data);
-			} catch (_err) {
-				/* intentional: skip unreadable or malformed session files */
-			}
-		}
-	} catch (_err) {
-		/* intentional: sessions directory not readable — return whatever we have so far */
-	}
-	return sessions;
+	return readBoundedLocalSessions(getSessionsDir(cwd));
 }
 
 // ===========================================
@@ -278,25 +266,27 @@ export function getLocalStats(cwd?: string): LocalStats {
 	const syncState = readSyncState(cwd);
 	const pendingBytes = Math.max(0, fileSize - syncState.synced_through_bytes);
 
-	// Read first and last lines for timestamp range
-	let lines: string[];
-	try {
-		lines = readFileSync(path, "utf-8").split("\n").filter(Boolean);
-	} catch (_err) {
-		/* intentional: activity.jsonl unreadable — report empty stats */
-		return { total_events: 0, file_size_bytes: fileSize, pending_sync: 0 };
-	}
+	// Count the file in fixed-size chunks. The previous readFileSync(..., "utf-8")
+	// failed above V8's ~512MB string ceiling and then claimed `pending_sync: 0`,
+	// which made status and sync report a large unreadable backlog as up to date.
+	// Read failures now propagate to the command boundary instead of fabricating
+	// zero; large healthy logs stay exact with bounded memory.
+	const totalEvents = countNonEmptyFileLines(path);
+	const firstLine = readFirstNonEmptyFileLine(path);
+	const [lastLine] = readRecentLines(path, 1, MAX_CAPTURED_JSONL_LINE_BYTES);
 
 	let oldest: string | undefined;
 	let newest: string | undefined;
-	if (lines.length > 0) {
+	if (firstLine !== undefined) {
 		try {
-			oldest = JSON.parse(nonNull(lines[0])).ts;
+			oldest = JSON.parse(firstLine).ts;
 		} catch (_err) {
 			/* intentional: first line unparseable — leave oldest undefined */
 		}
+	}
+	if (lastLine !== undefined) {
 		try {
-			newest = JSON.parse(nonNull(lines[lines.length - 1])).ts;
+			newest = JSON.parse(lastLine).ts;
 		} catch (_err) {
 			/* intentional: last line unparseable — leave newest undefined */
 		}
@@ -304,10 +294,12 @@ export function getLocalStats(cwd?: string): LocalStats {
 
 	// Estimate pending event count from pending bytes ratio
 	const pendingSyncEstimate =
-		lines.length > 0 ? Math.round((pendingBytes / fileSize) * lines.length) : 0;
+		pendingBytes > 0 && totalEvents > 0 && fileSize > 0
+			? Math.max(1, Math.round((pendingBytes / fileSize) * totalEvents))
+			: 0;
 
 	return {
-		total_events: lines.length,
+		total_events: totalEvents,
 		file_size_bytes: fileSize,
 		pending_sync: pendingSyncEstimate,
 		oldest_event: oldest,
@@ -359,4 +351,3 @@ export function getSyncDiagnostics(cwd?: string): SyncDiagnostics {
 		last_sync_error: lastSyncError,
 	};
 }
-

@@ -1,7 +1,4 @@
 {
-  "per_edit_coverage": {
-    "budget_ms": 150000
-  },
   "file_reminders": [
     {
       "id": "repo-skill-impact-review",
@@ -17,10 +14,10 @@
       "created_by": "repo-policy"
     }
   ],
-  "diff_aware": {
+  "mutation_directed_strict_profile": {
     "enabled": true
   },
-  "mutation_directed_strict_profile": {
+  "diff_aware": {
     "enabled": true
   }
 }

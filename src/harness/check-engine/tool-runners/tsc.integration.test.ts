@@ -34,7 +34,8 @@ vi.mock("node:child_process", () => ({
 	spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
 }));
 
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:fs")>()),
 	existsSync: (...args: unknown[]) => existsSyncMock(...args),
 }));
 
@@ -440,7 +441,7 @@ describe("runTsc (sync) — project mode", () => {
 		expect(runTsc(input(projectScope()))).toEqual([]);
 	});
 
-	it("handles undefined stdout AND stderr via the `|| \"\"` fallbacks", async () => {
+	it("reports unavailable when exit 1 has no output to parse", async () => {
 		requireResolveMock.mockImplementation(() => {
 			throw new Error("no tsgo");
 		});
@@ -450,10 +451,12 @@ describe("runTsc (sync) — project mode", () => {
 			return spawnResult({ status: 1, stdout: undefined, stderr: undefined });
 		});
 		const { runTsc } = await loadTsc();
-		expect(runTsc(input(projectScope()))).toEqual([]);
+		expect(runTsc(input(projectScope()))).toEqual([
+			expect.objectContaining({ ruleId: "tsc-unavailable", severity: "warning" }),
+		]);
 	});
 
-	it("returns [] from the catch block when the real spawnSync throws", async () => {
+	it("reports unavailable when the real spawnSync throws", async () => {
 		requireResolveMock.mockImplementation(() => {
 			throw new Error("no tsgo");
 		});
@@ -463,7 +466,9 @@ describe("runTsc (sync) — project mode", () => {
 			throw new Error("kaboom in real check");
 		});
 		const { runTsc } = await loadTsc();
-		expect(runTsc(input(projectScope()))).toEqual([]);
+		expect(runTsc(input(projectScope()))).toEqual([
+			expect.objectContaining({ ruleId: "tsc-unavailable", message: expect.stringContaining("kaboom") }),
+		]);
 	});
 });
 
@@ -687,7 +692,7 @@ describe("runTsc (sync) — standalone (no tsconfig)", () => {
 		expect(nonNull(out[0]).ruleId).toBe("TS2345");
 	});
 
-	it("returns [] from the standalone catch block when spawnSync throws", async () => {
+	it("reports unavailable from the standalone catch block when spawnSync throws", async () => {
 		const standalone = "/tmp/hooks/check.ts";
 		existsSyncMock.mockReturnValue(false);
 		requireResolveMock.mockImplementation(() => {
@@ -698,7 +703,12 @@ describe("runTsc (sync) — standalone (no tsconfig)", () => {
 			throw new Error("standalone spawn blew up");
 		});
 		const { runTsc } = await loadTsc();
-		expect(runTsc(input(fileScope({ targetFile: standalone })))).toEqual([]);
+		expect(runTsc(input(fileScope({ targetFile: standalone })))).toEqual([
+			expect.objectContaining({
+				ruleId: "tsc-unavailable",
+				message: expect.stringContaining("standalone spawn blew up"),
+			}),
+		]);
 	});
 });
 
@@ -766,6 +776,52 @@ describe("isFileInTscScope (heuristic branches)", () => {
 // ===========================================================================
 
 describe("runTscAsync — project mode", () => {
+	it("serializes concurrent generations but never reuses the earlier result", async () => {
+		requireResolveMock.mockImplementation(() => {
+			throw new Error("no tsgo");
+		});
+		existsSyncMock.mockImplementation(existsForPaths([TSCONFIG_AT_ROOT]));
+		spawnSyncMock.mockImplementation(() => spawnResult({ status: 1 }));
+		let finishFirst = (_result: RunProcessResult): void => undefined;
+		const firstCompiler = new Promise<RunProcessResult>((resolveResult) => {
+			finishFirst = resolveResult;
+		});
+		runProcessAsyncMock
+			.mockReturnValueOnce(firstCompiler)
+			.mockResolvedValueOnce(procResult({ code: 1, stdout: tscFileDiag("src/generation-b.ts") }));
+		const { runTscAsync } = await loadTsc();
+		const first = runTscAsync(input(projectScope()));
+		await vi.waitFor(() => expect(runProcessAsyncMock).toHaveBeenCalledTimes(1));
+		const second = runTscAsync(input(projectScope()));
+		await Promise.resolve();
+		expect(runProcessAsyncMock).toHaveBeenCalledTimes(1);
+		finishFirst(procResult({ code: 0 }));
+		await expect(first).resolves.toEqual([]);
+		await vi.waitFor(() => expect(runProcessAsyncMock).toHaveBeenCalledTimes(2));
+		await expect(second).resolves.toEqual([
+			expect.objectContaining({ file: "src/generation-b.ts", ruleId: "TS2345" }),
+		]);
+	});
+
+	it.each([
+		["spawn failure", procResult({ code: null })],
+		["timeout", procResult({ code: null, timedOut: true, killed: true })],
+		["external kill", procResult({ code: null, killed: true })],
+		["nonzero without diagnostics", procResult({ code: 1 })],
+	])("reports unavailable on %s rather than returning clean", async (_label, result) => {
+		requireResolveMock.mockImplementation(() => {
+			throw new Error("no tsgo");
+		});
+		existsSyncMock.mockImplementation(existsForPaths([TSCONFIG_AT_ROOT]));
+		spawnSyncMock.mockImplementation(() => spawnResult({ status: 1 }));
+		runProcessAsyncMock.mockResolvedValue(result);
+		const { runTscAsync } = await loadTsc();
+		const out = await runTscAsync(input(projectScope()));
+		expect(out).toEqual([
+			expect.objectContaining({ ruleId: "tsc-unavailable", severity: "warning" }),
+		]);
+	});
+
 	it("parses file-level diagnostics from runProcessAsync output", async () => {
 		requireResolveMock.mockImplementation(() => {
 			throw new Error("no tsgo");
@@ -931,12 +987,14 @@ describe("runTscAsync — file mode + standalone", () => {
 		const standalone = "/tmp/script.ts";
 		requireResolveMock.mockReturnValue(TSGO_PKG_JSON);
 		existsSyncMock.mockImplementation(existsForPaths([TSGO_BIN])); // tsgo bin, no tsconfig
-		spawnSyncMock.mockImplementation(() => spawnResult({ status: 0 })); // tsgo probe ok
+		// A synchronous version probe here would block the daemon event loop.
+		spawnSyncMock.mockImplementation(() => spawnResult({ status: 0 }));
 		runProcessAsyncMock.mockResolvedValue(
 			procResult({ code: 1, stdout: tscFileDiag(standalone) }),
 		);
 		const { runTscAsync } = await loadTsc();
 		await runTscAsync(input(fileScope({ targetFile: standalone })));
+		expect(spawnSyncMock).not.toHaveBeenCalled();
 		const [cmd, args] = runProcessAsyncMock.mock.calls[0] as [string, string[]];
 		expect(cmd).toBe("node");
 		expect(args).toEqual([

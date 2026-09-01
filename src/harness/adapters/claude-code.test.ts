@@ -382,7 +382,7 @@ describe("Claude Code encodeDecision", () => {
 			},
 		});
 	});
-	it("PermissionRequest block — emits the permission-specific deny envelope", () => {
+	it("P: PermissionRequest block emits Claude's exact permission-specific deny envelope", () => {
 		const permissionEvent = adapter.parseHookInput(
 			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
 			"PermissionRequest",
@@ -394,12 +394,26 @@ describe("Claude Code encodeDecision", () => {
 		expect(JSON.parse(out.stdout as string)).toEqual({
 			hookSpecificOutput: {
 				hookEventName: "PermissionRequest",
-				permissionDecision: "deny",
-				permissionDecisionReason: "policy denied",
+				decision: { behavior: "deny", message: "policy denied" },
 			},
 		});
 	});
-	it("PermissionRequest ask — abstains so Claude keeps the native prompt", () => {
+	it("N: PermissionRequest block never reuses the PreToolUse permissionDecision fields", () => {
+		const permissionEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
+			"PermissionRequest",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "block", reason: "policy denied" },
+			permissionEvent,
+		);
+		const parsed = JSON.parse(out.stdout as string) as {
+			hookSpecificOutput: Record<string, unknown>;
+		};
+		expect(parsed.hookSpecificOutput).not.toHaveProperty("permissionDecision");
+		expect(parsed.hookSpecificOutput).not.toHaveProperty("permissionDecisionReason");
+	});
+	it("N: PermissionRequest ask abstains so Claude keeps the native prompt", () => {
 		const permissionEvent = adapter.parseHookInput(
 			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
 			"PermissionRequest",
@@ -409,7 +423,19 @@ describe("Claude Code encodeDecision", () => {
 			permissionEvent,
 		);
 		expect(out.stdout).toBeUndefined();
+		expect(out.stderr).toBe("please confirm");
 		expect(out.exit_code).toBe(0);
+	});
+	it("N: PermissionRequest allow diagnostics use stderr, never additionalContext stdout", () => {
+		const permissionEvent = adapter.parseHookInput(
+			{ session_id: "s", cwd: "/repo", tool_name: "Bash", tool_input: {} },
+			"PermissionRequest",
+		);
+		const out = adapter.encodeDecision(
+			{ decision: "allow", additional_context: "policy note", warnings: ["warning note"] },
+			permissionEvent,
+		);
+		expect(out).toEqual({ stderr: "policy note\nwarning note", exit_code: 0 });
 	});
 	it("WorktreeCreate always fails without returning a replacement path", () => {
 		const worktreeEvent = adapter.parseHookInput(

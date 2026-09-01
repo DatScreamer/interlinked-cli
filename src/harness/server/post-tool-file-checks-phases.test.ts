@@ -26,6 +26,11 @@ import type {
 import type { PerFileCheckCtx } from "./post-tool-file-checks.js";
 import type { ServerRuntime } from "./runtime-context.js";
 
+const { createChangeSetExternalBatch, batchResultsForFile } = vi.hoisted(() => ({
+	createChangeSetExternalBatch: vi.fn(),
+	batchResultsForFile: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Module mocks (vitest hoists these above the real-module imports below).
 // `node:fs` is mocked wholesale; everything else spreads the real module and
@@ -55,6 +60,11 @@ vi.mock("../quality-checks.js", async (importOriginal) => ({
 	formatQualityWarnings: vi.fn(() => []),
 	countSuppressionDirectives: vi.fn(() => 0),
 	findProjectRoot: vi.fn((_f: string, cwd: string) => cwd),
+}));
+
+vi.mock("../quality-checks/change-set-external.js", () => ({
+	MULTI_FILE_NAMED_EXTERNAL_CHECKS: new Set(["affected_tests", "dependency_audit"]),
+	createChangeSetExternalBatch,
 }));
 
 vi.mock("../session-state.js", async (importOriginal) => ({
@@ -292,6 +302,8 @@ beforeEach(() => {
 	mCollectSuggestions.mockReturnValue([]);
 	mRunBehavioral.mockReturnValue([]);
 	mAssertionDensity.mockReturnValue(null);
+	batchResultsForFile.mockResolvedValue([]);
+	createChangeSetExternalBatch.mockReturnValue({ resultsForFile: batchResultsForFile });
 });
 
 // ===========================================================================
@@ -406,6 +418,55 @@ describe("runQualityPhase", () => {
 		expect(preEditBaselines.has(FILE)).toBe(false);
 	});
 
+	it("shares one ChangeSet batch while preserving each file's own pre-edit baseline", async () => {
+		const secondFile = "/repo/src/other.ts";
+		const firstBaseline = { suppressionCount: 4, fileHash: "first" };
+		const secondBaseline = { suppressionCount: 9, fileHash: "second" };
+		const preEditBaselines = new Map([
+			[FILE, firstBaseline],
+			[secondFile, secondBaseline],
+		]);
+		const ctx = makeCtx({
+			rules: makeRules({ quality_checks: { typescript: { enabled: true, file_types: [".ts"] } } }),
+			preEditBaselines,
+		});
+		const acc = makeAcc({ editedFilePaths: [FILE, secondFile] });
+		const event = ev({
+			change_set: {
+				source: "filesystem-observation",
+				complete: true,
+				before_captured_at: "2026-08-31T00:00:00.000Z",
+				after_captured_at: "2026-08-31T00:00:01.000Z",
+				files: [
+					{ path: FILE, kind: "modified", before_sha256: "a", after_sha256: "b" },
+					{ path: secondFile, kind: "modified", before_sha256: "c", after_sha256: "d" },
+				],
+			},
+		});
+
+		await call({ ctx, acc, event, file: FILE });
+		await call({
+			ctx,
+			acc,
+			event: ev({ ...event, tool_input: { file_path: secondFile } }),
+			file: secondFile,
+		});
+
+		expect(createChangeSetExternalBatch).toHaveBeenCalledTimes(1);
+		expect(batchResultsForFile.mock.calls.map((callArgs) => callArgs[0])).toEqual([
+			FILE,
+			secondFile,
+		]);
+		expect(mRunQualityChecks).toHaveBeenCalledTimes(2);
+		expect(mRunQualityChecks.mock.calls[0]?.[3]).toEqual(
+			expect.objectContaining({ baseline: firstBaseline, skipMultiFileExternalChecks: true }),
+		);
+		expect(mRunQualityChecks.mock.calls[1]?.[3]).toEqual(
+			expect.objectContaining({ baseline: secondBaseline, skipMultiFileExternalChecks: true }),
+		);
+		expect(preEditBaselines.size).toBe(0);
+	});
+
 	it("resolves a relative editedFilePath against CWD for the baseline key", async () => {
 		const baseline = { suppressionCount: 9 };
 		const preEditBaselines = new Map([[FILE, baseline]]);
@@ -435,7 +496,7 @@ describe("runQualityPhase", () => {
 		);
 	});
 
-	it("records the names of enabled checks whose file_types match the edited extension", async () => {
+	it("records only check names the quality runner reports as completed", async () => {
 		const ctx = makeCtx({
 			rules: makeRules({
 				quality_checks: {
@@ -445,10 +506,26 @@ describe("runQualityPhase", () => {
 				},
 			}),
 		});
+		mRunQualityChecks.mockImplementation(async (_event, _checks, _cwd, options) => {
+			options.outChecksRan.push("typescript");
+			return [];
+		});
 		const { acc } = await call({ ctx });
 		expect(acc.checksRan).toContain("typescript");
-		expect(acc.checksRan).not.toContain("rust"); // wrong extension
-		expect(acc.checksRan).not.toContain("biome_disabled"); // disabled
+		expect(acc.checksRan).not.toContain("rust");
+		expect(acc.checksRan).not.toContain("biome_disabled");
+	});
+
+	it("does not infer checks_ran from config when a configured check defers", async () => {
+		mRunQualityChecks.mockResolvedValue([
+			qres({
+				name: "external_check_deferred",
+				message: `External check deferred for ${FILE} (typescript)`,
+				detail: "No check verdict was produced: compiler capacity is busy",
+			}),
+		]);
+		const { acc } = await call();
+		expect(acc.checksRan).not.toContain("typescript");
 	});
 
 	it("filters out acknowledged warnings but keeps acknowledged errors", async () => {
@@ -462,6 +539,45 @@ describe("runQualityPhase", () => {
 		const names = acc.allCheckResults.map((r) => r.name);
 		expect(names).toEqual(["err_ack"]);
 		expect(decision.warnings).toEqual(["[q] err_ack"]);
+	});
+
+	it("keeps acknowledged deferrals structured and compacts same-file no-verdict warnings", async () => {
+		mRunQualityChecks.mockResolvedValue([
+			qres({
+				name: "external_check_deferred",
+				message: `External check deferred for ${FILE} (typescript)`,
+				detail: "No check verdict was produced: compiler capacity is busy",
+			}),
+			qres({
+				name: "external_check_deferred",
+				message: `External check deferred for ${FILE} (biome_lint)`,
+				detail: "No check verdict was produced: linter capacity is busy",
+			}),
+			qres({
+				name: "affected_tests_deferred",
+				message: `Affected tests deferred for ${FILE} (another test check is running)`,
+				detail: "No test verdict was produced.",
+			}),
+		]);
+		mIsAck.mockReturnValue(true);
+
+		const { acc, decision } = await call();
+
+		expect(acc.allCheckResults.map((result) => result.name)).toEqual([
+			"external_check_deferred",
+			"external_check_deferred",
+			"affected_tests_deferred",
+		]);
+		expect(decision.warnings).toHaveLength(1);
+		const warning = nonNull(decision.warnings)[0] ?? "";
+		expect(warning).toContain("[interlinked:checks-deferred] [proven] NOT CHECKED");
+		expect(warning).toContain("typescript");
+		expect(warning).toContain("biome_lint");
+		expect(warning).toContain("affected tests");
+		expect(warning).toContain("another test check is running");
+		expect(warning).toContain("Retry each deferred check");
+		expect(warning).not.toContain("all clean");
+		expect(decision.summary).toBeUndefined();
 	});
 
 	it("pushes quality findings into allCheckResults with source=quality and resolved determinism", async () => {
@@ -724,6 +840,58 @@ describe("runProjectWideSweepPhase", () => {
 		expect(acc.projectWideSweepFired).toBe(true);
 		expect(decision.warnings).toBeUndefined(); // clean → no warnings
 		expect(ctx.log).toHaveBeenCalledWith(expect.stringContaining("clean"));
+	});
+
+	it("surfaces a deferred sweep as no verdict and never calls it clean", async () => {
+		const ctx = ctxWithSweep({
+			projectWideSweepState: { recordFileChecked: vi.fn(), recordEdit: vi.fn(() => true) },
+		});
+		mRunProjectWide.mockResolvedValue({
+			findings: [],
+			toolsRun: [],
+			deferredReasons: ["tsc: external-tool capacity is busy"],
+			elapsedMs: 0,
+		});
+		const decision: HarnessDecision = { decision: "allow" };
+		await runProjectWideSweepPhase(ctx, FILE, true, false, decision, makeAcc());
+		expect(decision.warnings).toHaveLength(1);
+		expect(decision.warnings?.[0]).toContain("[interlinked:checks-deferred] [proven] NOT CHECKED");
+		expect(decision.warnings?.[0]).toContain("external checks for /repo/src/mod.ts");
+		expect(decision.warnings?.[0]?.split("\n")).toHaveLength(1);
+		expect(ctx.log).toHaveBeenCalledWith(expect.stringContaining("deferred without a verdict"));
+		expect(ctx.log).not.toHaveBeenCalledWith(expect.stringContaining("clean"));
+	});
+
+	it("does not repeat a project-wide deferral when this file already has one", async () => {
+		const ctx = ctxWithSweep({
+			projectWideSweepState: { recordFileChecked: vi.fn(), recordEdit: vi.fn(() => true) },
+		});
+		mRunProjectWide.mockResolvedValue({
+			findings: [],
+			toolsRun: [],
+			deferredReasons: ["tsc: external-tool capacity is busy"],
+			elapsedMs: 0,
+		});
+		const perFileDeferral: CheckResultEntry = {
+			source: "quality",
+			name: "affected_tests_deferred",
+			severity: "warning",
+			message: "Affected tests deferred",
+			file: FILE,
+			determinism: "fully_deterministic",
+		};
+		const acc = makeAcc({ allCheckResults: [perFileDeferral] });
+		const decision: HarnessDecision = {
+			decision: "allow",
+			warnings: ["PER-FILE NOT CHECKED"],
+		};
+
+		await runProjectWideSweepPhase(ctx, FILE, true, false, decision, acc);
+
+		expect(decision.warnings).toEqual(["PER-FILE NOT CHECKED"]);
+		expect(mFormatQuality).not.toHaveBeenCalled();
+		expect(ctx.log).toHaveBeenCalledWith(expect.stringContaining("deferred without a verdict"));
+		expect(ctx.log).not.toHaveBeenCalledWith(expect.stringContaining("clean"));
 	});
 
 	it("sweeps on export-surface change (on_export_change) even without interval", async () => {

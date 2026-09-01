@@ -13,6 +13,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ScanProgress } from "./verify/scan-progress.js";
+
 // Every mock is a plain `vi.fn()` referenced DIRECTLY by the module factory
 // (no `(...a) => fn(...a)` wrapper). That keeps each export's identity equal to
 // the spy — so `verify.ts`'s live `export { … } from "./verify/*"` re-exports
@@ -45,12 +47,22 @@ class FakeCheckEngine {
 	constructor(public root: string) {}
 	discoverTools = discoverToolsMock;
 	runChecks = runChecksMock;
+	runChecksAsync = runChecksMock;
 	runDepAudit = runDepAuditMock;
 }
 const formatToolReportMock = vi.fn<(tools: unknown) => string>(() => "TOOL-REPORT");
 vi.mock("../harness/check-engine/index.js", () => ({
 	CheckEngine: FakeCheckEngine,
 	formatToolReport: formatToolReportMock,
+}));
+
+// --- harness/project-heavy-process-lock -----------------------------------
+const releaseHeavyProcessMock = vi.fn<() => void>();
+const tryAcquireProjectHeavyProcessLeaseMock = vi.fn<() => (() => void) | null>(
+	() => releaseHeavyProcessMock,
+);
+vi.mock("../harness/project-heavy-process-lock.js", () => ({
+	tryAcquireProjectHeavyProcessLease: tryAcquireProjectHeavyProcessLeaseMock,
 }));
 
 // --- harness/quality-checks ------------------------------------------------
@@ -154,15 +166,19 @@ vi.mock("./verify/structure.js", () => ({
 
 // --- verify/tool-results ---------------------------------------------------
 const checkProjectSetupMock = vi.fn<(cwd: string) => unknown[]>(() => []);
-const filterCodeQualityResultsMock = vi.fn<(r: unknown, s: Set<string>) => unknown>((r) => r);
-const runCodeQualityChecksMock = vi.fn<(files: string[], cwd: string) => unknown>(() => ({
-	undocumentedEnvVars: [],
-}));
+const clearCodeQualityResultsMock = vi.fn<(r: unknown) => void>();
+const filterCodeQualityResultsInPlaceMock = vi.fn<(r: unknown, s: Set<string>) => unknown>(
+	(r) => r,
+);
+const runCodeQualityChecksProgressiveMock = vi.fn<
+	(files: string[], cwd: string, progress: ScanProgress) => Promise<unknown>
+>(async () => ({ undocumentedEnvVars: [] }));
 const runSuggestionsMock = vi.fn<(args: unknown) => Map<string, unknown[]>>(() => new Map());
 vi.mock("./verify/tool-results.js", () => ({
 	checkProjectSetup: checkProjectSetupMock,
-	filterCodeQualityResults: filterCodeQualityResultsMock,
-	runCodeQualityChecks: runCodeQualityChecksMock,
+	clearCodeQualityResults: clearCodeQualityResultsMock,
+	filterCodeQualityResultsInPlace: filterCodeQualityResultsInPlaceMock,
+	runCodeQualityChecksProgressive: runCodeQualityChecksProgressiveMock,
 	runSuggestions: runSuggestionsMock,
 }));
 
@@ -215,6 +231,7 @@ beforeEach(() => {
 	runChecksMock.mockReturnValue({ results: [] });
 	runDepAuditMock.mockReturnValue({ kind: "audit" });
 	formatToolReportMock.mockReturnValue("TOOL-REPORT");
+	tryAcquireProjectHeavyProcessLeaseMock.mockReturnValue(releaseHeavyProcessMock);
 	detectDecisionSurfaceMock.mockReturnValue({ ds: true });
 	detectLockfileMultiplicityMock.mockReturnValue({ lm: true });
 	computeDecisionSurfaceRatchetMock.mockReturnValue({ dsr: true });
@@ -232,8 +249,10 @@ beforeEach(() => {
 	discoverFilesMock.mockReturnValue(["/p/a.ts", "/p/b.ts"]);
 	buildStructureJsonSectionMock.mockReturnValue({ structure: true });
 	checkProjectSetupMock.mockReturnValue([]);
-	filterCodeQualityResultsMock.mockImplementation((r: unknown) => r);
-	runCodeQualityChecksMock.mockReturnValue({ undocumentedEnvVars: [] });
+	filterCodeQualityResultsInPlaceMock.mockImplementation((r: unknown) => r);
+	runCodeQualityChecksProgressiveMock.mockImplementation(async () => ({
+		undocumentedEnvVars: [],
+	}));
 	runSuggestionsMock.mockReturnValue(new Map());
 	summarizeFlaggedFilesMock.mockReturnValue({ flaggedFiles: 0, totalFiles: 2, projectFindings: 0 });
 	existsSyncMock.mockReturnValue(true);
@@ -550,6 +569,58 @@ describe("verifyCommand — remote verify", () => {
 // ===========================================
 
 describe("runVerify — streaming output path", () => {
+	it("defers without a verdict when another process owns the project lane", async () => {
+		tryAcquireProjectHeavyProcessLeaseMock.mockReturnValueOnce(null);
+		const { verifyCommand } = await importVerify();
+
+		await verifyCommand({ cwd: "/repo" });
+
+		expect(stderr).toContain("verify deferred");
+		expect(stderr).toContain("no verification verdict was produced");
+		expect(process.exitCode).toBe(1);
+		expect(discoverFilesMock).not.toHaveBeenCalled();
+		expect(runCodeQualityChecksProgressiveMock).not.toHaveBeenCalled();
+		expect(releaseHeavyProcessMock).not.toHaveBeenCalled();
+	});
+
+	it("reports an unavailable no-verdict when project admission itself fails", async () => {
+		tryAcquireProjectHeavyProcessLeaseMock.mockImplementationOnce(() => {
+			throw new Error("lock directory unavailable");
+		});
+		const { verifyCommand } = await importVerify();
+
+		await verifyCommand({ cwd: "/repo" });
+
+		expect(stderr).toContain("verify unavailable");
+		expect(stderr).toContain("lock directory unavailable");
+		expect(stderr).toContain("no verification verdict was produced");
+		expect(process.exitCode).toBe(1);
+		expect(discoverFilesMock).not.toHaveBeenCalled();
+	});
+
+	it("always releases the project lane after a successful run", async () => {
+		const { verifyCommand } = await importVerify();
+		await verifyCommand({ cwd: "/repo" });
+		expect(releaseHeavyProcessMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("releases the project lane when verification throws", async () => {
+		runCodeQualityChecksProgressiveMock.mockRejectedValueOnce(new Error("scan failed"));
+		const { verifyCommand } = await importVerify();
+
+		await expect(verifyCommand({ cwd: "/repo" })).rejects.toThrow("scan failed");
+		expect(releaseHeavyProcessMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("runs no inline census before a requested --only external tool", async () => {
+		const { verifyCommand } = await importVerify();
+		await verifyCommand({ cwd: "/repo", only: "tsc" });
+
+		expect(runCodeQualityChecksProgressiveMock).not.toHaveBeenCalled();
+		expect(streamAllCqSectionsMock).not.toHaveBeenCalled();
+		expect(streamExternalToolsMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("drives the full streaming pipeline and emits the run record (default mode)", async () => {
 		const { verifyCommand } = await importVerify();
 		await verifyCommand({ cwd: "/repo" });
@@ -566,7 +637,8 @@ describe("runVerify — streaming output path", () => {
 		expect(streamDecisionSurfaceRatchetMock).toHaveBeenCalledWith({ dsr: true });
 
 		// code-quality + external tools + dead code
-		expect(filterCodeQualityResultsMock).toHaveBeenCalledTimes(1);
+		expect(filterCodeQualityResultsInPlaceMock).toHaveBeenCalledTimes(1);
+		expect(clearCodeQualityResultsMock).toHaveBeenCalledTimes(1);
 		expect(streamAllCqSectionsMock).toHaveBeenCalledTimes(1);
 		expect(streamUndocumentedEnvVarsMock).toHaveBeenCalledTimes(1);
 		expect(streamExternalToolsMock).toHaveBeenCalledTimes(1);
@@ -755,6 +827,10 @@ describe("runVerifyBatchJson — json output path", () => {
 		// only set and != "sca" → audit skipped, auditResult null
 		expect(runDepAuditMock).not.toHaveBeenCalled();
 		expect(lastJsonArg().auditResult).toBeNull();
+		// `--only tsc` means just typecheck: the expensive inline census must not
+		// run before the requested compiler process.
+		expect(runCodeQualityChecksProgressiveMock).not.toHaveBeenCalled();
+		expect(filterCodeQualityResultsInPlaceMock).not.toHaveBeenCalled();
 	});
 
 	it("normalizes the underscore form of --only when excluding tools", async () => {
@@ -813,5 +889,90 @@ describe("runVerifyBatchJson — json output path", () => {
 		expect(arg.lockfileMultiplicity).toEqual({ lm: true });
 		expect(arg.decisionSurfaceRatchet).toEqual({ dsr: true });
 		expect(arg.registryDrift).toEqual([]);
+	});
+});
+
+// ===========================================
+// Scan progress plumbing
+// ===========================================
+// The measured defect: `verify --all-checks` emitted nothing for 6m20s while
+// one CPU-bound span ran. These pin that the span now reports itself, that it
+// reports on stderr, and that `--json` stdout is unaffected.
+
+/** stderr as it stood partway through the scan, captured by the mock below. */
+let stderrDuringScan = "";
+
+/** Drive the real reporter verify handed the scan, as a mid-scan run would. */
+function driveProgressMidScan(): void {
+	stderrDuringScan = "";
+	runCodeQualityChecksProgressiveMock.mockImplementation(
+		async (files: string[], _cwd: string, progress: ScanProgress) => {
+			progress.start("checks");
+			progress.advance(files[0] ?? "/p/a.ts", 4000);
+			// Snapshot with the scan still running — this is the "during" proof.
+			stderrDuringScan = stderr;
+			progress.advance(files[1] ?? "/p/b.ts", 1);
+			progress.finish();
+			return { undocumentedEnvVars: [] };
+		},
+	);
+}
+
+describe("runVerify — scan progress", () => {
+	it("hands the scan a reporter sized to the discovered file count", async () => {
+		const { verifyCommand } = await importVerify();
+		await verifyCommand({ cwd: "/repo" });
+		const [passedFiles, passedCwd, progress] =
+			runCodeQualityChecksProgressiveMock.mock.calls[0] ?? [];
+		expect(passedFiles).toEqual(["/p/a.ts", "/p/b.ts"]);
+		expect(passedCwd).toBe("/repo");
+		progress?.start("checks");
+		expect(stderr).toContain("scanning checks 0/2");
+	});
+
+	it("writes the progress line to stderr while the scan runs, not after it", async () => {
+		const { verifyCommand } = await importVerify();
+		driveProgressMidScan();
+		await verifyCommand({ cwd: "/repo" });
+		expect(stderrDuringScan).toContain("scanning checks");
+		// The completion line had not been written yet at that moment.
+		expect(stderrDuringScan).not.toContain("code quality checks completed");
+	});
+
+	it("advances the counter to the file total as the scan proceeds", async () => {
+		const { verifyCommand } = await importVerify();
+		driveProgressMidScan();
+		await verifyCommand({ cwd: "/repo" });
+		expect(stderr).toContain("scanning checks 2/2");
+		expect(stdout).toBe("");
+	});
+
+	it("keeps --json stdout free of progress bytes", async () => {
+		const { verifyCommand } = await importVerify();
+		driveProgressMidScan();
+		await verifyCommand({ cwd: "/repo", json: true });
+		expect(stderr).toContain("scanning checks");
+		// outputJson is mocked, so every stdout byte here would be progress leakage.
+		expect(stdout).toBe("");
+		expect(outputJsonMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("names the slowest files after a slow run", async () => {
+		const { verifyCommand } = await importVerify();
+		driveProgressMidScan();
+		let t = 0;
+		// Each Date.now() read jumps 6s, so the run clears the slow-run threshold.
+		const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => (t += 6000));
+		await verifyCommand({ cwd: "/repo" });
+		dateSpy.mockRestore();
+		expect(stderr).toContain("slowest files:");
+		expect(stderr).toContain("/p/a.ts 4.0s");
+	});
+
+	it("stays silent about slow files on a fast run", async () => {
+		const { verifyCommand } = await importVerify();
+		driveProgressMidScan();
+		await verifyCommand({ cwd: "/repo" });
+		expect(stderr).not.toContain("slowest files:");
 	});
 });

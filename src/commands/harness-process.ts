@@ -17,7 +17,8 @@ import {
 	statSync,
 	unlinkSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { distStaleness, type DistStaleness } from "../harness/build-staleness.js";
 import { daemonPathsFor } from "../harness/session-paths.js";
 import { getConfigDir } from "../lib/config.js";
 import { c } from "../lib/formatter.js";
@@ -47,8 +48,9 @@ export function getPidPath(cwd: string = process.cwd()): string {
 
 
 /** Result returned by `reapOrphanHarnesses`. `candidates` is the full set the
- * sweep considered. `killed` is the subset that received a successful
- * `process.kill(SIGTERM)` (empty when `dryRun: true`). */
+ * sweep considered. `killed` is the subset whose authenticated process
+ * identity was confirmed gone (including ESRCH/PID replacement); empty when
+ * `dryRun: true`. */
 export interface ReapResult {
 	candidates: OrphanCandidate[];
 	killed: number[];
@@ -59,9 +61,9 @@ export interface ReapOptions {
 	/** When true, do NOT issue `process.kill`; just return candidates. Default
 	 *  for the `reap` CLI surface so users see the impact before opting in. */
 	dryRun?: boolean;
-	/** When true, *also* terminate the active daemon (skip the active-pid
-	 *  protection and the ancestor protection — this is the equivalent of
-	 *  `pkill -f interlinked-cli/dist/harness/server`). */
+	/** When true, also consider the active pid-file daemon. The invoking
+	 * process and its ancestor chain remain protected; explicit restart uses
+	 * `stopAllDaemons` when it intentionally needs to replace an ancestor. */
 	killAll?: boolean;
 	/** PIDs this sweep must never signal, whatever `ps` says — in practice the
 	 *  daemons that ANSWERED a socket probe (see
@@ -82,8 +84,10 @@ export interface ReapOptions {
  * 4 days of sessions, ~1.8 GB stale RSS. Without this sweep, every
  * `interlinked harness start` adds another long-lived process to the pile.
  *
- * Selection criteria: the process command line contains both `node` (or
- * `bun`) and `interlinked-cli/dist/harness/server`. We then exclude:
+ * Selection criteria: the process command line must structurally name a
+ * supported Node/Bun Interlinked daemon entry and this exact cwd. We then
+ * authenticate runtime, argv and process start identity again immediately
+ * before each signal. We exclude:
  *   1. The CLI process running this code (`process.pid`).
  *   2. The current shell / Claude Code ancestor chain (would terminate the
  *      session that just typed `interlinked harness start`).
@@ -91,8 +95,8 @@ export interface ReapOptions {
  *      (already shutdown by `isHarnessRunning` above, but defensive).
  *
  * `opts.dryRun` returns the candidate list without signalling. `opts.killAll`
- * disables the active-pid + ancestor protections so the user gets a clean
- * slate (the equivalent of a manual `pkill -f`).
+ * disables only the active-pid protection; it never makes the reaper a broad
+ * `pkill`, and socket-verified serving daemons remain protected.
  *
  * Best-effort: if `ps` fails, return an empty result — callers fall through.
  */
@@ -121,7 +125,7 @@ export function reapOrphanHarnesses(cwd: string, opts: ReapOptions = {}): ReapRe
 	if (dryRun) {
 		return { candidates, killed: [], dryRun: true };
 	}
-	const killed = terminateCandidates(candidates);
+	const killed = terminateCandidates(candidates, cwd);
 	// After everything dies, sweep the stale pid/sock files so the next
 	// `startSessionDaemon` doesn't see an "existing PID" left behind by a
 	// daemon that crashed without reaching its own removePidFile() call.
@@ -231,68 +235,76 @@ export function readDaemonStderrLog(log: DaemonStderrLog | null): string {
 	}
 }
 
+interface DistFreshnessOptions {
+	/** Suppress progress output when the caller owes stdout a single JSON value. */
+	quiet?: boolean;
+	/** Test seams for the filesystem/build boundaries; production uses the real implementations. */
+	resolveServerPath?: () => string;
+	readStaleness?: (repoRoot: string) => DistStaleness | null;
+	runBuild?: (repoRoot: string) => void;
+}
+
+function runRepositoryBuild(repoRoot: string): void {
+	execSync("npm run build", {
+		cwd: repoRoot,
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 120_000,
+	});
+}
+
+function sourceCheckoutRootForServerPath(serverPath: string): string | null {
+	const harnessDir = dirname(serverPath);
+	const buildOrSourceDir = dirname(harnessDir);
+	const artifact = basename(serverPath);
+	const container = basename(harnessDir);
+	const generation = basename(buildOrSourceDir);
+	const recognizedRuntime = artifact === "server.js" && container === "harness" && generation === "dist";
+	const recognizedSource = artifact === "server.ts" && container === "harness" && generation === "src";
+	return recognizedRuntime || recognizedSource ? dirname(buildOrSourceDir) : null;
+}
+
 /**
- * Check if the compiled dist/ harness is stale (source newer than dist).
- * If stale, rebuild automatically so `harness restart` always runs current code.
+ * Rebuild a source checkout when ANY product source is newer than dist.
  *
- * Resolves the dist path against `getHarnessServerPath()` so the staleness
- * probe targets the same file the daemon will actually load. The legacy
- * `cli/dist/...` layout is one of several candidates checked there; using
- * the resolved path means the probe works in flat-layout source checkouts
- * and node_modules installs alike.
+ * The shared recursive staleness detector deliberately ignores tests and
+ * generated/vendor trees, but sees edits to existing nested files whose
+ * parent-directory mtime does not change. Installed packages normally have no
+ * src/ tree, so their staleness result is null and this remains a no-op.
+ * A detected stale build is different: rebuild failure (or a build that leaves
+ * dist stale) throws so callers never launch known-old enforcement code.
  */
-export function ensureDistFresh(): void {
-	const cwd = process.cwd();
-	const distServer = getHarnessServerPath();
+export function ensureDistFresh(options: DistFreshnessOptions = {}): void {
+	const resolveServerPath = options.resolveServerPath ?? getHarnessServerPath;
+	const readStaleness = options.readStaleness ?? distStaleness;
+	const runBuild = options.runBuild ?? runRepositoryBuild;
+	const distServer = resolveServerPath();
 	if (!distServer || !existsSync(distServer)) return;
 
-	// Find the matching `src/harness/server.ts` alongside the resolved dist.
-	// Two repo shapes ship: flat-layout (`<root>/src/...`) and `cli/`-prefixed
-	// (`<root>/cli/src/...`). The dist sits at either `<root>/dist/harness/`
-	// or `<root>/cli/dist/harness/`; the matching src is two dirs up plus
-	// `src/harness/`.
-	const distHarnessDir = dirname(distServer);
-	const distRoot = dirname(distHarnessDir);
-	const srcRoot = join(dirname(distRoot), "src");
-	const srcServer = join(srcRoot, "harness", "server.ts");
-	if (!existsSync(srcServer)) return;
+	// Only infer a checkout from the two source/runtime layouts we own. A
+	// managed `.interlinked/harness-server` is a standalone artifact; walking
+	// three parents from it could accidentally inspect and build an unrelated
+	// ancestor checkout.
+	const repoRoot = sourceCheckoutRootForServerPath(distServer);
+	if (repoRoot === null) return;
+	const before = readStaleness(repoRoot);
+	if (!before?.stale) return;
 
+	if (!options.quiet) console.log(c.yellow("Source newer than dist — rebuilding..."));
 	try {
-		const distMtime = statSync(distServer).mtimeMs;
-
-		const srcDirs = [
-			join(srcRoot, "harness"),
-			join(srcRoot, "lib"),
-			join(srcRoot, "commands"),
-		];
-		let stale = false;
-		for (const dir of srcDirs) {
-			if (!existsSync(dir)) continue;
-			if (statSync(dir).mtimeMs > distMtime) {
-				stale = true;
-				break;
-			}
-		}
-		if (!stale && statSync(srcServer).mtimeMs > distMtime) {
-			stale = true;
-		}
-
-		if (stale) {
-			console.log(c.yellow("Source newer than dist — rebuilding..."));
-			try {
-				execSync("npm run build", {
-					cwd: dirname(srcRoot),
-					stdio: ["ignore", "pipe", "pipe"],
-					timeout: 30000,
-				});
-				console.log(c.green("Rebuilt dist/"));
-			} catch (_err) {
-				console.log(c.red("Build failed — starting harness with potentially stale code"));
-			}
-		}
-	} catch (_) {
-		/* intentional: staleness check is best-effort, skip on any fs/spawn error */
+		runBuild(repoRoot);
+	} catch (err) {
+		const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
+		throw new Error(`Build failed; refusing to start the harness with stale code${detail}`);
 	}
+
+	const after = readStaleness(repoRoot);
+	if (after === null) {
+		throw new Error("Build completed but dist freshness could not be verified; refusing to start the harness");
+	}
+	if (after.stale) {
+		throw new Error("Build completed but dist is still stale; refusing to start the harness");
+	}
+	if (!options.quiet) console.log(c.green("Rebuilt dist/"));
 }
 
 export function getHarnessServerPath(): string {

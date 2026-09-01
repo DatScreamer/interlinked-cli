@@ -109,6 +109,18 @@ describe("recordWarningsIssued", () => {
 		expect(record!.resolved).toBe(false);
 		expect(record!.issue_count).toBe(2);
 	});
+
+	it("does not count operational no-verdict rows as source feedback", () => {
+		const session = makeSession({ tool_call_count: 5 });
+		recordWarningsIssued(session, "src/foo.ts", [
+			"external_check_deferred",
+			"affected_tests_deferred",
+			"project_typecheck_deferred",
+			"project_tests_deferred",
+			"typescript",
+		]);
+		expect([...session.warnings_issued.keys()]).toEqual(["src/foo.ts::typescript"]);
+	});
 });
 
 // ===========================================
@@ -190,6 +202,28 @@ describe("recordWarningResolutions", () => {
 
 		expect(session.warnings_issued.get("src/foo.ts::typescript")!.resolved).toBe(true);
 		expect(session.warnings_issued.get("src/bar.ts::typescript")!.resolved).toBe(false);
+	});
+
+	it("does not infer resolution while the current call contains a no-verdict row", () => {
+		const warnings = new Map([
+			[
+				"src/foo.ts::typescript",
+				{
+					check_name: "typescript",
+					issue_count: 1,
+					first_issued_at: 1,
+					last_issued_at: 1,
+					resolved: false,
+				},
+			],
+		]);
+		const session = makeSession({ warnings_issued: warnings });
+		recordWarningResolutions(
+			session,
+			"src/foo.ts",
+			new Set(["external_check_deferred"]),
+		);
+		expect(session.warnings_issued.get("src/foo.ts::typescript")!.resolved).toBe(false);
 	});
 });
 

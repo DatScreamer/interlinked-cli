@@ -12,15 +12,8 @@
 // Behavior-preserving move: bare module-level state (`rules`, `trigramIndex`,
 // …) becomes `ctx.rules`, `ctx.trigramIndex`, ….
 
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getOrCreateEngine } from "../check-engine/index.js";
 import { runPostToolScan } from "../content-scanner/post-scan.js";
 import { evaluatePostToolUse } from "../evaluator.js";
-import {
-	baselineCallKey,
-	consumeBaselineSnapshot,
-} from "../evaluator/baseline-effect-guard.js";
 import { runFailureChannels } from "../failure-channels.js";
 import type { ToolBreakdownEntry } from "../quality-checks.js";
 import { shouldSkipPath } from "../skip-paths.js";
@@ -37,7 +30,7 @@ import type {
 	HarnessEvent,
 	SessionTrajectory,
 } from "../types.js";
-import { consumeWorkspaceSnapshot, isWorkspaceControlPath } from "../workspace-effects.js";
+import { isWorkspaceControlPath } from "../workspace-effects.js";
 import { type PerFileCheckCtx, runPerFileChecks } from "./post-tool-file-checks.js";
 import { appendFlakeCheckWarning } from "./post-tool-flake-phase.js";
 import { appendMutationHarvestWarning } from "./post-tool-mutation-harvest.js";
@@ -52,6 +45,16 @@ import {
 } from "./post-tool-pipeline-tracking.js";
 import type { ServerRuntime } from "./runtime-context.js";
 import { prerefreshSpecLedger } from "./spec-ledger-phase.js";
+import { withPostToolWarningSpool } from "./post-tool-pipeline-spool.js";
+import {
+	appendBaselineEffect,
+	appendRequiredToolWarnings,
+	attachObservedChangeSet,
+	attachTailResults,
+	emitAllCleanSummary,
+} from "./post-tool-pipeline-tail.js";
+
+export { POST_TOOL_PIPELINE_FAILURE_WARNING } from "./post-tool-pipeline-spool.js";
 
 function observedSkipDecision(
 	event: HarnessEvent,
@@ -183,13 +186,12 @@ function appendToolResponseChecks(
 
 /**
  * Run the per-file quality / structural / TDD / suggestion pipeline for every
- * edited file, bracketed by the on-disk in-progress marker that PreToolUse
- * polls. Codex `apply_patch` can carry multiple file sections, so the fan-out
- * iterates; a single-file event collapses to one iteration. All accumulated
- * warnings are persisted to `pending-quality-warnings.json` and the marker is
- * removed (even on a write failure) so PreToolUse never blocks forever.
+ * edited file. Codex `apply_patch` can carry multiple file sections, so the
+ * fan-out iterates; a single-file event collapses to one iteration. The outer
+ * PostTool pipeline owns late-warning persistence so tail findings are covered
+ * along with these per-file phases.
  */
-async function runFileChecksWithMarker(
+async function runFileChecks(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
 	session: SessionTrajectory,
@@ -198,20 +200,6 @@ async function runFileChecksWithMarker(
 	editedFilePaths: string[],
 	acc: PerFileCheckCtx,
 ): Promise<void> {
-	const dataDir = join(ctx.cwd, ".interlinked");
-	const markerPath = join(dataDir, "quality-check-in-progress");
-	const pendingPath = join(dataDir, "pending-quality-warnings.json");
-
-	// Write marker BEFORE running checks so PreToolUse knows to wait.
-	try {
-		if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-		writeFileSync(markerPath, new Date().toISOString());
-	} catch (markerErr) {
-		ctx.log(
-			`Failed to write quality-check marker (non-fatal): ${markerErr instanceof Error ? markerErr.message : String(markerErr)}`,
-		);
-	}
-
 	// Per-file fan-out: for non-multi events `editedFilePaths` collapses to a
 	// single-element list; the empty-string fallback keeps a check pass running
 	// even when no concrete path was resolved (direct-edit with no paths).
@@ -221,6 +209,7 @@ async function runFileChecksWithMarker(
 			: editedFilePath.length > 0
 				? [editedFilePath]
 				: [""];
+	acc.editedFilePaths = pathsToCheck;
 	// Phase mark — everything before this point was tool-response checks
 	// (silent-failure, context-bloat) plus paths-to-check setup.
 	acc.markPhase("tool_response_checks");
@@ -233,132 +222,9 @@ async function runFileChecksWithMarker(
 	}
 	// Phase mark — covers behavioral-checks + the recurrence log appender.
 	acc.markPhase("recurrence_aggregate");
-
-	// Write all accumulated warnings and remove marker.
-	try {
-		const allWarnings = postDecision.warnings || [];
-		if (allWarnings.length > 0) {
-			writeFileSync(pendingPath, JSON.stringify(allWarnings));
-		}
-		// Remove marker — signals PreToolUse that checks are done.
-		unlinkSync(markerPath);
-	} catch (err) {
-		try {
-			unlinkSync(markerPath);
-		} catch (e) {
-			void e;
-		}
-		ctx.log(`Quality check file error: ${err}`);
-	}
 }
 
-/** Attach the structured check results, run-list, per-tool latency breakdown,
- *  and per-phase wall-clock breakdown accumulated during the per-file fan-out.
- *  Each field is omitted (not set to empty) when nothing accumulated. */
-function attachTailResults(
-	postDecision: HarnessDecision,
-	allCheckResults: CheckResultEntry[],
-	checksRan: string[],
-	postToolMetrics: ToolBreakdownEntry[],
-	phaseBreakdown: Record<string, number>,
-	elapsedMs: number,
-): void {
-	if (allCheckResults.length > 0) {
-		postDecision.check_results = allCheckResults;
-	}
-	if (checksRan.length > 0) {
-		postDecision.checks_ran = [...new Set(checksRan)];
-		postDecision.checks_timing_ms = elapsedMs;
-	}
-	if (postToolMetrics.length > 0) {
-		postDecision.tool_breakdown = postToolMetrics;
-	}
-	postDecision.phase_breakdown = phaseBreakdown;
-}
-
-/** Required-tool coverage: warn once per session for each configured required
- *  tool that isn't available, recording the acknowledgement so it fires once. */
-function appendRequiredToolWarnings(
-	ctx: ServerRuntime,
-	session: SessionTrajectory,
-	postDecision: HarnessDecision,
-): void {
-	if (!ctx.rules.required_tools?.length || !session) return;
-	const engine = getOrCreateEngine(ctx.cwd);
-	for (const reqId of ctx.rules.required_tools) {
-		const skipKey = `required-tool-missing::${reqId}`;
-		if (session.acknowledged_checks.has(skipKey)) continue;
-		if (!engine.isToolAvailable(reqId)) {
-			pushWarnings(
-				postDecision,
-				`[interlinked:required-tool] Required tool "${reqId}" is not available. Install it or remove from required_tools in guard-rules.json.`,
-			);
-			session.acknowledged_checks.add(skipKey);
-		}
-	}
-}
-
-/** Abbreviate a check-family id for the compact all-clean summary line. */
-function abbreviateCheckName(c: string): string {
-	if (c === "structural") return "structural";
-	if (c === "typescript") return "tsc";
-	if (c === "biome_lint") return "biome";
-	if (c === "secrets_in_source") return "secrets";
-	if (c === "affected_tests") return "tests";
-	return c.replace(/_/g, "-");
-}
-
-/**
- * Emit a positive summary line when all checks passed (no warnings) and at
- * least one check actually ran. Uses the separate `summary` field so the hook
- * surfaces it as non-blocking output rather than a fake "block".
- */
-function emitAllCleanSummary(
-	postDecision: HarnessDecision,
-	rules: ServerRuntime["rules"],
-	checksRan: string[],
-	elapsedMs: number,
-): void {
-	const allWarnings = postDecision.warnings || [];
-	if (allWarnings.length !== 0 || checksRan.length === 0) return;
-	const ruleCount = rules.rules.length;
-	const checkSummary = [...new Set(checksRan)].map(abbreviateCheckName).join(", ");
-	postDecision.summary = `[interlinked] ✓ ${ruleCount} guard rules, ${checkSummary} — all clean (${elapsedMs}ms)`;
-}
-
-/**
- * Run the full PostToolUse pipeline for a completed tool-use event. Returns
- * the final `HarnessDecision` (allow / block, plus warnings / summary /
- * check_results / timing).
- */
-/** Effect arm: append the loosening warning when this call moved a water-line. */
-function appendBaselineEffect(event: HarnessEvent, decision: HarnessDecision, cwd: string): void {
-	if (event.dry_run) return;
-	const key = baselineCallKey({
-		toolUseId: event.tool_use_id,
-		sessionId: event.session_id,
-		timestamp: event.timestamp,
-	});
-	const warning = consumeBaselineSnapshot(key, cwd);
-	if (!warning) return;
-	decision.warnings = [...(decision.warnings ?? []), warning];
-}
-
-/** Attach actual repository effects before any tool-name/path-based routing. */
-function attachObservedChangeSet(event: HarnessEvent, cwd: string): void {
-	if (event.dry_run) return;
-	const observed = consumeWorkspaceSnapshot({
-		toolUseId: event.tool_use_id,
-		sessionId: event.session_id,
-		subagentId: event.subagent_id,
-		root: cwd,
-	});
-	if (!observed) return;
-	event.change_set = observed;
-	event.files_modified = observed.files.map((effect) => effect.path);
-}
-
-export async function runPostToolPipeline(
+async function runPostToolPipelineInner(
 	ctx: ServerRuntime,
 	event: HarnessEvent,
 	session: SessionTrajectory,
@@ -466,7 +332,7 @@ export async function runPostToolPipeline(
 			projectWideSweepFired: false,
 			recurrenceCursor: 0,
 		};
-		await runFileChecksWithMarker(
+		await runFileChecks(
 			ctx,
 			event,
 			session,
@@ -483,18 +349,40 @@ export async function runPostToolPipeline(
 
 	// Attach structured check results and timing to the decision.
 	const elapsedMs = Date.now() - postStartMs;
-	attachTailResults(postDecision, allCheckResults, checksRan, postToolMetrics, phaseBreakdown, elapsedMs);
+	attachTailResults({
+		postDecision,
+		allCheckResults,
+		checksRan,
+		postToolMetrics,
+		phaseBreakdown,
+		elapsedMs,
+	});
 
 	// Required-tool coverage: warn once per session if required tools are missing.
 	appendRequiredToolWarnings(ctx, session, postDecision);
 
 	// Emit a positive summary line when all checks pass (the detailed warnings
 	// carry the signal otherwise).
-	emitAllCleanSummary(postDecision, rules, checksRan, elapsedMs);
+	emitAllCleanSummary({ postDecision, rules, checksRan, elapsedMs });
 	// Effect-based baseline integrity: compare the water-lines against the
 	// pre-call snapshot. Warn-only — the loosening is already reversible (undo
 	// record) and inert (trusted value), so blocking adds nothing here.
 	appendBaselineEffect(event, postDecision, CWD);
 
 	return postDecision;
+}
+
+/**
+ * Run one PostTool request inside its own late-warning spool lifecycle. The
+ * ready record is published only after every warning-producing tail phase has
+ * completed; cleanup is request-owned and runs even when a phase throws.
+ */
+export async function runPostToolPipeline(
+	ctx: ServerRuntime,
+	event: HarnessEvent,
+	session: SessionTrajectory,
+): Promise<HarnessDecision> {
+	return withPostToolWarningSpool(ctx, event, () =>
+		runPostToolPipelineInner(ctx, event, session),
+	);
 }

@@ -47,8 +47,18 @@ const VALID_SCOPES = new Set(["user", "project", "local"]);
 const VALID_CLOUD_PRODUCTS = new Set(["guardrails", "agent-ci"]);
 
 export async function installHooksCommand(options: InstallHooksOptions): Promise<void> {
+	const runnerSelection = parseRunners(options.runner);
+	if (runnerSelection.unknown.length > 0) {
+		reportUnknownRunners(runnerSelection.unknown, options.json === true);
+		return;
+	}
+	const optionError = explicitOptionError(options);
+	if (optionError !== null) {
+		reportInvalidOption(optionError, options.json === true);
+		return;
+	}
 	const cwd = process.cwd();
-	const runners = parseRunners(options.runner);
+	const runners = runnerSelection.runners;
 	const scope = parseScope(options.scope);
 	const dryRun = options.dryRun === true;
 	const binaryPath = resolve(
@@ -72,9 +82,7 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 
 	const result = installHooks({ cwd, binaryPath, runners, scope, dryRun });
 
-	if (!dryRun && resolvedMode !== null) {
-		writeMode(cwd, resolvedMode, false);
-	}
+	const modeWriteSucceeded = applyRequestedMode(cwd, resolvedMode, dryRun);
 
 	if (options.cloud && !dryRun && !preserveMode) {
 		writeCloudConfig(cwd, options.cloud, options.tokenEnv);
@@ -85,18 +93,11 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 	// logged and dropped, so an installation whose hooks never fire reported
 	// success. It now mirrors `InstallResult.ok`, and the process exits non-zero
 	// so a script or CI step sees the failure too.
-	if (!result.ok) {
-		for (const failure of result.post_install_failures) {
-			process.stderr.write(
-				`[interlinked] ${failure.runner}: hooks are NOT active — post-install step failed: ${failure.reason}\n`,
-			);
-		}
-		process.exitCode = 1;
-	}
+	const commandOk = reportInstallFailure(result, resolvedMode, modeWriteSucceeded);
 
 	if (options.json) {
 		const payload = {
-			ok: result.ok,
+			ok: commandOk,
 			dry_run: dryRun,
 			entries: result.entries,
 			skipped: result.skipped,
@@ -112,7 +113,33 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 		return;
 	}
 
-	printHuman(result, dryRun, resolvedMode);
+	printHuman(result, dryRun, resolvedMode, modeWriteSucceeded);
+}
+
+function applyRequestedMode(cwd: string, mode: ModeName | null, dryRun: boolean): boolean {
+	if (dryRun || mode === null) return true;
+	return writeMode(cwd, mode, false);
+}
+
+function reportInstallFailure(
+	result: ReturnType<typeof installHooks>,
+	mode: ModeName | null,
+	modeWriteSucceeded: boolean,
+): boolean {
+	const ok = result.ok && modeWriteSucceeded;
+	if (ok) return true;
+	for (const failure of result.post_install_failures) {
+		process.stderr.write(
+			`[interlinked] ${failure.runner}: hooks are NOT active — post-install step failed: ${failure.reason}\n`,
+		);
+	}
+	if (!modeWriteSucceeded) {
+		process.stderr.write(
+			`[interlinked] hooks were written, but mode ${mode ?? "preserved"} was NOT applied; install-hooks is incomplete.\n`,
+		);
+	}
+	process.exitCode = 1;
+	return false;
 }
 
 /** Explicit --mode wins. In a TTY with no flag, prompt. Otherwise default
@@ -120,10 +147,6 @@ export async function installHooksCommand(options: InstallHooksOptions): Promise
 function resolveMode(options: InstallHooksOptions): ModeName {
 	if (options.mode) {
 		if (isKnownMode(options.mode)) return options.mode;
-		process.stderr.write(
-			`[interlinked] unknown mode '${options.mode}'; falling back to balanced\n`,
-		);
-		return "balanced";
 	}
 	if (options.json || !process.stdin.isTTY) return "balanced";
 	return promptForMode();
@@ -163,27 +186,55 @@ function readStdinLine(): string {
 	return buf.toString("utf-8", 0, read);
 }
 
-function parseRunners(raw: string | undefined): RunnerId[] {
-	if (!raw || raw === "all") return [];
+interface RunnerSelection {
+	runners: RunnerId[];
+	unknown: string[];
+}
+
+function parseRunners(raw: string | undefined): RunnerSelection {
+	if (raw === undefined || raw === "all") return { runners: [], unknown: [] };
 	const parts = raw.split(",").map((s) => s.trim());
 	const out: RunnerId[] = [];
+	const unknown: string[] = [];
 	for (const part of parts) {
 		if (VALID_RUNNERS.has(part as RunnerId)) {
 			out.push(part as RunnerId);
 		} else {
-			process.stderr.write(`[interlinked] warning: unknown runner ${part}; skipping\n`);
+			unknown.push(part);
 		}
 	}
-	return out;
+	return { runners: out, unknown };
+}
+
+/** Reject an invalid explicit selection before `[]` can reach the installer,
+ * where an empty list deliberately means "all runners". */
+function reportUnknownRunners(unknown: string[], json: boolean): void {
+	const message = `unknown runner${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}; no hooks were installed`;
+	process.exitCode = 1;
+	process.stderr.write(`[interlinked] ${message}\n`);
+	if (json) {
+		process.stdout.write(`${JSON.stringify({ ok: false, error: message })}\n`);
+	}
+}
+
+function explicitOptionError(options: InstallHooksOptions): string | null {
+	if (options.scope !== undefined && !VALID_SCOPES.has(options.scope)) {
+		return `unknown scope ${JSON.stringify(options.scope)}; expected user, project, or local`;
+	}
+	if (options.mode !== undefined && !isKnownMode(options.mode)) {
+		return `unknown mode ${JSON.stringify(options.mode)}; expected balanced, strict, or lenient`;
+	}
+	return null;
+}
+
+function reportInvalidOption(message: string, json: boolean): void {
+	process.exitCode = 1;
+	process.stderr.write(`[interlinked] ${message}; no files were changed\n`);
+	if (json) process.stdout.write(`${JSON.stringify({ ok: false, error: message })}\n`);
 }
 
 function parseScope(raw: string | undefined): "user" | "project" | "local" {
-	if (!raw) return "project";
-	if (!VALID_SCOPES.has(raw)) {
-		process.stderr.write(`[interlinked] warning: unknown scope ${raw}; using "project"\n`);
-		return "project";
-	}
-	return raw as "user" | "project" | "local";
+	return raw === "user" || raw === "local" ? raw : "project";
 }
 
 function writeCloudConfig(cwd: string, product: string, tokenEnv: string | undefined): void {
@@ -222,6 +273,7 @@ function printHuman(
 	},
 	dryRun: boolean,
 	mode: ModeName | null,
+	modeWriteSucceeded: boolean,
 ): void {
 	const verb = dryRun ? "would install" : "installed";
 	process.stdout.write(`[interlinked] ${verb} hooks for ${result.entries.length} runner(s)\n`);
@@ -258,7 +310,9 @@ function printHuman(
 		process.stdout.write(
 			mode === null
 				? "mode: preserved (not written \u2014 --preserve-mode)\n"
-				: `mode: ${mode}  (change anytime: interlinked mode <name>)\n`,
+				: modeWriteSucceeded
+					? `mode: ${mode}  (change anytime: interlinked mode <name>)\n`
+					: `mode: NOT APPLIED (requested ${mode})\n`,
 		);
 	}
 }

@@ -16,7 +16,9 @@ const mocks = vi.hoisted(() => ({
 	getGraphForFile: vi.fn(),
 	runPerEditMutationGate: vi.fn(),
 	emptyManifest: vi.fn(),
-	loadManifest: vi.fn(),
+	// SAFETY: `any` return — the mock stands in for the tri-state loader whose
+	// valid arm carries a manifest payload the per-case overrides supply.
+	loadManifestState: vi.fn((): any => ({ kind: "missing" })),
 	makeManifestPersister: vi.fn(),
 	makeManifestPersisterWithIndex: vi.fn(),
 	overlayHash: vi.fn(),
@@ -37,7 +39,7 @@ vi.mock("../evaluator/coverage-write-guard.js", () => ({ checkCoverageWrite: moc
 vi.mock("../mutation/gate.js", () => ({ runPerEditMutationGate: mocks.runPerEditMutationGate }));
 vi.mock("../mutation/manifest.js", () => ({
 	emptyManifest: mocks.emptyManifest,
-	loadManifest: mocks.loadManifest,
+	loadManifestState: mocks.loadManifestState,
 	makeManifestPersister: mocks.makeManifestPersister,
 }));
 vi.mock("../mutation/survivors-index.js", () => ({
@@ -46,6 +48,8 @@ vi.mock("../mutation/survivors-index.js", () => ({
 vi.mock("../mutation/pending-registry.js", () => ({
 	overlayHash: mocks.overlayHash,
 	pendingRegistry: mocks.pendingRegistry,
+	initPendingRegistryStore: vi.fn(),
+	commitPendingRegistry: vi.fn(),
 }));
 vi.mock("../mutation/pending-runs.js", () => ({ recordPending: mocks.recordPending }));
 vi.mock("./runtime-context.js", () => ({ getGraphForFile: mocks.getGraphForFile }));
@@ -78,7 +82,7 @@ beforeEach(() => {
 	mocks.checkCommitGate.mockResolvedValue(null);
 	mocks.runPerEditMutationGate.mockResolvedValue(null);
 	mocks.emptyManifest.mockReturnValue({ empty: true });
-	mocks.loadManifest.mockReturnValue(undefined);
+	mocks.loadManifestState.mockReturnValue({ kind: "missing" });
 	mocks.makeManifestPersister.mockReturnValue(() => {});
 	mocks.makeManifestPersisterWithIndex.mockReturnValue(() => {});
 	mocks.overlayHash.mockReturnValue("hash");
@@ -192,15 +196,15 @@ describe("runCommitGate (c13dc57da2bd0a31)", () => {
 describe("runMutationWriteGate (ca547d5a5d37967e)", () => {
 	it("resolves the manifest directory under cwd/.interlinked (kills 322d856)", async () => {
 		const ctx = makeCtx();
-		mocks.loadManifest.mockReturnValue({ generation: 1 });
+		mocks.loadManifestState.mockReturnValue({ kind: "valid", manifest: { generation: 1 } });
 		const event = { tool_name: "Write", tool_input: { file_path: "foo.ts" }, cwd: "/repo" };
 		await runMutationWriteGate(ctx, event as any, { decision: "allow", warnings: undefined } as any);
-		expect(mocks.loadManifest).toHaveBeenCalledWith(path.resolve("/repo", ".interlinked"));
+		expect(mocks.loadManifestState).toHaveBeenCalledWith(path.resolve("/repo", ".interlinked"));
 	});
 
 	it("a null/undefined manifest falls back to emptyManifest's result, not null (kills 28cf88a)", async () => {
 		const ctx = makeCtx();
-		mocks.loadManifest.mockReturnValue(null);
+		mocks.loadManifestState.mockReturnValue({ kind: "missing" });
 		const sentinelEmpty = { empty: true, marker: "sentinel" };
 		mocks.emptyManifest.mockReturnValue(sentinelEmpty);
 		const event = { tool_name: "Write", tool_input: { file_path: "foo.ts" }, cwd: "/repo" };
@@ -223,7 +227,7 @@ describe("runMutationWriteGate (ca547d5a5d37967e)", () => {
 describe("MUTATION_PLACEHOLDER_META (1235b8c2f630d07b)", () => {
 	it("passes the exact placeholder meta fields to emptyManifest (kills 31769158, 4e1a1b9c, 10680075, 518f501d, e37a17dd)", async () => {
 		const ctx = makeCtx();
-		mocks.loadManifest.mockReturnValue(undefined);
+		mocks.loadManifestState.mockReturnValue({ kind: "missing" });
 		const event = { tool_name: "Write", tool_input: { file_path: "foo.ts" }, cwd: "/repo" };
 		await runMutationWriteGate(ctx, event as any, { decision: "allow", warnings: undefined } as any);
 		expect(mocks.emptyManifest).toHaveBeenCalledWith({

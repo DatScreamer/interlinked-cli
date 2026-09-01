@@ -37,7 +37,7 @@ afterEach(() => {
 	logSpy.mockRestore();
 });
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escape codes for stable assertions
+// Strip ANSI escape codes for stable assertions.
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 function lastLog(): string {
@@ -85,7 +85,9 @@ describe("envCommand — json mode descriptions/examples", () => {
 		expect(byName.INTERLINKED_CLIENTS.description).toBe(
 			"Comma-separated list of clients for non-interactive bootstrap",
 		);
-		expect(byName.INTERLINKED_CLIENTS.example).toBe("claude,copilot,gemini,codex,cursor");
+		expect(byName.INTERLINKED_CLIENTS.example).toBe(
+			"claude,copilot,gemini,codex,cursor,opencode,pi",
+		);
 	});
 });
 

@@ -164,14 +164,20 @@ async function recordDispositionToLedger(configDir: string, opts: MutationDispos
 		return;
 	}
 
-	const { loadManifest } = await import("../harness/mutation/manifest.js");
+	const { corruptManifestMessage, loadManifestState } = await import("../harness/mutation/manifest.js");
 	const { findMutantRecord } = await import("../harness/mutation/accept.js");
 	const { describeDisposition } = await import("../harness/mutation/disposition.js");
 	const { loadLedger, makeRecord, refuseRecord, saveLedger, upsertRecord } = await import(
 		"../harness/mutation/disposition-store.js"
 	);
 
-	const base = loadManifest(configDir);
+	const state = loadManifestState(configDir);
+	if (state.kind === "corrupt") {
+		outputError(mode, corruptManifestMessage(configDir, state.detail));
+		process.exitCode = 1;
+		return;
+	}
+	const base = state.kind === "valid" ? state.manifest : null;
 	if (!base) {
 		outputError(mode, "No mutation manifest — measure the file first (`interlinked mutation measure <file> --record`).");
 		process.exitCode = 1;

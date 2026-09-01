@@ -56,7 +56,28 @@ function extractBuiltinRules() {
 			if (categoryMatch) categories.add(categoryMatch[1]);
 		}
 	}
-	return { count: ids.length, ids, reasons, categoryCount: categories.size };
+	return {
+		// The regex walk above exists to recover reason text for prose assertions,
+		// but it can also see rule-shaped examples and helper objects that are not
+		// present in the composed runtime registry. The generated reference is
+		// produced from getBuiltinRules() and is freshness-pinned in CI, so its
+		// headline is the authoritative dependency-free runtime count.
+		count: extractGeneratedBuiltinCount(),
+		ids,
+		reasons,
+		categoryCount: categories.size,
+	};
+}
+
+function extractGeneratedBuiltinCount() {
+	const text = read("docs/generated/guard-rules.md");
+	const m = text.match(/^(\d+) built-in rules that block or warn on dangerous operations\.$/m);
+	if (!m) {
+		throw new Error(
+			"headline rule count not found in docs/generated/guard-rules.md — did its generated format change?",
+		);
+	}
+	return Number.parseInt(m[1], 10);
 }
 
 // ---------------------------------------------------------------------

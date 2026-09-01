@@ -1,13 +1,16 @@
 // ===========================================
 // Claude Code adapter
 // ===========================================
-// Native payload reference: https://docs.claude.com/en/docs/claude-code/hooks
-// Checked against CLI hooks docs as of 2026-04-23.
+// Native payload reference: https://code.claude.com/docs/en/hooks
+// Checked against Claude Code's primary hooks reference as of 2026-09-01.
 //
 // Decision format:
-//   stdout `{ "decision": "deny" | "ask", "reason": "..." }` — blocks/prompts
-//   stdout `{ "hookSpecificOutput": { "additionalContext": "..." } }` — passes with note
-//   exit 0 + no stdout = allow
+//   PreToolUse uses hookSpecificOutput.permissionDecision.
+//   PermissionRequest uses hookSpecificOutput.decision.behavior.
+//   PostToolUse/continuation events use top-level decision: "block".
+//   Events that support it receive non-blocking feedback via additionalContext.
+//   exit 0 + no stdout = no hook override (ordinary events continue;
+//   PermissionRequest keeps Claude's configured permission flow)
 
 import { hookTimeoutSecondsFor } from "../../lib/hook-timeouts.js";
 import { agentWorktreeCreationBlockReason } from "../../lib/hook-template-chunks/destructive-command-guard.js";
@@ -20,6 +23,7 @@ import { buildDetachedHookCommand, buildHookCommand } from "./hook-command.js";
 import { buildStandardAction, normalizeNativeHookEvent } from "./normalization.js";
 import {
 	CLAUDE_CODE_CAPABILITIES,
+	eventCapability,
 	installedEventNames,
 } from "./provider-capabilities.js";
 import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
@@ -27,7 +31,7 @@ import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js"
 const NATIVE_EVENTS = installedEventNames(CLAUDE_CODE_CAPABILITIES);
 
 function claudeMissingRuntimePolicy(event: string): "fail_closed" | "warn_open" {
-	return event === "PreToolUse" || event === "WorktreeCreate" ? "fail_closed" : "warn_open";
+	return eventCapability(CLAUDE_CODE_CAPABILITIES, event)?.missing_runtime ?? "warn_open";
 }
 
 /**
@@ -42,9 +46,8 @@ function claudeMissingRuntimePolicy(event: string): "fail_closed" | "warn_open" 
  * only the post-call comparison establishes a shell command's effects, and the
  * bash-edit obligation gate is built on exactly that.
  *
- * Codex is the deliberate exception and keeps `matcher: ""` — its
- * `apply_patch` arrives through the all-tools matcher (see
- * `lib/hook-installers-shared.ts`). Do not "align" the two.
+ * Codex derives its own mutating matcher from the same write-tool registry;
+ * its native patch spelling is `apply_patch`, not Claude's `Edit`.
  *
  * The names come from `lib/write-tool-registry.ts`, NOT from a list kept here.
  * A second hand-maintained list is exactly how `MultiEdit` came to be registered
@@ -161,15 +164,14 @@ function encodeClaudeDecision(
 	// Claude Code validates hookSpecificOutput.hookEventName against the
 	// incoming event. Echo the native event and use a phase fallback for tests
 	// or compatibility payloads that omitted it.
-	const hookEventName =
-		event?.runner_native_event ?? (isPre ? "PreToolUse" : "PostToolUse");
+	const hookEventName = resolveClaudeHookEventName(event, isPre, isPermissionRequest);
+	if (isPermissionRequest) {
+		return encodeClaudePermissionRequestDecision(decision, hookEventName, stderr);
+	}
 
 	if (decision.decision === "block") {
-		const reason =
-			decision.reason ??
-			"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
-				"bug; re-run, or run `interlinked harness restart`, then report it.";
-		if (isPre || isPermissionRequest) {
+		const reason = claudeBlockReason(decision);
+		if (isPre) {
 			return {
 				stdout: JSON.stringify({
 					hookSpecificOutput: {
@@ -190,9 +192,6 @@ function encodeClaudeDecision(
 	}
 
 	if (decision.decision === "ask") {
-		// PermissionRequest is already inside Claude's approval flow. Abstain so
-		// the configured policy and the user's native prompt retain authority.
-		if (isPermissionRequest) return { stderr: stderr || undefined, exit_code: 0 };
 		const reason = formatAskReasonWithTargets(
 			decision.reason ?? "Confirmation required",
 			decision.resolved_targets,
@@ -227,6 +226,79 @@ function encodeClaudeDecision(
 		stderr: stderr || undefined,
 		exit_code: 0,
 	};
+}
+
+function encodeClaudePermissionRequestDecision(
+	decision: HarnessDecision,
+	hookEventName: string,
+	warnings: string,
+): AdapterOutput {
+	if (decision.decision === "block") {
+		return encodeClaudePermissionRequestBlock(decision, hookEventName, warnings);
+	}
+
+	// PermissionRequest has no additionalContext member. A generic Interlinked
+	// allow means "no objection", not "approve this permission on the user's
+	// behalf", so allow and ask both abstain on stdout. Keep non-blocking
+	// diagnostics on stderr and let Claude's configured policy and native prompt
+	// remain authoritative.
+	const feedback = claudePermissionRequestFeedback(decision, warnings);
+	return feedback ? { stderr: feedback, exit_code: 0 } : { exit_code: 0 };
+}
+
+function claudePermissionRequestFeedback(
+	decision: HarnessDecision,
+	warnings: string,
+): string {
+	const parts: string[] = [];
+	if (decision.system_message) {
+		parts.push(decision.system_message);
+	} else if (decision.decision === "ask") {
+		parts.push(
+			formatAskReasonWithTargets(
+				decision.reason ?? "Confirmation required",
+				decision.resolved_targets,
+			),
+		);
+	}
+	if (decision.additional_context) parts.push(decision.additional_context);
+	if (warnings) parts.push(warnings);
+	return parts.join("\n");
+}
+
+function encodeClaudePermissionRequestBlock(
+	decision: HarnessDecision,
+	hookEventName: string,
+	warnings: string,
+): AdapterOutput {
+	return {
+		stdout: JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName,
+				decision: { behavior: "deny", message: claudeBlockReason(decision) },
+			},
+		}),
+		stderr: warnings || undefined,
+		exit_code: 0,
+	};
+}
+
+function resolveClaudeHookEventName(
+	event: UnifiedHookEvent | undefined,
+	isPre: boolean,
+	isPermissionRequest: boolean,
+): string {
+	if (event?.runner_native_event) return event.runner_native_event;
+	if (isPermissionRequest) return "PermissionRequest";
+	return isPre ? "PreToolUse" : "PostToolUse";
+}
+
+function claudeBlockReason(decision: HarnessDecision): string {
+	return (
+		decision.reason ??
+		"Blocked by the interlinked harness, but no reason was attached — likely a harness " +
+			"bug; re-run, or run `interlinked harness restart`, then report it."
+	);
 }
 
 function encodeClaudeWorktreeCreationDecision(

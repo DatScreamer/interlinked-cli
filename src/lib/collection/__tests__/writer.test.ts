@@ -85,7 +85,14 @@ describe("appendCollection", () => {
 		mockFs.appendFileSync.mockReturnValue(undefined);
 
 		appendCollection(stubRecord(), "/my/repo");
-		expect(mockFs.mkdirSync).not.toHaveBeenCalled();
+		expect(mockFs.mkdirSync).not.toHaveBeenCalledWith(
+			path.join("/my/repo", ".interlinked"),
+			{ recursive: true },
+		);
+		// The shared append/rotation protocol still acquires its lock directory.
+		expect(mockFs.mkdirSync).toHaveBeenCalledWith(
+			`${getCollectionPath("/my/repo")}.interlinked-mutation.lock`,
+		);
 	});
 
 	it("swallows write errors silently", () => {

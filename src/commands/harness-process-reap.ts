@@ -12,6 +12,14 @@
 
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import {
+	type ProcessIdentityReader,
+	isHarnessDaemonCommandForCwd,
+	readHarnessProcessIdentity,
+	sameProcessIdentity,
+	stillMatchingIdentities,
+	verifiedProcessIdentities,
+} from "../harness/daemon-process-identity.js";
 
 /**
  * Candidate harness daemon row pulled from `ps` and filtered by the
@@ -74,15 +82,7 @@ export function isReapCandidate(
 ): boolean {
 	const { pid, command: cmd } = row;
 	if (pid === process.pid) return false;
-	if (!cmd.includes("node") && !cmd.includes("bun")) return false;
-	if (!cmd.includes("interlinked-cli/dist/harness/server")) return false;
-	// Scope by `--cwd`: a daemon spawned from a sibling repo has a different
-	// `--cwd` and must NOT be reaped from this workspace — doing so would silently
-	// disable hooks in the user's other open project. If `--cwd` is absent (legacy
-	// daemon, malformed cmdline) skip the candidate rather than risk a
-	// cross-workspace SIGTERM.
-	const candidateCwd = extractCwdArg(cmd);
-	if (candidateCwd === null || candidateCwd !== cwd) return false;
+	if (!isHarnessDaemonCommandForCwd({ command: cmd, cwd })) return false;
 	// Never SIGTERM our own ancestor chain — true in both default and killAll
 	// mode. killAll additionally treats the active daemon as fair game.
 	if (ancestorPids.has(pid)) return false;
@@ -113,6 +113,21 @@ export function collectReapCandidates(
 	return candidates;
 }
 
+function authenticatedCandidateStillOwnsPid(args: {
+	cwd: string;
+	pid: number;
+	expectedIdentity: string;
+	identify: ProcessIdentityReader;
+	onExited: (pid: number) => void;
+}): boolean {
+	const { cwd, pid, expectedIdentity, identify, onExited } = args;
+	if (sameProcessIdentity({ cwd, pid, expectedIdentity, isAlive: hasProcess, identify })) {
+		return true;
+	}
+	if (!hasProcess(pid)) onExited(pid);
+	return false;
+}
+
 /**
  * SIGTERM every candidate, wait under one shared deadline, then SIGKILL only the
  * survivors and wait again. Returns the PIDs confirmed gone (an ESRCH at any
@@ -120,7 +135,11 @@ export function collectReapCandidates(
  * signals before the first wait keeps N SIGTERM-deaf orphans from costing
  * N × (TERM grace + KILL grace).
  */
-export function terminateCandidates(candidates: readonly OrphanCandidate[]): number[] {
+export function terminateCandidates(
+	candidates: readonly OrphanCandidate[],
+	cwd: string,
+	identify: ProcessIdentityReader = readHarnessProcessIdentity,
+): number[] {
 	const killed: number[] = [];
 	const killedSet = new Set<number>();
 	const markKilled = (pid: number): void => {
@@ -129,14 +148,32 @@ export function terminateCandidates(candidates: readonly OrphanCandidate[]): num
 		killed.push(pid);
 	};
 
-	const termSent: OrphanCandidate[] = [];
+	const verified = verifiedProcessIdentities(
+		cwd,
+		candidates.map((candidate) => candidate.pid),
+		identify,
+	);
+	const termSent = new Map<number, string>();
 	for (const candidate of candidates) {
+		const expectedIdentity = verified.get(candidate.pid);
+		if (expectedIdentity === undefined) continue;
+		if (
+			!authenticatedCandidateStillOwnsPid({
+				cwd,
+				pid: candidate.pid,
+				expectedIdentity,
+				identify,
+				onExited: markKilled,
+			})
+		) {
+			continue;
+		}
 		// Signal every candidate before waiting. With per-candidate waits, N
 		// SIGTERM-deaf orphans cost N * (TERM grace + KILL grace) and later daemons
 		// were not even signalled until earlier timeouts expired.
 		try {
 			process.kill(candidate.pid, "SIGTERM");
-			termSent.push(candidate);
+			termSent.set(candidate.pid, expectedIdentity);
 		} catch (termErr) {
 			// Already gone counts as reaped; permission errors do not.
 			if (isNoSuchProcessError(termErr)) markKilled(candidate.pid);
@@ -146,22 +183,21 @@ export function terminateCandidates(candidates: readonly OrphanCandidate[]): num
 	// Verify all signalled processes under one shared deadline, then escalate only
 	// survivors. This preserves the "don't clear pid files unless the process is
 	// truly gone" contract without serial timeouts.
-	const termSurvivors = waitForProcessesExit(
-		termSent.map((candidate) => candidate.pid),
-		REAP_GRACE_MS,
-		markKilled,
-	);
-	const killSent: number[] = [];
-	for (const candidate of termSent) {
-		if (!termSurvivors.has(candidate.pid)) continue;
+	const termSurvivors = waitForIdentityExit(cwd, termSent, REAP_GRACE_MS, markKilled, identify);
+	const killSent = new Map<number, string>();
+	for (const [pid, expectedIdentity] of termSurvivors) {
+		if (identify(cwd, pid) !== expectedIdentity) {
+			markKilled(pid);
+			continue;
+		}
 		try {
-			process.kill(candidate.pid, "SIGKILL");
-			killSent.push(candidate.pid);
+			process.kill(pid, "SIGKILL");
+			killSent.set(pid, expectedIdentity);
 		} catch (killErr) {
-			if (isNoSuchProcessError(killErr)) markKilled(candidate.pid);
+			if (isNoSuchProcessError(killErr)) markKilled(pid);
 		}
 	}
-	waitForProcessesExit(killSent, REAP_KILL_GRACE_MS, markKilled);
+	waitForIdentityExit(cwd, killSent, REAP_KILL_GRACE_MS, markKilled, identify);
 	return killed;
 }
 
@@ -172,6 +208,30 @@ const REAP_GRACE_MS = 3000;
 /** After SIGKILL the kernel reaps within milliseconds; one second is overkill
  *  but cheap insurance against pathological scheduling. */
 const REAP_KILL_GRACE_MS = 1000;
+
+function waitForIdentityExit(
+	cwd: string,
+	targets: ReadonlyMap<number, string>,
+	timeoutMs: number,
+	onExited: (pid: number) => void,
+	identify: ProcessIdentityReader,
+): Map<number, string> {
+	let alive = stillMatchingIdentities(cwd, targets, hasProcess, identify);
+	for (const pid of targets.keys()) if (!alive.has(pid)) onExited(pid);
+	const deadline = Date.now() + timeoutMs;
+	while (alive.size > 0 && Date.now() < deadline) {
+		const previous = alive;
+		alive = stillMatchingIdentities(cwd, previous, hasProcess, identify);
+		for (const pid of previous.keys()) if (!alive.has(pid)) onExited(pid);
+		if (alive.size === 0) break;
+		const buf = new SharedArrayBuffer(4);
+		Atomics.wait(new Int32Array(buf), 0, 0, 50);
+	}
+	const previous = alive;
+	alive = stillMatchingIdentities(cwd, previous, hasProcess, identify);
+	for (const pid of previous.keys()) if (!alive.has(pid)) onExited(pid);
+	return alive;
+}
 
 /** Block synchronously until every PID is gone or `timeoutMs` elapses. Returns
  *  the still-alive survivors. Polls with `process.kill(pid, 0)` (signal 0 is
@@ -250,6 +310,9 @@ export function clearOrphanedPidFiles(cwd: string, killedPids: number[]): void {
 		const filePid = Number.parseInt(pidStr, 10);
 		if (!Number.isFinite(filePid)) continue;
 		if (!killedSet.has(filePid)) continue;
+		// A numeric PID can be reused between termination and cleanup. Never
+		// delete metadata (or its socket) while any process now owns that PID.
+		if (hasProcess(filePid)) continue;
 		try {
 			rmSync(pidPath, { force: true });
 		} catch {

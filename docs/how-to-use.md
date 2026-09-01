@@ -23,14 +23,17 @@ npm link               # exposes `interlinked` and `interlinked-hook` on PATH
 Then, in the project you want to guard:
 
 ```bash
-interlinked enable            # hooks + skills, auto-detecting every agent runner
-interlinked harness start     # start the local guard server
-interlinked status            # show what's configured
+interlinked                   # review posture, then install hooks + skills and start the daemon
+interlinked status            # show what is configured
 ```
 
-Restart or reload your agent so it picks up the new skills. `enable` is the
-canonical onboarding command — see the README's *Which onboarding command do
-I run?* section if you're deciding between `enable`, `setup`, and `init`.
+Restart or reload your agent so it picks up the new skills. Bare `interlinked`
+is the recommended human first run because its guided wizard shows the local
+enforcement posture before applying it. Use `interlinked enable` directly for
+automation or when you have already chosen the configuration; it auto-starts
+the daemon, so a second `harness start` is unnecessary. See the README's
+*Which onboarding command do I run?* section for the `setup` and `init`
+server/workspace variants.
 
 ## Where to go next
 
@@ -38,8 +41,9 @@ I run?* section if you're deciding between `enable`, `setup`, and `init`.
 |---|---|
 | [`../README.md`](../README.md) | Value proposition, full quick start, day-to-day commands |
 | [`harness.md`](./harness.md) | Harness architecture: guard evaluation, reservations, quality checks |
-| [`command-reference.md`](./command-reference.md) | Every command and flag |
-| [`generated/`](./generated/) | Auto-generated reference: guard rules, quality checks, structural checks, configuration |
+| [`command-reference.md`](./command-reference.md) | Command-family overview and links to the exact reference |
+| [`generated/cli-reference.md`](./generated/cli-reference.md) | Exact command and option surface, generated from the live CLI registry |
+| [`generated/`](./generated/) | Auto-generated guard, quality, structural, configuration, and metric references |
 
 Server-backed commands (`login`, `sync`, `tasks`, `inbox`) need an Interlinked
 MCP Server URL. Point the CLI at one with `interlinked enable --server <url>`

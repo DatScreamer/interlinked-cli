@@ -227,7 +227,19 @@ function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: RequestCo
 		openFeedStream(req, res, hosted);
 		return;
 	}
+	if (serveHtmlLens(res, path)) return;
 	sendStatus(res, HTTP.NOT_FOUND, "not found");
+}
+
+/** Extra HTML lenses ship as web assets next to index.html; only bare .html
+ *  names resolve, so this is not a general file server. True when served. */
+function serveHtmlLens(res: ServerResponse, path: string): boolean {
+	if (!/^\/[a-z-]+\.html$/.test(path)) return false;
+	const asset = resolveVizAsset(path.slice(1));
+	if (!asset || !existsSync(asset)) return false;
+	res.writeHead(HTTP.OK, { "Content-Type": contentTypeFor("index.html"), "Cache-Control": "no-store" });
+	res.end(readFileSync(asset));
+	return true;
 }
 
 function sendJson(res: ServerResponse, body: unknown): void {

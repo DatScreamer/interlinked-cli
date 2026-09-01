@@ -243,23 +243,56 @@ export function queryHarness(
 	event: JsonObject,
 	timeoutMs = 2000,
 ): Promise<JsonObject | null> {
+	return queryHarnessSocket(getSocketPath(cwd), event, timeoutMs);
+}
+
+/** One-line-JSON round-trip against an EXPLICIT socket path. RAW PROTOCOL
+ *  ONLY (review 2026-08-26, corrected twice): framed per-session daemons
+ *  speak the RPC frame envelope, not this hook-event line protocol — probe
+ *  them with `createDaemonClient(path).call("daemon.health", …)`, never with
+ *  this helper. The optional `signal` cancels the dial (socket destroyed,
+ *  resolves null) so a liveness race can cancel its losing probes. */
+export function queryHarnessSocket(
+	socketPath: string,
+	event: JsonObject,
+	timeoutMs = 2000,
+	signal?: AbortSignal,
+): Promise<JsonObject | null> {
 	return new Promise((resolve) => {
-		const socketPath = getSocketPath(cwd);
 		if (!existsSync(socketPath)) {
 			resolve(null);
 			return;
 		}
-
-		const timeout = setTimeout(() => {
-			try {
-				sock.destroy();
-			} catch (_) {
-				/* intentional: socket already destroyed or never connected */
-			}
+		if (signal?.aborted) {
 			resolve(null);
-		}, timeoutMs);
+			return;
+		}
+
+		// ONE settlement path (review pass 16): timer AND abort listener are
+		// cleaned on every exit, so a long-lived signal reused across calls
+		// cannot accumulate completed listeners.
+		let settled = false;
+		const onAbort = (): void => {
+			settle(null, true);
+		};
+		const settle = (value: JsonObject | null, destroySock: boolean): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			if (signal) signal.removeEventListener("abort", onAbort);
+			if (destroySock) {
+				try {
+					sock.destroy();
+				} catch (_) {
+					/* intentional: socket already destroyed or never connected */
+				}
+			}
+			resolve(value);
+		};
+		const timeout = setTimeout(() => settle(null, true), timeoutMs);
 
 		const sock = createConnection(socketPath);
+		if (signal) signal.addEventListener("abort", onAbort, { once: true });
 		let data = "";
 
 		sock.on("connect", () => {
@@ -269,29 +302,25 @@ export function queryHarness(
 			data += chunk.toString();
 			const nlIdx = data.indexOf("\n");
 			if (nlIdx !== -1) {
-				clearTimeout(timeout);
-				sock.destroy();
 				try {
-					resolve(JSON.parse(data.slice(0, nlIdx)));
+					settle(JSON.parse(data.slice(0, nlIdx)), true);
 				} catch {
-					resolve(null);
+					settle(null, true);
 				}
 			}
 		});
 		sock.on("error", () => {
-			clearTimeout(timeout);
-			resolve(null);
+			settle(null, false);
 		});
 		sock.on("close", () => {
-			clearTimeout(timeout);
 			if (data.trim()) {
 				try {
-					resolve(JSON.parse(data.trim()));
+					settle(JSON.parse(data.trim()), false);
 				} catch {
-					resolve(null);
+					settle(null, false);
 				}
 			} else {
-				resolve(null);
+				settle(null, false);
 			}
 		});
 	});

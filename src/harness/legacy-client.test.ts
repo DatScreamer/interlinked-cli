@@ -407,6 +407,18 @@ describe("toLegacyHarnessEvent base mapping", () => {
 		expect("method" in legacy).toBe(false);
 	});
 
+	it("carries the request-owned PostTool warning delivery token into the raw event", () => {
+		const legacy = toLegacyHarnessEvent(
+			makeEvent({
+				post_delivery_token: "delivery-token-0001",
+				post_delivery_pid: 4242,
+				phase: "post-tool",
+			}),
+		);
+		expect(legacy.post_delivery_token).toBe("delivery-token-0001");
+		expect(legacy.post_delivery_pid).toBe(4242);
+	});
+
 	it("falls back to a {} raw object when event.raw is not a JSON object", () => {
 		const ev = makeEvent({
 			raw: "this is a string, not an object",

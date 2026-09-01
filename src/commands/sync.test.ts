@@ -19,13 +19,23 @@
 // Fake timers drive the retry-backoff sleeps without wall-clock waits.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LocalActivityEvent, UnsyncedEvents } from "../lib/local-activity.js";
+import type {
+	ActivitySyncBasis,
+	LocalActivityEvent,
+	UnsyncedEvents,
+} from "../lib/local-activity.js";
 import { nonNull } from "../lib/non-null.js";
 import { fmtTime } from "./sync-format.js";
 
 // ---- ../lib/local-activity mock ---------------------------------------
 const mockGetLocalStats = vi.fn<() => { pending_sync: number } & Record<string, unknown>>();
-const mockGetUnsyncedEvents = vi.fn<(limit?: number) => UnsyncedEvents>();
+const mockGetUnsyncedEvents = vi.fn<
+	(
+		limit?: number,
+		cwd?: string,
+		range?: { startOffset?: number; endExclusive?: number },
+	) => UnsyncedEvents
+>();
 const mockReadSyncState = vi.fn<() => {
 	synced_through_bytes: number;
 	last_sync_at: string;
@@ -33,10 +43,24 @@ const mockReadSyncState = vi.fn<() => {
 }>();
 const mockUpdateSyncState = vi.fn<(offset: number, summary?: unknown) => void>();
 const mockAppendSyncError = vi.fn<(entry: Record<string, unknown>) => void>();
+const mockCaptureActivitySyncBasis = vi.fn<(cursor: number) => ActivitySyncBasis>();
+const mockCheckpointSyncState = vi.fn<
+	(checkpoint: { nextCursor: number; summary?: unknown }) => void
+>();
 
 vi.mock("../lib/local-activity.js", () => ({
-	getLocalStats: () => mockGetLocalStats(),
-	getUnsyncedEvents: (limit?: number) => mockGetUnsyncedEvents(limit),
+	assertActivitySyncCursor: (cursor: number, fileSize: number) => {
+		if (cursor > fileSize) throw new Error("activity sync cursor basis changed");
+	},
+	captureActivitySyncBasis: (cursor: number) => mockCaptureActivitySyncBasis(cursor),
+	checkpointSyncState: (checkpoint: { nextCursor: number; summary?: unknown }) =>
+		mockCheckpointSyncState(checkpoint),
+	getLocalStats: () => ({ file_size_bytes: Number.MAX_SAFE_INTEGER, ...mockGetLocalStats() }),
+	getUnsyncedEvents: (
+		limit?: number,
+		cwd?: string,
+		range?: { startOffset?: number; endExclusive?: number },
+	) => mockGetUnsyncedEvents(limit, cwd, range),
 	readSyncState: () => mockReadSyncState(),
 	updateSyncState: (offset: number, summary?: unknown) => mockUpdateSyncState(offset, summary),
 	appendSyncError: (entry: Record<string, unknown>) => mockAppendSyncError(entry),
@@ -77,6 +101,8 @@ vi.mock("../lib/secrets.js", () => ({
 import { syncCommand } from "./sync.js";
 
 // --- capture helpers ---------------------------------------------------
+
+const SYNC_RESPONSE_BODY_LIMIT = 256 * 1024;
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -119,33 +145,24 @@ function ev(over: Partial<LocalActivityEvent> = {}): LocalActivityEvent {
 }
 
 /** A fetch Response stub for the ok-with-json path. */
-function okRes(body: { accepted?: number; skipped?: number; errors?: number }): Response {
-	return {
-		ok: true,
+function okRes(body: unknown): Response {
+	return new Response(JSON.stringify(body), {
 		status: 200,
-		json: async () => body,
-		text: async () => JSON.stringify(body),
-	} as unknown as Response;
+		headers: { "content-type": "application/json" },
+	});
 }
 /** A fetch Response stub for a non-ok status with a text body. */
 function failRes(status: number, text = "boom"): Response {
-	return {
-		ok: false,
-		status,
-		json: async () => ({}),
-		text: async () => text,
-	} as unknown as Response;
+	return new Response(text, { status });
 }
-/** A non-ok Response whose `.text()` rejects (exercises the `.catch(() => "")`). */
+/** A non-ok Response whose stream rejects while the body is read. */
 function failResTextThrows(status: number): Response {
-	return {
-		ok: false,
-		status,
-		json: async () => ({}),
-		text: async () => {
-			throw new Error("body read failed");
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.error(new Error("body read failed"));
 		},
-	} as unknown as Response;
+	});
+	return new Response(body, { status });
 }
 
 beforeEach(() => {
@@ -159,6 +176,13 @@ beforeEach(() => {
 	mockGetLocalStats.mockReturnValue({ pending_sync: 1 });
 	mockGetUnsyncedEvents.mockReturnValue({ events: [ev()], newOffset: 4096 });
 	mockReadSyncState.mockReturnValue({ synced_through_bytes: 0, last_sync_at: "" });
+	mockCaptureActivitySyncBasis.mockImplementation(() => ({
+		identity: { dev: "test", ino: "activity" },
+		endExclusive: Number.MAX_SAFE_INTEGER,
+	}));
+	mockCheckpointSyncState.mockImplementation((checkpoint) =>
+		mockUpdateSyncState(checkpoint.nextCursor, checkpoint.summary),
+	);
 	mockResolveConfig.mockReturnValue({
 		server_url: "https://api.example.com",
 		workspace_id: "ws-123",
@@ -190,6 +214,19 @@ afterEach(() => {
 // =======================================================================
 
 describe("syncCommand — up-to-date short-circuits", () => {
+	it("rejects an old-basis cursor beyond EOF instead of reporting up to date", async () => {
+		mockGetLocalStats.mockReturnValue({ pending_sync: 0, file_size_bytes: 10 });
+		mockReadSyncState.mockReturnValue({ synced_through_bytes: 11, last_sync_at: "x" });
+
+		await syncCommand({ json: true });
+
+		expect(JSON.parse(stderrConsole())).toMatchObject({
+			error: expect.stringContaining("activity sync cursor basis changed"),
+		});
+		expect(fetch).not.toHaveBeenCalled();
+		expect(mockGetUnsyncedEvents).not.toHaveBeenCalled();
+	});
+
 	it("pending_sync === 0 prints 'Already up to date' and skips fetch (normal)", async () => {
 		mockGetLocalStats.mockReturnValue({ pending_sync: 0 });
 		await syncCommand({});
@@ -334,14 +371,24 @@ describe("syncCommand — dry-run", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	it("--limit is parsed and forwarded to getUnsyncedEvents", async () => {
+	it("--limit bounds each dry-run page and preserves the frozen byte range", async () => {
 		await syncCommand({ dryRun: true, limit: "50" });
-		expect(mockGetUnsyncedEvents).toHaveBeenCalledWith(50);
+		expect(mockGetUnsyncedEvents).toHaveBeenNthCalledWith(
+			1,
+			50,
+			undefined,
+			expect.objectContaining({ startOffset: 0 }),
+		);
 	});
 
-	it("omitting --limit forwards undefined (no cap)", async () => {
+	it("omitting --limit still caps each materialized page at BATCH_SIZE", async () => {
 		await syncCommand({ dryRun: true });
-		expect(mockGetUnsyncedEvents).toHaveBeenCalledWith(undefined);
+		expect(mockGetUnsyncedEvents).toHaveBeenNthCalledWith(
+			1,
+			100,
+			undefined,
+			expect.objectContaining({ startOffset: 0 }),
+		);
 	});
 });
 
@@ -405,6 +452,20 @@ describe("syncCommand — local-dev workspace guard", () => {
 // =======================================================================
 
 describe("syncCommand — successful sync", () => {
+	it("does not report success when the generation-checked checkpoint is refused", async () => {
+		mockCheckpointSyncState.mockImplementation(() => {
+			throw new Error("activity sync cursor basis changed: activity log was replaced");
+		});
+
+		await syncCommand({ json: true });
+
+		expect(JSON.parse(stderrConsole())).toMatchObject({
+			error: expect.stringContaining("activity log was replaced"),
+		});
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+	});
+
 	it("sends Bearer auth + workspace_uuid to prod and advances the cursor", async () => {
 		await syncCommand({});
 		expect(fetch).toHaveBeenCalledTimes(1);
@@ -541,7 +602,10 @@ describe("syncCommand — successful sync", () => {
 	it("accumulates accepted/skipped across multiple batches", async () => {
 		const events = Array.from({ length: 150 }, (_, i) => ev({ session: `s${i}` }));
 		mockGetLocalStats.mockReturnValue({ pending_sync: 150 });
-		mockGetUnsyncedEvents.mockReturnValue({ events, newOffset: 8000 });
+		mockGetUnsyncedEvents
+			.mockReturnValueOnce({ events: events.slice(0, 100), newOffset: 5000 })
+			.mockReturnValueOnce({ events: events.slice(100), newOffset: 8000 })
+			.mockReturnValue({ events: [], newOffset: 8000 });
 		const fetchFn = fetch as unknown as ReturnType<typeof vi.fn>;
 		fetchFn
 			.mockResolvedValueOnce(okRes({ accepted: 100, skipped: 0, errors: 0 }))
@@ -552,16 +616,22 @@ describe("syncCommand — successful sync", () => {
 		expect(j.accepted).toBe(140);
 		expect(j.skipped).toBe(10);
 		expect(j.batches_sent).toBe(2);
-		expect(mockUpdateSyncState).toHaveBeenCalledWith(8000, expect.any(Object));
+		expect(mockUpdateSyncState).toHaveBeenNthCalledWith(1, 5000, expect.any(Object));
+		expect(mockUpdateSyncState).toHaveBeenNthCalledWith(2, 8000, expect.any(Object));
 	});
 
-	it("missing accepted/skipped/errors in response default to 0 (|| branch)", async () => {
+	it("an empty success receipt fails closed without advancing the cursor", async () => {
 		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(okRes({}));
 		await syncCommand({ json: true });
 		const j = jsonOut();
 		expect(j.accepted).toBe(0);
 		expect(j.skipped).toBe(0);
-		expect(j.errors).toBe(0);
+		expect(j.errors).toBe(1);
+		expect(j.batches_sent).toBe(0);
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+		expect(mockAppendSyncError).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "manual_sync_receipt", transient: false }),
+		);
 	});
 
 	it("JSON success with no workspace_id reports workspace_id: null (|| null arm)", async () => {
@@ -738,7 +808,7 @@ describe("syncCommand — egress scrubbing", () => {
 		mockScrubResult = { found: 3, types: ["aws_key", "email"] };
 		mockGetUnsyncedEvents.mockReturnValue({
 			events: [ev(), ev({ session: "s2" })],
-			newOffset: 1,
+			newOffset: 100,
 		});
 		mockGetLocalStats.mockReturnValue({ pending_sync: 2 });
 		await syncCommand({});
@@ -794,6 +864,212 @@ describe("syncCommand — request timeout wiring", () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(capturedSignal?.aborted).toBe(false);
 	});
+
+	it("keeps the timeout active while an endless body is read after headers", async () => {
+		vi.useFakeTimers();
+		let capturedSignal: AbortSignal | undefined;
+		const fetchFn = vi.fn<typeof fetch>();
+		fetchFn.mockImplementationOnce(async (_input, init) => {
+			capturedSignal = init?.signal ?? undefined;
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					capturedSignal?.addEventListener("abort", () => {
+						controller.error(new DOMException("request timed out", "AbortError"));
+					});
+				},
+			});
+			return new Response(body, { status: 200 });
+		});
+		fetchFn.mockResolvedValueOnce(okRes({ accepted: 1, skipped: 0, errors: 0 }));
+		vi.stubGlobal("fetch", fetchFn);
+
+		const run = syncCommand({ json: true });
+		await vi.advanceTimersByTimeAsync(9999);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(capturedSignal?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(capturedSignal?.aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(250);
+		await run;
+
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+		expect(jsonOut()).toMatchObject({ accepted: 1, errors: 0, retries: 1 });
+		expect(mockAppendSyncError).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "manual_sync_timeout", transient: true }),
+		);
+	});
+});
+
+describe("syncCommand — bounded response bodies", () => {
+	it("accepts an exact-limit success receipt", async () => {
+		const receipt = JSON.stringify({ accepted: 1, skipped: 0, errors: 0 });
+		const exactLimitBody = receipt + " ".repeat(SYNC_RESPONSE_BODY_LIMIT - receipt.length);
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			new Response(exactLimitBody, { status: 200 }),
+		);
+
+		await syncCommand({ json: true });
+
+		expect(jsonOut()).toMatchObject({ accepted: 1, errors: 0, batches_sent: 1 });
+		expect(mockUpdateSyncState).toHaveBeenCalledWith(4096, expect.any(Object));
+	});
+
+	it("cancels an oversized streamed success body and preserves the cursor", async () => {
+		let pulls = 0;
+		let cancelled = false;
+		const block = new Uint8Array(128 * 1024).fill(97);
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulls++;
+				controller.enqueue(block);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			new Response(body, { status: 200 }),
+		);
+
+		await syncCommand({ json: true });
+
+		expect(cancelled).toBe(true);
+		expect(pulls).toBeLessThanOrEqual(4);
+		expect(jsonOut()).toMatchObject({ accepted: 0, errors: 1, batches_sent: 0 });
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+		expect(mockAppendSyncError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				stage: "manual_sync_receipt",
+				message: expect.stringContaining(`exceeded ${SYNC_RESPONSE_BODY_LIMIT} bytes`),
+			}),
+		);
+	});
+
+	it("rejects an oversized error body from Content-Length without buffering it", async () => {
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			new Response("server-controlled detail", {
+				status: 400,
+				headers: { "content-length": String(SYNC_RESPONSE_BODY_LIMIT + 1) },
+			}),
+		);
+
+		await syncCommand({});
+
+		expect(processStderr()).toContain(`response body exceeded ${SYNC_RESPONSE_BODY_LIMIT} bytes`);
+		expect(mockAppendSyncError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				stage: "manual_sync_http",
+				status: 400,
+				message: expect.stringContaining(`exceeded ${SYNC_RESPONSE_BODY_LIMIT} bytes`),
+			}),
+		);
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+	});
+});
+
+describe("syncCommand — bounded cumulative summary", () => {
+	const uniqueEvents = 300;
+
+	function scriptUniqueRun(): void {
+		mockGetLocalStats.mockReturnValue({ pending_sync: uniqueEvents });
+		mockCaptureActivitySyncBasis.mockReturnValue({
+			identity: { dev: "test", ino: "activity" },
+			endExclusive: uniqueEvents,
+		});
+		mockGetUnsyncedEvents.mockImplementation((limit, _cwd, range) => {
+			const start = range?.startOffset ?? 0;
+			const count = Math.min(limit ?? 100, uniqueEvents - start);
+			const events = Array.from({ length: count }, (_, offset) => {
+				const id = start + offset;
+				return ev({
+					type: `type-${id}`,
+					agent: `agent-${id}`,
+					tool: `tool-${id}`,
+					session: `session-${id}`,
+				});
+			});
+			return { events, newOffset: start + count };
+		});
+		// SAFETY: beforeEach installs fetch as a Vitest mock for every test.
+		const fetchFn = fetch as unknown as ReturnType<typeof vi.fn>;
+		fetchFn.mockImplementation(
+			async (_input: RequestInfo | URL, init?: RequestInit) => {
+				// SAFETY: sync serializes this request body from buildBatchBody immediately before fetch.
+				const sent = JSON.parse(String(init?.body)) as { events: unknown[] };
+				return okRes({ accepted: sent.events.length, skipped: 0, errors: 0 });
+			},
+		);
+	}
+
+	it("marks an ordinary bounded summary complete", async () => {
+		await syncCommand({ json: true });
+
+		const result = jsonOut();
+		expect(result.breakdown_complete).toBe(true);
+		expect(result.summary_truncated).toBeNull();
+	});
+
+	it("retains bounded keys across many pages while preserving totals and cursor", async () => {
+		scriptUniqueRun();
+
+		await syncCommand({ json: true });
+
+		const result = jsonOut();
+		// SAFETY: the sync JSON contract always emits breakdown as an object.
+		const breakdown = result.breakdown as Record<string, unknown>;
+		// SAFETY: breakdown.by_type is the serialized bounded count dictionary.
+		const byType = breakdown.by_type as Record<string, number>;
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(result.accepted).toBe(uniqueEvents);
+		expect(Object.keys(byType)).toHaveLength(256);
+		expect(breakdown.sessions).toBe(256);
+		expect(mockUpdateSyncState).toHaveBeenLastCalledWith(uniqueEvents, undefined);
+	});
+
+	it("reports omitted occurrences rather than presenting the bounded summary as exact", async () => {
+		scriptUniqueRun();
+
+		await syncCommand({ json: true });
+
+		const result = jsonOut();
+		expect(result.breakdown_complete).toBe(false);
+		expect(result.summary_truncated).toEqual({
+			exact: false,
+			retained_key_limit: 256,
+			omitted_occurrences: { by_type: 44, by_agent: 44, by_tool: 44, sessions: 44 },
+		});
+	});
+
+	it("labels retained counts and omissions in normal output", async () => {
+		scriptUniqueRun();
+
+		await syncCommand({});
+
+		expect(stdout()).toContain("Sessions (retained)");
+		expect(stdout()).toContain("Summary");
+		expect(stdout()).toContain("partial (bounded memory)");
+		expect(stdout()).toContain(
+			"Omitted occurrences — event types: 44, agents: 44, tools: 44, sessions: 44",
+		);
+	});
+
+	it("omits overlong summary keys with explicit accounting", async () => {
+		const longKey = "x".repeat(513);
+		mockGetUnsyncedEvents.mockReturnValue({
+			events: [ev({ type: longKey, agent: longKey, tool: longKey, session: longKey })],
+			newOffset: 4096,
+		});
+
+		await syncCommand({ json: true });
+
+		const result = jsonOut();
+		// SAFETY: the sync JSON contract always emits breakdown as an object.
+		const breakdown = result.breakdown as Record<string, unknown>;
+		expect(breakdown).toMatchObject({ by_type: {}, by_agent: {}, top_tools: [], sessions: 0 });
+		expect(result.summary_truncated).toMatchObject({
+			omitted_occurrences: { by_type: 1, by_agent: 1, by_tool: 1, sessions: 1 },
+		});
+	});
 });
 
 // =======================================================================
@@ -832,7 +1108,7 @@ describe("syncCommand — fatal (non-transient) HTTP error", () => {
 		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(failRes(400, "bad payload"));
 		mockGetUnsyncedEvents.mockReturnValue({
 			events: [ev(), ev({ session: "s2" })],
-			newOffset: 1,
+			newOffset: 100,
 		});
 		mockGetLocalStats.mockReturnValue({ pending_sync: 2 });
 		mockReadSyncState.mockReturnValue({ synced_through_bytes: 77, last_sync_at: "x" });
@@ -857,8 +1133,8 @@ describe("syncCommand — fatal (non-transient) HTTP error", () => {
 		await syncCommand({});
 		expect(processStderr()).toContain("Batch 1 failed (400)");
 		expect(processStderr()).toContain("bad payload");
-		// errors>0 -> the "Cursor not advanced" advisory shows
-		expect(stdout()).toContain("Cursor not advanced due to errors");
+		// errors>0 -> the failed page remains pending for the next run
+		expect(stdout()).toContain("Failed batch remains pending");
 		expect(stdout()).toContain("Errors");
 		expect(stdout()).not.toContain("Stryker was here");
 	});
@@ -871,18 +1147,18 @@ describe("syncCommand — fatal (non-transient) HTTP error", () => {
 		expect(processStderr()).not.toContain("y".repeat(101));
 	});
 
-	it("falls back to an empty error body when res.text() rejects (.catch arm)", async () => {
-		// 400 (non-transient) whose body read throws -> errBody === "" via .catch.
+	it("reports a bounded read failure when a non-success body stream rejects", async () => {
 		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(failResTextThrows(400));
 		await syncCommand({});
-		// The failure line still prints, with an EMPTY body suffix (not the
-		// .catch() fallback value leaking any other string).
-		expect(processStderr()).toContain("Batch 1 failed (400): \n");
+		expect(processStderr()).toContain(
+			"Batch 1 failed (400): [response body could not be read: body read failed]",
+		);
 		expect(mockAppendSyncError).toHaveBeenCalledWith(
 			expect.objectContaining({
 				stage: "manual_sync_http",
 				status: 400,
-				message: "Batch 1 failed with status 400: ",
+				message:
+					"Batch 1 failed with status 400: [response body could not be read: body read failed]",
 			}),
 		);
 	});
@@ -1037,9 +1313,9 @@ describe("syncCommand — network throw / timeout", () => {
 		await vi.runAllTimersAsync();
 		await p;
 		const j = jsonOut();
-		// retriesUsed++ fires on each of the 2 network-error attempts (=2), plus
-		// the attempt-3 success bump `delta.retriesUsed += attempt - 1` (+=2) => 4.
-		expect(j.retries).toBe(4);
+		// Exactly two retry attempts were scheduled; eventual success does not
+		// count either retry a second time.
+		expect(j.retries).toBe(2);
 		expect(j.accepted).toBe(1);
 	});
 
@@ -1119,7 +1395,10 @@ describe("syncCommand — batch loop boundary and slicing", () => {
 	it("splits into correctly-sized batches (100 then 50), not the whole array twice", async () => {
 		const events = Array.from({ length: 150 }, (_, i) => ev({ session: `s${i}` }));
 		mockGetLocalStats.mockReturnValue({ pending_sync: 150 });
-		mockGetUnsyncedEvents.mockReturnValue({ events, newOffset: 8000 });
+		mockGetUnsyncedEvents
+			.mockReturnValueOnce({ events: events.slice(0, 100), newOffset: 5000 })
+			.mockReturnValueOnce({ events: events.slice(100), newOffset: 8000 })
+			.mockReturnValue({ events: [], newOffset: 8000 });
 		const fetchFn = fetch as unknown as ReturnType<typeof vi.fn>;
 		fetchFn
 			.mockResolvedValueOnce(okRes({ accepted: 100, skipped: 0, errors: 0 }))
@@ -1134,13 +1413,17 @@ describe("syncCommand — batch loop boundary and slicing", () => {
 	it("uses 1-based sequential batch numbers in failure reporting (Math.floor(i/BATCH_SIZE)+1)", async () => {
 		const events = Array.from({ length: 150 }, (_, i) => ev({ session: `s${i}` }));
 		mockGetLocalStats.mockReturnValue({ pending_sync: 150 });
-		mockGetUnsyncedEvents.mockReturnValue({ events, newOffset: 8000 });
+		mockGetUnsyncedEvents
+			.mockReturnValueOnce({ events: events.slice(0, 100), newOffset: 5000 })
+			.mockReturnValueOnce({ events: events.slice(100), newOffset: 8000 });
 		const fetchFn = fetch as unknown as ReturnType<typeof vi.fn>;
 		fetchFn
 			.mockResolvedValueOnce(okRes({ accepted: 100, skipped: 0, errors: 0 }))
 			.mockResolvedValueOnce(failRes(400, "bad"));
 		await syncCommand({});
 		expect(processStderr()).toContain("Batch 2 failed (400)");
+		expect(mockUpdateSyncState).toHaveBeenCalledTimes(1);
+		expect(mockUpdateSyncState).toHaveBeenCalledWith(5000, expect.any(Object));
 	});
 });
 
@@ -1203,8 +1486,8 @@ describe("syncCommand — success output exact rendering", () => {
 		await vi.runAllTimersAsync();
 		await p;
 		const out = stdout();
-		expect(out).toContain("Retries");
-		expect(out).toContain("2");
+		const retriesLine = out.split("\n").find((line) => line.includes("Retries"));
+		expect(retriesLine).toContain("1");
 	});
 
 	it("renders the actual formatted earliest/latest timestamps on the Time Range line", async () => {
@@ -1341,33 +1624,65 @@ describe("syncCommand — status-code boundary and null response body", () => {
 		expect(j.batches_sent).toBe(1);
 	});
 
-	it("a null JSON response body is handled without throwing (optional-chaining on result fields)", async () => {
-		const nullBodyRes = {
-			ok: true,
+	it("a null JSON response body fails closed without advancing the cursor", async () => {
+		const nullBodyRes = new Response("null", {
 			status: 200,
-			json: async () => null,
-			text: async () => "null",
-		} as unknown as Response;
+			headers: { "content-type": "application/json" },
+		});
 		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(nullBodyRes);
 		await syncCommand({ json: true });
 		expect(fetch).toHaveBeenCalledTimes(1);
 		const j = jsonOut();
 		expect(j.accepted).toBe(0);
 		expect(j.skipped).toBe(0);
-		expect(j.errors).toBe(0);
-		expect(j.batches_sent).toBe(1);
-		expect(mockAppendSyncError).not.toHaveBeenCalled();
+		expect(j.errors).toBe(1);
+		expect(j.batches_sent).toBe(0);
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+		expect(mockAppendSyncError).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "manual_sync_receipt" }),
+		);
+	});
+
+	it("a malformed success receipt fails closed without advancing the cursor", async () => {
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			okRes({ accepted: "1", skipped: 0, errors: 0 }),
+		);
+		await syncCommand({ json: true });
+		expect(jsonOut()).toMatchObject({ accepted: 0, skipped: 0, errors: 1, batches_sent: 0 });
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+	});
+
+	it("an under-accounted success receipt fails closed", async () => {
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			okRes({ accepted: 0, skipped: 0, errors: 0 }),
+		);
+		await syncCommand({ json: true });
+		expect(jsonOut()).toMatchObject({ errors: 1, batches_sent: 0 });
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
+	});
+
+	it("an exact accepted-plus-skipped receipt permits the checkpoint", async () => {
+		mockGetLocalStats.mockReturnValue({ pending_sync: 2 });
+		mockGetUnsyncedEvents.mockReturnValue({ events: [ev(), ev()], newOffset: 200 });
+		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+			okRes({ accepted: 1, skipped: 1, errors: 0 }),
+		);
+		await syncCommand({ json: true });
+		expect(jsonOut()).toMatchObject({ accepted: 1, skipped: 1, errors: 0, batches_sent: 1 });
+		expect(mockUpdateSyncState).toHaveBeenCalledWith(200, expect.any(Object));
 	});
 });
 
 describe("syncCommand — exact error/retry accounting", () => {
-	it("errors from a successful response body accumulate with +=, not -=", async () => {
+	it("a success receipt reporting errors fails the whole submitted page", async () => {
 		(fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
 			okRes({ accepted: 1, skipped: 0, errors: 2 }),
 		);
 		await syncCommand({ json: true });
 		const j = jsonOut();
-		expect(j.errors).toBe(2);
+		expect(j.errors).toBe(1);
+		expect(j.batches_sent).toBe(0);
+		expect(mockUpdateSyncState).not.toHaveBeenCalled();
 	});
 
 	it("retries counted exactly across a transient-then-success batch (503 -> ok)", async () => {
@@ -1380,9 +1695,8 @@ describe("syncCommand — exact error/retry accounting", () => {
 		await vi.runAllTimersAsync();
 		await p;
 		const j = jsonOut();
-		// retriesUsed++ on the retry (=1) then += (attempt-1)=1 on the attempt-2
-		// success => exactly 2, not 0 or 1.
-		expect(j.retries).toBe(2);
+		// One failed attempt scheduled one retry; success does not double count it.
+		expect(j.retries).toBe(1);
 	});
 });
 

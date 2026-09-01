@@ -1,15 +1,16 @@
 ---
 name: interlinked-verify
-description: "Run `interlinked verify`, understand the PostToolUse quality checks, and land multi-file edits through the content gate. Load this when you want to check your changes (`interlinked verify` — the on-demand whole-project check run), when a `pre_block` check refused an edit, when you need to land a cross-file refactor without transient tsc errors (`interlinked write --batch` / `multi-edit` / `verify-changeset` and the exporter-before-importers rule), when deciding whether a finding is default-gate or advisory, or when you need to know where to put probe/scratch scripts (`interlinked scratch`). Note: `interlinked verify` reports findings but exits 0 — it is not a pass/fail gate."
+description: "Run `interlinked verify`, understand the PostToolUse quality checks, and land multi-file edits through the content gate. Load this when you want to check your changes (`interlinked verify` — the on-demand whole-project check run), when a `pre_block` check refused an edit, when you need to land a cross-file refactor without transient tsc errors (`interlinked write --batch` / `multi-edit` / `verify-changeset` and the exporter-before-importers rule), when deciding whether a finding is default-gate or advisory, or when you need to know where to put probe/scratch scripts (`interlinked scratch`). Verify reports ordinary findings with exit 0; an unavailable/deferred run exits nonzero because no verdict exists."
 ---
 
 # interlinked-verify — check your work & land edits through the gates
 
 Interlinked gates edits at **three moments**, and they run different check sets:
-- **PreToolUse content gate** (real Edit/Write, and `interlinked write`/`verify-changeset`):
-  runs `pre_block` registry checks → **biome** overlay → **tsc** overlay. Blocking findings stop
-  the write. **No coverage/complexity/`post` checks here.** (`interlinked multi-edit` is the
-  exception — it runs **only biome + tsc**, not `pre_block`; see the ordering section.)
+- **PreToolUse content gate**: real agent Edit/Write calls run deterministic `pre_block` checks
+  without synchronously launching biome/tsc on the daemon event loop; those external overlays
+  are reported as **NOT CHECKED** and run asynchronously after the write. Transactional CLI
+  paths (`interlinked write` / `verify-changeset`) still run `pre_block → biome → tsc` and fail
+  closed. (`interlinked multi-edit` runs **only biome + tsc**, not `pre_block`; see below.)
 - **Other PreToolUse guards** (real Edit/Write only): function tokens, coverage, cyclomatic, CRAP, baseline —
   see **interlinked-quality-gates**; package/allowlist — see **interlinked-supply-chain**.
 - **PostToolUse** (after the write lands): external tools (tsc/biome/eslint/semgrep/gitleaks/…)
@@ -52,7 +53,22 @@ a **review tool, expect noise, not a gate**.
 > pass/fail gate — do not `&&`-chain on its exit status. To gate programmatically, parse
 > `--json`, or use `interlinked write` / `verify-changeset` (which **do** exit nonzero on
 > blocking findings). (Exceptions that *do* exit nonzero: usage errors, and
-> `--structure-only` / `--adoption-gate`.)
+> `--structure-only` / `--adoption-gate`, or a deferred/unavailable run that produced no
+> verification verdict.)
+
+Whole-project heavyweight work is admitted once per canonical project across CLI and agent
+processes. If another verify/check/test batch already owns that lane, verify does not queue or
+start a second memory-heavy scan: it prints `verify deferred`, states that no verdict was
+produced, and exits 1. Retry after the active project run finishes. Different project roots use
+independent lanes, and the compiler has a separate nested lease so `--only tsc` can run while
+verify owns the heavyweight lane. `--only <tool>` really runs only that external tool; it skips
+the inline code-quality census rather than retaining the whole-project scan before the requested
+tool.
+
+Lease ownership binds the PID to an OS-derived process-start identity, so a live unrelated
+process that reused the same PID cannot keep compiler or heavyweight capacity busy. Legacy
+lockfiles without that identity remain compatible while fresh, but expire after 24 hours — well
+beyond every minute-scale workload timeout — rather than starving a project indefinitely.
 
 There is **no** `--file`/`--changed`/`--staged` flag — verify always walks the whole discovered
 set (or `target`/`--subdir`). Diff-awareness lives at the *edit-time* gate, not in verify.
@@ -124,10 +140,76 @@ Two newer TS type-discipline advisories, both AST-parsed and both `[heuristic]`:
   ternary trick for omitting a field. The idiomatic guarded passthrough
   `guard ? { key: guard } : {}` is exempt.
 
-Both degrade to silence when `typescript` is absent. Every finding is tagged `[proven]` (a real
-tool ran it — fix it) or `[heuristic]` (regex/AST shape — evaluate it). See
-**interlinked-harness** for the suppression grammar
-(`// interlinked-ignore: <check> — reason` / `verify-suppressions.json`).
+Every finding is tagged `[proven]` (a real tool ran it — fix it) or
+`[heuristic]` (regex/AST shape — evaluate it). See **interlinked-harness** for
+the suppression grammar (`// interlinked-ignore: <check> — reason` /
+`verify-suppressions.json`).
+
+**Checker availability is a first-class state (2026-08-27).** The tsc overlay
+returns one of three outcomes: `ok` (it RAN — empty findings = checked clean),
+`skipped` (it deliberately did not apply: non-TS file or operator `mode: off` —
+nothing was verified, and nothing claims to be), or `unavailable` (it SHOULD
+have run and could not: sidecar spawn failure, timeout, cooldown, or per-project
+compiler backpressure). Unavailable
+is never clean: transactional paths — `interlinked write` (single AND
+`--batch`), `multi-edit`, `verify-changeset` — ABORT with a
+`tsc-overlay-unavailable` failure and leave files untouched; the ordinary
+single-edit hook path does not launch the sidecar at all. It surfaces a NOT CHECKED warning,
+and the admitted PostToolUse path checks the on-disk result asynchronously.
+
+Full-project TypeScript children are serialized per project across concurrent
+hook and CLI processes. Heavy verify/check/test/audit/sweep work uses one
+project-scoped cross-process lease and does not queue: contention is an explicit
+deferred/no-verdict result. Each accepted request runs after its own edit is on
+disk; results are never shared across edit generations.
+A multi-file PostToolUse request also owns one external-tool batch for its
+entire ChangeSet: project-capable compilers, linters, and security scanners run
+at most once, then their findings are attributed back to the touched files.
+Cheap inline checks still run once per file. A same-ecosystem dependency audit
+runs once for the ChangeSet, and TypeScript/Vitest affected tests run once with
+the union of changed source paths. Mixed-language affected-test sets,
+multi-ecosystem audits, file/tool-cap overflow, a file-only external runner, or
+a batch denied by capacity produce one aggregate `NOT CHECKED` result for the
+request instead of N subprocesses or N warnings. Existing-file TypeScript
+diagnostics from the batch warn without claiming they were introduced: only a
+request-proven new file has an empty compiler baseline; the exact per-edit
+introduction decision remains the PreToolUse overlay's responsibility.
+When several PostToolUse checks defer for one edited file, the model-visible
+output is one `[interlinked:checks-deferred]` NOT CHECKED warning with the
+individual reasons; structured `check_results` still retain every deferral.
+`checks_ran` lists only checks that completed with a real verdict; attempted
+checks that throw or defer are recorded under a `deferred_<check>` timing
+boundary instead of being reported as completed.
+The same deferral is not repeated by the project-wide sweep, and a deferred
+event never receives an `all clean` summary. Re-editing a file cannot repair
+checker capacity, so operational deferrals also never become a
+`persistent_warning_escalation` source error, recurrence signal, or
+feedback-effectiveness warning/resolution. They remain structured operational
+telemetry, and the NOT CHECKED notice remains visible until a real verdict
+exists. Retry every named check before claiming the edit is verified.
+
+PostTool warning delivery is request-owned. Each daemon check pass writes its
+own tokenized active/ready record under `.interlinked/quality-warning-spool/`;
+both installed hook runtimes acknowledge a synchronous result before showing
+it, while a result that finishes after the hook timeout is atomically claimed
+and shown once on that same session's next PreToolUse. The originating hook's
+PID preserves its first-delivery right without making another hook wait.
+Parallel agents cannot overwrite or unlink one another's work, clean results
+create no replay record, and a PreToolUse never force-removes a live check
+marker. A PostTool pipeline exception publishes an explicit `NOT CHECKED`
+diagnostic instead of an empty record, and an abandoned active-only marker is
+claimed only after its hook process is gone (or the marker expires); live
+markers are preserved. The old shared `pending-quality-warnings.json` file is read only as a
+one-time rolling-upgrade migration path; when request-owned evidence exists,
+unscoped legacy text is discarded rather than mixed into another request.
+
+Because the synchronous overlay path cannot wait without blocking the daemon
+from reaping an async compiler, contention returns `unavailable` immediately;
+retry after the active check finishes instead of treating the edit as verified.
+The synchronous export-ripple advisory follows the same rule: it reports an
+explicit `export_ripple_compilation_deferred` info finding and launches no
+second compiler while same-project compiler work is active.
+Different project roots remain independent and may compile concurrently.
 
 ## Landing multi-file edits (the ordering rule)
 Three agent-callable commands gate proposed content **without** running function-token/coverage/complexity/post
@@ -195,8 +277,10 @@ Convention: one date-prefixed subdir per effort (`scratch/2026-07-19-<slug>/`). 
 - Batch gate ≠ full edit gate — `write`/`multi-edit`/`verify-changeset` skip function tokens,
   coverage, cyclomatic, CRAP, and `post` checks. A batch that passes can still trip those on the next real
   Edit, and verify will still flag `post` findings.
-- New files skip the biome/tsc overlay (no baseline to diff) but run `pre_block` strictly —
-  run `verify` to type-check them.
+- New files ARE checked by the biome/tsc overlay in the `write`/`multi-edit`/`verify-changeset`
+  gate — a fresh file diffs against an EMPTY baseline, so every diagnostic it introduces counts
+  (the earlier "new files skip the overlay" claim was stale; corrected 2026-08-27). The real-Edit
+  hook path is where the merge-conflict caveat above applies.
 - `--all-checks` re-enables high-FP heuristics; it's for periodic audits, not CI gating.
 
 ## Quick reference

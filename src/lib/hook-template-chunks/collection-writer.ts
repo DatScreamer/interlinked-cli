@@ -275,6 +275,6 @@ function appendCollectionRecord(event, dataDir) {
         const collectionPath = join(dataDir, "collection.jsonl");
         const dir = dirname(collectionPath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-        appendFileSync(collectionPath, JSON.stringify(record) + "\\n");
+        appendFileWithMutationLock(collectionPath, JSON.stringify(record) + "\\n");
     } catch (_err) { void 0; /* intentional: collection write is best-effort */ }
 }`;

@@ -37,7 +37,8 @@ describe("AGENT_LAZINESS_ENTRIES", () => {
 			"file_level_suppression",
 			"untestable_time_in_source",
 			"double_cast_unknown",
-			"type_smuggling",
+			// type_smuggling demoted to VERIFY_ONLY 2026-08-22 (per-file
+			// ts.Program melted the daemon) — no longer a registry entry.
 			"unbounded_promise_all",
 			"sync_io_on_hot_path",
 		]) {

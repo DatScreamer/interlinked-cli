@@ -232,9 +232,10 @@ export function getSupermodelCallContext(filePath: string, cwd?: string): string
 	);
 }
 
-/** Run tsc and biome against a target file BEFORE an edit, returning existing
- *  errors as context warnings. Delegates to the unified CheckEngine which
- *  handles mtime-based caching internally. */
+/** Return already-cached diagnostics as advisory context BEFORE an edit.
+ *  This path must never discover or spawn tsc/biome: PreToolUse owns the
+ *  daemon's latency-critical deterministic phase. A cold cache is silent;
+ *  async PostTool checks repopulate evidence after the write. */
 export function getPreToolUseDiagnostics(
 	filePath: string,
 	cwd: string,
@@ -245,7 +246,7 @@ export function getPreToolUseDiagnostics(
 	const checkCwd = findProjectRoot(filePath, cwd) || cwd;
 	const relPath = relative(checkCwd, filePath) || filePath;
 	const engine = getOrCreateEngine(checkCwd);
-	const results = engine.getDiagnostics(filePath);
+	const results = engine.getCachedDiagnostics(filePath);
 	if (results.length === 0) return [];
 	const diagnostics = results.slice(0, 10).map((r) => {
 		const prefix = r.tool === "biome" ? "biome: " : "";

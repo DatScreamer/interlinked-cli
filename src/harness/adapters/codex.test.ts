@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nonNull } from "../../lib/non-null.js";
-import { createCodexAdapter } from "./codex.js";
+import { CODEX_WRITE_TOOLS } from "../../lib/write-tool-registry.js";
+import { CODEX_POST_TOOL_USE_MATCHER, createCodexAdapter } from "./codex.js";
 
 const adapter = createCodexAdapter();
 const overriddenAdapter = createCodexAdapter({
@@ -258,18 +259,21 @@ describe("Codex renderSettingsFragment", () => {
 		});
 		expect(handler.command).toContain("/bin/hook");
 	});
-	it("uses empty PostToolUse matcher (match all tools)", () => {
+	it("scopes PostToolUse to Codex's mutating tools", () => {
 		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
 		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
 		const entries = root.hooks.PostToolUse as Array<{ matcher: string }>;
-		expect(nonNull(entries[0]).matcher).toBe("");
+		expect(nonNull(entries[0]).matcher).toBe("Bash|apply_patch");
+		expect(nonNull(entries[0]).matcher).toBe(CODEX_POST_TOOL_USE_MATCHER);
+		expect(CODEX_POST_TOOL_USE_MATCHER.split("|")).toEqual([...CODEX_WRITE_TOOLS]);
 	});
 
-	it("uses empty matcher for all events", () => {
+	it("uses an empty matcher for every event except PostToolUse", () => {
 		const fragment = adapter.renderSettingsFragment("/bin/hook", "project");
 		const root = fragment.fragment as { hooks: Record<string, unknown[]> };
 		for (const eventName of Object.keys(root.hooks)) {
 			const entries = root.hooks[eventName] as Array<{ matcher: string }>;
+			if (eventName === "PostToolUse") continue;
 			expect(nonNull(entries[0]).matcher).toBe("");
 		}
 	});

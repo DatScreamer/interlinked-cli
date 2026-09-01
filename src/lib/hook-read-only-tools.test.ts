@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isReadOnlyToolName, READ_ONLY_TOOL_NAMES } from "./hook-read-only-tools.js";
 
 describe("READ_ONLY_TOOL_NAMES", () => {
-	it("P1: names the eight tools that cannot write a file", () => {
+	it("P1: names the file readers and collaboration-control tools", () => {
 		expect([...READ_ONLY_TOOL_NAMES]).toEqual([
 			"Read",
 			"Glob",
@@ -12,6 +12,12 @@ describe("READ_ONLY_TOOL_NAMES", () => {
 			"TodoRead",
 			"NotebookRead",
 			"ListFiles",
+			"collaborationspawn_agent",
+			"collaborationsend_message",
+			"collaborationfollowup_task",
+			"collaborationinterrupt_agent",
+			"collaborationlist_agents",
+			"collaborationwait_agent",
 		]);
 	});
 
@@ -42,6 +48,16 @@ describe("isReadOnlyToolName — positive (must report read-only)", () => {
 	it("P3: plain lowercase", () => {
 		expect(isReadOnlyToolName("read")).toBe(true);
 		expect(isReadOnlyToolName("grep")).toBe(true);
+	});
+
+	it("P4: successful collaboration-control calls are non-writing", () => {
+		for (const name of [
+			"collaborationspawn_agent",
+			"collaborationwait_agent",
+			"collaboration.list_agents",
+		]) {
+			expect(isReadOnlyToolName(name)).toBe(true);
+		}
 	});
 });
 

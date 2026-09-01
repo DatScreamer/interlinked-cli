@@ -512,7 +512,11 @@ describe("evaluateScratchpadWriteGuard — ephemeral-write ledger", () => {
 	// real and the no-append outcome is a genuine assertion, not a missing-dir
 	// coincidence.
 	it("never appends a record for a non-ephemeral, non-scratch write", () => {
-		const cwd = mkdtempSync(join(process.cwd(), "scratch", "sg-ledger-"));
+		// Stryker copies only configured project inputs; root `scratch/` is
+		// intentionally excluded and therefore may not exist in its sandbox.
+		// A temporary project directly under cwd stays outside the OS temp tree
+		// without depending on that optional directory.
+		const cwd = mkdtempSync(join(process.cwd(), ".sg-ledger-"));
 		try {
 			mkdirSync(join(cwd, ".interlinked"));
 			const warnings: string[] = [];

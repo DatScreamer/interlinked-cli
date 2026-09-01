@@ -19,10 +19,8 @@ vi.mock("node:fs", async (importOriginal) => {
 		...actual,
 		createReadStream: (...args: unknown[]) => {
 			createReadStreamSpy(...args);
-			// SAFETY: args is the exact rest-param forwarded from the mocked
-			// signature to the real fs.createReadStream overload set; `any`
-			// only bridges the variadic-args type, not the return type.
-			// biome-ignore lint/suspicious/noExplicitAny: passthrough to the real implementation
+			// SAFETY: the exact mocked rest arguments are forwarded to the real
+			// overloaded function; `any` only bridges its variadic call signature.
 			return (actual.createReadStream as any)(...args);
 		},
 	};
@@ -43,7 +41,6 @@ async function capture(fn: () => Promise<void>): Promise<string> {
 /** Strips ANSI color/style escape codes so literal-text assertions aren't
  * broken by terminal formatting inserted between words/lines. */
 function stripAnsi(s: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching real ANSI escape bytes is the point
 	return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

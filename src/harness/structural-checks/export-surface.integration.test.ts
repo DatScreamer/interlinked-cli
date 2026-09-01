@@ -54,7 +54,7 @@ type EngineStub = {
 	projectRoot: string;
 	discoverTools: () => Array<{ id: string; available: boolean }>;
 	runChecks: (...args: unknown[]) => {
-		results: Array<{ severity: string }>;
+		results: Array<{ severity: string; ruleId?: string }>;
 	};
 };
 let engineStub: EngineStub;
@@ -119,7 +119,7 @@ beforeEach(() => {
 	engineStub = {
 		projectRoot: "/proj",
 		discoverTools: () => [{ id: "tsc", available: true }],
-		runChecks: () => ({ results: [] }),
+		runChecks: vi.fn(() => ({ results: [] })),
 	};
 });
 
@@ -342,6 +342,23 @@ describe("checkExportRippleCompilation", () => {
 			}),
 			expect.objectContaining({ tools: ["tsc"] }),
 		);
+	});
+
+	it("reports an honest deferral when the tsc runner says it was unavailable", () => {
+		engineStub.runChecks = vi.fn(() => ({
+			results: [{ severity: "warning", ruleId: "tsc-unavailable" }],
+		}));
+		const graph = makeGraph();
+		const out = checkExportRippleCompilation(FILE, REL, ["/proj/a.ts"], graph);
+		expect(out).toEqual([
+			expect.objectContaining({
+				check: "export_ripple_compilation_deferred",
+				severity: "info",
+				file: FILE,
+				affectedFiles: ["/proj/a.ts"],
+			}),
+		]);
+		expect(engineStub.runChecks).toHaveBeenCalledTimes(1);
 	});
 });
 

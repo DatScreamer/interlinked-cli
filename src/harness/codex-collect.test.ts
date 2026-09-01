@@ -1,12 +1,22 @@
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	truncateSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { collectCodexSessions, findCodexRollouts } from "./codex-collect.js";
+import { TimelineScanError } from "./timeline-writer.js";
 
 const roots: string[] = [];
 afterAll(() => {
-	// best-effort; OS reaps tmp
+	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
 function tmp(prefix: string): string {
@@ -90,5 +100,26 @@ describe("collectCodexSessions", () => {
 			wrote = false;
 		}
 		expect(wrote).toBe(false);
+	});
+
+	it("fails closed without duplicating a sparse multi-gigabyte history", () => {
+		const { dir, cwd } = setup();
+		const first = collectCodexSessions({ cwd, dir });
+		const path = join(cwd, ".interlinked", "timeline.jsonl");
+		truncateSync(path, 2_200_000_000);
+
+		expect(first.added).toBeGreaterThan(0);
+		expect(() => collectCodexSessions({ cwd, dir })).toThrow(/row larger than/);
+		expect(statSync(path).size).toBe(2_200_000_000);
+	});
+
+	it("fails closed and preserves a malformed destination timeline", () => {
+		const { dir, cwd } = setup();
+		const path = join(cwd, ".interlinked", "timeline.jsonl");
+		const malformed = "not-json\n";
+		writeFileSync(path, malformed);
+
+		expect(() => collectCodexSessions({ cwd, dir })).toThrow(TimelineScanError);
+		expect(readFileSync(path, "utf8")).toBe(malformed);
 	});
 });

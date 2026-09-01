@@ -26,7 +26,9 @@ function event(overrides: Partial<HarnessEvent> = {}): HarnessEvent {
     };
 }
 
-function rollout(options: { completed?: boolean; subagent?: boolean } = {}): string {
+function rollout(
+    options: { completed?: boolean; subagent?: boolean; duplicateRootMeta?: boolean } = {},
+): string {
     const source = options.subagent === false
         ? { cli: true }
         : {
@@ -42,12 +44,17 @@ function rollout(options: { completed?: boolean; subagent?: boolean } = {}): str
         {
             timestamp: "2026-08-20T15:48:40.000Z",
             type: "session_meta",
-            payload: { id: "sub-thread", source, cwd: "/repo" },
+            payload: {
+                id: "sub-thread",
+                ...(options.duplicateRootMeta ? { session_id: "parent-thread" } : {}),
+                source,
+                cwd: "/repo",
+            },
         },
         {
             timestamp: "2026-08-20T15:48:41.000Z",
             type: "turn_context",
-            payload: { model: "gpt-5.6-luna", effort: "medium" },
+            payload: { model: "vendor-model-luna", effort: "medium" },
         },
         {
             timestamp: "2026-08-20T15:48:53.263Z",
@@ -60,6 +67,18 @@ function rollout(options: { completed?: boolean; subagent?: boolean } = {}): str
             },
         },
     ];
+    if (options.duplicateRootMeta) {
+        rows.splice(1, 0, {
+            timestamp: "2026-08-20T15:48:40.500Z",
+            type: "session_meta",
+            payload: {
+                id: "parent-thread",
+                session_id: "parent-thread",
+                source: { cli: true },
+                cwd: "/repo",
+            },
+        });
+    }
     if (options.completed) {
         rows.push({
             timestamp: "2026-08-20T15:48:54.742Z",
@@ -84,7 +103,7 @@ describe("parseCodexAttributionRollout", () => {
             subagent_id: "sub-thread",
             agent_name: "/root/kill_a_survivors",
             parent_agent: "parent-thread",
-            model: "gpt-5.6-luna",
+            model: "vendor-model-luna",
         });
         expect(parsed.cwd).toBe("/repo");
         expect(parsed.executionIds.has("exec-123")).toBe(true);
@@ -92,6 +111,16 @@ describe("parseCodexAttributionRollout", () => {
 
     it("does not invent attribution for a root Codex rollout", () => {
         expect(parseCodexAttributionRollout(rollout({ subagent: false })).attribution).toBeNull();
+    });
+
+    it("keeps the first child owner when a later root session_meta is duplicated", () => {
+        const parsed = parseCodexAttributionRollout(rollout({ duplicateRootMeta: true }));
+        expect(parsed.attribution).toMatchObject({
+            subagent_id: "sub-thread",
+            agent_name: "/root/kill_a_survivors",
+            parent_agent: "parent-thread",
+        });
+        expect(parsed.cwd).toBe("/repo");
     });
 });
 
@@ -103,7 +132,7 @@ describe("resolveCodexSubagentAttribution", () => {
             { rolloutPaths: [path], nowMs: Date.parse(TS) },
         );
         expect(resolved?.subagent_id).toBe("sub-thread");
-        expect(resolved?.model).toBe("gpt-5.6-luna");
+        expect(resolved?.model).toBe("vendor-model-luna");
     });
 
     it("matches the pending rollout call for PreToolUse before completion", () => {
@@ -134,7 +163,7 @@ describe("resolveCodexSubagentAttribution", () => {
         expect(target.agent_name).toBe("native-name");
         expect(eventAttributionFields(target)).toEqual({
             subagent_id: "sub-thread",
-            model: "gpt-5.6-luna",
+            model: "vendor-model-luna",
             parent_agent: "parent-thread",
         });
     });

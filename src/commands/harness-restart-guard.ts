@@ -23,10 +23,12 @@
 import type { DaemonLedgerEvent } from "../harness/daemon-ledger.js";
 import { readRecentDaemonEvents, recordDaemonEvent } from "../harness/daemon-ledger.js";
 import {
+	HANDOVER_ATTEMPT_ENV,
 	HANDOVER_CHURN_MAX_ATTEMPTS,
 	HANDOVER_CHURN_WINDOW_MS,
 	churnBackstopEvent,
 	handoverChurnExceeded,
+	newHandoverAttemptId,
 } from "../harness/handover-churn.js";
 import { startupInFlight, waitForDaemonSocket } from "../harness/startup-lock.js";
 import { c } from "../lib/formatter.js";
@@ -80,6 +82,59 @@ export async function resolveRestartAction(
 
 export interface ReportRestartDecisionDeps {
 	recordEvent?: (evt: DaemonLedgerEvent) => void;
+	/** The restart attempt these verdict rows belong to (attempt-ID protocol).
+	 *  Terminal verdicts carry it so the reducer resolves the attempt. */
+	attemptId?: string;
+}
+
+export interface RestartAttemptDeps {
+	recordEvent?: (evt: DaemonLedgerEvent) => void;
+	env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Begin the restart CLI's leg of a handover attempt: adopt the id inherited
+ * from an automatic parent (build-refresh / rss-ceiling) or mint one for a
+ * manual restart, KEEP it in the env so the daemon spawn inherits it (the
+ * daemon consumes and clears it), and write the non-counting intent row —
+ * the row that also upgrades the old daemon's `signal` exit to
+ * `explicit-restart` in `describeLastExit`.
+ */
+export function beginRestartAttempt(cwd: string, deps: RestartAttemptDeps = {}): string {
+	const env = deps.env ?? process.env;
+	const attemptId = env[HANDOVER_ATTEMPT_ENV] || newHandoverAttemptId();
+	env[HANDOVER_ATTEMPT_ENV] = attemptId;
+	const recordEvent = deps.recordEvent ?? ((evt: DaemonLedgerEvent) => recordDaemonEvent(cwd, evt));
+	recordEvent({
+		at: Date.now(),
+		pid: process.pid,
+		event: "handover",
+		reason: "explicit-restart",
+		outcome: "requested",
+		attempt_id: attemptId,
+	});
+	return attemptId;
+}
+
+/** Terminal `start_failed` row: the restart sequence proceeded but could not
+ *  complete (e.g. the old daemon survived SIGKILL). Resolves the attempt so
+ *  the churn reducer never waits on a successor that is not coming. */
+export function failRestartAttempt(
+	cwd: string,
+	attemptId: string,
+	detail: string,
+	deps: RestartAttemptDeps = {},
+): void {
+	const recordEvent = deps.recordEvent ?? ((evt: DaemonLedgerEvent) => recordDaemonEvent(cwd, evt));
+	recordEvent({
+		at: Date.now(),
+		pid: process.pid,
+		event: "handover",
+		reason: "explicit-restart",
+		outcome: "start_failed",
+		attempt_id: attemptId,
+		detail,
+	});
 }
 
 /**
@@ -95,8 +150,20 @@ export function reportRestartDecision(
 ): void {
 	const recordEvent = deps.recordEvent ?? ((evt: DaemonLedgerEvent) => recordDaemonEvent(cwd, evt));
 	const nowMs = Date.now();
+	// Attempt-ID protocol: deferred-ready and backoff-churn are TERMINAL for
+	// this attempt (no successor is coming from it), so their rows carry the
+	// resolving `refused` outcome; deferred-timeout falls through to a real
+	// stop+respawn, so its row stays a non-terminal `requested`.
+	const attempt = deps.attemptId !== undefined ? { attempt_id: deps.attemptId } : {};
 	if (decision.action === "deferred-ready") {
-		recordEvent({ at: nowMs, pid: process.pid, event: "handover", reason: "deferred-to-inflight" });
+		recordEvent({
+			at: nowMs,
+			pid: process.pid,
+			event: "handover",
+			reason: "deferred-to-inflight",
+			outcome: "refused",
+			...attempt,
+		});
 		output(
 			mode,
 			{},
@@ -109,7 +176,11 @@ export function reportRestartDecision(
 		return;
 	}
 	if (decision.action === "backoff-churn") {
-		recordEvent(churnBackstopEvent(process.pid, nowMs, "explicit-restart suppressed"));
+		recordEvent({
+			...churnBackstopEvent(process.pid, nowMs, "explicit-restart suppressed"),
+			outcome: "refused",
+			...attempt,
+		});
 		outputError(
 			mode,
 			`Too many restart attempts (${HANDOVER_CHURN_MAX_ATTEMPTS}+) without a successful start in the ` +
@@ -121,5 +192,12 @@ export function reportRestartDecision(
 	// "deferred-timeout": the in-flight holder never answered within the wait
 	// window. Log it for the postmortem; the caller falls through to a real
 	// stop+respawn (the wedged-holder fallback).
-	recordEvent({ at: nowMs, pid: process.pid, event: "handover", reason: "deferred-timeout" });
+	recordEvent({
+		at: nowMs,
+		pid: process.pid,
+		event: "handover",
+		reason: "deferred-timeout",
+		outcome: "requested",
+		...attempt,
+	});
 }

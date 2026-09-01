@@ -37,7 +37,6 @@ vi.mock("../checks/dry-baseline.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../checks/dry-baseline.js")>();
 	return { ...actual, filterToRisers: vi.fn(actual.filterToRisers) };
 });
-
 import { buildAgentSafetyChecks } from "../check-registry/index.js";
 import { computeCrapRisers } from "../checks/crap-baseline.js";
 import { filterToRisers as filterDryToRisers } from "../checks/dry-baseline.js";
@@ -677,4 +676,3 @@ describe("checkFootgunBlock — grouping, join, and overflow internals", () => {
 		expect(f?.detail).toContain("L2: const a = await fetch(u);");
 	});
 });
-

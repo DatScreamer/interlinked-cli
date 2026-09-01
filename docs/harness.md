@@ -2,7 +2,7 @@
 
 ## What Is The Harness?
 
-The Interlinked Harness is a local server that runs on each developer's machine. It intercepts AI coding agent actions across Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, OpenCode, and Pi, evaluates normalized events against guard rules, manages file reservations, and enforces the lifecycle policies each provider can expose.
+The Interlinked Harness is a local server that runs on each developer's machine. It receives the events that configured coding-agent integrations deliver, normalizes them, evaluates them against guard rules, manages file reservations, and enforces only the lifecycle controls each provider exposes. Claude Code and Codex are supported; the Cursor, Copilot CLI, Gemini CLI, OpenCode, and Pi integrations are experimental.
 
 It is the **third component** of the Interlinked platform:
 
@@ -22,8 +22,8 @@ AI coding agents can:
 - Run destructive shell commands (`rm -rf /`, `git push --force`, `DROP DATABASE`)
 - Create unbounded Git worktrees that consume disk and fragment shared-agent state
 - Write secrets into source files
-- Go to "sleep" in the terminal instead of staying in their MCP work loop
-- Ask the human for input via the terminal instead of via MCP messages
+- Wait inefficiently in the terminal instead of using an agent-native or MCP wait primitive
+- Ask the human for input through a provider surface that may not support native confirmation
 - Edit files that another agent (on the same or a different developer's machine) is already editing
 - Curl localhost URLs when they should be using MCP tools (indicating a disconnected MCP server)
 - Write code with type errors, security vulnerabilities, or invalid syntax
@@ -53,14 +53,14 @@ Adding 50-200ms of network latency to every PreToolUse event would be too slow. 
 
 What we added that Sondera doesn't have:
 - **Remote server coordination** — file reservation sync, team-wide visibility
-- **Agent lifecycle enforcement** — sleep prevention, MCP-first communication
+- **Agent lifecycle normalization** — provider-specific continuation, interruption, and MCP-first guidance where the native API exposes them
 - **Cohort awareness** — tracking all of one developer's agents together
 - **Auto file reservation** — transparent lease management without explicit MCP calls
 - **Quality checks** — PostToolUse TypeScript compilation, lint, secrets scanning
 
 ### Runtime: Node.js
 
-The harness runs on Node.js using `node:net` for Unix socket IPC. The server is pre-compiled to JavaScript via tsup (`cli/dist/harness/server.js`) for fast startup, or can be run from TypeScript source via `npx tsx` during development.
+The harness runs on Node.js using `node:net` for Unix socket IPC. The server is pre-compiled to JavaScript via tsup (`dist/harness/server.js`) for fast startup, or can be run from TypeScript source via `npx tsx` during development.
 
 **Why Node.js?**
 1. **Universal** — no extra runtime install required (Node.js is already a dependency)
@@ -74,21 +74,21 @@ The harness runs on Node.js using `node:net` for Unix socket IPC. The server is 
 ## Architecture
 
 ```
-Coding Agent (Claude / Codex / Copilot / Gemini / Cursor / OpenCode / Pi)
+Claude / Codex / Copilot / Gemini / Cursor hook arrays
     │
-    │ Hook event (stdin JSON)
-    ▼
-Hook Script (.interlinked/hooks/interlinked-activity.mjs)
+    ├──► Packaged `interlinked-hook` (`dist/hook-entry.js`)
     │
-    ├─── Local JSONL write (always, sync, ~0.1ms)
+OpenCode / Pi managed plugin or extension
     │
-    ├─── Connect to harness Unix socket (~1-5ms)
+    └──► Packaged `interlinked-hook` (`dist/hook-entry.js`)
+    │
+    ├─── Normalize native event and connect to harness Unix socket
     │    │
     │    ▼
     │  Interlinked Harness Server (Node.js)
     │    │
     │    ├─ Guard Evaluator
-    │    │  ├─ Lifecycle: sleep blocking, AskUserQuestion redirect
+    │    │  ├─ Lifecycle: provider-supported permission/continuation controls
     │    │  ├─ Destructive: rm -rf, force push, DROP DATABASE, pkill
     │    │  ├─ Security: secrets, path traversal, exfiltration, pipe-to-bash
     │    │  ├─ Code quality: JSON validity, Edit old_string verification
@@ -106,7 +106,7 @@ Hook Script (.interlinked/hooks/interlinked-activity.mjs)
     │    │  ├─ C/C++ (compile, clang-tidy), Semgrep, gitleaks, dependency audit
     │    │  └─ Prompt injection detection
     │    │
-    │    ├─ Structural Checks (PostToolUse, 25 dependency-aware checks)
+    │    ├─ Structural Checks (PostToolUse, <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> dependency-aware checks)
     │    │  ├─ Export surface, import resolution, hallucinated imports, dead imports/exports
     │    │  ├─ Import cycles, interface change impact, blast radius, smart tsc
     │    │  └─ Stale read warnings, sibling awareness, route context, completion tracking
@@ -126,28 +126,32 @@ Hook Script (.interlinked/hooks/interlinked-activity.mjs)
     │    ├─ Cohort Manager (tracks all agents for this developer)
     │    ├─ Session Tracker (per-session trajectory state)
     │    ├─ Reservation Manager (local cache + server sync)
-    │    └─ Server Bridge (reservation sync, guard event reporting)
-    │
-    ├─── Fire-and-forget POST to Interlinked MCP Server
+    │    ├─ Local activity/timeline capture for events the daemon receives
+    │    └─ Optional Server Bridge (reservation sync, guard event reporting)
     │
     ▼
-  PreToolUse: stdout {decision: "block"|"allow", reason?}
-  PostToolUse: stderr warnings (agent sees and self-corrects)
+  Provider-specific pre-tool decision / post-tool feedback
 ```
 
 ### Graceful Degradation
 
 If the harness is not running:
-- The hook script falls back to **inline pattern matching** (a minimal subset of critical rules embedded in the `.mjs`)
-- No quality checks run (PostToolUse is observe-only)
+- The packaged hook runtime falls back to a **self-contained deterministic subset** for ordinary hook phases
+- Checks that need the full evaluator do not run and must not be reported clean
 - No grep acceleration (agents use full ripgrep scan — slower but correct)
 - No auto-reservations (relies on server-side reservation system via MCP tools)
-- Activity capture still works (JSONL + server sync are independent of harness)
+- Only events that reach a running daemon are guaranteed to enter the local activity log; a cold-fallback decision is not a complete outage audit trail
 
-This means the system is safe even if:
-- The developer doesn't start the harness
-- The harness crashes
-- The Unix socket is unreachable
+This is a bounded degraded mode, not equivalence with the full harness. Deterministic inline
+checks can still refuse proven hazards and the hook attempts bounded self-heal, but external
+checks, project context, reservations, and complete capture remain unavailable until
+`interlinked harness status` confirms the socket is answering. If the packaged hook binary
+itself is missing or broken, the installed hook wrapper allows only provider-owned read
+builtins and exact repair commands; mutating or unclassified pre-tool calls fail closed.
+Inside the generated runtime, a parseable Claude/Codex `PreToolUse` or `PermissionRequest`
+whose main handler throws receives the same native deny envelope as an ordinary block. Hook
+stdout is staged until audit work completes, so terminal recovery replaces rather than appends
+to a pending response; non-gating failures emit no stdout and exit nonzero as a warning path.
 
 ## Key Design Decisions
 
@@ -157,14 +161,18 @@ This means the system is safe even if:
 - All checks that can be done with the tool call arguments alone (no execution needed)
 - Pattern matching on commands, file paths, content
 - File reservation conflict detection
-- Sleep/terminal-input prevention
 - Must be fast (<500ms total, ideally <50ms)
+
+For ordinary agent `Edit`/`Write` calls, the proposed-content blocker is the
+deterministic, introduced-only `pre_block` registry. It does not synchronously
+launch TypeScript, Biome, or another external tool.
 
 **PostToolUse** (feedback after the tool executes):
 - Checks that need the full project context or take significant time
 - TypeScript compilation (`tsc --noEmit`) — needs tsconfig.json, node_modules, all source files
 - Lint checks — need full project context
-- Results written to stderr so the agent sees them on the next turn and self-corrects
+- Results use each provider's model-visible post-tool channel when one exists; Copilot remains stderr-only
+- Capacity or tool unavailability produces an explicit `NOT CHECKED` no-verdict result, never a clean result
 
 **Why not PreToolUse for type checking?**
 Running `tsc` on PreToolUse would mean:
@@ -176,8 +184,13 @@ Running `tsc` on PreToolUse would mean:
 PostToolUse is better because:
 1. The file is already written to disk — `tsc` can check it directly
 2. The agent continues working while the check runs
-3. If errors are found, they appear as stderr output — the agent self-corrects on the next turn
-4. Two tool calls (write + fix) is more efficient than blocking repeatedly
+3. If errors are found, the next provider-visible warning lets the agent self-correct
+4. A write followed by its fix is more efficient than blocking repeatedly
+
+Transactional CLI paths serve a different contract. `interlinked write` and
+`verify-changeset` evaluate proposed content with `pre_block → Biome → TypeScript`
+and fail closed before committing it. `interlinked multi-edit` is transactional
+but runs Biome + TypeScript only; it does not run `pre_block`.
 
 ### 2. Auto File Reservation — Optimistic Locking
 
@@ -213,46 +226,57 @@ The cohort model lets the harness:
 - `agent_lost` — no events for 5 minutes, likely crashed or disconnected
 - `subagent_join/leave` — subagents tracked as children of their parent
 
-### 4. No Agent Sleep — MCP-First Communication
+### 4. Waiting and MCP-First Communication
 
-**Decision:** The harness blocks `bash sleep` commands and warns agents that use `AskUserQuestion`.
+**Decision:** Interlinked recommends provider-native waiting or MCP coordination,
+but the current rule set has no standalone block for a `sleep` command.
 
-**Why:** The biggest friction in multi-agent development is agents going idle in the terminal. They sleep, they ask the terminal for input, they exit their work loop. This forces the human developer to constantly monitor terminals and type responses.
-
-The correct pattern is:
-1. Agent calls `wait_for_work()` on the MCP server (blocks server-side, ~1-5ms wakeup)
-2. Human sends messages/tasks through the MCP web UI (`/chat`)
-3. Agent receives work via `wait_for_work` and acts on it
-4. Agent reports results via MCP tools
-
-The harness enforces this by:
-- **Blocking** `sleep` commands with a message: "Use wait_for_work MCP tool instead"
-- **Warning** on `AskUserQuestion` with: "Send a message via MCP instead of asking the terminal"
-- Detecting when agents curl localhost (MCP server likely disconnected) and escalating
+When an Interlinked MCP Server is configured, an agent can wait through the
+available coordination tool and receive tasks/messages without polling a terminal.
+Provider lifecycle and question controls are normalized only where their native APIs
+deliver them. Curl-to-localhost trajectory rules can still flag a likely disconnected
+MCP path, and unbounded spin/resource-bomb rules remain independent safety checks.
 
 ### 5. Multi-Agent Provider Support
 
-**Decision:** Guard semantics are provider-neutral after hook normalization.
+**Decision:** One evaluator consumes normalized events, while each adapter
+registers, controls, and renders only the native surfaces its provider offers.
+Registration is not a claim of provider parity.
 
-**How:** The hook script normalizes events from all agents into a common format (`HarnessEvent`) before sending to the harness. The evaluator doesn't know or care which agent produced the event. Tool names are matched flexibly:
-- Claude Code: `Bash`, `Read`, `Write`, `Edit`
-- Gemini CLI: `Shell`, `ReadFile`, `WriteFile`, `EditFile`
-- OpenCode: generic `tool.execute.before` / `tool.execute.after` payloads
-- Pi: `tool_call` / `tool_result`, plus direct `user_bash` commands
-- Both: matched by the evaluator's helper functions (`isBash`, `isFileWrite`, etc.)
+**How:** The packaged hook entry (or an OpenCode/Pi managed bridge in front of
+it) normalizes native payloads into `UnifiedHookEvent`. Shared helpers classify
+provider-specific names such as Claude/Codex `Bash`, Gemini `Shell`, Cursor's
+shell/MCP/file events, Copilot `preToolUse`, OpenCode
+`tool.execute.before`/`after`, and Pi `tool_call`/`tool_result` plus
+`user_bash`. The evaluator returns one `HarnessDecision`; the adapter then
+encodes it using that provider's actual response contract.
 
-Codex has full Interlinked coverage across its twelve native hook events,
-including pre-tool blocking, the distinct permission-request path,
-model-visible post-tool context, compaction, subagents, stop continuation, and
-session end. The observation-only `Interrupt` hook records top-level turn cancellation
-asynchronously with no control output or terminal cleanup. Claude and Codex use different native decision objects, but both
-translate to the same `HarnessDecision` internally. See
-[`design/cli-hook-normalization.md`](design/cli-hook-normalization.md).
+Claude Code and Codex are the supported integrations. Claude exposes native
+pre-tool, permission, continuation, subagent, compaction, and worktree event
+shapes; `PreToolUse` uses `permissionDecision`, while a `PermissionRequest` deny uses
+`hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message } }`.
+Interlinked otherwise abstains on that event so Claude's native permission policy keeps
+authority. Claude's installed `WorktreeCreate` event is a deliberate hard stop. Codex
+covers its twelve-event native surface, including its distinct
+PermissionRequest and continuation envelopes. Codex's observation-only
+`Interrupt` event records cancellation asynchronously and has no control
+output or terminal cleanup. Both translate to the same internal decision, not
+the same upstream UI or response object. See
+[`design/cli-hook-normalization.md`](design/cli-hook-normalization.md) and the
+current matrix in `src/harness/adapters/README.md`.
 
 Codex does not expose a custom status-line command slot comparable to Claude
 Code. Interlinked uses hook `statusMessage`, `interlinked status`, and the
 definition-hash runtime receipt instead of claiming UI parity the provider
 cannot supply.
+
+Cursor, Copilot CLI, and Gemini CLI use packaged hook-array adapters and remain
+experimental. Cursor has model-visible context only on its generic
+`postToolUse` channel; its event-specific after-hooks are observation-only.
+Copilot's feedback is stderr-only and canonical `ask` becomes deny. Gemini's
+decision/ask contract remains provisional. These adapters run shared policy
+where their event reaches Interlinked, but are not marketed as equivalent
+enforcement contracts.
 
 OpenCode and Pi use manifest-owned JavaScript bridges at
 `.opencode/plugins/interlinked.ts` and `.pi/extensions/interlinked.js`. OpenCode's stable plugin
@@ -279,7 +303,7 @@ bridge and preserves a bridge modified after installation.
 
 **Why:** Teams need shared safety policies (everyone should be blocked from `rm -rf /`), but individual developers may need exceptions (e.g., a DevOps engineer who legitimately uses `terraform destroy`).
 
-The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
+The rules are loaded at harness startup and hot-reloaded when files change. Built-in rules (<!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories — see `docs/generated/guard-rules.md` for the full reference) are always active unless explicitly disabled in the local override file.
 
 ### 7. Server Bridge — Coordination Without Dependency
 
@@ -303,7 +327,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 | `cli/src/harness/types.ts` | All type definitions: events, decisions, rules, cohort, reservations, config |
 | `cli/src/harness/server.ts` | Node.js Unix socket server — the main entry point (`node:net`) |
 | `cli/src/harness/evaluator.ts` | Guard evaluation — PreToolUse blocking + PostToolUse feedback |
-| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
+| `cli/src/harness/rules-loader.ts` | Rule loading: <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> built-in + team JSON + personal overrides + hot-reload |
 | `cli/src/harness/session-state.ts` | Per-session trajectory tracking (files, commands, tool counts) |
 | `cli/src/harness/cohort.ts` | Agent cohort manager (join/leave/lost detection, file tracking) |
 | `cli/src/harness/reservations.ts` | Auto file reservation (optimistic lock, 30s release, server sync) |
@@ -316,7 +340,7 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Analysis subsystems:**
 | File | Purpose |
 |------|---------|
-| `cli/src/harness/structural-checks.ts` | 25 dependency-aware checks (export surface, imports, cycles, blast radius) |
+| `cli/src/harness/structural-checks.ts` | <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> dependency-aware checks (export surface, imports, cycles, blast radius) |
 | `cli/src/harness/generic-checks.ts` | 50+ inline code analysis checks (SQL injection, complexity, async/await, etc.) |
 | `cli/src/harness/project-graph.ts` | Multi-project file dependency graph with caching |
 | `cli/src/harness/impact-analysis.ts` | Cross-file dependency tracking and breaking change detection |
@@ -343,9 +367,9 @@ The rules are loaded at harness startup and hot-reloaded when files change. Buil
 **Auto-generated reference docs** (run `npm run docs` to regenerate):
 | File | Contents |
 |------|----------|
-| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> built-in guard rules by category |
-| `cli/docs/generated/quality-checks.md` | All 31 PostToolUse quality checks |
-| `cli/docs/generated/structural-checks.md` | All 25 structural checks by tier |
+| `cli/docs/generated/guard-rules.md` | All <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> built-in guard rules by category |
+| `cli/docs/generated/quality-checks.md` | All <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> PostToolUse quality checks |
+| `cli/docs/generated/structural-checks.md` | All <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> structural checks by tier |
 | `cli/docs/generated/configuration.md` | Default config: diff-aware filtering + structural check settings |
 
 ## Grep Acceleration — Trigram Search Index
@@ -438,17 +462,15 @@ The index should be added to `.gitignore` — it's machine-local and fast to reb
 
 ## Guard Rules — Overview
 
-> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
+> **Full reference:** See `docs/generated/guard-rules.md` (auto-generated, <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories).
 
 ### Lifecycle Enforcement
 
 | Check | PreToolUse | Action | Condition |
 |-------|-----------|--------|-----------|
-| Sleep blocking | Yes | Block | `sleep` in Bash command |
-| AskUserQuestion redirect | Yes | Warn | Tool name is `AskUserQuestion` |
 | Curl-to-MCP detection | Yes | Warn → Block | `curl localhost:PORT` (escalates after 5 calls) |
 
-### Built-in Rule Categories (<!-- gen:builtin_rule_count -->124<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
+### Built-in Rule Categories (<!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> rules across <!-- gen:builtin_rule_category_count -->25<!-- /gen:builtin_rule_category_count --> categories)
 
 Category counts below are derived from `docs/generated/guard-rules.md` (the
 auto-generated source of truth — regenerate with `npm run docs` after adding
@@ -457,7 +479,7 @@ or removing a rule).
 | Category | Rules | Examples |
 |----------|-------|---------|
 | Process Killing | 9 | `pkill -f`, `killall`, `kill -9`, multi-PID kill |
-| Process Safety | 5 | `sleep` in agent commands, infinite-retry loops |
+| Process Safety | 5 | detached network processes, scheduled-task persistence |
 | File Deletion | 3 | `rm -rf /`, `rm .wrangler`, `rm node_modules` |
 | Git Operations | 10 | `--force` push, `reset --hard`, `clean -f`, `filter-branch`, `stash drop`, `worktree add` |
 | Database | 5 | `DROP DATABASE/TABLE`, `TRUNCATE`, `DELETE` without WHERE, MongoDB drop, Redis flush |
@@ -515,7 +537,7 @@ or removing a rule).
 | Tier | Checks | Examples |
 |------|--------|---------|
 | Tier 1 (fast, sub-100ms) | 15 | Export surface, import resolution, dead imports/exports, hallucinated imports, stale read warnings |
-| Tier 2 (medium, sub-1s) | 5 | Import cycles, interface change impact, test proximity, blast radius, layer violations |
+| Tier 2 (medium, sub-1s) | 9 | Import cycles, interface change impact, test proximity, blast radius, layer violations |
 | Tier 3 (conditional, 1-5s) | 2 | Smart tsc (single-file when safe), full impact analysis |
 
 ### Diff-Aware Filtering
@@ -560,7 +582,6 @@ cd cli && npx vitest run src/harness/__tests__/docs-freshness.test.ts
 node cli/dist/harness/server.js --verbose &
 interlinked harness test "rm -rf /"          # → BLOCKED
 interlinked harness test "git push --force"  # → BLOCKED
-interlinked harness test "sleep 30"          # → BLOCKED
 interlinked harness test "npm run build"     # → ALLOWED
 interlinked harness stop
 
@@ -591,8 +612,8 @@ Quality checks, structural checks, and diff-aware filtering are all configurable
 See `docs/generated/configuration.md` for the full default configuration reference.
 
 **Key configuration sections:**
-- `quality_checks` — enable/disable each of the 31 PostToolUse checks
-- `structural_checks` — enable/disable each of the 22 structural checks + thresholds
+- `quality_checks` — enable/disable each of the <!-- gen:quality_check_count -->33<!-- /gen:quality_check_count --> PostToolUse checks
+- `structural_checks` — enable/disable each of the <!-- gen:structural_check_count -->26<!-- /gen:structural_check_count --> structural checks + thresholds
 - `diff_aware` — control which checks suppress pre-existing findings
 - `error_memory` — error pattern history with optional embeddings support
 

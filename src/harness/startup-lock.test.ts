@@ -1,16 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, type Socket } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	acquireStartupLock,
 	isStartupLockStale,
 	readStartupLockHolder,
 	releaseStartupLock,
+	STARTUP_LOCK_INITIALIZATION_GRACE_MS,
 	STARTUP_LOCK_TTL_MS,
 	startupInFlight,
 	startupLockPath,
 	touchStartupLock,
+	touchStartupLockHolder,
+	transferStartupLock,
 	waitForDaemonSocket,
 } from "./startup-lock.js";
 
@@ -85,14 +89,30 @@ describe("acquireStartupLock — negative (must not fire)", () => {
 		expect(existsSync(startupLockPath(root))).toBe(true);
 	});
 
-	it("N3: garbage lock content is treated as stale, not as a live holder", () => {
-		writeFileSync(startupLockPath(root), "not json");
-		expect(readStartupLockHolder(root)).toBeNull();
-		expect(acquireStartupLock(root).acquired).toBe(true);
-		expect(JSON.parse(readFileSync(startupLockPath(root), "utf-8")).pid).toBe(process.pid);
+	it("N3: release leaves initializing or malformed lock metadata alone", () => {
+		const path = startupLockPath(root);
+		writeFileSync(path, "");
+		releaseStartupLock(root);
+		expect(existsSync(path)).toBe(true);
+		expect(readFileSync(path, "utf-8")).toBe("");
 	});
 
-	it("N4: startupInFlight is false with no lock and false for an expired one", () => {
+	it("N4: fresh unreadable lock metadata is treated as initialization, not stolen", () => {
+		writeFileSync(startupLockPath(root), "not json");
+		expect(readStartupLockHolder(root)).toBeNull();
+		expect(acquireStartupLock(root).acquired).toBe(false);
+	});
+
+	it("N5: unreadable lock metadata is reclaimed after the initialization grace", () => {
+		const path = startupLockPath(root);
+		writeFileSync(path, "not json");
+		const stale = new Date(Date.now() - STARTUP_LOCK_INITIALIZATION_GRACE_MS - 1_000);
+		utimesSync(path, stale, stale);
+		expect(acquireStartupLock(root).acquired).toBe(true);
+		expect(JSON.parse(readFileSync(path, "utf-8")).pid).toBe(process.pid);
+	});
+
+	it("N6: startupInFlight is false with no lock and false for an expired one", () => {
 		expect(startupInFlight(root)).toBe(false);
 		foreignLock(Date.now() - STARTUP_LOCK_TTL_MS - 1);
 		expect(startupInFlight(root)).toBe(false);
@@ -144,6 +164,47 @@ describe("touchStartupLock — negative (must not touch someone else's lock)", (
 	});
 });
 
+describe("transferStartupLock — hook-to-daemon ownership handoff", () => {
+	it("P1: transfers this process's fresh lease to the spawned child", () => {
+		const lock = acquireStartupLock(root);
+		if (!lock.acquired) throw new Error("expected acquire");
+		expect(transferStartupLock(root, { childPid: 424_242, nowMs: 12_345 })).toBe(true);
+		expect(readStartupLockHolder(root)).toEqual({ pid: 424_242, at: 12_345 });
+	});
+
+	it("N1: refuses to overwrite another process's lease", () => {
+		foreignLock(Date.now(), process.pid + 1);
+		expect(transferStartupLock(root, { childPid: 424_242 })).toBe(false);
+		expect(readStartupLockHolder(root)?.pid).toBe(process.pid + 1);
+	});
+
+	it("P2: the launching parent can heartbeat the transferred child lease", () => {
+		const lock = acquireStartupLock(root);
+		if (!lock.acquired) throw new Error("expected acquire");
+		expect(transferStartupLock(root, { childPid: 424_242, nowMs: 10_000 })).toBe(true);
+		touchStartupLockHolder(root, { holderPid: 424_242, nowMs: 20_000 });
+		expect(readStartupLockHolder(root)).toEqual({ pid: 424_242, at: 20_000 });
+	});
+
+	it("N2: a mismatched parent heartbeat leaves the child lease unchanged", () => {
+		const lock = acquireStartupLock(root);
+		if (!lock.acquired) throw new Error("expected acquire");
+		expect(transferStartupLock(root, { childPid: 424_242, nowMs: 10_000 })).toBe(true);
+		touchStartupLockHolder(root, { holderPid: 777_777, nowMs: 20_000 });
+		expect(readStartupLockHolder(root)).toEqual({ pid: 424_242, at: 10_000 });
+	});
+
+	it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5])(
+		"N3: rejects an invalid child pid (%s)",
+		(childPid) => {
+			const lock = acquireStartupLock(root);
+			if (!lock.acquired) throw new Error("expected acquire");
+			expect(transferStartupLock(root, { childPid })).toBe(false);
+			expect(readStartupLockHolder(root)?.pid).toBe(process.pid);
+		},
+	);
+});
+
 describe("waitForDaemonSocket — loser waits instead of binding", () => {
 	it("P1: resolves true as soon as a socket answers", async () => {
 		let calls = 0;
@@ -176,5 +237,24 @@ describe("waitForDaemonSocket — loser waits instead of binding", () => {
 			sleep: () => Promise.resolve(),
 		});
 		expect(ok).toBe(false);
+	});
+
+	it("N3: a silent accepting listener is not a ready startup winner", async () => {
+		const socketPath = join(root, ".interlinked", "harness.sock");
+		const peers = new Set<Socket>();
+		const server = createServer((socket) => {
+			peers.add(socket);
+			socket.once("close", () => peers.delete(socket));
+			/* accepts connections but never speaks the harness protocol */
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			await expect(
+				waitForDaemonSocket(root, { timeout_ms: 0, poll_ms: 10 }),
+			).resolves.toBe(false);
+		} finally {
+			for (const peer of peers) peer.destroy();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
 	});
 });

@@ -6,8 +6,9 @@
 // queue to every mutation-eligible source file, including files absent from the
 // manifest and files whose last measurement found zero survivors. Both paths
 // use the same single-file pipeline
-// `mutation measure` uses (`measureOneFile`), recording each clean result into
-// the manifest the per-edit gate enforces against.
+// `mutation measure` uses (`measureOneFile`), recording each complete,
+// conclusive result as manifest baseline state. A recorded result may still
+// contain survivors; persistence never certifies the target as clean.
 //
 // Sequential on purpose: a runner box holds ONE worktree and answers 503 while
 // busy, so a parallel sweep against one endpoint would spend its budget being
@@ -15,16 +16,26 @@
 // so each box sweeps a disjoint slice, and the ranked order is deterministic,
 // so no coordinator is needed to keep them from colliding.
 
-import { join, resolve } from "node:path";
-import { isTestPath } from "../harness/coverage-test-selector.js";
-import { findManifestFiles } from "../harness/manifest-file-walk.js";
+import { resolve } from "node:path";
 import { summarizeSurvivors } from "../harness/mutation/survivors.js";
+import { tryAcquireProjectHeavyProcessLease } from "../harness/project-heavy-process-lock.js";
 import { getConfigDir } from "../lib/config.js";
 import { c, header } from "../lib/formatter.js";
 import { getOutputMode, output, outputError } from "../lib/output.js";
 import type { MeasureOneResult } from "./mutation-measure-support.js";
 import { measureOneFile } from "./mutation-measure-support.js";
 import { parseShard, type Shard, shardOf } from "./mutation-survivors.js";
+import {
+	eligibleMutationFiles,
+	mergeEligibleTargets,
+	type SweepTarget,
+} from "./mutation-sweep-targets.js";
+
+export {
+	eligibleMutationFiles,
+	mergeEligibleTargets,
+	type SweepTarget,
+} from "./mutation-sweep-targets.js";
 
 export interface MutationSweepOptions {
 	file?: string;
@@ -41,21 +52,6 @@ export interface MutationSweepOptions {
 	cwd?: string;
 	json?: boolean;
 	short?: boolean;
-}
-
-/** One file to measure, with the debt that put it on the list. */
-export interface SweepTarget {
-	file: string;
-	open: number;
-	uncovered: number;
-	/** True when the file's records already carry measurement provenance — it
-	 *  has been measured under the current regime, so a re-sweep would re-pay
-	 *  for an answer already held. */
-	qualified: boolean;
-	/** ISO timestamp of the file's current measurement provenance. Null means
-	 *  the file is absent from the manifest or carries legacy, unqualified
-	 *  records. */
-	measuredAt?: string | null;
 }
 
 /**
@@ -120,6 +116,7 @@ export function selectSweepTargets(targets: readonly SweepTarget[], selection: S
 export interface SweepSummary {
 	files: number;
 	measured: number;
+	partial: number;
 	busy: number;
 	notMeasurable: number;
 	errors: number;
@@ -140,6 +137,7 @@ export function summarizeSweep(results: readonly MeasureOneResult[]): SweepSumma
 	const summary: SweepSummary = {
 		files: results.length,
 		measured: 0,
+		partial: 0,
 		busy: 0,
 		notMeasurable: 0,
 		errors: 0,
@@ -148,6 +146,7 @@ export function summarizeSweep(results: readonly MeasureOneResult[]): SweepSumma
 	};
 	for (const r of results) {
 		if (r.status === "measured") summary.measured += 1;
+		else if (r.status === "partial") summary.partial += 1;
 		else if (r.status === "busy") summary.busy += 1;
 		else if (r.status === "not_measurable") summary.notMeasurable += 1;
 		else summary.errors += 1;
@@ -172,6 +171,9 @@ function movement(result: MeasureOneResult): string {
  *  only at the end is indistinguishable from a hung one. */
 export function renderSweepLine(result: MeasureOneResult): string {
 	if (result.status === "measured") return `  ${c.green("✓")} ${result.file}  ${movement(result)}`;
+	if (result.status === "partial") {
+		return `  ${c.yellow("·")} ${result.file}  partial evidence — not recorded (${result.reason ?? "unknown"})`;
+	}
 	if (result.status === "busy") return `  ${c.yellow("·")} ${result.file}  runner busy — not measured`;
 	if (result.status === "not_measurable") {
 		return `  ${c.yellow("·")} ${result.file}  not measurable (${result.reason ?? "unknown"})`;
@@ -184,7 +186,7 @@ export function renderSweepSummary(summary: SweepSummary, selection: SweepSelect
 	const lines = [
 		"",
 		c.bold(`  Swept ${summary.files} file(s)${shard}`),
-		`  ${summary.measured} measured · ${summary.busy} busy · ${summary.notMeasurable} not measurable · ${summary.errors} failed`,
+		`  ${summary.measured} measured · ${summary.partial} partial · ${summary.busy} busy · ${summary.notMeasurable} not measurable · ${summary.errors} failed`,
 	];
 	if (summary.measured === 0) {
 		lines.push(c.yellow("  0 measured — nothing in this sweep reached the manifest."));
@@ -193,36 +195,6 @@ export function renderSweepSummary(summary: SweepSummary, selection: SweepSelect
 	const delta = summary.survivorsBefore - summary.survivorsAfter;
 	lines.push(`  survivors ${summary.survivorsBefore} → ${summary.survivorsAfter} (${delta >= 0 ? "-" : "+"}${Math.abs(delta)})`);
 	return lines.join("\n");
-}
-
-const MUTATION_SOURCE_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i;
-
-/** The exact full-census domain: JS/TS product source under `src/`. */
-export function eligibleMutationFiles(cwd: string): string[] {
-	return findManifestFiles(join(cwd, "src"), (name) => MUTATION_SOURCE_EXT.test(name))
-		.map((file) => `src/${file}`)
-		.filter((file) => !file.endsWith(".d.ts") && !isTestPath(file));
-}
-
-/**
- * Merge the current source domain with manifest rows.
- *
- * A manifest-only work-list cannot prove full coverage: it cannot name a file
- * nobody measured, and it loses measured-clean files when callers filter on
- * open survivors. The source inventory is authoritative for membership; the
- * manifest contributes debt and provenance when it has them.
- */
-export function mergeEligibleTargets(
-	manifestRows: readonly SweepTarget[],
-	eligibleFiles: readonly string[],
-): SweepTarget[] {
-	const byFile = new Map(manifestRows.map((row) => [row.file, row]));
-	return eligibleFiles
-		.map((file): SweepTarget => {
-			const row = byFile.get(file);
-			return row ?? { file, open: 0, uncovered: 0, qualified: false, measuredAt: null };
-		})
-		.sort((a, b) => b.open - a.open || b.uncovered - a.uncovered || a.file.localeCompare(b.file));
 }
 
 function matchesFileFilter(file: string, fileFilter: string | undefined): boolean {
@@ -237,10 +209,16 @@ async function loadTargets(
 	fileFilter: string | undefined,
 	allEligible: boolean,
 ): Promise<SweepTarget[] | null> {
-	const { loadManifest } = await import("../harness/mutation/manifest.js");
+	const { corruptManifestMessage, loadManifestState } = await import("../harness/mutation/manifest.js");
 	const { existsSync } = await import("node:fs");
-	const manifest = loadManifest(configDir);
-	if (!manifest) return null;
+	const state = loadManifestState(configDir);
+	if (state.kind === "corrupt") {
+		// Say so rather than reading as "nothing to sweep" (Grok issue 19).
+		process.stderr.write(`${corruptManifestMessage(configDir, state.detail)}\n`);
+		return null;
+	}
+	if (state.kind !== "valid") return null;
+	const manifest = state.manifest;
 	const summary = summarizeSurvivors(manifest, {
 		exists: (file: string) => existsSync(resolve(cwd, file)),
 	});
@@ -454,15 +432,34 @@ export async function mutationSweepCommand(
 			`sweeping ${targets.length} of ${all.length} file(s) across ${endpoints.length} runner(s)…\n`,
 		);
 	}
-	const results = await runSweep({
-		targets,
-		cwd,
-		configDir,
-		opts,
-		quiet: mode === "json",
-		measureOne,
-		endpoints,
-	});
+	// A sweep retains a local test runner (and its transformed module graph)
+	// across many files. Admit it at the outer boundary so another agent's
+	// verify/test/audit process cannot overlap the same checkout and recreate
+	// the system-OOM class. This never queues: the operator gets an explicit
+	// no-verdict refusal and can retry after the current heavyweight owner ends.
+	const releaseHeavyProcess = tryAcquireProjectHeavyProcessLease(cwd);
+	if (!releaseHeavyProcess) {
+		outputError(
+			mode,
+			"Mutation sweep deferred — another heavyweight process owns this project. No files were measured; retry after the active verify/test/audit/sweep finishes.",
+		);
+		process.exitCode = 1;
+		return;
+	}
+	let results: MeasureOneResult[];
+	try {
+		results = await runSweep({
+			targets,
+			cwd,
+			configDir,
+			opts,
+			quiet: mode === "json",
+			measureOne,
+			endpoints,
+		});
+	} finally {
+		releaseHeavyProcess();
+	}
 	const summary = summarizeSweep(results);
 	const payload = { summary, results };
 

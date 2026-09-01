@@ -8,7 +8,17 @@
 //   interlinked mode <name> --local     # write to gitignored personal override
 //   interlinked mode <name> --force     # skip confirmation prompts
 
-import { existsSync, mkdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { CheckAction, CheckPolicy, CheckPolicyFile } from "../harness/check-policy.js";
 import { loadCheckPolicy } from "../harness/check-policy.js";
@@ -63,7 +73,10 @@ export async function modeCommand(
 		}
 	}
 
-	writeMode(cwd, name, options.local === true);
+	if (!writeMode(cwd, name, options.local === true)) {
+		fail(`mode ${name} not applied — see the error above; neither file was changed`, options);
+		return;
+	}
 	if (options.json) {
 		process.stdout.write(
 			`${JSON.stringify(
@@ -217,7 +230,27 @@ function policyPath(cwd: string, local: boolean): string {
 	return join(cwd, ".interlinked", local ? "check-policy.local.json" : "check-policy.json");
 }
 
-export function writeMode(cwd: string, mode: ModeName, local: boolean): void {
+/** Bytes + mode of one file, or null when absent — for the rollback. */
+type ModeFileSnapshot = { content: string; fileMode: number } | null;
+
+function snapshotModeFile(path: string): ModeFileSnapshot {
+	if (!existsSync(path)) return null;
+	return { content: readFileSync(path, "utf-8"), fileMode: statSync(path).mode };
+}
+
+function restoreModeFile(path: string, snap: ModeFileSnapshot): void {
+	if (snap === null) {
+		if (existsSync(path)) unlinkSync(path);
+		return;
+	}
+	const tmp = `${path}.mode-restore.tmp`;
+	writeFileSync(tmp, snap.content);
+	chmodSync(tmp, snap.fileMode);
+	renameSync(tmp, path);
+}
+
+/** The check-policy half of a mode switch (merge-preserving). */
+function writeCheckPolicyFile(cwd: string, mode: ModeName, local: boolean): void {
 	const path = policyPath(cwd, local);
 	const dir = join(cwd, ".interlinked");
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -233,27 +266,63 @@ export function writeMode(cwd: string, mode: ModeName, local: boolean): void {
 	existing.version = existing.version ?? 1;
 	existing.mode = mode;
 	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`);
-	applyModeGuardOverrides(cwd, mode);
+}
+
+/** TRANSACTIONAL two-file write (review 2026-08-30, both directions): the
+ *  guard-posture half goes first — a refusal there leaves check-policy
+ *  untouched — and a FAILED check-policy write afterwards restores the guard
+ *  file from its snapshot, so the two files never split into a half-applied
+ *  mode. Rollback covers HANDLED failures; an OS crash mid-write cannot run
+ *  the in-memory restore. Returns false (nonzero exit code) when nothing
+ *  effective was written. */
+export function writeMode(cwd: string, mode: ModeName, local: boolean): boolean {
+	const guardPath = join(
+		cwd,
+		".interlinked",
+		local ? "guard-rules.local.json" : "guard-rules.json",
+	);
+	const guardBefore = snapshotModeFile(guardPath);
+	if (!applyModeGuardOverrides(cwd, mode, local)) {
+		process.exitCode = 1;
+		return false;
+	}
+	try {
+		writeCheckPolicyFile(cwd, mode, local);
+		return true;
+	} catch (err) {
+		// Inverse direction: the guard half landed but check-policy failed —
+		// restore the guard file so the posture never splits.
+		restoreModeFile(guardPath, guardBefore);
+		process.stderr.write(
+			`[interlinked] mode ${mode}: check-policy write failed (${err instanceof Error ? err.message : String(err)}) — guard changes rolled back; neither file was changed.\n`,
+		);
+		process.exitCode = 1;
+		return false;
+	}
 }
 
 /** A mode is a POSTURE, not just check severities: apply the preset's
  *  philosophy-dependent gates (TDD, per-edit coverage, session-end nudges)
- *  into the shared guard-rules.json, merge-preserving. Later hand edits win
- *  until the mode is re-applied; "custom" applies nothing. A failed merge
- *  (malformed existing file) warns rather than aborting — the check-policy
- *  half of the switch already landed and remains valid on its own. */
-function applyModeGuardOverrides(cwd: string, mode: ModeName): void {
+ *  into the guard-rules file of the SAME tier as the check-policy write —
+ *  `--local` keeps a personal mode switch out of the committed team file
+ *  (review 2026-08-30: it used to edit shared policy). Merge-preserving;
+ *  later hand edits win until the mode is re-applied; "custom" applies
+ *  nothing. Returns false on a refused merge (malformed target file) so the
+ *  caller can abort BEFORE the check-policy half lands. */
+function applyModeGuardOverrides(cwd: string, mode: ModeName, local: boolean): boolean {
 	const preset = getPreset(mode);
 	const overrides = preset?.guard_overrides;
-	if (!overrides) return;
+	if (!overrides) return true;
 	// SAFETY: ModeGuardOverrides is a plain nested record of booleans/strings —
 	// structurally a JsonObject; TS can't see that through the interface name.
-	const r = mergeIntoGuardRules(cwd, overrides as JsonObject);
+	const r = mergeIntoGuardRules(cwd, overrides as JsonObject, local ? "local" : "team");
 	if (!r.ok) {
 		process.stderr.write(
-			`[interlinked] mode ${mode}: gate overrides NOT applied (${r.error}) — fix ${r.path} and re-run interlinked mode ${mode}\n`,
+			`[interlinked] mode ${mode}: NOT applied (${r.error}) — fix ${r.path} and re-run interlinked mode ${mode}. Neither file was changed.\n`,
 		);
+		return false;
 	}
+	return true;
 }
 
 // -----------------------------------------------------------------------------

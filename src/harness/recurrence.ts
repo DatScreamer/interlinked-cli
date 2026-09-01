@@ -7,6 +7,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { interlinkedPath } from "../lib/interlinked-path.js";
+import { isOperationalCheckDeferral } from "./operational-check-deferrals.js";
 import {
 	deriveSignature,
 	SIGNATURE_ASSEMBLY_CAP,
@@ -338,6 +339,10 @@ export function recordHarnessCaught(opts: {
 	phase?: RecurrencePhase | undefined;
 	severity?: RecurrenceSeverity | undefined;
 }): void {
+	// Capacity/backpressure rows are retained by the structured check-results
+	// sink. They are not repeat source defects and must never propose a source
+	// ratchet through recurrence aggregation.
+	if (isOperationalCheckDeferral(opts.check_id)) return;
 	try {
 		recordRecurrenceEvent(
 			{

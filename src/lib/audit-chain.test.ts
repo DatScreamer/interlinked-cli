@@ -1,14 +1,26 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGzip, gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	canonicalJson,
 	computeEntryHash,
 	GENESIS_HASH,
+	iterateFileLines,
 	verifyAuditChain,
+	verifyAuditChainStreaming,
 } from "./audit-chain.js";
 
 type ChainedRecordType = "guard_block" | "guard_warn" | "guard_allow" | "session_end";
@@ -55,6 +67,13 @@ function writeJsonl(path: string, records: Record<string, unknown>[]): void {
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 	const text = `${records.map((r) => JSON.stringify(r)).join("\n")}\n`;
 	writeFileSync(path, text);
+}
+
+async function writeGzipChunks(
+	path: string,
+	chunks: Iterable<string> | AsyncIterable<string>,
+): Promise<void> {
+	await pipeline(Readable.from(chunks), createGzip(), createWriteStream(path));
 }
 
 describe("canonicalJson", () => {
@@ -243,7 +262,7 @@ describe("verifyAuditChain", () => {
 		expect(res.first_bad_reason).toMatch(/hash mismatch/);
 	});
 
-	it("tolerates malformed JSONL lines without breaking the chain", () => {
+	it("fails closed on a malformed JSONL line", () => {
 		const e1 = makeEntry({ previousHash: GENESIS_HASH });
 		const broken = "{not valid json";
 		const e2 = makeEntry({
@@ -259,22 +278,25 @@ describe("verifyAuditChain", () => {
 		);
 
 		const res = verifyAuditChain(tmp);
-		expect(res.valid).toBe(true);
-		expect(res.chained_events).toBe(2);
+		expect(res.valid).toBe(false);
+		expect(res.chained_events).toBe(1);
+		expect(res.first_bad_line_number).toBe(2);
+		expect(res.first_bad_reason).toMatch(/invalid audit row.*malformed JSON/);
 	});
 
-	it("ignores a record whose type field is not a string (falls through to '')", () => {
+	it("fails closed on a JSON object whose type field is not a string", () => {
 		const e1 = makeEntry({ previousHash: GENESIS_HASH });
 		const nonStringType = { ...e1, type: 42 };
 		writeJsonl(activityPath, [nonStringType]);
 
 		const res = verifyAuditChain(tmp);
-		expect(res.valid).toBe(true);
+		expect(res.valid).toBe(false);
 		expect(res.total_events).toBe(1);
 		expect(res.guard_events).toBe(0);
+		expect(res.first_bad_reason).toMatch(/no valid type/);
 	});
 
-	it("N1: treats a line that parses to valid JSON but not a keyed object (array/number) as unchained, not a crash", () => {
+	it("N1: fails closed when a physical row is valid JSON but not an audit object", () => {
 		const e1 = makeEntry({ previousHash: GENESIS_HASH });
 		const e2 = makeEntry({ previousHash: e1.hash as string, ts: "2026-05-26T10:00:01.000Z" });
 		const dir = join(tmp, ".interlinked");
@@ -285,12 +307,37 @@ describe("verifyAuditChain", () => {
 		);
 
 		const res = verifyAuditChain(tmp);
-		expect(res.valid).toBe(true);
-		// The array/number lines count toward total_events (they parsed fine)
-		// but never toward guard_events — they can't carry a chained `type`.
-		expect(res.total_events).toBe(4);
-		expect(res.guard_events).toBe(2);
-		expect(res.chained_events).toBe(2);
+		expect(res.valid).toBe(false);
+		expect(res.total_events).toBe(2);
+		expect(res.guard_events).toBe(1);
+		expect(res.chained_events).toBe(1);
+		expect(res.first_bad_line_number).toBe(2);
+		expect(res.first_bad_reason).toMatch(/not a JSON object/);
+	});
+
+	it("fails closed on an unterminated malformed tail instead of certifying the prefix", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH });
+		const dir = join(tmp, ".interlinked");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(activityPath, `${JSON.stringify(e1)}\n{"type":"guard_allow"`);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.chained_events).toBe(1);
+		expect(res.first_bad_line_number).toBe(2);
+		expect(res.first_bad_reason).toMatch(/invalid audit row.*malformed JSON/);
+	});
+
+	it("fails the streaming production verifier closed on an unterminated malformed tail", async () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH });
+		mkdirSync(join(tmp, ".interlinked"), { recursive: true });
+		writeFileSync(activityPath, `${JSON.stringify(e1)}\n{"type":"guard_block"`);
+
+		const res = await verifyAuditChainStreaming(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.chained_events).toBe(1);
+		expect(res.first_bad_line_number).toBe(2);
+		expect(res.first_bad_reason).toMatch(/invalid audit row.*malformed JSON/);
 	});
 
 	it("P1: a record carrying only the fields computeEntryHash expects still chains and hashes byte-identically", () => {
@@ -362,23 +409,39 @@ describe("verifyAuditChain — archived segments (readArchivedAuditLines)", () =
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
-	it("treats a non-array segments field as no archived segments", () => {
+	// These two cases previously asserted that an unreadable index reads as NO
+	// index — verification then covered only the live log and returned
+	// valid:true over whatever the archive held. For a tamper-evidence tool
+	// that is the worst possible answer, and it made destroying the index
+	// (trivial) strictly more effective than forging segment hashes (hard).
+	// The index now fails closed exactly like the segments it indexes; an
+	// ABSENT manifest still legitimately means "never compacted".
+	it("P: a non-array segments field FAILS verification instead of reading as empty", () => {
 		writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ segments: "oops" }));
 
 		const res = verifyAuditChain(tmp);
-		expect(res.valid).toBe(true);
-		expect(res.total_events).toBe(0);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("archive manifest");
 	});
 
-	it("returns no archived lines when manifest.json is not valid JSON", () => {
+	it("P: a manifest that is not valid JSON FAILS verification, naming the manifest", () => {
 		writeFileSync(join(archiveDir, "manifest.json"), "{not valid json");
 
 		const res = verifyAuditChain(tmp);
-		expect(res.valid).toBe(true);
-		expect(res.total_events).toBe(0);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("archive manifest");
+		// Not misattributed to the live log, which is fine — the operator needs
+		// to know to reindex, not to go inspect activity.jsonl.
+		expect(res.first_bad_reason).not.toContain("activity.jsonl unreadable");
 	});
 
-	it("sorts segments missing 'seq' first (nullish default 0) and skips a segment with no 'file'", () => {
+	it("N: an ABSENT manifest still means 'never compacted', not a failure", () => {
+		// No manifest.json written at all.
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(true);
+	});
+
+	it("sorts segments missing 'seq' first (nullish default 0)", () => {
 		const e1 = makeEntry({ previousHash: GENESIS_HASH, ts: "2026-05-26T10:00:00.000Z" });
 		const e2 = makeEntry({
 			previousHash: e1.hash as string,
@@ -396,8 +459,6 @@ describe("verifyAuditChain — archived segments (readArchivedAuditLines)", () =
 					// No `seq` — defaults to 0 via `?? 0`, sorts before seq: 1.
 					{ file: "seg-a.jsonl.gz" },
 					{ file: "seg-b.jsonl.gz", seq: 1 },
-					// No `file` field — must be skipped (continue), not crash.
-					{ seq: 5 },
 				],
 			}),
 		);
@@ -406,5 +467,162 @@ describe("verifyAuditChain — archived segments (readArchivedAuditLines)", () =
 		expect(res.valid).toBe(true);
 		expect(res.chained_events).toBe(2);
 		expect(res.last_hash).toBe(e2.hash as string);
+	});
+
+	// Split out of the case above, where it was asserted as a benign skip. A
+	// listed entry with no filename means something was archived and the
+	// pointer to it is gone — a hole in the index, which is evidence loss, not
+	// a row to step over.
+	it("P: a listed segment with no 'file' FAILS verification instead of being skipped", () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH, ts: "2026-05-26T10:00:00.000Z" });
+		writeFileSync(join(archiveDir, "seg-a.jsonl.gz"), gzipSync(`${JSON.stringify(e1)}\n`));
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "seg-a.jsonl.gz", seq: 0 }, { seq: 5 }] }),
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("archive manifest");
+	});
+
+	it("P2: an unreadable LISTED segment fails verification loudly, naming the segment", () => {
+		// A tamper-evidence reader must never skip evidence: a corrupt or
+		// missing segment the manifest promises is a verify failure, not noise.
+		writeFileSync(join(archiveDir, "seg-corrupt.jsonl.gz"), "not gzip data");
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "seg-corrupt.jsonl.gz", seq: 1 }] }),
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("seg-corrupt.jsonl.gz");
+		expect(res.first_bad_reason).toMatch(/unreadable/);
+	});
+
+	it("P3: a manifest-listed segment file that does not exist also fails loudly", () => {
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "seg-gone.jsonl.gz", seq: 1 }] }),
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("seg-gone.jsonl.gz");
+	});
+
+	it("streams a segment larger than the synchronous inflate cap and preserves its chain into the live log", async () => {
+		const e1 = makeEntry({ previousHash: GENESIS_HASH, ts: "2026-05-26T10:00:00.000Z" });
+		const e2 = makeEntry({
+			previousHash: String(e1.hash),
+			type: "guard_block",
+			ts: "2026-05-26T10:00:01.000Z",
+		});
+		const e3 = makeEntry({
+			previousHash: String(e2.hash),
+			type: "guard_warn",
+			ts: "2026-05-26T10:00:02.000Z",
+		});
+		const filler = `${JSON.stringify({ type: "post_tool_use", pad: "x".repeat(1024) })}\n`;
+		const fillerCount = Math.ceil((17 * 1024 * 1024) / Buffer.byteLength(filler));
+		function* largeSegment(): Generator<string> {
+			yield `${JSON.stringify(e1)}\n`;
+			for (let i = 0; i < fillerCount; i++) yield filler;
+			yield `${JSON.stringify(e2)}\n`;
+		}
+
+		const segment = join(archiveDir, "large.jsonl.gz");
+		await writeGzipChunks(segment, largeSegment());
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "large.jsonl.gz", seq: 1 }] }),
+		);
+		writeJsonl(join(dataDir, "activity.jsonl"), [e3]);
+
+		const legacy = verifyAuditChain(tmp);
+		expect(legacy.valid).toBe(false);
+		expect(legacy.first_bad_reason).toContain("large.jsonl.gz");
+
+		const streamed = await verifyAuditChainStreaming(tmp);
+		expect(streamed.valid).toBe(true);
+		expect(streamed.total_events).toBe(fillerCount + 3);
+		expect(streamed.chained_events).toBe(3);
+		expect(streamed.last_hash).toBe(e3.hash);
+	}, 15_000);
+
+	it("fails the synchronous verifier before reading a compressed segment beyond its cap", () => {
+		const segment = join(archiveDir, "oversized-compressed.jsonl.gz");
+		writeFileSync(segment, "not-a-gzip");
+		truncateSync(segment, 17 * 1024 * 1024);
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "oversized-compressed.jsonl.gz", seq: 1 }] }),
+		);
+
+		const res = verifyAuditChain(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("compressed segment exceeds");
+	});
+
+	it("fails the streaming verifier closed on a corrupt gzip segment", async () => {
+		writeFileSync(join(archiveDir, "corrupt-stream.jsonl.gz"), "not gzip data");
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "corrupt-stream.jsonl.gz", seq: 1 }] }),
+		);
+
+		const res = await verifyAuditChainStreaming(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("corrupt-stream.jsonl.gz");
+	});
+
+	it("fails the streaming verifier closed when one decompressed line exceeds the line cap", async () => {
+		function* oversizedLine(): Generator<string> {
+			for (let i = 0; i < 65; i++) yield "x".repeat(256 * 1024);
+			yield "\n";
+		}
+		await writeGzipChunks(join(archiveDir, "oversized-line.jsonl.gz"), oversizedLine());
+		writeFileSync(
+			join(archiveDir, "manifest.json"),
+			JSON.stringify({ segments: [{ file: "oversized-line.jsonl.gz", seq: 1 }] }),
+		);
+
+		const res = await verifyAuditChainStreaming(tmp);
+		expect(res.valid).toBe(false);
+		expect(res.first_bad_reason).toContain("audit line exceeds");
+	}, 15_000);
+});
+
+describe("iterateFileLines — chunked line streaming", () => {
+	let tmp: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "audit-chain-lines-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("P4: reassembles a line that spans chunk boundaries (tiny chunkBytes)", () => {
+		const path = join(tmp, "log.jsonl");
+		const lines = ["short", "a-much-longer-line-that-spans-many-tiny-chunks", "", "tail-no-newline"];
+		writeFileSync(path, `${lines.slice(0, 3).join("\n")}\n${lines[3]}`);
+		expect([...iterateFileLines(path, 4)]).toEqual(lines);
+	});
+
+	it("P5: yields identical lines regardless of chunk size", () => {
+		const path = join(tmp, "log.jsonl");
+		const content = Array.from({ length: 50 }, (_, i) => JSON.stringify({ i, pad: "x".repeat(i) }));
+		writeFileSync(path, `${content.join("\n")}\n`);
+		expect([...iterateFileLines(path, 7)]).toEqual([...iterateFileLines(path, 64 * 1024)]);
+	});
+
+	it("fails closed when a newline-free live record exceeds the line cap", () => {
+		const path = join(tmp, "oversized-live.jsonl");
+		writeFileSync(path, "x");
+		truncateSync(path, 17 * 1024 * 1024);
+		expect(() => [...iterateFileLines(path)]).toThrow(/audit line exceeds/);
 	});
 });

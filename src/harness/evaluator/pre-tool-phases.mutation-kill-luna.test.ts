@@ -203,7 +203,12 @@ describe("evaluatePreChecksTail mutation contracts", () => {
 
 	// test-contract: boundary — stale-branch checking includes call counts 1, 3 and excludes 4.
 	it("checks stale branches through the inclusive limit", () => {
-		vi.mocked(checkStaleBranch).mockReturnValue({ warning: "stale" });
+		// Once per expected call: a persistent mockReturnValue would survive
+		// vi.clearAllMocks() (it clears calls, not implementations) and leak
+		// "stale" into later tests in this file.
+		vi.mocked(checkStaleBranch)
+			.mockReturnValueOnce({ warning: "stale" })
+			.mockReturnValueOnce({ warning: "stale" });
 		for (const count of [1, 3]) {
 			const warnings: string[] = [];
 			evaluatePreChecksTail(event({ session_id: `s-${count}` }), session({ tool_call_count: count }), undefined, "Read", {}, warnings);
@@ -301,8 +306,10 @@ describe("evaluateErrorMemory mutation contracts", () => {
 		vi.mocked(getPatternWarnings).mockReturnValueOnce(["pattern warning"]);
 		const s = session();
 		const warnings: string[] = [];
-		evaluateErrorMemory(event(), rules({ enabled: true } as GuardRulesConfig["error_memory"]), s, g, h, "Edit", { file_path: "a.ts", old_string: "old" }, warnings);
-		expect(getPatternWarnings).toHaveBeenCalledWith([], "relative/a.ts", s, expect.any(Number));
+		// estimateEditLine reads the real filesystem, so the target must exist and
+		// contain old_string — package.json (vitest runs from the repo root) does.
+		evaluateErrorMemory(event(), rules({ enabled: true } as GuardRulesConfig["error_memory"]), s, g, h, "Edit", { file_path: "package.json", old_string: '"name"' }, warnings);
+		expect(getPatternWarnings).toHaveBeenCalledWith([], "relative/package.json", s, expect.any(Number));
 		expect(warnings).toEqual(["pattern warning"]);
 	});
 

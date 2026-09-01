@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearManifestCache } from "../harness/mutation/manifest.js";
+import { tryAcquireProjectHeavyProcessLease } from "../harness/project-heavy-process-lock.js";
 import type { MeasureOneResult } from "./mutation-measure-support.js";
 import {
 	eligibleMutationFiles,
@@ -140,8 +141,9 @@ describe("summarizeSweep", () => {
 			result("b.ts", { status: "busy" }),
 			result("c.ts", { status: "error", reason: "boom" }),
 			result("d.ts", { status: "not_measurable", reason: "no_tests" }),
+			result("e.ts", { status: "partial", reason: "engine exited 2" }),
 		]);
-		expect(s).toMatchObject({ measured: 1, busy: 1, errors: 1, notMeasurable: 1 });
+		expect(s).toMatchObject({ measured: 1, partial: 1, busy: 1, errors: 1, notMeasurable: 1 });
 	});
 
 	it("P2: sums the survivor delta only over files that actually re-measured", () => {
@@ -162,7 +164,7 @@ describe("summarizeSweep", () => {
 
 	it("N1: an empty sweep summarizes to zeros, not NaN", () => {
 		const s = summarizeSweep([]);
-		expect(s).toMatchObject({ measured: 0, busy: 0, errors: 0, survivorsBefore: 0, survivorsAfter: 0 });
+		expect(s).toMatchObject({ measured: 0, partial: 0, busy: 0, errors: 0, survivorsBefore: 0, survivorsAfter: 0 });
 	});
 
 	it("N2: local refusals are counted as errors, not as measurements", () => {
@@ -216,6 +218,12 @@ describe("renderSweepLine", () => {
 		expect(line).not.toContain("not_measurable: no_tests");
 	});
 
+	it("partial evidence is visible but never rendered with the measured checkmark", () => {
+		const line = renderSweepLine(result("src/a.ts", { status: "partial", reason: "missing engine evidence" }));
+		expect(line).toContain("partial evidence — not recorded");
+		expect(line).not.toContain("✓");
+	});
+
 	it("mutant-kill: an unrecognized status uses the generic 'status: reason' format with a cross icon, not the not-measurable format", () => {
 		const line = renderSweepLine(result("src/a.ts", { status: "error", reason: "boom" }));
 		expect(line).toContain("✗");
@@ -249,7 +257,7 @@ describe("renderSweepSummary", () => {
 
 	it("mutant-kill: the per-status counts line reports each status label with its own count", () => {
 		const text = renderSweepSummary(summarizeSweep([result("a.ts"), result("b.ts", { status: "busy" })]), {});
-		expect(text).toContain("1 measured · 1 busy · 0 not measurable · 0 failed");
+		expect(text).toContain("1 measured · 0 partial · 1 busy · 0 not measurable · 0 failed");
 	});
 
 	it("mutant-kill: zero measured files says the exact phrase, newline-joined, not a survivor-delta line", () => {
@@ -568,6 +576,28 @@ describe("mutationSweepCommand", () => {
 		);
 		expect(seenUrls[0]).toEqual(["http://a.invalid", "http://b.invalid"]);
 		expect(process.exitCode).toBe(0);
+	});
+
+	it("defers without measuring when another process owns the project heavyweight lane", async () => {
+		writeManifest(survivedManifest({ "src/here.ts": [{ mutantId: "m1" }] }));
+		const release = tryAcquireProjectHeavyProcessLease(cwd);
+		expect(release).not.toBeNull();
+		let called = false;
+		try {
+			await mutationSweepCommand(
+				{ cwd, json: true, runnerUrl: ["http://runner.invalid"] },
+				async (): Promise<MeasureOneResult> => {
+					called = true;
+					return result("src/here.ts");
+				},
+			);
+		} finally {
+			release?.();
+		}
+		expect(called).toBe(false);
+		expect(process.exitCode).toBe(1);
+		expect(logs.join("\n")).toMatch(/sweep deferred/i);
+		expect(logs.join("\n")).toMatch(/no files were measured/i);
 	});
 
 	it("P6: passes record:true and surface:'sweep' to every measured file — a sweep that never records changes nothing", async () => {

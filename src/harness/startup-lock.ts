@@ -26,27 +26,35 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
 import { join } from "node:path";
-import { daemonSocketPaths, isDaemonSocketServing } from "./session-paths.js";
+import { daemonSocketPaths, isDaemonSocketReady } from "./session-paths.js";
 
 /** Lock file name, under `.interlinked/`. Hidden so it never shows up in the
  *  data-directory INDEX as a durable artifact — it is transient by design. */
 export const STARTUP_LOCK_FILE = ".harness-start.lock";
 
-/** A lock older than this is presumed abandoned. A cold daemon boot is ~1s;
- *  15s covers boot + socket listen on a slow machine with headroom, while
- *  staying short enough that a genuinely wedged holder cannot block starts for
- *  longer than one agent turn. */
-export const STARTUP_LOCK_TTL_MS = 15_000;
+/** A lock older than this is presumed abandoned. Canonical startup can wait up
+ * to 60s for a cold compiler- and memory-pressure-bound daemon. Keep a margin
+ * above that window so scheduler jitter cannot make a live child stealable at
+ * the readiness deadline. Generated hooks cannot remain alive to heartbeat
+ * the child-owned lease, so they share this same bound. */
+export const STARTUP_LOCK_TTL_MS = 75_000;
 
 /** How long a loser waits for the winner's socket before giving up and saying
  *  so. Deliberately longer than a normal boot and shorter than a hook's
  *  patience: the loser reports, it does not hang the CLI. */
 export const STARTUP_WAIT_MS = 8_000;
+
+/** A newly O_EXCL-created lock exists briefly before its JSON holder bytes are
+ * visible. An unreadable file inside this grace is an initializing mutex, not
+ * stale metadata that a contender may unlink. */
+export const STARTUP_LOCK_INITIALIZATION_GRACE_MS = 2_000;
 
 /** Socket poll interval while waiting for the winner. */
 const STARTUP_POLL_MS = 250;
@@ -119,6 +127,43 @@ function writeLockFile(path: string, pid: number, nowMs: number): boolean {
 	}
 }
 
+function startupLockIsInitializing(path: string, nowMs: number): boolean {
+	try {
+		return nowMs - statSync(path).mtimeMs <= STARTUP_LOCK_INITIALIZATION_GRACE_MS;
+	} catch {
+		return false;
+	}
+}
+
+let lockTempSequence = 0;
+
+/** Atomically replace a holder only while the exact owner snapshot still
+ * matches. Readers therefore observe the old or new valid JSON, never the
+ * truncate-before-write interval that used to look like a stale lock. */
+function replaceStartupLockHolder(
+	repoRoot: string,
+	expected: StartupLockHolder,
+	next: StartupLockHolder,
+): boolean {
+	const path = startupLockPath(repoRoot);
+	const tempPath = `${path}.${process.pid}.${++lockTempSequence}.tmp`;
+	try {
+		writeFileSync(tempPath, JSON.stringify(next), { flag: "wx" });
+		const current = readStartupLockHolder(repoRoot);
+		if (current === null || current.pid !== expected.pid || current.at !== expected.at) return false;
+		renameSync(tempPath, path);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			/* intentional: rename consumed it, or creation failed */
+		}
+	}
+}
+
 /**
  * Try to become THE process that starts the daemon for `repoRoot`.
  *
@@ -141,6 +186,9 @@ export function acquireStartupLock(repoRoot: string, nowMs: number = Date.now())
 	if (writeLockFile(path, process.pid, nowMs)) return { acquired: true, path, release };
 
 	const holder = readStartupLockHolder(repoRoot);
+	if (holder === null && startupLockIsInitializing(path, nowMs)) {
+		return { acquired: false, holder: null };
+	}
 	if (!isStartupLockStale(holder, nowMs)) return { acquired: false, holder };
 	try {
 		unlinkSync(path);
@@ -155,7 +203,11 @@ export function acquireStartupLock(repoRoot: string, nowMs: number = Date.now())
  *  alone — releasing another process's mutex is how a herd restarts. */
 export function releaseStartupLock(repoRoot: string): void {
 	const holder = readStartupLockHolder(repoRoot);
-	if (holder !== null && holder.pid !== process.pid) return;
+	// Null can mean another O_EXCL winner has created the inode but has not yet
+	// finished writing its holder JSON. Never unlink ambiguous metadata: the
+	// initialization grace protects acquisition, and release must honor the same
+	// window or it can erase the new winner's pathname out from under its fd.
+	if (holder === null || holder.pid !== process.pid) return;
 	try {
 		unlinkSync(startupLockPath(repoRoot));
 	} catch {
@@ -164,12 +216,32 @@ export function releaseStartupLock(repoRoot: string): void {
 }
 
 /**
+ * Transfer a startup lease owned by THIS process to the daemon it spawned.
+ *
+ * Hook entry points are intentionally short-lived. Leaving the lease under the
+ * hook PID makes it stale the instant that hook exits, so the next concurrent
+ * hook steals it and spawns another daemon. The child PID keeps the lease live
+ * across processes until the daemon either starts serving or dies. Ownership
+ * is checked before the rewrite; another process's lease is never adopted.
+ */
+export function transferStartupLock(
+	repoRoot: string,
+	input: { childPid: number; nowMs?: number },
+): boolean {
+	const { childPid, nowMs = Date.now() } = input;
+	if (!Number.isSafeInteger(childPid) || childPid <= 0) return false;
+	const holder = readStartupLockHolder(repoRoot);
+	if (holder === null || holder.pid !== process.pid) return false;
+	return replaceStartupLockHolder(repoRoot, holder, { pid: childPid, at: nowMs });
+}
+
+/**
  * Refresh a lock THIS process holds so a legitimately slow start does not go
  * stale under a concurrent caller mid-poll.
  *
  * Root cause this closes (2026-08-22 postmortem): `isStartupLockStale`
  * declares a lock stale once its `at` timestamp is older than
- * `STARTUP_LOCK_TTL_MS` (15s) — REGARDLESS of whether the holder is still
+ * `STARTUP_LOCK_TTL_MS` — REGARDLESS of whether the holder is still
  * alive. `daemonizeHarness` can legitimately poll for up to 60s (a cold
  * TypeScript compile, or a swap-bound machine under load), so the lock's
  * fixed acquisition timestamp goes stale from every OTHER caller's point of
@@ -184,13 +256,20 @@ export function releaseStartupLock(repoRoot: string): void {
  * `releaseStartupLock`; never throws.
  */
 export function touchStartupLock(repoRoot: string, nowMs: number = Date.now()): void {
+	touchStartupLockHolder(repoRoot, { holderPid: process.pid, nowMs });
+}
+
+/** Heartbeat a lease already transferred to a known child while the parent
+ * CLI polls that child's socket. The expected PID is explicit and must match
+ * the file, so this cannot refresh an unrelated process's lease. */
+export function touchStartupLockHolder(
+	repoRoot: string,
+	input: { holderPid: number; nowMs?: number },
+): void {
+	const { holderPid, nowMs = Date.now() } = input;
 	const holder = readStartupLockHolder(repoRoot);
-	if (holder === null || holder.pid !== process.pid) return;
-	try {
-		writeFileSync(startupLockPath(repoRoot), JSON.stringify({ pid: process.pid, at: nowMs }));
-	} catch {
-		/* intentional: best-effort heartbeat — a missed touch only risks a steal */
-	}
+	if (holder === null || holder.pid !== holderPid) return;
+	replaceStartupLockHolder(repoRoot, holder, { pid: holderPid, at: nowMs });
 }
 
 export interface WaitOptions {
@@ -213,7 +292,7 @@ export interface WaitOptions {
 export async function waitForDaemonSocket(repoRoot: string, opts: WaitOptions = {}): Promise<boolean> {
 	const deadline = Date.now() + (opts.timeout_ms ?? STARTUP_WAIT_MS);
 	const pollMs = opts.poll_ms ?? STARTUP_POLL_MS;
-	const probe = opts.probe ?? ((p: string) => isDaemonSocketServing(p, { timeout_ms: pollMs }));
+	const probe = opts.probe ?? ((p: string) => isDaemonSocketReady(p, { timeout_ms: pollMs }));
 	const list = opts.listSockets ?? daemonSocketPaths;
 	const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 	for (;;) {

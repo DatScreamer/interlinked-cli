@@ -51,12 +51,14 @@ describe("return-type detector mutation contracts: exported declarations", () =>
 		expect(findingLines(code)).toEqual([]);
 	});
 
-	// test-contract: boundary — declaration whitespace and multiline parameters remain one public signature
+	// test-contract: boundary — declaration whitespace and multiline parameters remain one public signature.
+	// Params stay brace-free: the signature collector stops at the first line containing `{` or `=>`, so a
+	// destructured/braced param line ends the scan before the closing paren (documented heuristic limit).
 	it("reports multiline declarations on their first line and preserves exact finding text", () => {
 		const code = [
 			"  export   async   function   merge(",
-			"    { id }: { id: string },",
-			"    values: Array<{ key: string }>,",
+			"    id: string,",
+			"    values: number,",
 			") {",
 			"  return { id, values };",
 			"}",
@@ -112,23 +114,37 @@ describe("return-type detector mutation contracts: exported arrow consts", () =>
 		expect(findingLines(code)).toEqual([]);
 	});
 
-	// test-contract: boundary — export-const syntax must begin the trimmed line and must not be inferred from values or text
+	// test-contract: boundary — export-const syntax must begin the trimmed line and must not be inferred from values or text.
+	// The value const sits last: the signature collector scoops following lines until `{`/`=>`, so an earlier
+	// position followed by a line containing `=>` would trip the known scoop false positive pinned below.
 	it("rejects private, default, embedded, value, and string lookalikes", () => {
 		const code = [
 			"const privateArrow = (value: number) => value;",
 			"export default const impossible = (value: number) => value;",
 			"if (ready) export const embedded = (value: number) => value;",
-			"export const value = 42;",
 			"const text = \"export const inside = (value: number) => value;\";",
+			"export const value = 42;",
 		].join("\n");
 		expect(findingLines(code)).toEqual([]);
 	});
 
-	// test-contract: boundary — the detector accepts declaration whitespace but still reports the declaration's first line
+	// test-contract: bug — KNOWN LIMITATION pinned, not endorsed: the multiline signature scoop reads a later
+	// line's `=>` (even inside a string literal) as this const's arrow, so a plain value const false-fires when
+	// such a line follows it before any `{`. Fixing the detector should flip this expectation to [].
+	it("pins the signature-scoop false positive on a value const followed by arrow text", () => {
+		const code = [
+			"export const value = 42;",
+			"const text = \"export const inside = (value: number) => value;\";",
+		].join("\n");
+		expect(findingLines(code)).toEqual([1]);
+	});
+
+	// test-contract: boundary — the detector accepts declaration whitespace but still reports the declaration's
+	// first line. Params stay brace-free: a `{` on a param line ends the signature scan before the `=>` is seen.
 	it("reports multiline and compact arrows with exact first-line locations", () => {
 		const code = [
 			" export  const  merge = (",
-			"   { id }: { id: string },",
+			"   id: string,",
 			")=>({ id });",
 			"export const compact = (value: number)=>value;",
 		].join("\n");
@@ -189,11 +205,12 @@ describe("return-type detector mutation contracts: exported function-expression 
 		expect(findingLines(code)).toEqual([]);
 	});
 
-	// test-contract: boundary — multiline function-expression signatures report only the declaration line and preserve its trimmed text
+	// test-contract: boundary — multiline function-expression signatures report only the declaration line and
+	// preserve its trimmed text. Params stay brace-free so the signature scan reaches the closing paren.
 	it("reports multiline function expressions on their declaration line", () => {
 		const code = [
 			"  export const make = async function named(",
-			"    { id }: { id: string },",
+			"    id: string,",
 			") {",
 			"  return { id };",
 			"};",

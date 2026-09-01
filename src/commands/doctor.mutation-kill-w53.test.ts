@@ -10,6 +10,17 @@ vi.mock("../lib/api-client.js", () => ({
 	getClient: () => getClientMock(),
 }));
 
+// Fixture isolation: the drift check reads the REAL repo's installer
+// manifest when unmocked (these tests run with the repo as cwd), which
+// shifted the pass counts this suite pins.
+vi.mock("./doctor-install-drift.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./doctor-install-drift.js")>()),
+	installedHookDriftChecks: () => [],
+}));
+vi.mock("./doctor-posture.js", () => ({
+	postureEnumChecks: () => [],
+}));
+
 const resolveAuthTokenMock = vi.fn();
 vi.mock("../lib/auth.js", () => ({
 	resolveAuthToken: (cwd: string) => resolveAuthTokenMock(cwd),
@@ -236,7 +247,7 @@ describe("normal-mode text rendering — positive (must fire)", () => {
 		collectionLivenessCheckMock.mockReturnValue({ status: "pass", message: "ok" });
 		thinkingCaptureCheckMock.mockReturnValue({ name: "think", status: "warn", message: "m" });
 		authTokenCheckMock.mockReturnValue({ name: "auth", status: "pass", message: "ok" });
-        	hookVersionChecksMock.mockReturnValue([{ name: "hv", status: "pass", message: "ok" }]);
+		hookVersionChecksMock.mockReturnValue([{ name: "hv", status: "pass", message: "ok" }]);
 		resolveAuthTokenMock.mockReturnValue(null);
 
 		await doctorCommand({});

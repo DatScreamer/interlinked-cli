@@ -32,6 +32,15 @@ describe("findManifestFiles", () => {
 		expect(findManifestFiles(root, (n) => n.endsWith(".csproj"))).toEqual(["Real.csproj"]);
 	});
 
+	it("skips tool-managed tree copies (.stryker-tmp sandboxes, .wrangler output)", () => {
+		mkdirSync(join(root, ".stryker-tmp", "sandbox-abc", "src"), { recursive: true });
+		mkdirSync(join(root, ".wrangler", "tmp"), { recursive: true });
+		writeFileSync(join(root, ".stryker-tmp", "sandbox-abc", "src", "copy.ts"), "");
+		writeFileSync(join(root, ".wrangler", "tmp", "bundle.ts"), "");
+		writeFileSync(join(root, "real.ts"), "");
+		expect(findManifestFiles(root, (n) => n.endsWith(".ts"))).toEqual(["real.ts"]);
+	});
+
 	it("does not traverse symlinked directories (no escape out of the tree)", () => {
 		const outside = mkdtempSync(join(tmpdir(), "walk-outside-"));
 		writeFileSync(join(outside, "Escaped.csproj"), "");

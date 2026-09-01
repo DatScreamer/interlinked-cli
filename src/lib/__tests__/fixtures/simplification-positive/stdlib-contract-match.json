@@ -1,0 +1,15 @@
+{
+  "schema_version": "simplification-benchmark-pair/v1",
+  "fixture_id": "positive-stdlib-contract-match",
+  "remedy": "stdlib",
+  "contract": {
+    "description": "A custom helper and a pinned standard API pass the same edge-case fixture.",
+    "required_behaviors": ["basename strips directory components", "trailing separators follow the pinned runtime contract"],
+    "scorer_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "variants": {
+    "overbuilt": [{ "path": "src/name.ts", "language": "typescript", "content": "export function basename(path: string) { const parts = path.split('/'); return parts[parts.length - 1] ?? ''; }\n" }],
+    "minimal": [{ "path": "src/name.ts", "language": "typescript", "content": "export { basename } from 'node:path';\n" }]
+  },
+  "expected": { "overbuilt_matching_findings_min": 1, "minimal_total_findings_max": 0, "rank_margin_min": 0.1, "protected_false_positives_max": 0 }
+}

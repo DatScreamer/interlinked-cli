@@ -50,7 +50,7 @@ describe("parseCodexRolloutText", () => {
 			{
 				timestamp: "2026-08-20T15:48:41Z",
 				type: "turn_context",
-				payload: { model: "gpt-5.6-luna" },
+				payload: { model: "vendor-model-luna" },
 			},
 			{
 				timestamp: "2026-08-20T15:48:42Z",
@@ -69,7 +69,7 @@ describe("parseCodexRolloutText", () => {
 			agent_id: "sub-thread",
 			attribution_agent: "/root/kill_a_survivors",
 			is_sidechain: true,
-			model: "gpt-5.6-luna",
+			model: "vendor-model-luna",
 		});
 	});
 

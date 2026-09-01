@@ -70,6 +70,7 @@ import { runPostToolPipeline } from "./post-tool-pipeline.js";
 function context() {
     return {
         cwd: "/repo",
+		interlinkedDir: "/repo/.interlinked",
         rules: { rules: [{ id: "rule" }], content_scanner: { enabled: true } },
         contentScanner: {},
         compiledAllowlist: [],

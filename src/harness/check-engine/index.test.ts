@@ -7,9 +7,8 @@
 //   - ./tool-runners/*.js     → every runner the registry references
 //   - ./tool-runners/biome.js → runBiomeOverlay (overlay path)
 //   - ./tool-runners/tsc-overlay.js → runTscOverlay / clearTscOverlayCache
-//   - ./pool.js               → createLimiter (kept REAL — deterministic)
+//   - ../project-heavy-process-lock.js → faithful cross-process lease double
 //   - node:fs                 → statSync (mtime cache control)
-//   - node:os                 → cpus (concurrency-cap control)
 // No real subprocesses, filesystem, network, or wall-clock dependence.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,14 +37,6 @@ vi.mock("node:fs", () => ({
 		}
 		return { mtimeMs: v };
 	},
-}));
-
-// ---------------------------------------------------------------------------
-// node:os — cpus() controls the parallel limiter cap in runChecksAsync.
-// ---------------------------------------------------------------------------
-let cpuCount = 4;
-vi.mock("node:os", () => ({
-	cpus: () => Array.from({ length: cpuCount }, () => ({})),
 }));
 
 // ---------------------------------------------------------------------------
@@ -162,6 +153,12 @@ vi.mock("./tool-runners/biome.js", () => ({
 vi.mock("./tool-runners/tsc-overlay.js", () => ({
 	runTscOverlay: (args: { projectRoot: string; filePath: string; content: string }) =>
 		tscOverlaySpy(args),
+	// The engine's typed path routes through the same spy, wrapped in the
+	// "ok" outcome; unavailable passthrough is pinned in tsc-overlay tests.
+	runTscOverlayTyped: (args: { projectRoot: string; filePath: string; content: string }) => ({
+		status: "ok",
+		findings: tscOverlaySpy(args),
+	}),
 	clearTscOverlayCache: (root: string) => clearTscOverlayCacheSpy(root),
 }));
 
@@ -216,49 +213,23 @@ vi.mock("./tool-runners/swift.js", () => ({
 	runSwiftLintAsync: mkAsyncRunner("swiftlint"),
 }));
 
-// ./pool.js — a faithful re-implementation of createLimiter (a single-counter
-// FIFO queue, same as the real one) PLUS a one-shot fault-injection toggle.
-// Default behavior matches the real limiter exactly, so every async test runs
-// unchanged; `poolFailNextTasks` lets a single test force the wrapped task to
-// REJECT, which is the only way to drive the `r.status !== "fulfilled"` arm of
-// the Promise.allSettled loop (runOne itself swallows all runner errors).
-let poolFailNextTasks = 0;
-vi.mock("./pool.js", () => ({
-	createLimiter: (maxConcurrent: number) => {
-		const cap = Math.max(1, maxConcurrent | 0);
-		let inFlight = 0;
-		const queue: Array<() => void> = [];
-		const acquire = (): Promise<void> => {
-			if (inFlight < cap) {
-				inFlight++;
-				return Promise.resolve();
-			}
-			return new Promise<void>((res) => {
-				queue.push(() => {
-					inFlight++;
-					res();
-				});
-			});
-		};
-		const release = (): void => {
-			inFlight--;
-			const next = queue.shift();
-			if (next) next();
-		};
-		return <T>(task: () => Promise<T>): Promise<T> =>
-			acquire().then(async () => {
-				try {
-					if (poolFailNextTasks > 0) {
-						poolFailNextTasks -= 1;
-						throw new Error("injected limiter rejection");
-					}
-					return await task();
-				} finally {
-					release();
-				}
-			});
-	},
-}));
+// Cross-process lease — faithful project-wide, non-queueing admission double.
+// The closure is shared by every CheckEngine instance in this test module.
+vi.mock("../project-heavy-process-lock.js", () => {
+	let inFlight = false;
+	return {
+		tryAcquireProjectHeavyProcessLease: (_root: string) => {
+			if (inFlight) return null;
+			inFlight = true;
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				inFlight = false;
+			};
+		},
+	};
+});
 
 // ---------------------------------------------------------------------------
 // System under test — imported AFTER all vi.mock declarations are hoisted.
@@ -297,8 +268,6 @@ beforeEach(() => {
 	asyncCalls.length = 0;
 	syncOutputs.clear();
 	asyncOutputs.clear();
-	cpuCount = 4;
-	poolFailNextTasks = 0;
 	discoverToolsSpy.mockClear();
 	discoverSingleToolSpy.mockClear();
 	formatToolReportSpy.mockClear();
@@ -553,19 +522,17 @@ describe("CheckEngine.runChecks", () => {
 	});
 
 	it("filters to the options.tools allow-list (skips others)", () => {
-		discoverToolsImpl = () => [avail("tsc", true), avail("biome", true)];
+		discoverSingleToolImpl = (id) => avail(id, true);
 		const eng = new CheckEngine(ROOT);
 		const rep = eng.runChecks(
 			{ projectRoot: ROOT, mode: "file" },
 			{ tools: ["tsc"] },
 		);
 		expect(rep.toolsRun.map((t) => t.id)).toEqual(["tsc"]);
-		expect(rep.toolsSkipped.map((t) => t.id)).toEqual(["biome"]);
+		expect(rep.toolsSkipped).toEqual([]);
 		expect(syncCalls.map((c) => c.id)).toEqual(["tsc"]);
-		// biome was available-but-deselected → config_disabled category.
-		const biomeSkip = rep.skipped.find((s) => s.check === "biome");
-		expect(biomeSkip?.category).toBe("config_disabled");
-		expect(biomeSkip?.reason).toBe("skipped by options");
+		expect(discoverToolsSpy).not.toHaveBeenCalled();
+		expect(discoverSingleToolSpy).toHaveBeenCalledWith("tsc", ROOT);
 	});
 
 	it("respects options.skipTools", () => {
@@ -619,7 +586,76 @@ describe("CheckEngine.runChecks", () => {
 // CheckEngine.runChecksAsync
 // ===========================================================================
 describe("CheckEngine.runChecksAsync", () => {
-	it("runs concurrency-safe tools in parallel via async runners + dedups", async () => {
+	it("declines a concurrent request burst and runs the admitted batch one tool at a time", async () => {
+		discoverSingleToolImpl = (id) => avail(id, true);
+		let active = 0;
+		let peak = 0;
+		let releaseRunners: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseRunners = resolve;
+		});
+		let observeFirstStart: () => void = () => {};
+		const firstStarted = new Promise<void>((resolve) => {
+			observeFirstStart = resolve;
+		});
+		const boundedRunner = async (): Promise<CheckResult[]> => {
+			active++;
+			peak = Math.max(peak, active);
+			observeFirstStart();
+			await release;
+			active--;
+			return [];
+		};
+		asyncOutputs.set("tsc", boundedRunner);
+		asyncOutputs.set("biome", boundedRunner);
+
+		const first = new CheckEngine(ROOT);
+		const admitted = first.runChecksAsync(
+			{ projectRoot: ROOT, mode: "file" },
+			{ tools: ["tsc", "biome"] },
+		);
+
+		await firstStarted;
+		expect(peak).toBe(1);
+		let eventLoopTurn = false;
+		setTimeout(() => {
+			eventLoopTurn = true;
+		}, 0);
+		const burst = await Promise.all(
+			Array.from({ length: 32 }, () =>
+				new CheckEngine(ROOT).runChecksAsync(
+					{ projectRoot: ROOT, mode: "file" },
+					{ tools: ["tsc"] },
+				),
+			),
+		);
+		expect(burst).toHaveLength(32);
+		expect(
+			burst.every(
+				(report) =>
+					report.toolsRun.length === 0 &&
+					report.skipped[0]?.category === "resource_busy" &&
+					report.skipped[0]?.check === "tsc",
+			),
+		).toBe(true);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(eventLoopTurn).toBe(true);
+		expect(asyncCalls).toHaveLength(1);
+		releaseRunners();
+		await admitted;
+		expect(peak).toBe(1);
+		expect(asyncCalls).toHaveLength(2);
+
+		// Release is real: the next request gets a slot and executes.
+		await new CheckEngine(ROOT).runChecksAsync(
+			{ projectRoot: ROOT, mode: "file" },
+			{ tools: ["tsc"] },
+		);
+		expect(asyncCalls).toHaveLength(3);
+		expect(discoverToolsSpy).not.toHaveBeenCalled();
+	});
+
+	it("runs concurrency-safe tools sequentially via async runners + dedups", async () => {
 		discoverToolsImpl = () => [avail("tsc", true), avail("biome", true)];
 		asyncOutputs.set("tsc", async () => [
 			result({ tool: "tsc", severity: "error", file: "a.ts", line: 7, message: "dup" }),
@@ -640,9 +676,9 @@ describe("CheckEngine.runChecksAsync", () => {
 		expect(asyncCalls.every((c) => c.timeoutMs === 30_000)).toBe(true);
 	});
 
-	it("runs sequential (unsafe) tools after the parallel batch using the sync runner", async () => {
-		// cargo-check is concurrencySafe:false and sync-only → sequential group,
-		// wrapped in Promise.resolve(meta.runner(...)).
+	it("never invokes a sync-only runner on the daemon-safe async path", async () => {
+		// cargo-check is concurrencySafe:false and sync-only. Running it here
+		// would block every daemon socket despite the method being async.
 		discoverToolsImpl = () => [avail("tsc", true), avail("cargo-check", true)];
 		asyncOutputs.set("tsc", async () => [result({ tool: "tsc", file: "a.ts", line: 1 })]);
 		syncOutputs.set("cargo-check", () => [
@@ -650,14 +686,19 @@ describe("CheckEngine.runChecksAsync", () => {
 		]);
 		const eng = new CheckEngine(ROOT);
 		const rep = await eng.runChecksAsync({ projectRoot: ROOT, mode: "project" });
-		expect(rep.results).toHaveLength(2);
+		expect(rep.results).toHaveLength(1);
 		expect(asyncCalls.map((c) => c.id)).toEqual(["tsc"]);
-		expect(syncCalls.map((c) => c.id)).toEqual(["cargo-check"]);
-		// metrics ordering: parallel results first, then sequential.
+		expect(syncCalls).toHaveLength(0);
 		expect(rep.metrics.map((m) => m.tool)).toEqual(["tsc", "cargo-check"]);
+		expect(rep.toolsRun.map((tool) => tool.id)).toEqual(["tsc"]);
+		expect(rep.skipped).toContainEqual({
+			check: "cargo-check",
+			reason: "async runner unavailable; run `interlinked verify` for this tool",
+			category: "error",
+		});
 	});
 
-	it("isolates a crashing async runner: empty results, no findings, batch survives", async () => {
+	it("isolates a crashing async runner without calling it clean", async () => {
 		discoverToolsImpl = () => [avail("tsc", true), avail("biome", true)];
 		asyncOutputs.set("tsc", async () => {
 			throw new Error("tsc spawn blew up");
@@ -670,9 +711,14 @@ describe("CheckEngine.runChecksAsync", () => {
 		expect(rep.results[0]?.tool).toBe("biome");
 		const tscMetric = rep.metrics.find((m) => m.tool === "tsc");
 		expect(tscMetric?.findingCount).toBe(0);
+		expect(rep.skipped).toContainEqual({
+			check: "tsc",
+			reason: "tsc spawn blew up",
+			category: "error",
+		});
 	});
 
-	it("isolates a crashing SEQUENTIAL sync runner too", async () => {
+	it("defers a sync-only runner without calling it", async () => {
 		discoverToolsImpl = () => [avail("cargo-check", true)];
 		syncOutputs.set("cargo-check", () => {
 			throw new Error("cargo exploded");
@@ -681,9 +727,15 @@ describe("CheckEngine.runChecksAsync", () => {
 		const rep = await eng.runChecksAsync({ projectRoot: ROOT, mode: "project" });
 		expect(rep.results).toHaveLength(0);
 		expect(rep.metrics.find((m) => m.tool === "cargo-check")?.findingCount).toBe(0);
+		expect(syncCalls).toHaveLength(0);
+		expect(rep.skipped).toContainEqual({
+			check: "cargo-check",
+			reason: "async runner unavailable; run `interlinked verify` for this tool",
+			category: "error",
+		});
 	});
 
-	it("emits an empty metric (no crash) for an available tool absent from the registry", async () => {
+	it("defers an available tool absent from the async registry", async () => {
 		// dep-audit passes the filter but has no TOOL_REGISTRY entry → runOne
 		// returns the zeroed metric branch.
 		discoverToolsImpl = () => [avail("dep-audit", true)];
@@ -694,10 +746,15 @@ describe("CheckEngine.runChecksAsync", () => {
 			{ tool: "dep-audit", elapsedMs: 0, findingCount: 0, cacheHit: false },
 		]);
 		expect(rep.results).toHaveLength(0);
+		expect(rep.toolsRun).toEqual([]);
+		expect(rep.skipped).toContainEqual({
+			check: "dep-audit",
+			reason: "no async check runner is registered; run `interlinked verify` for this tool",
+			category: "error",
+		});
 	});
 
-	it("clamps the limiter to >=1 on a single-core machine and still runs parallel tools", async () => {
-		cpuCount = 1; // cpus-1 = 0 → Math.max(1, 0) = 1
+	it("runs every safe tool in the finite admitted batch", async () => {
 		discoverToolsImpl = () => [avail("tsc", true), avail("biome", true)];
 		asyncOutputs.set("tsc", async () => [result({ tool: "tsc", file: "a.ts", line: 1 })]);
 		asyncOutputs.set("biome", async () => [result({ tool: "biome", file: "b.ts", line: 1 })]);
@@ -708,11 +765,7 @@ describe("CheckEngine.runChecksAsync", () => {
 	});
 
 	it("applies options.tools / skipTools filtering and skip categorization", async () => {
-		discoverToolsImpl = () => [
-			avail("tsc", true),
-			avail("biome", true),
-			avail("ruff", false, { reason: "no config" }),
-		];
+		discoverSingleToolImpl = (id) => avail(id, true);
 		asyncOutputs.set("tsc", async () => []);
 		const eng = new CheckEngine(ROOT);
 		const rep = await eng.runChecksAsync(
@@ -720,9 +773,9 @@ describe("CheckEngine.runChecksAsync", () => {
 			{ tools: ["tsc"] },
 		);
 		expect(rep.toolsRun.map((t) => t.id)).toEqual(["tsc"]);
-		expect(rep.skipped.find((s) => s.check === "biome")?.category).toBe("config_disabled");
-		expect(rep.skipped.find((s) => s.check === "ruff")?.category).toBe("tool_missing");
-		expect(rep.skipped.find((s) => s.check === "ruff")?.reason).toBe("no config");
+		expect(rep.toolsSkipped).toEqual([]);
+		expect(discoverToolsSpy).not.toHaveBeenCalled();
+		expect(discoverSingleToolSpy).toHaveBeenCalledWith("tsc", ROOT);
 	});
 
 	it("falls back to 'skipped by options' reason for an available deselected tool", async () => {
@@ -747,22 +800,6 @@ describe("CheckEngine.runChecksAsync", () => {
 		expect(ruffSkip?.category).toBe("tool_missing");
 	});
 
-	it("drops a rejected parallel settle and keeps the fulfilled ones", async () => {
-		// Force the limiter to reject ONE parallel task. Promise.allSettled
-		// records it as "rejected", so the `r.status === 'fulfilled'` guard
-		// filters it out (no metric, no results) while the other safe tool's
-		// result still lands.
-		poolFailNextTasks = 1;
-		discoverToolsImpl = () => [avail("tsc", true), avail("biome", true)];
-		asyncOutputs.set("tsc", async () => [result({ tool: "tsc", file: "a.ts", line: 1 })]);
-		asyncOutputs.set("biome", async () => [result({ tool: "biome", file: "b.ts", line: 1 })]);
-		const eng = new CheckEngine(ROOT);
-		const rep = await eng.runChecksAsync({ projectRoot: ROOT, mode: "file" });
-		// Exactly one of the two parallel tasks survived (whichever wasn't the
-		// injected rejection). The metric/result count reflects the dropped one.
-		expect(rep.results).toHaveLength(1);
-		expect(rep.metrics).toHaveLength(1);
-	});
 });
 
 // ===========================================================================
@@ -813,6 +850,37 @@ describe("CheckEngine.runDepAudit", () => {
 // CheckEngine.getDiagnostics — mtime cache, extension dispatch, stat failures.
 // ===========================================================================
 describe("CheckEngine.getDiagnostics", () => {
+	it("reads a cold diagnostic cache without discovery or tool execution", () => {
+		const file = "/proj/src/cold.ts";
+		statTable.set(file, 1);
+		discoverSingleToolImpl = (id) => avail(id, true);
+
+		expect(new CheckEngine(ROOT).getCachedDiagnostics(file)).toEqual([]);
+		expect(discoverSingleToolSpy).not.toHaveBeenCalled();
+		expect(discoverToolsSpy).not.toHaveBeenCalled();
+		expect(syncCalls).toHaveLength(0);
+	});
+
+	it("returns only an mtime-matched cache snapshot without re-running tools", () => {
+		const file = "/proj/src/cached.ts";
+		statTable.set(file, 10);
+		discoverSingleToolImpl = (id) => avail(id, true);
+		syncOutputs.set("tsc", () => [result({ tool: "tsc", file: "src/cached.ts", line: 1 })]);
+		const engine = new CheckEngine(ROOT);
+		const populated = engine.getDiagnostics(file);
+
+		syncCalls.length = 0;
+		discoverSingleToolSpy.mockClear();
+		expect(engine.getCachedDiagnostics(file)).toBe(populated);
+		expect(discoverSingleToolSpy).not.toHaveBeenCalled();
+		expect(syncCalls).toHaveLength(0);
+
+		statTable.set(file, 11);
+		expect(engine.getCachedDiagnostics(file)).toEqual([]);
+		expect(discoverSingleToolSpy).not.toHaveBeenCalled();
+		expect(syncCalls).toHaveLength(0);
+	});
+
 	it("returns [] and short-circuits when the initial stat throws", () => {
 		// no statTable entry for the path → statSync throws.
 		discoverSingleToolImpl = (id) => avail(id, true);
@@ -1059,6 +1127,14 @@ describe("CheckEngine.getTscDiagnosticsForOverlay", () => {
 			filePath: "/proj/src/q.ts",
 			content: "const x: number = 's'",
 		});
+	});
+
+	it("typed variant returns the ok outcome with the same findings", () => {
+		tscOverlayImpl = () => [result({ tool: "tsc", severity: "error", file: "src/q.ts", line: 8 })];
+		const eng = new CheckEngine(ROOT);
+		const out = eng.getTscDiagnosticsForOverlayTyped("/proj/src/q.ts", "const x: number = 's'");
+		expect(out.status).toBe("ok");
+		expect(out.status === "ok" && out.findings).toHaveLength(1);
 	});
 });
 

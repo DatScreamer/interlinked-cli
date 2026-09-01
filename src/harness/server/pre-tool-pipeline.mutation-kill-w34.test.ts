@@ -37,6 +37,10 @@ vi.mock("../evaluator/commit-baseline-gate.js", () => ({
 	runCommitBaselineGate: vi.fn(() => null),
 }));
 
+vi.mock("../evaluator/commit-function-token-gate.js", () => ({
+	runCommitFunctionTokenGate: vi.fn(() => null),
+}));
+
 vi.mock("../evaluator/commit-laundering-gate.js", () => ({
 	runCommitLaunderingGate: vi.fn(() => null),
 }));
@@ -88,6 +92,7 @@ vi.mock("./pre-tool-pipeline-stages.js", () => ({
 	captureDiffAwareBaseline: vi.fn(),
 	injectStructureContext: vi.fn(),
 	runProjectWideGitGate: vi.fn(),
+	runProjectWideGitGateAsync: vi.fn(async () => {}),
 	runTddCommitGate: vi.fn(),
 }));
 

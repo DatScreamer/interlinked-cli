@@ -6,6 +6,35 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("node:child_process", () => ({
 	spawnSync: vi.fn(),
 }));
+vi.mock("../quality-checks/test-process-gate.js", async () => {
+	const { spawnSync } = await import("node:child_process");
+	return {
+		runBoundedTestProcess: async (spec: {
+			command: string;
+			args: string[];
+			cwd: string;
+			timeoutMs: number;
+		}) => {
+			const result = spawnSync(spec.command, spec.args, {
+				shell: false,
+				timeout: spec.timeoutMs,
+				cwd: spec.cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			if (result.error || result.status === null) {
+				return { kind: "deferred" as const, reason: "unavailable" as const };
+			}
+			return {
+				kind: "completed" as const,
+				code: result.status,
+				stdout: result.stdout || "",
+				stderr: result.stderr || "",
+				timedOut: false,
+			};
+		},
+	};
+});
 // Mock existsSync so runPytestDispatcher's candidate lookup deterministically
 // finds (or doesn't find) a test file regardless of the host filesystem.
 vi.mock("node:fs", async () => {
@@ -59,9 +88,9 @@ describe("TEST_DISPATCHERS — registry", () => {
 	});
 
 	it("does NOT register swift, java, c_cpp (silent-skip for now)", () => {
-		expect(TEST_DISPATCHERS.swift).toBeUndefined();
-		expect(TEST_DISPATCHERS.java).toBeUndefined();
-		expect(TEST_DISPATCHERS.c_cpp).toBeUndefined();
+		expect("swift" in TEST_DISPATCHERS).toBe(false);
+		expect("java" in TEST_DISPATCHERS).toBe(false);
+		expect("c_cpp" in TEST_DISPATCHERS).toBe(false);
 	});
 });
 
@@ -72,9 +101,9 @@ describe("runPytestDispatcher", () => {
 	const dispatcher = TEST_DISPATCHERS.python;
 	if (!dispatcher) throw new Error("python dispatcher not registered");
 
-	it("returns empty when no test-candidate file exists", () => {
+	it("returns empty when no test-candidate file exists", async () => {
 		existsSyncMock.mockReturnValue(false);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.py",
 			profile,
@@ -87,7 +116,7 @@ describe("runPytestDispatcher", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("skips silently when pytest binary missing (ENOENT)", () => {
+	it("reports no verdict when pytest is unavailable", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
@@ -97,7 +126,7 @@ describe("runPytestDispatcher", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.py",
 			profile,
@@ -106,10 +135,10 @@ describe("runPytestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("skips an errored pytest process even when the status is nonzero", () => {
+	it("reports no verdict for an errored pytest process even when status is nonzero", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
@@ -119,7 +148,7 @@ describe("runPytestDispatcher", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/pytest-enoent.py",
 			absPath: "/repo/src/pytest-enoent.py",
 			profile,
@@ -128,10 +157,10 @@ describe("runPytestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("classifies ImportError as pre-existing (no result)", () => {
+	it("classifies ImportError as pre-existing (no result)", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
@@ -140,7 +169,7 @@ describe("runPytestDispatcher", () => {
 				stderr: "ImportError: cannot import name 'foo' from 'bar'",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.py",
 			profile,
@@ -152,7 +181,7 @@ describe("runPytestDispatcher", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("reports an edit-introduced failure", () => {
+	it("reports an edit-introduced failure", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
@@ -160,7 +189,7 @@ describe("runPytestDispatcher", () => {
 				stdout: "FAILED tests/test_m.py::test_adds - AssertionError: 1 != 2",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.py",
 			profile,
@@ -175,10 +204,10 @@ describe("runPytestDispatcher", () => {
 		expect(nonNull(out[0]).message).toContain("pytest");
 	});
 
-	it("uses the exact pytest command and spawn options", () => {
+	it("uses the exact pytest command and spawn options", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "/repo/src/command.py",
 			absPath: "/repo/src/command.py",
 			profile,
@@ -200,10 +229,10 @@ describe("runPytestDispatcher", () => {
 		);
 	});
 
-	it("treats a null pytest status without an error as a silent skip", () => {
+	it("treats a null pytest status as an explicit no-verdict result", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: null }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/pytest-null.py",
 			absPath: "/repo/src/pytest-null.py",
 			profile,
@@ -212,10 +241,10 @@ describe("runPytestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("keeps pytest-failure baselines distinct for different candidate files", () => {
+	it("keeps pytest-failure baselines distinct for different candidate files", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stdout: "AssertionError: pytest baseline" }),
@@ -230,8 +259,8 @@ describe("runPytestDispatcher", () => {
 				severity: "error",
 				checkName: "affected_tests",
 			});
-		expect(run("pytest-baseline-a")).toHaveLength(1);
-		expect(run("pytest-baseline-b")).toHaveLength(1);
+		expect(await run("pytest-baseline-a")).toHaveLength(1);
+		expect(await run("pytest-baseline-b")).toHaveLength(1);
 	});
 });
 
@@ -242,7 +271,7 @@ describe("runCargoTestDispatcher", () => {
 	const dispatcher = TEST_DISPATCHERS.rust;
 	if (!dispatcher) throw new Error("rust dispatcher not registered");
 
-	it("classifies unresolved import as pre-existing", () => {
+	it("classifies unresolved import as pre-existing", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 101,
@@ -250,7 +279,7 @@ describe("runCargoTestDispatcher", () => {
 				stderr: "error[E0432]: unresolved import `foo`",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/lib.rs",
 			profile,
@@ -262,7 +291,7 @@ describe("runCargoTestDispatcher", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("reports compile error from cargo test --no-run", () => {
+	it("reports compile error from cargo test --no-run", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 101,
@@ -270,7 +299,7 @@ describe("runCargoTestDispatcher", () => {
 				stderr: "error[E0308]: mismatched types: expected `u32`, found `&str`",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/lib.rs",
 			profile,
@@ -283,7 +312,7 @@ describe("runCargoTestDispatcher", () => {
 		expect(nonNull(out[0]).message).toContain("cargo test");
 	});
 
-	it("skips silently when cargo missing (ENOENT)", () => {
+	it("reports no verdict when cargo is unavailable", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: null,
@@ -292,7 +321,7 @@ describe("runCargoTestDispatcher", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/lib.rs",
 			profile,
@@ -301,10 +330,10 @@ describe("runCargoTestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("skips an errored cargo process even when the status is nonzero", () => {
+	it("reports no verdict for an errored cargo process even when status is nonzero", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
@@ -313,7 +342,7 @@ describe("runCargoTestDispatcher", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/cargo-enoent.rs",
 			absPath: "/repo/src/cargo-enoent.rs",
 			profile,
@@ -322,12 +351,12 @@ describe("runCargoTestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("passes --no-run flag", () => {
+	it("passes --no-run flag", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/lib.rs",
 			profile,
@@ -350,9 +379,9 @@ describe("runCargoTestDispatcher", () => {
 		);
 	});
 
-	it("treats a null cargo status without an error as a silent skip", () => {
+	it("treats a null cargo status as an explicit no-verdict result", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: null }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/cargo-null.rs",
 			absPath: "/repo/src/cargo-null.rs",
 			profile,
@@ -361,10 +390,10 @@ describe("runCargoTestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("keeps cargo-failure baselines distinct for different project roots", () => {
+	it("keeps cargo-failure baselines distinct for different project roots", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 101, stderr: "error[E0308]: baseline mismatch" }),
 		);
@@ -378,8 +407,8 @@ describe("runCargoTestDispatcher", () => {
 				severity: "error",
 				checkName: "affected_tests",
 			});
-		expect(run("/repo/cargo-baseline-a")).toHaveLength(1);
-		expect(run("/repo/cargo-baseline-b")).toHaveLength(1);
+		expect(await run("/repo/cargo-baseline-a")).toHaveLength(1);
+		expect(await run("/repo/cargo-baseline-b")).toHaveLength(1);
 	});
 });
 
@@ -390,9 +419,9 @@ describe("runGoTestDispatcher", () => {
 	const dispatcher = TEST_DISPATCHERS.go;
 	if (!dispatcher) throw new Error("go dispatcher not registered");
 
-	it("scopes `go test` to the package directory, not project-wide", () => {
+	it("scopes `go test` to the package directory, not project-wide", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/pkg/m.go",
 			profile,
@@ -421,7 +450,7 @@ describe("runGoTestDispatcher", () => {
 		);
 	});
 
-	it("skips an errored go process even when the status is nonzero", () => {
+	it("reports no verdict for an errored go process even when status is nonzero", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
@@ -430,7 +459,7 @@ describe("runGoTestDispatcher", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/pkg/go-enoent.go",
 			absPath: "/repo/src/pkg/go-enoent.go",
 			profile,
@@ -439,10 +468,10 @@ describe("runGoTestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("classifies `cannot find package` as pre-existing", () => {
+	it("classifies `cannot find package` as pre-existing", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
@@ -450,7 +479,7 @@ describe("runGoTestDispatcher", () => {
 				stderr: "cannot find package foo/bar in /go/src/foo/bar",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/pkg/m.go",
 			profile,
@@ -462,7 +491,7 @@ describe("runGoTestDispatcher", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("reports a genuine test failure", () => {
+	it("reports a genuine test failure", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
@@ -470,7 +499,7 @@ describe("runGoTestDispatcher", () => {
 					"--- FAIL: TestAdd (0.00s)\n    m_test.go:12: expected 2, got 1\nFAIL\n",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/pkg/m.go",
 			profile,
@@ -492,14 +521,14 @@ describe("runVitestDispatcher", () => {
 	const dispatcher = TEST_DISPATCHERS.typescript;
 	if (!dispatcher) throw new Error("typescript dispatcher not registered");
 
-	it("reports edit-introduced vitest --related failures", () => {
+	it("reports edit-introduced vitest --related failures", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
 				stdout: "FAIL  src/m.test.ts > adds two\n  AssertionError: expected 2 to be 3",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.ts",
 			profile,
@@ -512,14 +541,14 @@ describe("runVitestDispatcher", () => {
 		expect(nonNull(out[0]).message).toContain("vitest --related");
 	});
 
-	it("classifies Cannot find module as pre-existing", () => {
+	it("classifies Cannot find module as pre-existing", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
 				stdout: "Error: Cannot find module '@/foo'",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.ts",
 			profile,
@@ -531,9 +560,9 @@ describe("runVitestDispatcher", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("returns empty (no result) when vitest --related exits 0", () => {
+	it("returns empty (no result) when vitest --related exits 0", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0, stdout: "PASS" }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/ok-pass.ts",
 			profile,
@@ -549,9 +578,9 @@ describe("runVitestDispatcher", () => {
 		expect(firstArgs).toContain("--related");
 	});
 
-	it("invokes vitest --related against the absolute edited path", () => {
+	it("invokes vitest --related against the absolute edited path", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "src/m.ts",
 			absPath: "/repo/src/widget.ts",
 			profile,
@@ -573,10 +602,10 @@ describe("runVitestDispatcher", () => {
 		);
 	});
 
-	it("does not use the convention fallback after a related pass", () => {
+	it("does not use the convention fallback after a related pass", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0, stdout: "PASS" }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/related-pass.ts",
 			absPath: "/repo/src/related-pass.ts",
 			profile,
@@ -589,12 +618,10 @@ describe("runVitestDispatcher", () => {
 		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("falls back when a related run returns null status without an error", () => {
+	it("reports unavailable without spawning a fallback when the related runner has no status", async () => {
 		existsSyncMock.mockReturnValue(true);
-		spawnSyncMock
-			.mockReturnValueOnce(mkSpawnResult({ status: null }))
-			.mockReturnValueOnce(mkSpawnResult({ status: 0, stdout: "PASS" }));
-		const out = dispatcher({
+		spawnSyncMock.mockReturnValueOnce(mkSpawnResult({ status: null }));
+		const out = await dispatcher({
 			filePath: "src/related-null.ts",
 			absPath: "/repo/src/related-null.ts",
 			profile,
@@ -603,11 +630,19 @@ describe("runVitestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
-		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+		expect(out).toEqual([
+			expect.objectContaining({
+				name: "affected_tests_deferred",
+				severity: "warning",
+				message:
+					"Affected tests deferred for src/related-null.ts (test process could not be started)",
+				detail: expect.stringContaining("No test verdict was produced"),
+			}),
+		]);
+		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("defaults to 'npx vitest run' when the profile declares no test_runner", () => {
+	it("defaults to 'npx vitest run' when the profile declares no test_runner", async () => {
 		// test_runner === null → runnerCmd falls back to the literal default,
 		// which still contains "vitest" so the dispatcher proceeds.
 		const noRunner: typeof profile = { ...profile, test_runner: null };
@@ -624,7 +659,7 @@ describe("runVitestDispatcher", () => {
 					stdout: "FAIL src/dflt.test.ts > t\n  AssertionError: bad",
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/dflt.ts",
 			absPath: "/repo/src/dflt.ts",
 			profile: noRunner,
@@ -639,7 +674,7 @@ describe("runVitestDispatcher", () => {
 		expect(nonNull(spawnSyncMock.mock.calls[1])[0]).toBe("npx");
 	});
 
-	it("uses the absolute test path verbatim when the candidate is outside checkCwd", () => {
+	it("uses the absolute test path verbatim when the candidate is outside checkCwd", async () => {
 		// absPath lives outside checkCwd → the discovered test file does NOT
 		// start with checkCwd → relTest keeps the full absolute path (else branch).
 		existsSyncMock.mockReturnValue(true);
@@ -653,7 +688,7 @@ describe("runVitestDispatcher", () => {
 					stdout: "FAIL /outside/proj/m.test.ts\n  AssertionError: nope",
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "m.ts",
 			absPath: "/outside/proj/m.ts",
 			profile,
@@ -670,7 +705,7 @@ describe("runVitestDispatcher", () => {
 		expect(nonNull(out[0]).message).toContain("/outside/proj/m.test.ts");
 	});
 
-	it("returns empty when profile test_runner is not vitest", () => {
+	it("returns empty when profile test_runner is not vitest", async () => {
 		const nonVitest: typeof profile = {
 			...profile,
 			test_runner: {
@@ -680,7 +715,7 @@ describe("runVitestDispatcher", () => {
 				description: "non-vitest runner",
 			},
 		};
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath,
 			absPath: "/repo/src/m.ts",
 			profile: nonVitest,
@@ -694,7 +729,7 @@ describe("runVitestDispatcher", () => {
 		expect(spawnSyncMock).not.toHaveBeenCalled();
 	});
 
-	it("falls back to convention runner when --related reports unknown option", () => {
+	it("falls back to convention runner when --related reports unknown option", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			// 1) vitest --related → unsupported flag (older vitest)
@@ -708,7 +743,7 @@ describe("runVitestDispatcher", () => {
 					stdout: "FAIL src/conv.test.ts > x\n  AssertionError: expected 1 to be 2",
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/conv.ts",
 			absPath: "/repo/src/conv.ts",
 			profile,
@@ -729,7 +764,7 @@ describe("runVitestDispatcher", () => {
 		expect(convArgs.some((a) => a.endsWith("conv.test.ts"))).toBe(true);
 	});
 
-	it("normalizes the convention command and test path exactly", () => {
+	it("normalizes the convention command and test path exactly", async () => {
 		existsSyncMock.mockReturnValue(true);
 		const spacedProfile: typeof profile = {
 			...profile,
@@ -743,7 +778,7 @@ describe("runVitestDispatcher", () => {
 		spawnSyncMock
 			.mockReturnValueOnce(mkSpawnResult({ status: 1, stderr: "unknown option --related" }))
 			.mockReturnValueOnce(mkSpawnResult({ status: 0, stdout: "PASS" }));
-		dispatcher({
+		await dispatcher({
 			filePath: "src/space.ts",
 			absPath: "/repo/src/space.ts",
 			profile: spacedProfile,
@@ -765,7 +800,7 @@ describe("runVitestDispatcher", () => {
 		]);
 	});
 
-	it("falls back to convention runner when --related errors (spawn error)", () => {
+	it("does not fallback or call a spawn error clean when --related is unavailable", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(
@@ -782,7 +817,7 @@ describe("runVitestDispatcher", () => {
 					stdout: "FAIL src/err.test.ts\n  AssertionError",
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/err.ts",
 			absPath: "/repo/src/err.ts",
 			profile,
@@ -792,10 +827,16 @@ describe("runVitestDispatcher", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(nonNull(out[0]).message).toContain("src/err.test.ts");
+		expect(nonNull(out[0])).toMatchObject({
+			name: "affected_tests_deferred",
+			severity: "warning",
+		});
+		expect(nonNull(out[0]).message).toContain("could not be started");
+		expect(nonNull(out[0]).message).not.toContain("Tests failed");
+		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("convention fallback skips silently when the runner binary is missing (ENOENT)", () => {
+	it("convention fallback reports no verdict when the runner binary is missing", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			// related: "unknown option" → older vitest → fall through to convention
@@ -811,7 +852,7 @@ describe("runVitestDispatcher", () => {
 					}) as NodeJS.ErrnoException,
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/missing-runner.ts",
 			absPath: "/repo/src/missing-runner.ts",
 			profile,
@@ -820,11 +861,17 @@ describe("runVitestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0])).toMatchObject({
+			name: "affected_tests_deferred",
+			severity: "warning",
+		});
+		expect(nonNull(out[0]).detail).toContain("No test verdict was produced");
+		expect(nonNull(out[0]).message).not.toContain("Tests failed");
 		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("skips an errored convention runner even when the status is nonzero", () => {
+	it("treats an errored convention runner as unavailable even with a nonzero status", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(mkSpawnResult({ status: 1, stderr: "unknown option --related" }))
@@ -836,7 +883,7 @@ describe("runVitestDispatcher", () => {
 					}) as NodeJS.ErrnoException,
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/conv-enoent.ts",
 			absPath: "/repo/src/conv-enoent.ts",
 			profile,
@@ -845,17 +892,19 @@ describe("runVitestDispatcher", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).name).toBe("affected_tests_deferred");
+		expect(nonNull(out[0]).message).not.toContain("Tests failed");
 	});
 
-	it("convention fallback returns empty when the convention test passes (status 0)", () => {
+	it("convention fallback returns empty when the convention test passes (status 0)", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(
 				mkSpawnResult({ status: 1, stderr: "error: unknown option '--related'" }),
 			)
 			.mockReturnValueOnce(mkSpawnResult({ status: 0, stdout: "PASS" }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/conv-pass.ts",
 			absPath: "/repo/src/conv-pass.ts",
 			profile,
@@ -870,7 +919,7 @@ describe("runVitestDispatcher", () => {
 		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("trims each output stream and preserves an empty combined output", () => {
+	it("trims each output stream and preserves an empty combined output", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 1,
@@ -878,7 +927,7 @@ describe("runVitestDispatcher", () => {
 				stderr: "  stderr-trimmed  ",
 			}),
 		);
-		const trimmed = dispatcher({
+		const trimmed = await dispatcher({
 			filePath: "src/trimmed-output.ts",
 			absPath: "/repo/src/trimmed-output.ts",
 			profile,
@@ -893,7 +942,7 @@ describe("runVitestDispatcher", () => {
 		);
 
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 1 }));
-		const empty = dispatcher({
+		const empty = await dispatcher({
 			filePath: "src/empty-output.ts",
 			absPath: "/repo/src/empty-output.ts",
 			profile,
@@ -906,7 +955,7 @@ describe("runVitestDispatcher", () => {
 		expect(nonNull(empty[0]).detail).toBe("");
 	});
 
-	it("keeps related-failure baselines distinct for different edited files", () => {
+	it("keeps related-failure baselines distinct for different edited files", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stdout: "AssertionError: distinct baseline" }),
 		);
@@ -920,11 +969,11 @@ describe("runVitestDispatcher", () => {
 				severity: "error",
 				checkName: "affected_tests",
 			});
-		expect(run("/repo/src/baseline-a.ts")).toHaveLength(1);
-		expect(run("/repo/src/baseline-b.ts")).toHaveLength(1);
+		expect(await run("/repo/src/baseline-a.ts")).toHaveLength(1);
+		expect(await run("/repo/src/baseline-b.ts")).toHaveLength(1);
 	});
 
-	it("keeps convention-failure baselines distinct for different test files", () => {
+	it("keeps convention-failure baselines distinct for different test files", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(mkSpawnResult({ status: 1, stderr: "unknown option --related" }))
@@ -941,11 +990,11 @@ describe("runVitestDispatcher", () => {
 				severity: "error",
 				checkName: "affected_tests",
 			});
-		expect(run("convention-baseline-a")).toHaveLength(1);
-		expect(run("convention-baseline-b")).toHaveLength(1);
+		expect(await run("convention-baseline-a")).toHaveLength(1);
+		expect(await run("convention-baseline-b")).toHaveLength(1);
 	});
 
-	it("convention fallback classifies module-resolution failure as pre-existing", () => {
+	it("convention fallback classifies module-resolution failure as pre-existing", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(
@@ -957,7 +1006,7 @@ describe("runVitestDispatcher", () => {
 					stdout: "Error: Cannot find module '@/preexisting'",
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/conv-pre.ts",
 			absPath: "/repo/src/conv-pre.ts",
 			profile,
@@ -972,14 +1021,14 @@ describe("runVitestDispatcher", () => {
 		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("convention fallback returns empty when NO test-candidate file exists", () => {
+	it("convention fallback returns empty when NO test-candidate file exists", async () => {
 		// related falls through (unknown option) but existsSync finds nothing →
 		// convention runner is never spawned (testFile is undefined).
 		existsSyncMock.mockReturnValue(false);
 		spawnSyncMock.mockReturnValueOnce(
 			mkSpawnResult({ status: 1, stderr: "error: unknown option '--related'" }),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/no-test.ts",
 			absPath: "/repo/src/no-test.ts",
 			profile,
@@ -993,14 +1042,14 @@ describe("runVitestDispatcher", () => {
 		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("emits a related-failure detail tail combining stderr THEN stdout", () => {
+	it("emits a related-failure detail tail combining stderr THEN stdout", async () => {
 		// combinedOutput: when both streams are present, stderr precedes stdout.
 		const stderr = "stderr-line-A";
 		const stdout = "FAIL src/m.test.ts > t\n  AssertionError: nope";
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stdout, stderr }),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/combined.ts",
 			absPath: "/repo/src/combined.ts",
 			profile,
@@ -1019,13 +1068,13 @@ describe("runVitestDispatcher", () => {
 		);
 	});
 
-	it("truncates a long failure detail to the last 8 lines", () => {
+	it("truncates a long failure detail to the last 8 lines", async () => {
 		const longBody = Array.from({ length: 30 }, (_, i) => `line-${i}`).join("\n");
 		// Last line carries a genuine-failure marker so it isn't classified
 		// pre-existing.
 		const stdout = `${longBody}\nAssertionError: boom`;
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 1, stdout }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/long.ts",
 			absPath: "/repo/src/long.ts",
 			profile,
@@ -1049,9 +1098,9 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 	const dispatcher = TEST_DISPATCHERS.go;
 	if (!dispatcher) throw new Error("go dispatcher not registered");
 
-	it("uses '.' as the package arg when the file sits in the project root", () => {
+	it("uses '.' as the package arg when the file sits in the project root", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "m.go",
 			absPath: "/repo/m.go",
 			profile,
@@ -1066,9 +1115,9 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 		expect(args).toEqual(["test", "-count=1", "."]);
 	});
 
-	it("prefixes a non-dot package path with ./ and forward slashes", () => {
+	it("prefixes a non-dot package path with ./ and forward slashes", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "internal/svc/m.go",
 			absPath: "/repo/internal/svc/m.go",
 			profile,
@@ -1081,11 +1130,11 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 		expect(args).toContain("./internal/svc");
 	});
 
-	it("keeps a parent-relative ('..') package path as-is (no extra ./ prefix)", () => {
+	it("keeps a parent-relative ('..') package path as-is (no extra ./ prefix)", async () => {
 		// pkgDir resolves OUTSIDE checkCwd → relative() starts with ".." →
 		// the `relPkg.startsWith(".")` branch keeps it verbatim.
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "../sibling/m.go",
 			absPath: "/repo/sibling/m.go",
 			profile,
@@ -1100,14 +1149,14 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 		expect(nonNull(pkgArg).startsWith("./..")).toBe(false);
 	});
 
-	it("classifies a generic build failure (undefined symbol) as pre-existing", () => {
+	it("classifies a generic build failure (undefined symbol) as pre-existing", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: 2,
 				stderr: "build failed: ./m.go:3:5: undefined: helperFn",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "pkg/m.go",
 			absPath: "/repo/pkg/m.go",
 			profile,
@@ -1119,7 +1168,7 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("skips silently when the go binary is missing (ENOENT)", () => {
+	it("reports no verdict when the go binary is unavailable", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
 				status: null,
@@ -1128,7 +1177,7 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 				}) as NodeJS.ErrnoException,
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "pkg/m.go",
 			absPath: "/repo/pkg/m.go",
 			profile,
@@ -1137,12 +1186,12 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("returns empty when go test passes (status 0)", () => {
+	it("returns empty when go test passes (status 0)", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0, stdout: "ok\t./pkg\t0.01s" }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "pkg/m.go",
 			absPath: "/repo/pkg/m.go",
 			profile,
@@ -1154,9 +1203,9 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("treats a null go status without an error as a silent skip", () => {
+	it("treats a null go status as an explicit no-verdict result", async () => {
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: null }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/pkg/go-null.go",
 			absPath: "/repo/src/pkg/go-null.go",
 			profile,
@@ -1165,10 +1214,10 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 			severity: "error",
 			checkName: "affected_tests",
 		});
-		expect(out).toEqual([]);
+		expect(out).toEqual([expect.objectContaining({ name: "affected_tests_deferred" })]);
 	});
 
-	it("keeps go-failure baselines distinct for different package paths", () => {
+	it("keeps go-failure baselines distinct for different package paths", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stdout: "--- FAIL: TestBaseline\nFAIL" }),
 		);
@@ -1182,13 +1231,13 @@ describe("runGoTestDispatcher — path scoping branches", () => {
 				severity: "error",
 				checkName: "affected_tests",
 			});
-		expect(run("go-baseline-a")).toHaveLength(1);
-		expect(run("go-baseline-b")).toHaveLength(1);
+		expect(await run("go-baseline-a")).toHaveLength(1);
+		expect(await run("go-baseline-b")).toHaveLength(1);
 	});
 });
 
 describe("test-candidate path construction", () => {
-	it("derives Python candidates from the extension, directory, and basename", () => {
+	it("derives Python candidates from the extension, directory, and basename", async () => {
 		const filePath = "/repo/src/candidate.py";
 		const profile = getProfileForFile(filePath);
 		if (!profile) throw new Error("python profile missing");
@@ -1200,7 +1249,7 @@ describe("test-candidate path construction", () => {
 			return false;
 		});
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath,
 			absPath: filePath,
 			profile,
@@ -1229,10 +1278,10 @@ describe("runPytestDispatcher — additional branches", () => {
 	const dispatcher = TEST_DISPATCHERS.python;
 	if (!dispatcher) throw new Error("python dispatcher not registered");
 
-	it("returns empty when pytest passes (status 0)", () => {
+	it("returns empty when pytest passes (status 0)", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0, stdout: "1 passed" }));
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/pass.py",
 			absPath: "/repo/src/pass.py",
 			profile,
@@ -1244,7 +1293,7 @@ describe("runPytestDispatcher — additional branches", () => {
 		expect(out).toEqual([]);
 	});
 
-	it("emits the configured severity (warning) on a genuine failure", () => {
+	it("emits the configured severity (warning) on a genuine failure", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({
@@ -1252,7 +1301,7 @@ describe("runPytestDispatcher — additional branches", () => {
 				stdout: "FAILED tests/test_warn.py::t - AssertionError: 1 != 2",
 			}),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "/repo/src/warn.py",
 			absPath: "/repo/src/warn.py",
 			profile,
@@ -1265,10 +1314,10 @@ describe("runPytestDispatcher — additional branches", () => {
 		expect(nonNull(out[0]).severity).toBe("warning");
 	});
 
-	it("relativizes the test path against checkCwd in the pytest invocation", () => {
+	it("relativizes the test path against checkCwd in the pytest invocation", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock.mockReturnValue(mkSpawnResult({ status: 0 }));
-		dispatcher({
+		await dispatcher({
 			filePath: "src/rel.py",
 			absPath: "/repo/src/rel.py",
 			profile,
@@ -1302,11 +1351,11 @@ describe("dispatcher survivor contracts", () => {
 	});
 
 	// test-contract: invariant — failure details trim a single non-empty stream without adding a phantom second stream
-	it("preserves a trimmed stderr-only failure detail", () => {
+	it("preserves a trimmed stderr-only failure detail", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stderr: "  stderr-only failure  " }),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/stderr-only.ts",
 			absPath: "/repo/src/stderr-only.ts",
 			profile,
@@ -1320,11 +1369,11 @@ describe("dispatcher survivor contracts", () => {
 	});
 
 	// test-contract: boundary — an empty stdout stream must not become synthetic output when stderr is the only failure evidence
-	it("does not synthesize output for an empty stdout stream", () => {
+	it("does not synthesize output for an empty stdout stream", async () => {
 		spawnSyncMock.mockReturnValue(
 			mkSpawnResult({ status: 1, stdout: "", stderr: "real stderr" }),
 		);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/empty-stdout.ts",
 			absPath: "/repo/src/empty-stdout.ts",
 			profile,
@@ -1337,8 +1386,9 @@ describe("dispatcher survivor contracts", () => {
 		expect(nonNull(out[0]).detail).toBe("real stderr");
 	});
 
-	// test-contract: boundary — a non-ENOENT spawn error remains an actionable test failure instead of being silently skipped
-	it("reports a convention failure when the runner returns a non-ENOENT process error", () => {
+	// test-contract: boundary — a process transport error is not a test verdict,
+	// even when buffered output happens to resemble a failing assertion.
+	it("reports no verdict when the convention runner has a process error", async () => {
 		existsSyncMock.mockReturnValue(true);
 		spawnSyncMock
 			.mockReturnValueOnce(mkSpawnResult({ status: 1, stderr: "unknown option --related" }))
@@ -1351,7 +1401,7 @@ describe("dispatcher survivor contracts", () => {
 					}) as NodeJS.ErrnoException,
 				}),
 			);
-		const out = dispatcher({
+		const out = await dispatcher({
 			filePath: "src/epipe.ts",
 			absPath: "/repo/src/epipe.ts",
 			profile,
@@ -1361,6 +1411,8 @@ describe("dispatcher survivor contracts", () => {
 			checkName: "affected_tests",
 		});
 		expect(out).toHaveLength(1);
-		expect(nonNull(out[0]).detail).toContain("runner pipe failed");
+		expect(nonNull(out[0]).name).toBe("affected_tests_deferred");
+		expect(nonNull(out[0]).detail).toContain("No test verdict was produced");
+		expect(nonNull(out[0]).message).not.toContain("Tests failed");
 	});
 });
