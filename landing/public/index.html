@@ -4,16 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Interlinked CLI — The harness for your harness</title>
-  <meta name="description" content="Local guard layer for AI coding agents. Hooks into Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI. Blocks dangerous tool calls in ~1 ms, deterministically, on your machine." />
+  <meta name="description" content="Local guard layer for AI coding agents. Hooks into Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI, opencode, and Pi. Blocks dangerous tool calls in milliseconds, deterministically, on your machine." />
 
   <link rel="canonical" href="https://interlinked.quentincody.dev/" />
 
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Interlinked CLI — The harness for your harness" />
-  <meta property="og:description" content="Local guard layer for AI coding agents. 1,175 verified blocks across 1,715 logged events in 94 days of dogfooding. Receipts inside." />
+  <meta property="og:description" content="Local guard layer for AI coding agents. 911 verified blocks across 3,834 logged events in 109 days of dogfooding. Receipts inside." />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Interlinked CLI — The harness for your harness" />
-  <meta name="twitter:description" content="Local guard layer for AI coding agents. 1,175 verified blocks in 94 days of dogfooding." />
+  <meta name="twitter:description" content="Local guard layer for AI coding agents. 911 verified blocks in 109 days of dogfooding." />
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext y='20' font-size='20'%3E%E2%97%87%3C/text%3E%3C/svg%3E" />
 
@@ -67,7 +67,7 @@
   <div class="w-full flex justify-center pt-6 px-6">
     <a href="#receipts" class="group inline-flex items-center gap-2 rounded-full border border-ink-600 bg-ink-800/60 backdrop-blur px-3 py-1.5 text-xs sm:text-sm text-zinc-300 hover:border-accent-500/50 hover:text-zinc-100 transition">
       <span class="rounded-full bg-accent-500/15 text-accent-400 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">New</span>
-      <span><!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified --> verified blocks in <!-- gen:receipts_window_days -->94<!-- /gen:receipts_window_days --> days of dogfooding</span>
+      <span><!-- gen:receipts_verified -->911<!-- /gen:receipts_verified --> verified blocks in <!-- gen:receipts_window_days -->109<!-- /gen:receipts_window_days --> days of dogfooding</span>
       <span class="opacity-60 group-hover:opacity-100">→</span>
     </a>
   </div>
@@ -97,7 +97,7 @@
         The harness for your harness.
       </h1>
       <p class="mt-5 text-lg sm:text-xl text-zinc-400 leading-relaxed max-w-xl">
-        Local guard layer for AI coding agents. Hooks into Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI; evaluates every tool call against deterministic rules; blocks the dangerous ones in milliseconds; gates new dependencies behind a fail-closed allowlist; keeps a local activity log you can grep.
+        Local guard layer for AI coding agents. Supported on Claude Code and Codex, with experimental Cursor, Copilot CLI, Gemini CLI, OpenCode, and Pi integrations; evaluates delivered tool hooks against deterministic rules; blocks the dangerous ones in milliseconds; gates new dependencies behind a fail-closed allowlist; keeps a local activity log you can grep.
       </p>
 
       <div class="mt-8 flex flex-col sm:flex-row gap-3 max-w-xl">
@@ -125,6 +125,8 @@
         <span class="text-zinc-300 normal-case tracking-normal">Cursor</span>
         <span class="text-zinc-300 normal-case tracking-normal">Copilot CLI</span>
         <span class="text-zinc-300 normal-case tracking-normal">Gemini CLI</span>
+        <span class="text-zinc-300 normal-case tracking-normal">opencode</span>
+        <span class="text-zinc-300 normal-case tracking-normal">Pi</span>
       </div>
     </div>
 
@@ -167,20 +169,20 @@
       <div class="lg:col-span-1">
         <p class="text-accent-500 text-sm font-semibold uppercase tracking-wider">The receipt</p>
         <h2 class="mt-3 text-3xl sm:text-4xl font-bold text-zinc-50 tracking-tight">
-          <!-- gen:receipts_window_days -->94<!-- /gen:receipts_window_days --> days. One developer.<br />
-          <span class="text-accent-500"><!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified --> verified real blocks.</span>
+          <!-- gen:receipts_window_days -->109<!-- /gen:receipts_window_days --> days. One developer.<br />
+          <span class="text-accent-500"><!-- gen:receipts_verified -->911<!-- /gen:receipts_verified --> verified real blocks.</span>
         </h2>
         <p class="mt-5 text-zinc-400 leading-relaxed">
-          The author dogfooded the harness on his own machine while writing it. Across every rotation of the activity log, <!-- gen:receipts_logged -->1715<!-- /gen:receipts_logged --> distinct <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">guard_block</code> events were captured; the rows below are the ones that survived a per-event audit against Claude Code's session transcripts to confirm the agent's actual <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">tool_input</code>.
+          The author dogfooded the harness on his own machine while writing it. Across every surviving rotation of the activity log, <!-- gen:receipts_logged -->3834<!-- /gen:receipts_logged --> distinct <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">guard_block</code> events were captured; the rows below are the ones that survived a per-event audit against Claude Code's session transcripts to confirm the agent's actual <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">tool_input</code>.
         </p>
         <p class="mt-3 text-zinc-400 leading-relaxed">
           Some early dramatic-looking categories (<code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">shutdown</code>, root-level <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">rm -rf</code>, <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">DROP TABLE</code>) turned out to be false positives — the rules' substring matchers fired on commit-message bodies, <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">echo</code> arguments, and <code class="text-zinc-300 bg-ink-800 px-1.5 py-0.5 rounded text-xs">grep</code> patterns. Those rules were tightened with command-start anchors and quote masking; the table reflects only blocks where the agent's resolved command actually matched the row's intent.
         </p>
         <p class="mt-3 text-zinc-400 leading-relaxed">
-          Two more deflations keep the numbers honest: <!-- gen:receipts_collapsed -->303<!-- /gen:receipts_collapsed --> duplicate events from a since-fixed hook over-registration bug (one blocked call logged 3–4×) are collapsed to one, and <!-- gen:receipts_grep_accel -->57<!-- /gen:receipts_grep_accel --> grep-accelerator "block-and-answer" events — the trigram index answering a search, not enforcement — are excluded entirely.
+          Two more deflations keep the numbers honest: <!-- gen:receipts_collapsed -->291<!-- /gen:receipts_collapsed --> duplicate events from a since-fixed hook over-registration bug (one blocked call logged 3–4×) are collapsed to one, and <!-- gen:receipts_grep_accel -->11<!-- /gen:receipts_grep_accel --> grep-accelerator "block-and-answer" events — the trigram index answering a search, not enforcement — are excluded entirely.
         </p>
         <p class="mt-4 text-xs text-zinc-500">
-          Data window 2026-04-24 → 2026-07-27, audited <!-- gen:data_as_of -->2026-07-27<!-- /gen:data_as_of -->. Audit method: <code class="text-zinc-400">npm run docs:audit-receipts</code> (re-runs the per-event transcript correlation locally).
+          Data window 2026-05-14 → 2026-09-01, audited <!-- gen:data_as_of -->2026-09-01<!-- /gen:data_as_of -->. Two earlier log segments (2026-04-24 → 2026-05-14; a prior audit over that longer window verified 1175 blocks total) were lost and are excluded rather than estimated. Audit method: <code class="text-zinc-400">npm run docs:audit-receipts</code> (re-runs the per-event transcript correlation locally).
         </p>
       </div>
 
@@ -196,52 +198,52 @@
             </thead>
             <tbody class="divide-y divide-ink-700/60 font-mono">
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tsc_diff_overlay -->830<!-- /gen:row_tsc_diff_overlay --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tsc_diff_overlay -->580<!-- /gen:row_tsc_diff_overlay --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Edits that introduced a <em>new</em> TypeScript error — blocked before the write landed (<code class="text-zinc-200">tsc-diff-overlay</code>)</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tdd_new_file -->94<!-- /gen:row_tdd_new_file --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_tdd_new_file -->93<!-- /gen:row_tdd_new_file --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Created a new source file with no companion test</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_bash_redirect_bypass -->88<!-- /gen:row_bash_redirect_bypass --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_bash_redirect_bypass -->128<!-- /gen:row_bash_redirect_bypass --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Used shell redirect (<code class="text-zinc-200">cat &gt; file.ts</code>) to dodge the content-quality gate</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_repo_confinement -->40<!-- /gen:row_repo_confinement --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_repo_confinement -->20<!-- /gen:row_repo_confinement --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Wrote outside the repo root (e.g. <code class="text-zinc-200">/tmp/x.ts</code>)</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_empty_catch -->47<!-- /gen:row_empty_catch --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_empty_catch -->23<!-- /gen:row_empty_catch --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Empty <code class="text-zinc-200">catch {}</code> blocks landing in code</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_process_kill -->30<!-- /gen:row_process_kill --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_process_kill -->24<!-- /gen:row_process_kill --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans"><code class="text-zinc-200">kill</code> / <code class="text-zinc-200">pkill</code> / <code class="text-zinc-200">killall</code> at running processes — four aimed at the harness or session itself</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_reservation_conflict -->25<!-- /gen:row_reservation_conflict --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_reservation_conflict -->26<!-- /gen:row_reservation_conflict --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Edited a file another agent held the reservation on (multi-agent lease enforced)</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_git_destructive -->14<!-- /gen:row_git_destructive --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_git_destructive -->10<!-- /gen:row_git_destructive --></td>
                 <td class="px-4 py-3"><span class="text-amber-400">high</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Destructive git: <code class="text-zinc-200">reset --hard</code>, <code class="text-zinc-200">branch -D</code>, <code class="text-zinc-200">stash drop</code></td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_secrets_in_source -->4<!-- /gen:row_secrets_in_source --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_secrets_in_source -->2<!-- /gen:row_secrets_in_source --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Secrets detected in proposed write content — blocked before landing on disk</td>
               </tr>
               <tr class="hover:bg-ink-800/40">
-                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_supply_chain -->3<!-- /gen:row_supply_chain --></td>
+                <td class="px-4 py-3 text-right text-zinc-100 font-semibold tabular-nums"><!-- gen:row_supply_chain -->5<!-- /gen:row_supply_chain --></td>
                 <td class="px-4 py-3"><span class="text-rose-400">critical</span></td>
                 <td class="px-4 py-3 text-zinc-300 font-sans">Package installs not on the team allowlist (fail-closed supply-chain gate)</td>
               </tr>
@@ -252,7 +254,7 @@
         <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">Verified blocks</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_verified -->1175<!-- /gen:receipts_verified --></p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_verified -->911<!-- /gen:receipts_verified --></p>
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">PreToolUse eval p50</p>
@@ -260,11 +262,11 @@
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">Distinct blocks logged</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_logged -->1715<!-- /gen:receipts_logged --></p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:receipts_logged -->3834<!-- /gen:receipts_logged --></p>
           </div>
           <div class="rounded-lg border border-ink-700 bg-ink-900/40 p-4">
             <p class="text-xs text-zinc-500 uppercase tracking-wider">Built-in rules</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --></p>
+            <p class="mt-1 text-2xl font-bold text-zinc-50 tabular-nums"><!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --></p>
           </div>
         </div>
       </div>
@@ -384,7 +386,7 @@ agent (Claude / Codex / Cursor / Copilot / Gemini)
           </tr>
           <tr>
             <td class="px-4 py-3 font-medium text-zinc-100">Catches dangerous shell commands (rm -rf, kubectl delete --all, …)</td>
-            <td class="px-4 py-3 text-emerald-400">✓ <!-- gen:builtin_rule_count -->123<!-- /gen:builtin_rule_count --> rules</td>
+            <td class="px-4 py-3 text-emerald-400">✓ <!-- gen:builtin_rule_count -->121<!-- /gen:builtin_rule_count --> rules</td>
             <td class="px-4 py-3 text-zinc-500">— (file lints, not commands)</td>
             <td class="px-4 py-3">depends on prompt</td>
             <td class="px-4 py-3 text-zinc-500">—</td>
@@ -464,7 +466,7 @@ agent (Claude / Codex / Cursor / Copilot / Gemini)
           <span class="chev text-accent-500 text-2xl leading-none">+</span>
         </summary>
         <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
-          Hot-path rules add ~1 ms median to PreToolUse — imperceptible. Post-edit checks that compile proposed file content (<code class="text-zinc-300 bg-ink-800 px-1 rounded">tsc</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded">biome</code>) take whatever the compiler takes; for a typical TS file that's a few hundred milliseconds, and the agent only pays it if the diff is suspicious. Latency budgets are enforced per tool class.
+          Hot-path rules add ~3 ms median to PreToolUse (p50 across ~35k logged evaluations) — imperceptible. Post-edit checks that compile proposed file content (<code class="text-zinc-300 bg-ink-800 px-1 rounded">tsc</code>, <code class="text-zinc-300 bg-ink-800 px-1 rounded">biome</code>) take whatever the compiler takes; for a typical TS file that's a few hundred milliseconds, paid on code-file edits — reads and shell commands skip it. Latency budgets are enforced per event class.
         </div>
       </details>
 
@@ -474,7 +476,7 @@ agent (Claude / Codex / Cursor / Copilot / Gemini)
           <span class="chev text-accent-500 text-2xl leading-none">+</span>
         </summary>
         <div class="px-5 pb-5 text-zinc-400 leading-relaxed text-sm">
-          Today it ships first-class hooks for Claude Code, Codex, Cursor, Copilot CLI, and Gemini CLI. Other agents land as the runtime ecosystem standardizes — if you're using one we don't have a hook generator for, file an issue and we'll prioritize.
+          Claude Code and Codex are the supported integrations. Cursor, Copilot CLI, Gemini CLI, OpenCode, and Pi are experimental: their adapters install and normalize the native surfaces available today, but upstream enforcement and lifecycle capabilities differ. Other agents land as the runtime ecosystem standardizes — if you're using one we don't have an integration for, file an issue and we'll prioritize.
         </div>
       </details>
 
