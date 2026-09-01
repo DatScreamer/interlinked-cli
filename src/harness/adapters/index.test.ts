@@ -6,8 +6,8 @@ import { buildAllAdapters, detectAdapter, getAdapter } from "./index.js";
 
 describe("buildAllAdapters", () => {
 	const adapters = buildAllAdapters();
-	it("returns all seven runner adapters", () => {
-		expect(adapters.length).toBe(7);
+	it("returns all eight runner adapters", () => {
+		expect(adapters.length).toBe(8);
 		const ids = adapters.map((a) => a.id).sort();
 		expect(ids).toEqual([
 			"claude-code",
@@ -16,6 +16,7 @@ describe("buildAllAdapters", () => {
 			"cursor",
 			"gemini-cli",
 			"opencode",
+			"opencode2",
 			"pi",
 		]);
 	});
@@ -58,6 +59,9 @@ describe("detectAdapter", () => {
 	it("detects OpenCode via OPENCODE", () => {
 		expect(detectAdapter({ OPENCODE: "1" })?.id).toBe("opencode");
 	});
+	it("detects OpenCode v2 via OPENCODE2 before OPENCODE*", () => {
+		expect(detectAdapter({ OPENCODE2: "1" })?.id).toBe("opencode2");
+	});
 	it("detects Pi via PI_CODING_AGENT", () => {
 		expect(detectAdapter({ PI_CODING_AGENT: "1" })?.id).toBe("pi");
 	});
@@ -69,6 +73,7 @@ describe("getAdapter", () => {
 		expect(getAdapter("copilot-cli")?.id).toBe("copilot-cli");
 		expect(getAdapter("cursor")?.id).toBe("cursor");
 		expect(getAdapter("opencode")?.id).toBe("opencode");
+		expect(getAdapter("opencode2")?.id).toBe("opencode2");
 		expect(getAdapter("pi")?.id).toBe("pi");
 	});
 	it("returns null for unknown ids", () => {

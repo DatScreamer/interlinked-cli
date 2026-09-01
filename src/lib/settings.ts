@@ -19,6 +19,7 @@ export type ClientName =
 	| "codex"
 	| "cursor"
 	| "opencode"
+	| "opencode2"
 	| "pi";
 
 interface ClientConfig {
@@ -91,8 +92,20 @@ const CLIENT_CONFIGS: ClientConfig[] = [
 		detectFromEnv: (env) =>
 			Object.entries(env).some(
 				([name, value]) =>
-					name.startsWith("OPENCODE") && typeof value === "string" && value.length > 0,
+					name.startsWith("OPENCODE") &&
+					name !== "OPENCODE2" &&
+					typeof value === "string" &&
+					value.length > 0,
 			),
+	},
+	{
+		name: "opencode2",
+		label: "OpenCode v2",
+		configDir: ".opencode",
+		settingsFile: "plugins/interlinked-opencode2.ts",
+		inputMethod: "stdin",
+		detectFromEnv: (env) =>
+			Boolean(env.OPENCODE2) || env.INTERLINKED_CLIENT === "opencode2",
 	},
 	{
 		name: "pi",
@@ -149,6 +162,7 @@ export const CLIENT_TO_RUNNER: Record<ClientName, RunnerId> = {
 	codex: "codex",
 	cursor: "cursor",
 	opencode: "opencode",
+	opencode2: "opencode2",
 	pi: "pi",
 };
 

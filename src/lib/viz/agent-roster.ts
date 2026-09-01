@@ -51,7 +51,7 @@ const FILES_KEPT = 6;
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
 
 /** Runner families recognized in an agent name (`session-<runner>-<id8>`). */
-const RUNNERS = ["claude", "codex", "copilot", "gemini", "cursor", "opencode", "pi", "aider"];
+const RUNNERS = ["claude", "codex", "copilot", "gemini", "cursor", "opencode", "opencode2", "pi", "aider"];
 
 /**
  * Stable hue for an actor id: the same FNV-1a → hue mapping the graph uses for

@@ -386,7 +386,7 @@ describe("printSummary", () => {
 		await enableCommand({});
 
 		expect(logged(logSpy)).toContain(
-			"--clients claude,copilot,gemini,codex,cursor,opencode,pi",
+			"--clients claude,copilot,gemini,codex,cursor,opencode,opencode2,pi",
 		);
 	});
 });

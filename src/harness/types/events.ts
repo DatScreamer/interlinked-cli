@@ -63,6 +63,7 @@ export type AgentSource =
 	| "gemini"
 	| "cursor"
 	| "opencode"
+	| "opencode2"
 	| "pi";
 
 /**
