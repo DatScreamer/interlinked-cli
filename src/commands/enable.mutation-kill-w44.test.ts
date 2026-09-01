@@ -361,7 +361,7 @@ describe("noteUndetectedClients", () => {
 		await enableCommand({});
 
 		const out = logged(logSpy);
-		expect(out).toContain("Not detected: copilot, gemini, codex, cursor, opencode, pi");
+		expect(out).toContain("Not detected: copilot, gemini, codex, cursor, opencode, opencode2, pi");
 	});
 });
 

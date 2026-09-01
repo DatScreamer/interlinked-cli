@@ -16,12 +16,13 @@ import type { JsonObject } from "../../lib/json-types.js";
 import { eventAttributionFields } from "../event-attribution-fields.js";
 import type { AgentSource, HarnessEvent } from "../types.js";
 
+/** Empty string = omit `client_runner` (Claude is default; Cursor uses `cursor_version`). */
 const CLIENT_RUNNER_BY_AGENT_SOURCE: Record<AgentSource, string> = {
-	claude: "claude-code",
+	claude: "",
 	codex: "codex",
 	copilot: "copilot",
 	gemini: "gemini-cli",
-	cursor: "cursor",
+	cursor: "",
 	opencode: "opencode",
 	opencode2: "opencode2",
 	pi: "pi",
