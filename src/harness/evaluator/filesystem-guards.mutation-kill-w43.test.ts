@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	evaluateProtectedFiles,
 	evaluateRepoConfinement,
@@ -14,10 +14,25 @@ describe("filesystem-guards mutation kills — isEphemeralTempPath", () => {
 	// makes resolve("") === process.cwd() get added as a bogus ephemeral root, so
 	// an ordinary path under the real cwd starts reading as "ephemeral".
 	// test-contract: public-api — isEphemeralTempPath must not classify an
-	// ordinary path under the real process cwd as an ephemeral temp root.
-	it("does not treat a path under the real process cwd as ephemeral", () => {
-		const underCwd = path.join(process.cwd(), "definitely-not-a-temp-dir", "file.txt");
-		expect(isEphemeralTempPath(underCwd)).toBe(false);
+	// ordinary path under a non-temp process cwd as an ephemeral temp root.
+	it("does not treat a path under a non-temp process cwd as ephemeral", async () => {
+		// Clean-clone tests may themselves run below macOS's /var/folders temp
+		// root. Pin cwd to a platform-rooted non-temp value so this test keeps
+		// exercising the empty-root mutant rather than assuming its host layout.
+		// Reset and import AFTER the spy because EPHEMERAL_TEMP_ROOTS is computed
+		// once at module evaluation; an empty root must therefore resolve to this
+		// synthetic cwd for the mutation-directed assertion to retain its teeth.
+		const syntheticCwd = path.join(path.parse(homedir()).root, "interlinked-non-temp-project");
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(syntheticCwd);
+		vi.resetModules();
+		try {
+			const { isEphemeralTempPath: classifyEphemeral } = await import("./filesystem-guards.js");
+			const underCwd = path.join(syntheticCwd, "definitely-not-a-temp-dir", "file.txt");
+			expect(classifyEphemeral(underCwd)).toBe(false);
+		} finally {
+			cwdSpy.mockRestore();
+			vi.resetModules();
+		}
 	});
 
 	// Kills b9eb5089309f108c: root.endsWith(sep) -> root.startsWith(sep) drops the

@@ -37,6 +37,42 @@ function ownVersion(): string {
 	return version;
 }
 
+function runBuiltContext(): unknown {
+	const fixture = mkdtempSync(join(tmpdir(), "hook-version-built-"));
+	const configDir = join(fixture, ".interlinked");
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(
+		join(configDir, "config.json"),
+		JSON.stringify({
+			version: 1,
+			server_url: "http://127.0.0.1:8787",
+			default_workspace_key: "main",
+			default_project: "main",
+			mode: "quality",
+		}),
+	);
+	try {
+		const raw = execFileSync(process.execPath, [DIST_CLI, "context", "--json"], {
+			cwd: fixture,
+			encoding: "utf-8",
+			timeout: 60_000,
+			env: {
+				...process.env,
+				HOME: fixture,
+				USERPROFILE: fixture,
+				XDG_CONFIG_HOME: join(fixture, ".config"),
+				INTERLINKED_HOME: configDir,
+				INTERLINKED_DATA_DIR: configDir,
+				INTERLINKED_ACCESS_TOKEN: "",
+				INTERLINKED_TOKEN: "",
+			},
+		});
+		return JSON.parse(raw);
+	} finally {
+		rmSync(fixture, { recursive: true, force: true });
+	}
+}
+
 /** The built bundle is a prerequisite, not something to silently skip past:
  *  a skipped test here is exactly how the original defect survived. When
  *  `dist/` is absent (a fresh clone that has not run `npm run build`) the
@@ -47,12 +83,7 @@ describe("hook version resolved from the built bundle", () => {
 	it.skipIf(!built)(
 		"P: `context --json` from dist reports THIS package's version, not an ancestor's",
 		() => {
-			const raw = execFileSync(process.execPath, [DIST_CLI, "context", "--json"], {
-				cwd: REPO_ROOT,
-				encoding: "utf-8",
-				timeout: 60_000,
-			});
-			const parsed: unknown = JSON.parse(raw);
+			const parsed = runBuiltContext();
 			const hooks = (parsed as { hooks?: { current_version?: unknown } }).hooks;
 			const current = hooks?.current_version;
 			expect(typeof current).toBe("string");
@@ -72,12 +103,7 @@ describe("hook version resolved from the built bundle", () => {
 			const ancestor: unknown = JSON.parse(readFileSync(ancestorPkg, "utf-8"));
 			const ancestorVersion = (ancestor as { version?: unknown }).version;
 			if (typeof ancestorVersion !== "string" || ancestorVersion === ownVersion()) return;
-			const raw = execFileSync(process.execPath, [DIST_CLI, "context", "--json"], {
-				cwd: REPO_ROOT,
-				encoding: "utf-8",
-				timeout: 60_000,
-			});
-			const parsed: unknown = JSON.parse(raw);
+			const parsed = runBuiltContext();
 			const current = String(
 				(parsed as { hooks?: { current_version?: unknown } }).hooks?.current_version ?? "",
 			);

@@ -4,7 +4,7 @@
 
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GuardRulesConfig, HarnessEvent } from "../types.js";
 import {
@@ -512,24 +512,20 @@ describe("evaluateScratchpadWriteGuard — ephemeral-write ledger", () => {
 	// real and the no-append outcome is a genuine assertion, not a missing-dir
 	// coincidence.
 	it("never appends a record for a non-ephemeral, non-scratch write", () => {
-		// Stryker copies only configured project inputs; root `scratch/` is
-		// intentionally excluded and therefore may not exist in its sandbox.
-		// A temporary project directly under cwd stays outside the OS temp tree
-		// without depending on that optional directory.
-		const cwd = mkdtempSync(join(process.cwd(), ".sg-ledger-"));
-		try {
-			mkdirSync(join(cwd, ".interlinked"));
+		withTmpProjectRoot((cwd) => {
+			// Keep the managed-project ledger writable under the test sandbox, but
+			// make the attempted absolute target platform-rooted and non-ephemeral.
+			// This remains valid when the clone and HOME both live below /var/folders.
+			const target = join(parse(tmpdir()).root, "interlinked-non-temp-target", "src", "real.ts");
 			const warnings: string[] = [];
 			evaluateScratchpadWriteGuard(
 				makeEvent({ cwd, dry_run: false }),
 				"Write",
-				{ file_path: join(cwd, "src", "real.ts"), content: "export {};\n" },
+				{ file_path: target, content: "export {};\n" },
 				RULES,
 				warnings,
 			);
 			expect(existsSync(logPath(cwd))).toBe(false);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
+		});
 	});
 });
