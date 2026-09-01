@@ -471,7 +471,7 @@ interlinked logout [--all]
 - **OpenCode and Pi installs are managed source bridges.** OpenCode v1 writes
   `.opencode/plugins/interlinked.ts` (user: `~/.config/opencode/plugins/interlinked.ts`).
   OpenCode v2 (`opencode2`) writes `.opencode/plugins/interlinked-opencode2.ts` (user:
-  `~/.config/opencode-v2/opencode/plugins/`). Distinct filenames and plugin ids, so both
+  `~/.config/opencode/plugins/interlinked-opencode2.ts`). Distinct filenames and plugin ids, so both
   can be enabled in one repo; each plugin no-ops in the other binary. Pi writes
   `.pi/extensions/interlinked.js`. Install refuses to overwrite a foreign file at that
   path, and uninstall preserves a bridge whose bytes changed after install. Restart OpenCode

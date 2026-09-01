@@ -111,7 +111,8 @@ export function mapOpencode2Tool(tool: string, args: unknown): MappedOpencodeToo
 	}
 }
 
-const DESTRUCTIVE_RM = /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f\b.*\s(\/|~)/;
+/** Recursive rm of / or ~. Matches `-rf` and `-fr` (and mixed clusters containing both). */
+export const OPENCODE2_DESTRUCTIVE_RM = /\brm\s+-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)\b.*\s(\/|~)/;
 const INSTALL_VERB =
 	/\b(npm|pnpm|yarn|bun|pip|pip3|pipx|poetry|uv|cargo|gem|bundle|go)\s+(install|add|get)\b/;
 
@@ -119,7 +120,7 @@ const INSTALL_VERB =
 export function opencode2ColdBlockReason(toolName: string, toolInput: JsonObject): string | null {
 	if (toolName !== "Bash") return null;
 	const command = typeof toolInput.command === "string" ? toolInput.command : "";
-	if (DESTRUCTIVE_RM.test(command)) {
+	if (OPENCODE2_DESTRUCTIVE_RM.test(command)) {
 		return "BLOCKED: Recursive deletion of a filesystem root is not allowed (OpenCode cold fallback).";
 	}
 	if (INSTALL_VERB.test(command)) {

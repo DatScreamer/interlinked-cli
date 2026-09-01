@@ -49,6 +49,8 @@ describe("mapOpencode2Tool — negative (must not invent names)", () => {
 describe("opencode2ColdBlockReason", () => {
 	it("P1: blocks recursive rm of /", () => {
 		expect(opencode2ColdBlockReason("Bash", { command: "rm -rf /" })).toMatch(/BLOCKED/);
+		expect(opencode2ColdBlockReason("Bash", { command: "rm -fr /" })).toMatch(/BLOCKED/);
+		expect(opencode2ColdBlockReason("Bash", { command: "rm -fr ~" })).toMatch(/BLOCKED/);
 	});
 
 	it("P2: blocks npm install", () => {

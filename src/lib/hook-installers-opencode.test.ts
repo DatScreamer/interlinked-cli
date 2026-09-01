@@ -37,6 +37,9 @@ describe("OpenCode plugin installer", () => {
 		expect(body).toContain("export const InterlinkedPlugin");
 		expect(body).toContain("setup:");
 		expect(body).toContain("execute.before");
+		expect(body).toContain('hook("deleted"');
+		expect(body).toContain("SessionEnd");
+		expect(body).toContain("(?:r[a-zA-Z]*f|f[a-zA-Z]*r)");
 		expect(isOpencode2PluginInstalled(cwd)).toBe(true);
 	});
 

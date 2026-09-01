@@ -6,6 +6,8 @@
 // colliding on filename or plugin id. OpenCode auto-loads
 // `{plugin,plugins}/*.{ts,js}`. The file has ZERO imports from this package.
 
+import { OPENCODE2_DESTRUCTIVE_RM } from "./opencode-tool-map.js";
+
 /** Marker grepped by doctor / uninstall. Distinct from the v1 provider-bridge marker. */
 export const OPENCODE_PLUGIN_MARKER = "interlinked-opencode-plugin";
 
@@ -124,7 +126,7 @@ function findSocket(start) {
 function coldBlock(toolName, toolInput) {
   if (toolName !== "Bash") return null;
   const command = typeof toolInput.command === "string" ? toolInput.command : "";
-  if (/\\brm\\s+-[a-zA-Z]*r[a-zA-Z]*f\\b.*\\s(\\/|~)/.test(command)) {
+  if (/${OPENCODE2_DESTRUCTIVE_RM.source}/.test(command)) {
     return "BLOCKED: Recursive deletion of a filesystem root is not allowed (OpenCode cold fallback).";
   }
   if (/\\b(npm|pnpm|yarn|bun|pip|pip3|pipx|poetry|uv|cargo|gem|bundle|go)\\s+(install|add|get)\\b/.test(command)) {
@@ -288,6 +290,9 @@ export default {
     if (ctx.session && typeof ctx.session.hook === "function") {
       await ctx.session.hook("created", (event) =>
         queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "SessionStart" }),
+      );
+      await ctx.session.hook("deleted", (event) =>
+        queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "SessionEnd" }),
       );
       await ctx.session.hook("idle", (event) =>
         queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "Stop" }),
