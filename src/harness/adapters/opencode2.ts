@@ -12,8 +12,7 @@
 // is ever invoked with --runner opencode2.
 
 import { mapOpencode2Tool } from "../../lib/opencode-tool-map.js";
-import { isOpenCodeV2Env } from "../../lib/opencode-runtime.js";
-import { installOpencode2Hooks, uninstallOpencode2Hooks } from "../../lib/hook-installers-opencode.js";
+import { isOpenCodeV2Env, opencodeUserPluginRelPath } from "../../lib/opencode-runtime.js";
 import { buildOpencodePluginSource, OPENCODE_PLUGIN_FILENAME } from "../../lib/opencode-plugin-source.js";
 import type { JsonObject } from "../../lib/json-types.js";
 import {
@@ -23,7 +22,7 @@ import {
 import type { UnifiedPhase } from "../unified-event.js";
 import { makeEventId } from "../unified-event.js";
 import { installedEventNames, OPENCODE2_CAPABILITIES } from "./provider-capabilities.js";
-import type { AdapterOutput, PostInstallOptions, RunnerAdapter, SettingsFragment } from "./types.js";
+import type { AdapterOutput, RunnerAdapter, SettingsFragment } from "./types.js";
 
 const NATIVE_EVENTS = installedEventNames(OPENCODE2_CAPABILITIES);
 
@@ -72,7 +71,7 @@ export function createOpencode2Adapter(opts: OpencodeAdapterOptions = {}): Runne
 				phase === "pre-tool" || phase === "post-tool"
 					? {
 							kind: "tool_call" as const,
-							tool_name: toolName.toLowerCase(),
+							tool_name: toolName,
 							tool_class: classifyFromToolName(
 								toolName,
 								toolInput,
@@ -108,7 +107,7 @@ export function createOpencode2Adapter(opts: OpencodeAdapterOptions = {}): Runne
 		renderSettingsFragment(_binaryPath, scope): SettingsFragment {
 			const path =
 				scope === "user"
-					? `~/.config/opencode/plugins/${OPENCODE_PLUGIN_FILENAME}`
+					? opencodeUserPluginRelPath(OPENCODE_PLUGIN_FILENAME)
 					: `.opencode/plugins/${OPENCODE_PLUGIN_FILENAME}`;
 			return {
 				path,
@@ -139,15 +138,7 @@ export function createOpencode2Adapter(opts: OpencodeAdapterOptions = {}): Runne
 			};
 		},
 
-		postInstall(options: PostInstallOptions) {
-			if (options.dryRun) return;
-			installOpencode2Hooks(options.cwd, "");
-		},
 
-		postUninstall(options: PostInstallOptions) {
-			if (options.dryRun) return;
-			uninstallOpencode2Hooks(options.cwd);
-		},
 	};
 }
 

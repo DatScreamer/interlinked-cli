@@ -138,14 +138,18 @@ export function detectClients(
 	cwd: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): DetectedClient[] {
-	return CLIENT_CONFIGS.map((config) => ({
-		name: config.name,
-		settingsPath: getClientSettingsPath(cwd, config),
-		exists:
+	const v2Env = env.OPENCODE2 || env.INTERLINKED_CLIENT === "opencode2";
+	return CLIENT_CONFIGS.map((config) => {
+		const fromEnv = config.detectFromEnv?.(env) === true;
+		const fromFiles =
 			existsSync(join(cwd, config.configDir)) ||
-			config.detectionFiles?.some((path) => existsSync(join(cwd, path))) === true ||
-			config.detectFromEnv?.(env) === true,
-	}));
+			config.detectionFiles?.some((path) => existsSync(join(cwd, path))) === true;
+		let exists = fromEnv || fromFiles;
+		// `.opencode/` is shared. Directory presence is v1; v2 requires an explicit env/client signal.
+		if (config.name === "opencode2") exists = fromEnv;
+		if (config.name === "opencode" && v2Env) exists = fromEnv;
+		return { name: config.name, settingsPath: getClientSettingsPath(cwd, config), exists };
+	});
 }
 
 /** Maps a legacy `ClientName` id to the adapter `RunnerId` vocabulary. The two

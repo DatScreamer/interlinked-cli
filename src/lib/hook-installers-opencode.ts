@@ -7,8 +7,8 @@
 // installer writes `interlinked-opencode2.ts` so both can be enabled.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { opencodeUserPluginDir } from "./opencode-runtime.js";
 import {
 	buildOpencodePluginSource,
 	OPENCODE_PLUGIN_FILENAME,
@@ -30,8 +30,7 @@ export function opencodePluginRelPath(): string {
 
 export function getOpencodePluginPath(cwd: string, scope: "user" | "project" | "local" = "project"): string {
 	if (scope === "user") {
-		const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
-		return join(home, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME);
+		return join(opencodeUserPluginDir(), OPENCODE_PLUGIN_FILENAME);
 	}
 	return join(cwd, ".opencode", "plugins", OPENCODE_PLUGIN_FILENAME);
 }
@@ -43,20 +42,9 @@ function writePlugin(path: string): void {
 }
 
 function pluginPaths(cwd: string): string[] {
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	const project = getOpencodePluginPath(cwd, "project");
-	const userV2 = getOpencodePluginPath(cwd, "user");
 	const projectDir = dirname(project);
-	const v1UserDir = join(home, ".config", "opencode", "plugins");
-	return [
-		project,
-		userV2,
-		join(projectDir, "interlinked.js"),
-		join(projectDir, "interlinked.ts"),
-		join(v1UserDir, "interlinked.js"),
-		join(v1UserDir, "interlinked-opencode2.js"),
-		join(v1UserDir, "interlinked.ts"),
-	];
+	return [project, join(projectDir, "interlinked-opencode2.js")];
 }
 
 function pluginIsOurs(path: string): boolean {
@@ -74,11 +62,9 @@ function pluginIsOurs(path: string): boolean {
  */
 export function installOpencode2Hooks(cwd: string, _hookScriptPath: string): void {
 	const project = getOpencodePluginPath(cwd, "project");
-	const userPlugin = getOpencodePluginPath(cwd, "user");
 	writePlugin(project);
-	writePlugin(userPlugin);
 	for (const leftover of pluginPaths(cwd)) {
-		if (leftover === project || leftover === userPlugin) continue;
+		if (leftover === project) continue;
 		if (!pluginIsOurs(leftover)) continue;
 		rmSync(leftover, { force: true });
 	}

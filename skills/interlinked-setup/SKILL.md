@@ -470,9 +470,9 @@ interlinked logout [--all]
   current `gemini` client installs Gemini CLI hooks/skills; do not treat it as Antigravity.
 - **OpenCode and Pi installs are managed source bridges.** OpenCode v1 writes
   `.opencode/plugins/interlinked.ts` (user: `~/.config/opencode/plugins/interlinked.ts`).
-  OpenCode v2 (`opencode2`) writes `.opencode/plugins/interlinked-opencode2.ts` (user:
-  `~/.config/opencode/plugins/interlinked-opencode2.ts`). Distinct filenames and plugin ids, so both
-  can be enabled in one repo; each plugin no-ops in the other binary. Pi writes
+  OpenCode v2 (`opencode2`, experimental) writes `.opencode/plugins/interlinked-opencode2.ts` (user:
+  `~/.config/opencode/plugins/interlinked-opencode2.ts`, or `$XDG_CONFIG_HOME/opencode/plugins/` when set). Distinct filenames and plugin ids, so both
+  can be enabled in one repo with `--clients opencode,opencode2`; bare enable does not install v2 from `.opencode/` alone. Each plugin no-ops in the other binary. Pi writes
   `.pi/extensions/interlinked.js`. Install refuses to overwrite a foreign file at that
   path, and uninstall preserves a bridge whose bytes changed after install. Restart OpenCode
   after install. In Pi, run `/reload` or restart and approve the project-extension trust prompt.

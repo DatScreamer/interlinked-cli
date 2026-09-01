@@ -69,7 +69,7 @@ export function hueForAgent(id: string): number {
 /** Extract the runner family from an agent name, or "unknown". */
 export function runnerOf(agent: string): string {
 	const lower = agent.toLowerCase();
-	return RUNNERS.find((r) => lower.includes(r)) ?? "unknown";
+	return [...RUNNERS].sort((a, b) => b.length - a.length).find((r) => lower.includes(r)) ?? "unknown";
 }
 
 /** Compact lane label: runner plus the identifying tail of the agent name. */

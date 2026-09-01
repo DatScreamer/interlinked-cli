@@ -147,6 +147,18 @@ describe("cross-runner equivalence — semantically identical Edit events", () =
 				"PreToolUse",
 			),
 		],
+		[
+			"opencode2",
+			nonNull(buildAllAdapters()[5]).parseHookInput(
+				{
+					sessionID: "s",
+					cwd: "/r",
+					tool: "edit",
+					args: { filePath: "/r/a.ts", oldString: "x", newString: "y" },
+				},
+				"tool.execute.before",
+			),
+		],
 	];
 	for (const [name, event] of runners) {
 		it(`${name} Edit → modify tool_class`, () => {

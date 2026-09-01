@@ -37,8 +37,9 @@ describe("OpenCode plugin installer", () => {
 		expect(body).toContain("export const InterlinkedPlugin");
 		expect(body).toContain("setup:");
 		expect(body).toContain("execute.before");
-		expect(body).toContain('hook("deleted"');
+		expect(body).toContain("session.deleted");
 		expect(body).toContain("SessionEnd");
+		expect(body).toContain("event.subscribe");
 		expect(body).toContain("(?:r[a-zA-Z]*f|f[a-zA-Z]*r)");
 		expect(isOpencode2PluginInstalled(cwd)).toBe(true);
 	});
@@ -58,10 +59,10 @@ describe("OpenCode plugin installer", () => {
 		const cwd = tmp();
 		const dir = join(cwd, ".opencode", "plugins");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "interlinked.js"), `// ${OPENCODE_PLUGIN_MARKER}\n`);
+		writeFileSync(join(dir, "interlinked-opencode2.js"), `// ${OPENCODE_PLUGIN_MARKER}\n`);
 		installOpencode2Hooks(cwd, "");
 		expect(existsSync(join(dir, "interlinked-opencode2.ts"))).toBe(true);
-		expect(existsSync(join(dir, "interlinked.js"))).toBe(false);
+		expect(existsSync(join(dir, "interlinked-opencode2.js"))).toBe(false);
 	});
 
 	it("P4: does not overwrite a v1 managed interlinked.ts", () => {

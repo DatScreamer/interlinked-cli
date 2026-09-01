@@ -30,13 +30,8 @@ const PLUGIN_ID = ${JSON.stringify(OPENCODE_PLUGIN_ID)};
 
 function isOpenCodeV2() {
   const env = typeof process === "undefined" ? {} : process.env;
-  const argv = typeof process === "undefined" ? [] : process.argv;
-  if (Boolean(env.OPENCODE2) || env.INTERLINKED_CLIENT === "opencode2") return true;
-  if (String(env.XDG_CONFIG_HOME || "").includes("opencode-v2")) return true;
-  if (argv.some((part) => String(part).includes("opencode2"))) return true;
-  // This file is the v2 plugin. Gate unless the process is clearly OpenCode v1.
+  if (env.INTERLINKED_CLIENT === "opencode2" || Boolean(env.OPENCODE2)) return true;
   if (env.INTERLINKED_CLIENT === "opencode") return false;
-  if (env.OPENCODE && !env.OPENCODE2) return false;
   return true;
 }
 
@@ -135,12 +130,14 @@ function coldBlock(toolName, toolInput) {
   return null;
 }
 
+function unavailable(event) {
+  const reason = coldBlock(event.tool_name, event.tool_input || {});
+  return reason ? { decision: "block", reason } : { decision: "allow" };
+}
+
 function queryHarness(event) {
   const socketPath = findSocket(event.cwd);
-  if (!socketPath) {
-    const reason = coldBlock(event.tool_name, event.tool_input || {});
-    return Promise.resolve(reason ? { decision: "block", reason } : { decision: "allow" });
-  }
+  if (!socketPath) return Promise.resolve(unavailable(event));
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
@@ -150,10 +147,7 @@ function queryHarness(event) {
       try { socket.destroy(); } catch { /* ignore */ }
       resolve(value);
     };
-    const timer = setTimeout(() => {
-      const reason = coldBlock(event.tool_name, event.tool_input || {});
-      finish(reason ? { decision: "block", reason } : { decision: "allow" });
-    }, TIMEOUT_MS);
+    const timer = setTimeout(() => finish(unavailable(event)), TIMEOUT_MS);
     const socket = createConnection(socketPath);
     let buf = "";
     socket.on("connect", () => socket.write(JSON.stringify(event) + "\\n"));
@@ -162,17 +156,15 @@ function queryHarness(event) {
       const nl = buf.indexOf("\\n");
       if (nl === -1) return;
       try {
-        finish(JSON.parse(buf.slice(0, nl)));
+        const parsed = JSON.parse(buf.slice(0, nl));
+        finish(parsed && typeof parsed === "object" ? parsed : unavailable(event));
       } catch {
-        finish({ decision: "allow" });
+        finish(unavailable(event));
       }
     });
-    socket.on("error", () => {
-      const reason = coldBlock(event.tool_name, event.tool_input || {});
-      finish(reason ? { decision: "block", reason } : { decision: "allow" });
-    });
+    socket.on("error", () => finish(unavailable(event)));
     socket.on("close", () => {
-      if (!settled) finish({ decision: "allow" });
+      if (!settled) finish(unavailable(event));
     });
   });
 }
@@ -224,11 +216,26 @@ async function gateBefore(event, pluginCwd) {
   }
 }
 
+const MUTATING = { write: true, edit: true, bash: true, shell: true, apply_patch: true, Write: true, Edit: true, Bash: true };
+
+function applyFindings(event, decision) {
+  if (!decision) return;
+  const extra = [decision.reason, ...(decision.warnings || [])].filter(Boolean).join("\\n");
+  if (!extra) return;
+  if (event && typeof event.append === "function") {
+    event.append(extra);
+    return;
+  }
+  if (event && typeof event.output === "string") event.output = event.output + "\\n" + extra;
+}
+
 async function gateAfter(event, pluginCwd) {
   const tool = (event && (event.tool || event.name || event.id)) || "unknown";
-  const mapped = mapTool(typeof tool === "string" ? tool : String(tool), readArgs(event));
+  const toolKey = typeof tool === "string" ? tool : String(tool);
+  if (!MUTATING[toolKey] && !MUTATING[toolKey.toLowerCase()]) return;
+  const mapped = mapTool(toolKey, readArgs(event));
   const sessionId = event && (event.sessionID || event.sessionId);
-  await queryHarness({
+  const decision = await queryHarness({
     ...baseEvent(pluginCwd, sessionId),
     hook_event: "PostToolUse",
     tool_name: mapped.tool_name,
@@ -236,6 +243,7 @@ async function gateAfter(event, pluginCwd) {
     tool_response: event && (event.output || event.result),
     tool_use_id: event && event.callID,
   });
+  applyFindings(event, decision);
 }
 
 let armed = false;
@@ -287,16 +295,17 @@ export default {
         return gateBefore({ tool: "bash", args: { command }, sessionID: event && event.sessionID }, pluginCwd);
       });
     }
-    if (ctx.session && typeof ctx.session.hook === "function") {
-      await ctx.session.hook("created", (event) =>
-        queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "SessionStart" }),
-      );
-      await ctx.session.hook("deleted", (event) =>
-        queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "SessionEnd" }),
-      );
-      await ctx.session.hook("idle", (event) =>
-        queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID)), hook_event: "Stop" }),
-      );
+    if (ctx.event && typeof ctx.event.subscribe === "function") {
+      const life = [
+        ["session.created", "SessionStart"],
+        ["session.deleted", "SessionEnd"],
+        ["session.idle", "Stop"],
+      ];
+      for (const [name, hookEvent] of life) {
+        ctx.event.subscribe(name, (event) =>
+          queryHarness({ ...baseEvent(pluginCwd, event && (event.id || event.sessionID || event.sessionId)), hook_event: hookEvent }),
+        );
+      }
     }
   },
 };

@@ -128,5 +128,3 @@ export function opencode2ColdBlockReason(toolName: string, toolInput: JsonObject
 	}
 	return null;
 }
-
-

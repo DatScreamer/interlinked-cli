@@ -24,8 +24,8 @@ describe("OpenCode detectFromEnv", () => {
 	it("P1: detects OPENCODE2", () => {
 		expect(adapter.detectFromEnv({ OPENCODE2: "1" })).toBe(true);
 	});
-	it("P2: detects the v2 XDG config home", () => {
-		expect(adapter.detectFromEnv({ XDG_CONFIG_HOME: "/home/agent/.config/opencode-v2" })).toBe(true);
+	it("N3: XDG_CONFIG_HOME substring is not a v2 identity signal", () => {
+		expect(adapter.detectFromEnv({ XDG_CONFIG_HOME: "/home/agent/.config/opencode-v2" })).toBe(false);
 	});
 	it("N1: ignores a plain env", () => {
 		expect(adapter.detectFromEnv({})).toBe(false);
@@ -44,7 +44,7 @@ describe("OpenCode parseHookInput", () => {
 		expect(event.phase).toBe("pre-tool");
 		expect(event.runner).toBe("opencode2");
 		if (event.action.kind !== "tool_call") throw new Error("expected tool_call");
-		expect(event.action.tool_name).toBe("edit");
+		expect(event.action.tool_name).toBe("Edit");
 		expect(event.action.tool_input).toMatchObject({ file_path: "/r/a.ts" });
 	});
 

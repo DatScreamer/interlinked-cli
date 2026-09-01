@@ -73,6 +73,7 @@ const PROVIDER_BY_SOURCE: Record<AgentSource, string> = {
 	codex: "codex",
 	cursor: "cursor",
 	opencode: "opencode",
+	opencode2: "opencode2",
 	pi: "pi",
 };
 
