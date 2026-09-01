@@ -97,6 +97,7 @@ export const CONSUMED_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
 	"callID",
 	"tool",
 	"args",
+	"input",
 	"output",
 	"filePath",
 	"oldString",

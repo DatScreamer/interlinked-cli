@@ -95,6 +95,38 @@ describe("generated OpenCode v2 plugin against a fake host", () => {
 		}
 	});
 
+	it("cold-blocks rm -fr / when the daemon closes before a complete line", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "oc2-plugin-"));
+		dirs.push(dir);
+		mkdirSync(join(dir, ".interlinked"), { recursive: true });
+		const sock = join(dir, ".interlinked", "harness.sock");
+		const server = createServer((c) => {
+			c.on("data", () => c.end());
+		});
+		await new Promise<void>((resolve, reject) => {
+			server.on("error", reject);
+			server.listen(sock, () => resolve());
+		});
+		try {
+			const hooks: Record<string, (event: Record<string, unknown>) => Promise<unknown>> = {};
+			const plugin = await loadPlugin(dir);
+			await plugin.default.setup({
+				location: { directory: dir },
+				tool: {
+					hook: async (name: string, fn: (e: Record<string, unknown>) => Promise<unknown>) => {
+						hooks[name] = fn;
+					},
+				},
+				event: { subscribe: () => undefined },
+			});
+			await expect(
+				hooks["execute.before"]?.({ tool: "bash", args: { command: "rm -fr /" }, sessionID: "s" }),
+			).rejects.toThrow(/BLOCKED/);
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
+
 	it("cold-blocks rm -fr / on malformed daemon JSON", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "oc2-plugin-"));
 		dirs.push(dir);
