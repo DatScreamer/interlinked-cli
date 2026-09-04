@@ -69,9 +69,9 @@ prompts on genuinely NEW packages.
 > block is a message the agent must guess at, and the likeliest guess is to work around the gate.
 
 Key `enable` flags: `--server <url>` · `--agent <name>` · `--clients <list>`
-(`claude,copilot,gemini,codex,cursor,opencode,pi`) · `--sync-mode <realtime|local|manual>` ·
+(`claude,copilot,gemini,codex,cursor,opencode,opencode2,pi`) · `--sync-mode <realtime|local|manual>` ·
 `--data-dir <path>` · `--structure <mode>` · `--dry-run`.
-`install-hooks` uses different vocabulary: `--runner <claude-code,copilot-cli,cursor,gemini-cli,codex,opencode,pi>`
+`install-hooks` uses different vocabulary: `--runner <claude-code,copilot-cli,cursor,gemini-cli,codex,opencode,opencode2,pi>`
 · `--scope <user|project|local>` · `--mode <balanced|strict|lenient>`.
 Explicit values are strict: an unknown client, sync mode, structure mode, install scope, or
 enforcement mode exits nonzero before config, hook, manifest, stand-down, binary-fallback,
@@ -399,6 +399,14 @@ hand.
   model reference, and source/test include policy.
 - **`.interlinked/semantic.local.json`** (gitignored): local-only CPU/runtime topology. Remote URLs,
   API tokens, and cloud fallbacks are rejected by the v1 schema.
+- **`.interlinked/tool-commands.json`** (committed): per-tool argv overrides for build/lint/test
+  runners (`go_build`, `go_test`, `golangci_lint`, …). Team tier may set `base_args` +
+  `timeout_ms` only (flags for a fixed binary / a bounded cap); `command` (arbitrary executable)
+  and `env` are personal-tier only — a violation is a `doctor` error.
+- **`.interlinked/tool-commands.local.json`** (gitignored): trusted personal tier; may add a full
+  `command` override or `env` wholesale, winning over the team entry for the same key. No shell
+  interpolation — argv must be written as the executed argument list (`-tags 'dev devaccounts'` is
+  one token `["-tags","dev devaccounts"]`).
 - **Env overrides** (win over both files): `INTERLINKED_SERVER_URL`,
   `INTERLINKED_ACCESS_TOKEN` (alias `INTERLINKED_TOKEN`), `INTERLINKED_AGENT_NAME`,
   `INTERLINKED_WORKSPACE_ID`, `INTERLINKED_SYNC_MODE`, `INTERLINKED_HOME` (relocates the whole
@@ -468,14 +476,14 @@ interlinked logout [--all]
 - **Gemini is a compatibility lane, not the Antigravity adapter.** Consumer Gemini CLI service
   ended in June 2026, while enterprise and paid API-key Gemini CLI use remain supported. The
   current `gemini` client installs Gemini CLI hooks/skills; do not treat it as Antigravity.
-- **OpenCode and Pi installs are managed source bridges.** Project scope writes
-  `.opencode/plugins/interlinked.ts` or `.pi/extensions/interlinked.js` as an Interlinked-owned
-  whole file; user scope uses `~/.config/opencode/plugins/interlinked.ts` and
-  `~/.pi/agent/extensions/interlinked.js`. Install refuses to overwrite a foreign file at that
-  path, and uninstall preserves a bridge whose bytes changed after install. A loaded bridge writes
-  its provider row to `.interlinked/hook-runtime.json`, but only Codex currently has a dedicated
-  doctor trust-verification row. Restart OpenCode after install (its plugin trust is implicit). In
-  Pi, run `/reload` or restart and approve the project-extension trust prompt.
+- **OpenCode and Pi installs are managed source bridges.** OpenCode v1 writes
+  `.opencode/plugins/interlinked.ts` (user: `~/.config/opencode/plugins/interlinked.ts`).
+  OpenCode v2 (`opencode2`, experimental) writes `.opencode/plugins/interlinked-opencode2.ts` (user:
+  `~/.config/opencode/plugins/interlinked-opencode2.ts`, or `$XDG_CONFIG_HOME/opencode/plugins/` when set). Distinct filenames and plugin ids, so both
+  can be enabled in one repo with `--clients opencode,opencode2`; bare enable does not install v2 from `.opencode/` alone. Each plugin no-ops in the other binary. Pi writes
+  `.pi/extensions/interlinked.js`. Install refuses to overwrite a foreign file at that
+  path, and uninstall preserves a bridge whose bytes changed after install. Restart OpenCode
+  after install. In Pi, run `/reload` or restart and approve the project-extension trust prompt.
 - **Their native parity is intentionally bounded.** OpenCode's stable tool-before hook cannot
   open confirmation, so `ask` denies; permission bus and `session.idle`/Stop are observation-only.
   Pi prompts through `ctx.ui.confirm` when interactive and denies headless; `user_bash` gates
