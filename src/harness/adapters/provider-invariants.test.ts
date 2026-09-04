@@ -69,6 +69,13 @@ const WRITE_FIXTURES: Record<InstalledRunnerId, WriteFixture> = {
 	},
 };
 
+function writeFixture(id: RunnerId): WriteFixture {
+	if (id === "unknown") {
+		throw new Error("unknown is not an installed adapter and has no write fixture");
+	}
+	return WRITE_FIXTURES[id];
+}
+
 function looksLikeAllow(out: { exit_code: number; stdout?: string | undefined }): boolean {
 	if (out.exit_code !== 0) return false;
 	if (!out.stdout) return true;
@@ -112,7 +119,7 @@ describe("every adapter's native write is a harness file-write", () => {
 
 	it("parsed write tool names are isFileWrite / direct edits (or file_operation)", () => {
 		for (const adapter of buildAllAdapters()) {
-			const fixture = WRITE_FIXTURES[adapter.id];
+			const fixture = writeFixture(adapter.id);
 			const event = adapter.parseHookInput(fixture.payload, fixture.nativeEvent);
 			if (event.action.kind === "file_operation") {
 				expect(["create", "edit", "write", "delete"]).toContain(event.action.operation);
@@ -210,7 +217,7 @@ describe("ask without a native prompt is not an allow", () => {
 	it("encodeDecision(ask) is not indistinguishable from allow when the runner cannot ask", () => {
 		for (const adapter of buildAllAdapters()) {
 			if (adapterHasAskOrPermission(adapter)) continue;
-			const fixture = WRITE_FIXTURES[adapter.id];
+			const fixture = writeFixture(adapter.id);
 			const event = adapter.parseHookInput(fixture.payload, fixture.nativeEvent);
 			const out = adapter.encodeDecision({ decision: "ask", reason: "confirm" }, event);
 			expect(looksLikeAllow(out), `${adapter.id} turned ask into allow`).toBe(false);
