@@ -46,7 +46,7 @@ That is the triad every responsible-AI program is built on — **evaluation,
 observability, and enforceable guardrails** — implemented at the provider
 integration layer where a delivered agent intent becomes a real-world action.
 Policy is shared through version control and normalized
-across <!-- gen:runner_count -->7<!-- /gen:runner_count --> agent runners and a
+across <!-- gen:runner_count -->8<!-- /gen:runner_count --> agent runners and a
 fleet of agents working in parallel. Claude Code and Codex are the supported
 pair; the other adapters are experimental, and each can enforce only the
 controls its native API exposes. None of this requires a cloud dependency or
