@@ -23,8 +23,10 @@ interface WriteFixture {
 	toolClass: "modify" | "write";
 }
 
-/** One native write/edit payload per runner. Missing an adapter id fails the suite. */
-const WRITE_FIXTURES: Record<RunnerId, WriteFixture> = {
+type InstalledRunnerId = Exclude<RunnerId, "unknown">
+
+/** One native write/edit payload per installed adapter. Missing an id fails the suite. */
+const WRITE_FIXTURES: Record<InstalledRunnerId, WriteFixture> = {
 	"claude-code": {
 		nativeEvent: "PreToolUse",
 		payload: { session_id: "s", cwd: "/r", tool_name: "Write", tool_input: { file_path: "/r/a.ts", content: "x" } },
@@ -64,11 +66,6 @@ const WRITE_FIXTURES: Record<RunnerId, WriteFixture> = {
 		nativeEvent: "tool_call",
 		payload: { sessionId: "s", cwd: "/r", toolName: "edit", input: { file_path: "/r/a.ts" } },
 		toolClass: "modify",
-	},
-	unknown: {
-		nativeEvent: "PreToolUse",
-		payload: { session_id: "s", cwd: "/r", tool_name: "Write", tool_input: { file_path: "/r/a.ts", content: "x" } },
-		toolClass: "write",
 	},
 };
 
