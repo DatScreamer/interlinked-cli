@@ -25,51 +25,19 @@ import {
 	parseTsSource,
 	type TsModule,
 } from "./cyclomatic-ast.js";
+import { goHalsteadCheck } from "./go-halstead.js";
+import {
+	HALSTEAD_DIFFICULTY_CEILING,
+	HALSTEAD_VOLUME_FLOOR,
+	MIN_TEXT_FOR_TALLY,
+} from "./halstead-constants.js";
 import type { InlineMatch } from "./shared.js";
 
-/**
- * Halstead difficulty above this fires the check.
- *
- * Difficulty = (n1/2)·(N2/n2) — distinct operators against operand reuse. It is
- * LENGTH-INDEPENDENT, which is exactly why the check gates on it rather than on
- * the maintainability index.
- *
- * The MI was tried first and rejected on measurement, not taste. Measured on
- * this module's own fixtures: a 12-line function packed with 30 distinct
- * operators scored MI 54, while a 43-line function of trivial `const v = n;`
- * assignments scored MI 42 — i.e. MI ranked the trivial-but-long function as
- * WORSE. MI's `16.2·ln(LOC)` term makes it a length metric, and length is
- * already governed by the per-file line cap and by `large_files`.
- *
- * The VALUE is calibrated from the corpus dogfood run, not from fixtures. Over
- * 9023 functions in this repo the difficulty distribution is:
- *
- *   p50 15.1 · p75 24.9 · p90 35.0 · p95 41.6 · p99 58.6 · p99.9 85.4 · max 164
- *
- * An earlier draft used 25 because it cleanly separated the unit-test
- * fixtures — that is the 75th percentile of real code, and it produced 2226
- * hits. This is precisely the failure the corpus obligation exists to catch:
- * hand-authored fixtures only span the shapes the author imagined. 80 sits
- * just under p99.9 and yields ~17 findings, each genuinely dense.
- */
-export const HALSTEAD_DIFFICULTY_CEILING = 80;
+export { HALSTEAD_DIFFICULTY_CEILING, HALSTEAD_VOLUME_FLOOR, MIN_TEXT_FOR_TALLY };
 
-/**
- * Minimum volume before difficulty is considered.
- *
- * A three-token expression can score high difficulty on tiny absolute numbers;
- * requiring real volume keeps the check off trivial one-liners.
- */
-export const HALSTEAD_VOLUME_FLOOR = 200;
-
-/**
- * Source-length floor below which a function is not tallied at all.
- *
- * Purely a performance guard, chosen to be strictly weaker than the reporting
- * floor so it can never change a verdict: reaching HALSTEAD_VOLUME_FLOOR needs
- * on the order of 40 tokens, which cannot fit in this many characters.
- */
-export const MIN_TEXT_FOR_TALLY = 200;
+// HALSTEAD_DIFFICULTY_CEILING / HALSTEAD_VOLUME_FLOOR / MIN_TEXT_FOR_TALLY
+// live in ./halstead-constants.ts and are re-exported above so existing
+// importers keep working.
 
 /** Halstead measures for one function. */
 export interface HalsteadMetrics {
@@ -297,6 +265,9 @@ export function computeMaintainability(
  * dense fixture in this module's tests has cyclomatic 1.
  */
 export function maintainabilityCheck(content: string, filePath: string): InlineMatch[] {
+	if (filePath.endsWith(".go")) {
+		return goHalsteadCheck(content, filePath);
+	}
 	const measured = computeMaintainability(content, filePath, MIN_TEXT_FOR_TALLY);
 	if (!measured) return [];
 	return measured

@@ -302,3 +302,4 @@ docs/test-quality-harness-plan.md
 
 # Wrangler dev secrets (per-Worker; ADMIN_TOKEN for the landing waitlist export)
 .dev.vars
+.interlinked/quality-warning-spool/
