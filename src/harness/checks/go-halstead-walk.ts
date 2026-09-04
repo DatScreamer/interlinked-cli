@@ -333,8 +333,9 @@ function countIdent(tokens: GoTok[], i: number, c: GoHalsteadCounts): number {
 		return i + 1;
 	}
 	if (prev?.kind === "op" && prev.text === ".") {
-		if (next?.kind === "lparen") addOperand(c, `func:${t.text}`);
-		else addOperand(c, `field:${t.text}`);
+		// Call-shaped `recv.Name(` is handled by the `next?.kind === "lparen"`
+		// branch above, so this is a field/selector operand.
+		addOperand(c, `field:${t.text}`);
 		return i + 1;
 	}
 	if (next?.kind === "op" && next.text === ".") {

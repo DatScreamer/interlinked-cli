@@ -65,9 +65,14 @@ const WRITE_FIXTURES: Record<RunnerId, WriteFixture> = {
 		payload: { sessionId: "s", cwd: "/r", toolName: "edit", input: { file_path: "/r/a.ts" } },
 		toolClass: "modify",
 	},
+	unknown: {
+		nativeEvent: "PreToolUse",
+		payload: { session_id: "s", cwd: "/r", tool_name: "Write", tool_input: { file_path: "/r/a.ts", content: "x" } },
+		toolClass: "write",
+	},
 };
 
-function looksLikeAllow(out: { exit_code: number; stdout?: string }): boolean {
+function looksLikeAllow(out: { exit_code: number; stdout?: string | undefined }): boolean {
 	if (out.exit_code !== 0) return false;
 	if (!out.stdout) return true;
 	try {
