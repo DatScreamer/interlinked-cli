@@ -19,7 +19,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 // Imported after the mock is registered.
-const { runGoBuild, runGolangciLint } = await import("./go.js");
+const { golangciJsonFormatArg, runGoBuild, runGolangciLint } = await import("./go.js");
 
 const PROJECT_ROOT = "/work/repo";
 const TARGET = `${PROJECT_ROOT}/cmd/server/main.go`;
@@ -199,12 +199,35 @@ describe("runGoBuild", () => {
 // runGolangciLint
 // ---------------------------------------------------------------------------
 
+describe("golangciJsonFormatArg", () => {
+	it("keeps the v1 flag for 1.x and unrecognized text", () => {
+		expect(golangciJsonFormatArg("golangci-lint has version 1.64.8 built with go1.24.1")).toBe(
+			"--out-format=json",
+		);
+		expect(golangciJsonFormatArg("")).toBe("--out-format=json");
+	});
+
+	it("uses the v2 flag for 2.x", () => {
+		expect(golangciJsonFormatArg("golangci-lint has version 2.13.2 built with go1.27.0")).toBe(
+			"--output.json.path=stdout",
+		);
+	});
+});
+
 describe("runGolangciLint", () => {
-	it("invokes golangci-lint with json out-format + ./... , cwd, timeout, pipes", () => {
-		spawnSyncMock.mockReturnValue(spawnResult({ status: 0 }));
+	it("invokes golangci-lint v1 with --out-format=json + ./... , cwd, timeout, pipes", () => {
+		spawnSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === "version") {
+				return spawnResult({
+					status: 0,
+					stdout: "golangci-lint has version 1.64.8 built with go1.24.1\n",
+				});
+			}
+			return spawnResult({ status: 0 });
+		});
 		runGolangciLint(input(fileScope(), 7_777));
-		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-		const [cmd, args, opts] = spawnSyncMock.mock.calls[0] as [
+		expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+		const [cmd, args, opts] = spawnSyncMock.mock.calls[1] as [
 			string,
 			string[],
 			Record<string, unknown>,
@@ -217,6 +240,23 @@ describe("runGolangciLint", () => {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
 		});
+	});
+
+	it("invokes golangci-lint v2 with --output.json.path=stdout", () => {
+		spawnSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === "version") {
+				return spawnResult({
+					status: 0,
+					stdout: "golangci-lint has version 2.13.2 built with go1.27.0\n",
+				});
+			}
+			return spawnResult({ status: 1, stdout: golangciJson() });
+		});
+		const out = runGolangciLint(input(fileScope()));
+		const [, args] = spawnSyncMock.mock.calls[1] as [string, string[]];
+		expect(args).toEqual(["run", "--output.json.path=stdout", "./..."]);
+		expect(out).toHaveLength(1);
+		expect(nonNull(out[0]).ruleId).toBe("errcheck");
 	});
 
 	it("returns [] when the binary is absent (error.code === ENOENT)", () => {

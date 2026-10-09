@@ -19,9 +19,67 @@ import type { CheckResult, ToolRunnerInput, ResolvedToolCommand } from "../types
 // scope rather than append after it so flag ordering stays correct (Go flags
 // must precede the package pattern).
 const GO_BUILD_PREFIX = ["go", "build"] as const;
-const GOLANGCI_PREFIX = ["golangci-lint", "run", "--out-format=json"] as const;
 const GO_TEST_PREFIX = ["go", "test"] as const;
 const DOT_SLASH = ["./..."] as const;
+/** golangci-lint v1 JSON flag. v2 removed it (`unknown flag: --out-format`, exit 3). */
+const GOLANGCI_V1_JSON = "--out-format=json";
+/** golangci-lint v2+ JSON flag. Text stays off stdout when only this path is set. */
+const GOLANGCI_V2_JSON = "--output.json.path=stdout";
+
+/**
+ * Pick the JSON output flag from `golangci-lint version` text.
+ * Unrecognized output stays on the v1 flag so older binaries keep working.
+ */
+export function golangciJsonFormatArg(versionOutput: string): string {
+	const match =
+		versionOutput.match(/\bversion\s+(\d+)\./i) ?? versionOutput.match(/\b(\d+)\.\d+\.\d+\b/);
+	const major = match ? Number(match[1]) : 1;
+	return major >= 2 ? GOLANGCI_V2_JSON : GOLANGCI_V1_JSON;
+}
+
+function golangciRunPrefix(formatArg: string): readonly string[] {
+	return ["golangci-lint", "run", formatArg];
+}
+
+function probeGolangciFormatArg(
+	bin: string,
+	cwd: string,
+	timeoutMs: number,
+	env: NodeJS.ProcessEnv | undefined,
+): string {
+	try {
+		const result = spawnSync(bin, ["version"], {
+			cwd,
+			timeout: Math.min(timeoutMs, 10_000),
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+			...(env ? { env } : {}),
+		});
+		if (result.error) return GOLANGCI_V1_JSON;
+		return golangciJsonFormatArg(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+	} catch {
+		return GOLANGCI_V1_JSON;
+	}
+}
+
+async function probeGolangciFormatArgAsync(
+	bin: string,
+	cwd: string,
+	timeoutMs: number,
+	env: NodeJS.ProcessEnv | undefined,
+): Promise<string> {
+	try {
+		const result = await runProcessAsync(bin, ["version"], {
+			cwd,
+			timeout: Math.min(timeoutMs, 10_000),
+			...(env ? { env } : {}),
+		});
+		if (result.code === null || result.timedOut || result.killed) return GOLANGCI_V1_JSON;
+		return golangciJsonFormatArg(`${result.stdout}\n${result.stderr}`);
+	} catch {
+		return GOLANGCI_V1_JSON;
+	}
+}
 
 function effectiveTimeout(override: ResolvedToolCommand | undefined, base: number): number {
 	return override?.timeoutMs ?? base;
@@ -114,7 +172,16 @@ export async function runGoBuildAsync(input: ToolRunnerInput): Promise<CheckResu
 
 export function runGolangciLint(input: ToolRunnerInput): CheckResult[] {
 	const { scope } = input;
-	const argv = buildToolCommandArgv(input.commandOverride, GOLANGCI_PREFIX, DOT_SLASH);
+	const env = input.commandOverride?.env
+		? { ...process.env, ...input.commandOverride.env }
+		: undefined;
+	const formatArg = probeGolangciFormatArg(
+		input.commandOverride?.argv?.[0] ?? "golangci-lint",
+		scope.projectRoot,
+		input.timeoutMs,
+		env,
+	);
+	const argv = buildToolCommandArgv(input.commandOverride, golangciRunPrefix(formatArg), DOT_SLASH);
 	const bin = argv[0];
 	if (bin === undefined) return [];
 	const args = argv.slice(1);
@@ -150,7 +217,14 @@ export function runGolangciLint(input: ToolRunnerInput): CheckResult[] {
 
 export async function runGolangciLintAsync(input: ToolRunnerInput): Promise<CheckResult[]> {
 	const { scope } = input;
-	const argv = buildToolCommandArgv(input.commandOverride, GOLANGCI_PREFIX, DOT_SLASH);
+	const env = input.commandOverride?.env;
+	const formatArg = await probeGolangciFormatArgAsync(
+		input.commandOverride?.argv?.[0] ?? "golangci-lint",
+		scope.projectRoot,
+		input.timeoutMs,
+		env,
+	);
+	const argv = buildToolCommandArgv(input.commandOverride, golangciRunPrefix(formatArg), DOT_SLASH);
 	const bin = argv[0];
 	if (bin === undefined) return [];
 	const args = argv.slice(1);
